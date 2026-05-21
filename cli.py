@@ -453,6 +453,47 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view.",
     )
 
+    # ── Plan command (capability-planner) ────────────────────
+    plan_p = sub.add_parser(
+        "plan",
+        help=(
+            "Build a deterministic substrate plan for a goal. "
+            "Walks the capability registry and emits the "
+            "recommended capability sequence + CLI commands "
+            "+ audit verification. The first consumer of the "
+            "registry; the LLM-driven planner is a future PR "
+            "that swaps in behind this call shape."
+        ),
+    )
+    plan_p.add_argument(
+        "goal", nargs="?", default="",
+        help=(
+            "Free-form goal phrase (e.g. 'launch store', "
+            "'mobile design', 'seed products'). Omitted "
+            "when --close-audit-gaps is supplied."
+        ),
+    )
+    plan_p.add_argument(
+        "--close-audit-gaps", action="store_true",
+        dest="close_audit_gaps",
+        help=(
+            "Treat the audit's failing checks as the goal. "
+            "Runs ``shopai launch-audit`` first, then plans "
+            "against the failing keys."
+        ),
+    )
+    plan_p.add_argument(
+        "--store", default=None,
+        help=(
+            "Store ID for the audit (used with "
+            "--close-audit-gaps)."
+        ),
+    )
+    plan_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view.",
+    )
+
     # ── Daily-brief command ──────────────────────────────────
     daily_p = sub.add_parser(
         "daily-brief",
@@ -10711,6 +10752,111 @@ def _cmd_shopify_scopes_audit(args) -> None:
     sys.exit(1)
 
 
+def _cmd_plan(args) -> None:
+    """Build a capability plan for a goal phrase or for the
+    audit's failing checks.
+
+    Two modes:
+      - ``shopai plan "<goal>"`` -- free-form phrase ->
+        substring-matched + composition-walked plan.
+      - ``shopai plan --close-audit-gaps`` -- runs the audit
+        first, then plans against the failing keys.
+
+    Output is the same Plan dataclass either way (text +
+    JSON). Future LLM-driven planner swaps in behind the
+    same call shape.
+    """
+    as_json = bool(getattr(args, "json", False))
+    close_gaps = bool(getattr(args, "close_audit_gaps", False))
+    goal = (getattr(args, "goal", "") or "").strip()
+
+    try:
+        from core.capability_planner import (
+            plan_for_audit_gaps,
+            plan_for_goal,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("capability_planner import failed: %s", exc)
+        print(f"plan unavailable: {exc}")
+        return
+
+    if close_gaps:
+        sm = _get_store_manager()
+        store_id = (
+            getattr(args, "store", None)
+            or sm.active_store_id
+        )
+        try:
+            from engines.store_setup.launch_audit import (
+                audit_store,
+            )
+            audit = audit_store(store_id=store_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("plan audit raised: %s", exc)
+            if as_json:
+                print(json.dumps({
+                    "ok": False,
+                    "error": "audit_unavailable",
+                    "message": str(exc),
+                }, indent=2))
+            else:
+                print(f"audit unavailable: {exc}")
+            return
+        failing = [
+            c.get("key", "")
+            for c in (audit.get("checks") or [])
+            if not c.get("ok")
+        ]
+        plan = plan_for_audit_gaps(failing)
+    else:
+        if not goal:
+            print(
+                "Usage: shopai plan \"<goal>\"  OR  "
+                "shopai plan --close-audit-gaps"
+            )
+            sys.exit(1)
+        plan = plan_for_goal(goal)
+
+    if as_json:
+        print(json.dumps(plan.to_dict(), indent=2, default=str))
+        return
+
+    # ── Text view ───────────────────────────────────────────
+    print(f"Plan for: {plan.goal}")
+    print()
+    if plan.is_empty():
+        print("  (no plan -- registry returned no matches)")
+        for n in plan.notes:
+            print(f"  note: {n}")
+        return
+    print("Steps:")
+    for i, s in enumerate(plan.steps, start=1):
+        cli = f"  ({s.cli_command})" if s.cli_command else ""
+        print(f"  {i}. [{s.role}] {s.capability_name}{cli}")
+        print(f"     -> {s.description}")
+        if s.closes_audits:
+            print(
+                f"     closes: "
+                f"{', '.join(s.closes_audits)}"
+            )
+    print()
+    if plan.cli_sequence:
+        print("Run:")
+        for c in plan.cli_sequence:
+            print(f"  $ {c}")
+        print()
+    if plan.audit_coverage:
+        print(
+            f"Audit coverage: "
+            f"{', '.join(plan.audit_coverage)}"
+        )
+    if plan.notes:
+        print()
+        print("Notes:")
+        for n in plan.notes:
+            print(f"  - {n}")
+
+
 def _cmd_capabilities(args) -> None:
     """Query the substrate capability registry.
 
@@ -19171,6 +19317,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "capabilities":
         _cmd_capabilities(args)
+        return
+
+    if args.command == "plan":
+        _cmd_plan(args)
         return
 
     if args.command == "launch":

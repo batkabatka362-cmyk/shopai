@@ -233,13 +233,39 @@ class _Registry:
         return results
 
 
+_STOPWORDS: frozenset[str] = frozenset({
+    "the", "a", "an", "to", "for", "of", "and", "or",
+    "with", "by", "from", "this", "that", "these", "those",
+    "is", "be", "do", "in", "on", "at", "as", "it",
+})
+
+
 def _matches_query(cap: Capability, q: str) -> bool:
-    """Substring match across the LLM-readable fields. Simple
-    on purpose -- when the registry grows large enough to need
-    semantic search, swap this for an embedding lookup behind
-    the same call site. The contract is the same: "given a
-    free-form phrase, return the capabilities that seem
-    relevant"."""
+    """Match a free-form phrase against the LLM-readable
+    fields.
+
+    Two passes for robustness:
+
+      1. **Exact phrase substring** -- "mobile design" hits
+         only capabilities mentioning that exact bigram.
+      2. **Token AND** -- "launch the store" splits to
+         ['launch', 'store'] (stopwords dropped) and matches
+         only capabilities whose blob contains BOTH tokens.
+         AND-across-tokens is narrower than OR but produces
+         a more useful planner-relevant signal: an operator
+         saying "design the store for mobile" gets
+         store_design_engine specifically, not every entry
+         containing "store".
+
+    Single-token queries reduce to a simple substring check
+    on that token, which is the right behaviour for short
+    phrases like "mobile" or "policies".
+
+    When the registry grows large enough to need semantic
+    search, swap this for an embedding lookup behind the
+    same call site -- the contract ("free-form phrase ->
+    relevant capabilities") doesn't change.
+    """
     haystacks = [
         cap.name,
         cap.description,
@@ -248,7 +274,19 @@ def _matches_query(cap: Capability, q: str) -> bool:
         " ".join(cap.side_effects),
     ]
     blob = " ".join(haystacks).lower()
-    return q in blob
+
+    # Exact phrase
+    if q in blob:
+        return True
+
+    # Token AND: drop stopwords + sub-3-char noise
+    tokens = [
+        t for t in q.split()
+        if len(t) >= 3 and t not in _STOPWORDS
+    ]
+    if not tokens:
+        return False
+    return all(t in blob for t in tokens)
 
 
 # Module-level singleton.
