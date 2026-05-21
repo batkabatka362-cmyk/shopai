@@ -378,6 +378,81 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── Capability registry commands ─────────────────────────
+    capabilities_p = sub.add_parser(
+        "capabilities",
+        help=(
+            "Query the substrate capability registry: list / "
+            "show / find ShopAI's engines, adapters, "
+            "appliers, audits. The machine-readable catalog "
+            "that lets AI use the substrate."
+        ),
+    )
+    capabilities_sub = capabilities_p.add_subparsers(
+        dest="capability_action",
+    )
+
+    cap_list_p = capabilities_sub.add_parser(
+        "list",
+        help=(
+            "List every registered capability. Use --kind / "
+            "--tag / --closes-audit to filter."
+        ),
+    )
+    cap_list_p.add_argument(
+        "--kind", default=None,
+        help="Filter by kind (engine / applier / generator / "
+             "seeder / orchestrator / adapter / audit / "
+             "hydrator / enricher)",
+    )
+    cap_list_p.add_argument(
+        "--tag", default=None,
+        help="Filter by tag (e.g. 'launch', 'design', "
+             "'post-launch').",
+    )
+    cap_list_p.add_argument(
+        "--closes-audit", default=None,
+        dest="closes_audit",
+        help="Filter by audit check this capability closes "
+             "(e.g. 'active_products', 'legal_policies').",
+    )
+    cap_list_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view.",
+    )
+
+    cap_show_p = capabilities_sub.add_parser(
+        "show",
+        help="Print the full registration for one capability.",
+    )
+    cap_show_p.add_argument(
+        "name",
+        help="Capability name (see ``shopai capabilities "
+             "list``).",
+    )
+    cap_show_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view.",
+    )
+
+    cap_find_p = capabilities_sub.add_parser(
+        "find",
+        help=(
+            "Free-form search across name + description + "
+            "when_to_use + tags. The 'what fits this goal?' "
+            "query."
+        ),
+    )
+    cap_find_p.add_argument(
+        "query",
+        help="Free-form phrase. Substring-matched against "
+             "the LLM-readable fields.",
+    )
+    cap_find_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view.",
+    )
+
     # ── Daily-brief command ──────────────────────────────────
     daily_p = sub.add_parser(
         "daily-brief",
@@ -10636,6 +10711,147 @@ def _cmd_shopify_scopes_audit(args) -> None:
     sys.exit(1)
 
 
+def _cmd_capabilities(args) -> None:
+    """Query the substrate capability registry.
+
+    Three sub-actions:
+      - ``list``: enumerate every registered capability, with
+        optional kind/tag/closes-audit filters.
+      - ``show <name>``: full registration for one capability.
+      - ``find <query>``: free-form substring search across
+        name + description + when_to_use + tags.
+
+    The capabilities catalog is what lets an LLM planner (and
+    Claude during a task) discover "what fits this goal?"
+    without grepping filenames.
+    """
+    try:
+        from core.capability_registry.bootstrap import (
+            ensure_registered,
+        )
+        from core.capability_registry import get_registry
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("capability_registry import failed: %s", exc)
+        print(f"capability registry unavailable: {exc}")
+        return
+
+    ensure_registered()
+    registry = get_registry()
+    action = getattr(args, "capability_action", None) or "list"
+    as_json = bool(getattr(args, "json", False))
+
+    if action == "list":
+        results = registry.find(
+            kind=getattr(args, "kind", None),
+            tag=getattr(args, "tag", None),
+            closes_audit=getattr(args, "closes_audit", None),
+        )
+        if as_json:
+            print(json.dumps(
+                [c.to_dict() for c in results],
+                indent=2, default=str,
+            ))
+            return
+        if not results:
+            print("No capabilities matched the filters.")
+            return
+        print(
+            f"Capabilities ({len(results)}/"
+            f"{registry.count()} registered):"
+        )
+        print()
+        for c in results:
+            tags = (
+                f"  [{', '.join(c.tags)}]" if c.tags else ""
+            )
+            print(f"  {c.name:<32} {c.kind:<14}{tags}")
+            print(f"    -> {c.description}")
+        return
+
+    if action == "show":
+        cap = registry.get(args.name)
+        if cap is None:
+            if as_json:
+                print(json.dumps({
+                    "ok": False,
+                    "error": "not_found",
+                    "name": args.name,
+                }, indent=2))
+            else:
+                print(f"Unknown capability: {args.name}")
+                similar = registry.find(query=args.name)
+                if similar:
+                    print()
+                    print("Did you mean:")
+                    for s in similar[:5]:
+                        print(f"  {s.name}")
+            sys.exit(1)
+        if as_json:
+            print(json.dumps(cap.to_dict(), indent=2, default=str))
+            return
+        print(f"{cap.name}")
+        print(f"  kind:        {cap.kind}")
+        print(f"  module:      {cap.module_path}")
+        print(f"  description: {cap.description}")
+        print(f"  when to use: {cap.when_to_use}")
+        if cap.tags:
+            print(f"  tags:        {', '.join(cap.tags)}")
+        if cap.scopes_used:
+            print(
+                f"  scopes:      {', '.join(cap.scopes_used)}"
+            )
+        if cap.audit_checks_closed:
+            print(
+                f"  closes:      "
+                f"{', '.join(cap.audit_checks_closed)}"
+            )
+        if cap.composes_with:
+            print(
+                f"  composes:    "
+                f"{', '.join(cap.composes_with)}"
+            )
+        if cap.cli_commands:
+            print(
+                f"  cli:         "
+                f"{', '.join(cap.cli_commands)}"
+            )
+        if cap.side_effects:
+            print("  side effects:")
+            for se in cap.side_effects:
+                print(f"    - {se}")
+        if cap.example_input:
+            print("  example input:")
+            for k, v in cap.example_input.items():
+                print(f"    {k}: {v}")
+        return
+
+    if action == "find":
+        results = registry.find(query=args.query)
+        if as_json:
+            print(json.dumps(
+                [c.to_dict() for c in results],
+                indent=2, default=str,
+            ))
+            return
+        if not results:
+            print(f"No capabilities match '{args.query}'.")
+            return
+        print(
+            f"Capabilities matching '{args.query}' "
+            f"({len(results)}):"
+        )
+        print()
+        for c in results:
+            print(f"  {c.name:<32} -- {c.when_to_use}")
+        return
+
+    # Unknown action -> usage hint
+    print(
+        "Usage: shopai capabilities {list|show|find} ..."
+    )
+    sys.exit(1)
+
+
 def _cmd_launch(args) -> None:
     """Flagship: single-command store launch.
 
@@ -18951,6 +19167,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "shopify-webhooks-live-check":
         _cmd_shopify_webhooks_live_check(args)
+        return
+
+    if args.command == "capabilities":
+        _cmd_capabilities(args)
         return
 
     if args.command == "launch":
