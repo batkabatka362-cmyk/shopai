@@ -10532,6 +10532,10 @@ def _cmd_launch(args) -> None:
             print(line)
             if hint:
                 print(f"        fix: {hint}")
+        if not a_ready:
+            nxt = _suggest_next_audit_action(a_checks)
+            if nxt:
+                print(f"  Next: {nxt}")
     elif audit_after is not None and audit_after.get("error"):
         print()
         print(

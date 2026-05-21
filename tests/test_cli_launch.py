@@ -334,6 +334,43 @@ class TestKwargPropagation:
         assert "[MISS] active_products" in out
         assert "fix: Add ACTIVE products" in out
 
+    def test_audit_follow_up_includes_next_action(self, cli):
+        """When the audit follow-up surfaces gaps, the Next:
+        line points the operator at the highest-leverage
+        command."""
+        audit_result = {
+            "checks": [
+                {"key": "legal_policies", "ok": False,
+                 "applied": 0, "expected": 5,
+                 "missing": ["REFUND_POLICY"],
+                 "fix_hint": "Run: shopai launch ..."},
+                {"key": "standard_pages", "ok": False,
+                 "applied": 0, "expected": 4,
+                 "missing": ["about"],
+                 "fix_hint": "Run: shopai launch ..."},
+                {"key": "active_discounts", "ok": True,
+                 "applied": 1, "expected": 1, "missing": [],
+                 "fix_hint": ""},
+            ],
+            "ready_to_launch": False,
+            "completion_pct": 33,
+            "missing_summary": "...",
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "engines.store_setup.launch_orchestrator.launch_store",
+            return_value=_ready_result(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=audit_result,
+        ):
+            out, code = _capture(
+                cli._cmd_launch, _ns(audit=True),
+            )
+        # Next line surfaces under the follow-up section
+        assert "Next: shopai launch" in out
+
     def test_audit_flag_skipped_by_default(self, cli):
         with patch.object(
             cli, "_get_store_manager", return_value=_fake_sm(),
