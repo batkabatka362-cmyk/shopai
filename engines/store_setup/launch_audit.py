@@ -15,10 +15,11 @@ Output schema::
         "checks": [
             {"key": "legal_policies",
              "ok": True, "applied": 5, "expected": 5,
-             "missing": []},
+             "missing": [], "fix_hint": ""},
             {"key": "standard_pages",
              "ok": False, "applied": 3, "expected": 4,
-             "missing": ["FAQ"]},
+             "missing": ["FAQ"],
+             "fix_hint": "Run: shopai launch ..."},
             ...
         ],
         "ready_to_launch": False,
@@ -82,6 +83,52 @@ _MIN_SHIPPING_ZONES: int = 1
 # active warehouse that doesn't fulfill online orders (e.g. a
 # pickup-only outpost) can't satisfy a website checkout.
 _MIN_FULFILLABLE_LOCATIONS: int = 1
+
+
+# Per-check operator-actionable next steps. The fix_hint
+# tells the operator HOW to close each missing check, so the
+# audit's value goes beyond "what's missing" to "what to do
+# about it". Format is a short verb-led sentence; CLI prints
+# it verbatim on failure lines.
+_FIX_HINTS: dict[str, str] = {
+    "legal_policies": (
+        "Run: shopai launch --store-name <NAME> --niche <NICHE>"
+    ),
+    "standard_pages": (
+        "Run: shopai launch --store-name <NAME> --niche <NICHE>"
+    ),
+    "active_discounts": (
+        "Run: shopai launch --store-name <NAME> --niche <NICHE>"
+    ),
+    "curated_collections": (
+        "Run: shopai launch --store-name <NAME> --niche <NICHE>"
+    ),
+    "design_tokens": (
+        "Run: shopai launch (requires a MAIN theme installed "
+        "on the store)"
+    ),
+    "active_products": (
+        "Add ACTIVE products via Shopify admin or run a niche "
+        "seeder; shopai post-launch enriches what exists"
+    ),
+    "shipping_zones": (
+        "Manual: configure at "
+        "admin.shopify.com/settings/shipping"
+    ),
+    "fulfillable_locations": (
+        "Manual: activate a location with online-order "
+        "fulfillment at admin.shopify.com/settings/locations"
+    ),
+}
+
+
+def _fix_hint(check_key: str) -> str:
+    """Look up the operator-actionable next step for ``key``.
+
+    Returns an empty string if no hint is registered -- the CLI
+    treats empty as "no hint to show", not as an error.
+    """
+    return _FIX_HINTS.get(check_key, "")
 
 
 def audit_store(
@@ -151,6 +198,12 @@ def audit_store(
             expected=expected_fulfillable_locations,
         ),
     )
+
+    # Decorate every check with its operator-actionable hint
+    # in one place so individual probes stay focused on the
+    # read+normalise responsibility. Unknown keys get "".
+    for check in checks:
+        check["fix_hint"] = _fix_hint(check.get("key", ""))
 
     total = len(checks)
     passed = sum(1 for c in checks if c["ok"])

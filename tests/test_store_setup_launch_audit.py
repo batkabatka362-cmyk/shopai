@@ -850,3 +850,72 @@ class TestStoreIdPropagation:
             audit_store(store_id="store-a")
         params = record_mock.call_args.kwargs["params"]
         assert params["store_id"] == "store-a"
+
+
+class TestFixHint:
+    """Every check carries an operator-actionable ``fix_hint``
+    string. The hint is purely advisory -- it doesn't gate
+    pass/fail, it just tells the operator HOW to close the gap.
+
+    The contract: every known check key has a non-empty hint
+    so the CLI never has to think about "what do I do about
+    this missing piece".
+    """
+
+    def _all_checks(self):
+        router = type("R", (), {})()
+        router.execute = _router_with(_ALL_GOOD)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            return audit_store()["checks"]
+
+    def test_every_check_has_fix_hint_key(self):
+        checks = self._all_checks()
+        for c in checks:
+            assert "fix_hint" in c, (
+                f"{c['key']} has no fix_hint field"
+            )
+
+    def test_every_known_check_has_nonempty_hint(self):
+        checks = self._all_checks()
+        for c in checks:
+            assert c["fix_hint"], (
+                f"{c['key']} has empty fix_hint -- every "
+                "known launchability gap needs an actionable "
+                "next step"
+            )
+
+    def test_setup_hints_reference_launch_command(self):
+        """Checks closeable by the launch flow point to
+        ``shopai launch``."""
+        checks = {c["key"]: c for c in self._all_checks()}
+        for key in (
+            "legal_policies", "standard_pages",
+            "active_discounts", "curated_collections",
+            "design_tokens",
+        ):
+            hint = checks[key]["fix_hint"]
+            assert "shopai launch" in hint.lower(), (
+                f"{key} hint should reference shopai launch: "
+                f"{hint}"
+            )
+
+    def test_manual_hints_reference_admin(self):
+        """Shopify-admin-only checks point operators at
+        admin.shopify.com."""
+        checks = {c["key"]: c for c in self._all_checks()}
+        for key in ("shipping_zones", "fulfillable_locations"):
+            hint = checks[key]["fix_hint"]
+            assert "admin.shopify.com" in hint, (
+                f"{key} hint should reference admin URL: "
+                f"{hint}"
+            )
+
+    def test_active_products_hint_explains_seeder(self):
+        checks = {c["key"]: c for c in self._all_checks()}
+        hint = checks["active_products"]["fix_hint"]
+        assert "product" in hint.lower()

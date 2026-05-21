@@ -1391,6 +1391,57 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    launch_audit_p = sub.add_parser(
+        "launch-audit",
+        help=(
+            "Read-only launch-readiness audit -- reports per-"
+            "check pass/fail PLUS an operator-actionable "
+            "fix_hint for each gap (legal, pages, discounts, "
+            "collections, design, products, shipping, "
+            "fulfillment). Records completion_pct via Pattern Z."
+        ),
+    )
+    launch_audit_p.add_argument(
+        "--store", default=None,
+        help=(
+            "Store ID for Pattern Z scope (falls back to active "
+            "store thread-local)"
+        ),
+    )
+    launch_audit_p.add_argument(
+        "--expected-products", type=int, default=1,
+        help=(
+            "Minimum ACTIVE product count to pass the "
+            "active_products check (default: 1)"
+        ),
+    )
+    launch_audit_p.add_argument(
+        "--expected-collections", type=int, default=1,
+        help=(
+            "Minimum collection count to pass the "
+            "curated_collections check (default: 1)"
+        ),
+    )
+    launch_audit_p.add_argument(
+        "--expected-discounts", type=int, default=1,
+        help=(
+            "Minimum active discount count to pass the "
+            "active_discounts check (default: 1)"
+        ),
+    )
+    launch_audit_p.add_argument(
+        "--strict", action="store_true",
+        help=(
+            "Exit 1 when ready_to_launch is False (default "
+            "behaviour is informational exit 0 so the audit "
+            "is safe to run on a cron alongside daily-brief)"
+        ),
+    )
+    launch_audit_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     post_launch_p = sub.add_parser(
         "post-launch",
         help=(
@@ -10207,6 +10258,107 @@ def _cmd_shopify_scopes_audit(args) -> None:
     sys.exit(1)
 
 
+def _cmd_launch_audit(args) -> None:
+    """Read-only launch-readiness audit.
+
+    Walks the 8 launchability checks (legal_policies,
+    standard_pages, active_discounts, curated_collections,
+    design_tokens, active_products, shipping_zones,
+    fulfillable_locations) and reports per-check pass/fail
+    plus an operator-actionable ``fix_hint`` on each gap.
+
+    Exits 0 by default (informational; safe alongside the
+    daily cron). Pass ``--strict`` to exit 1 when
+    ready_to_launch is False so CI can gate on it.
+    """
+    as_json = bool(getattr(args, "json", False))
+    strict = bool(getattr(args, "strict", False))
+    sm = _get_store_manager()
+    store_id = (
+        getattr(args, "store", None) or sm.active_store_id
+    )
+
+    try:
+        from engines.store_setup.launch_audit import audit_store
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("launch_audit import failed: %s", exc)
+        if as_json:
+            print(json.dumps({
+                "ok": None,
+                "error": "launch_audit_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"launch-audit unavailable: {exc}")
+        return
+
+    try:
+        result = audit_store(
+            store_id=store_id,
+            expected_products=int(
+                getattr(args, "expected_products", 1) or 1
+            ),
+            expected_collections=int(
+                getattr(args, "expected_collections", 1) or 1
+            ),
+            expected_discounts=int(
+                getattr(args, "expected_discounts", 1) or 1
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("launch_audit raised: %s", exc)
+        if as_json:
+            print(json.dumps({
+                "ok": None,
+                "error": "launch_audit_failed",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"launch-audit failed: {exc}")
+        return
+
+    if as_json:
+        print(json.dumps(result, indent=2))
+        if strict and not result.get("ready_to_launch"):
+            sys.exit(1)
+        return
+
+    # ── Text view ───────────────────────────────────────────
+    checks = result.get("checks") or []
+    pct = result.get("completion_pct", 0)
+    ready = result.get("ready_to_launch", False)
+    passed = sum(1 for c in checks if c.get("ok"))
+    header_status = "READY" if ready else "NOT READY"
+    print(
+        f"Launch-readiness audit -- {header_status} "
+        f"({passed}/{len(checks)} checks pass, {pct}% complete)"
+    )
+    print()
+    for check in checks:
+        key = check.get("key", "?")
+        ok = check.get("ok", False)
+        applied = check.get("applied", 0)
+        expected = check.get("expected", 0)
+        mark = "OK " if ok else "MISS"
+        print(f"  [{mark}] {key:<24} {applied}/{expected}")
+        if not ok:
+            missing = check.get("missing") or []
+            if missing:
+                print(f"        missing: {', '.join(missing)}")
+            hint = check.get("fix_hint") or ""
+            if hint:
+                print(f"        fix: {hint}")
+    print()
+    if ready:
+        print("All checks pass -- store is launchable.")
+    else:
+        print(
+            f"Missing: {result.get('missing_summary', '')}"
+        )
+    if strict and not ready:
+        sys.exit(1)
+
+
 def _cmd_post_launch(args) -> None:
     """Post-launch polish: run SEO + description enrichment
     over the store's products in one shot.
@@ -18123,6 +18275,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "shopify-webhooks-live-check":
         _cmd_shopify_webhooks_live_check(args)
+        return
+
+    if args.command == "launch-audit":
+        _cmd_launch_audit(args)
         return
 
     if args.command == "post-launch":
