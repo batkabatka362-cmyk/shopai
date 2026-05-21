@@ -116,8 +116,16 @@ class LiveExecutor:
                     "product": data.get("product", {}),
                     "timestamp": time.time(),
                 }
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # Snapshot failure means rollback won't have the
+            # pre-change state. The live action proceeds (the
+            # whole point of ``safe`` tier is to be reversible
+            # via the action itself), but operators chasing a
+            # bad rollback need this log.
+            logger.warning(
+                "_take_snapshot failed (product %s): %s",
+                product_id, exc,
+            )
 
     def _dispatch(self, action_type: str, shop_url: str, token: str,
                   params: dict) -> dict:
@@ -180,8 +188,11 @@ class LiveExecutor:
                 "success": result.get("success", False),
                 "id": params.get("product_id", ""),
             }, source="live_executor", score=4.0 if result.get("success") else 2.0)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "_record telemetry write failed (%s): %s",
+                action_type, exc,
+            )
 
     def get_snapshot(self, product_id: str) -> dict:
         return self._snapshots.get(product_id, {})
