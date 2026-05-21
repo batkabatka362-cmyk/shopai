@@ -435,6 +435,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view.",
     )
 
+    cap_run_p = capabilities_sub.add_parser(
+        "run",
+        help=(
+            "Execute a registered capability in-process. "
+            "Imports the module:attr from registry, invokes "
+            "with --args JSON. Defaults to dry-run (resolves "
+            "but does NOT invoke); pass --yes to actually "
+            "run. Risky: caller is responsible for arg "
+            "shape + side effects."
+        ),
+    )
+    cap_run_p.add_argument(
+        "name",
+        help="Capability name (from `shopai capabilities "
+             "list`).",
+    )
+    cap_run_p.add_argument(
+        "--args", default="{}",
+        help=(
+            "JSON dict of kwargs passed to the capability. "
+            "Default '{}' (no args)."
+        ),
+    )
+    cap_run_p.add_argument(
+        "--yes", action="store_true",
+        help=(
+            "Actually invoke the capability. Without --yes, "
+            "the command runs in dry-run mode (resolves "
+            "module + reports without invoking)."
+        ),
+    )
+    cap_run_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw ExecutionResult JSON instead of text.",
+    )
+
     cap_tree_p = capabilities_sub.add_parser(
         "tree",
         help=(
@@ -11120,6 +11156,81 @@ def _cmd_capabilities(args) -> None:
             print("  example input:")
             for k, v in cap.example_input.items():
                 print(f"    {k}: {v}")
+        return
+
+    if action == "run":
+        try:
+            from core.capability_executor import (
+                CapabilityExecutor,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "capability_executor import failed: %s", exc,
+            )
+            print(f"executor unavailable: {exc}")
+            return
+        try:
+            raw_args = getattr(args, "args", "{}") or "{}"
+            args_dict = json.loads(raw_args)
+            if not isinstance(args_dict, dict):
+                raise ValueError(
+                    "--args must be a JSON object"
+                )
+        except Exception as exc:  # noqa: BLE001
+            print(f"invalid --args JSON: {exc}")
+            sys.exit(1)
+
+        execu = CapabilityExecutor()
+        yes = bool(getattr(args, "yes", False))
+        if yes:
+            result = execu.execute(args.name, args_dict)
+        else:
+            result = execu.dry_run(args.name, args_dict)
+
+        if as_json:
+            print(json.dumps(
+                result.to_dict(),
+                indent=2, default=str,
+            ))
+            if not result.ok:
+                sys.exit(1)
+            return
+
+        # ── Text view ──
+        status = "OK" if result.ok else "FAIL"
+        mode = "EXECUTED" if yes else "DRY-RUN"
+        print(
+            f"[{status}] {mode} -- {result.capability}"
+        )
+        if result.module_path:
+            print(f"  module:      {result.module_path}")
+        if result.invocation_kind:
+            print(
+                f"  invocation:  {result.invocation_kind}"
+            )
+        if result.args:
+            print(f"  args:        {result.args}")
+        if result.error:
+            print(f"  error:       {result.error}")
+        if yes and result.ok:
+            print()
+            print("Result:")
+            try:
+                print(json.dumps(
+                    result.data,
+                    indent=2, default=str,
+                ))
+            except Exception:  # noqa: BLE001
+                # Non-JSON-serialisable result -- repr it
+                print(repr(result.data))
+        if not yes and result.ok:
+            print()
+            print(
+                "Dry-run only. Pass --yes to actually "
+                "invoke."
+            )
+        if not result.ok:
+            sys.exit(1)
         return
 
     if action == "tree":

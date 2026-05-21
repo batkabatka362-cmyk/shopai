@@ -65,10 +65,93 @@ def _ns(**kw):
         name=None,
         query=None,
         depth=2,
+        args="{}",
+        yes=False,
         json=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
+
+
+class TestRun:
+    """``shopai capabilities run <name>`` invokes a
+    registered capability in-process. Default dry-run;
+    --yes opts in to actual execution."""
+
+    def test_dry_run_resolves_real_function(self, cli):
+        out, code = _capture(
+            cli._cmd_capabilities,
+            _ns(
+                capability_action="run",
+                name="generate_starter_products",
+                args='{"niche": "beauty"}',
+            ),
+        )
+        assert code == 0
+        assert "DRY-RUN" in out
+        assert "generate_starter_products" in out
+        assert "Dry-run only" in out
+        assert "Pass --yes" in out
+
+    def test_yes_executes_real_function(self, cli):
+        out, code = _capture(
+            cli._cmd_capabilities,
+            _ns(
+                capability_action="run",
+                name="generate_starter_products",
+                args='{"niche": "beauty"}',
+                yes=True,
+                json=True,
+            ),
+        )
+        assert code == 0
+        data = json.loads(out)
+        assert data["ok"] is True
+        # Real generator returned 4 starter products
+        assert isinstance(data["data"], list)
+        assert len(data["data"]) == 4
+        assert (
+            data["data"][0]["title"]
+            == "Hydrating Vitamin C Serum"
+        )
+
+    def test_unknown_capability_exits_1(self, cli):
+        out, code = _capture(
+            cli._cmd_capabilities,
+            _ns(
+                capability_action="run",
+                name="ghost",
+            ),
+        )
+        assert code == 1
+        assert "unknown_capability" in out
+
+    def test_invalid_args_json_exits_1(self, cli):
+        out, code = _capture(
+            cli._cmd_capabilities,
+            _ns(
+                capability_action="run",
+                name="generate_starter_products",
+                args="not valid json",
+            ),
+        )
+        assert code == 1
+        assert "invalid --args JSON" in out
+
+    def test_cli_handler_capability_refused(self, cli):
+        """post_launch_enrich's module_path is ``cli:_cmd...``
+        -- can't be invoked in-process, returns a friendly
+        error."""
+        out, code = _capture(
+            cli._cmd_capabilities,
+            _ns(
+                capability_action="run",
+                name="post_launch_enrich",
+                yes=True,
+            ),
+        )
+        assert code == 1
+        assert "cli_handler_not_in_process" in out
 
 
 class TestTree:
