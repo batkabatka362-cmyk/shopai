@@ -60,26 +60,42 @@ class SmartExecutor:
             try:
                 from core.memory.intelligence import get_memory_intelligence
                 self._memory_intel = get_memory_intelligence()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "memory_intelligence init failed: %s "
+                    "(memory-aware scoring disabled this cycle)",
+                    exc,
+                )
         if not self._data_arch:
             try:
                 from core.data.architecture import get_data_architecture
                 self._data_arch = get_data_architecture()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "data_architecture init failed: %s "
+                    "(action recording disabled this cycle)",
+                    exc,
+                )
         if not self._learning_loop:
             try:
                 from core.brain.learning_loop import LearningLoop
                 self._learning_loop = LearningLoop()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "learning_loop init failed: %s "
+                    "(pattern detection disabled this cycle)",
+                    exc,
+                )
         if not self._ab_testing:
             try:
                 from core.system.ab_testing import get_ab_testing
                 self._ab_testing = get_ab_testing()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "ab_testing init failed: %s "
+                    "(experiment routing disabled this cycle)",
+                    exc,
+                )
         if not self._promotion_tracker:
             try:
                 from execution.promotion_tracker import (
