@@ -207,26 +207,79 @@ def _inside_fall_through_chain(
     owning_try = _find_owning_try(handler, tree)
     if owning_try is None:
         return False
-    parent = _parent_block_and_index(owning_try, tree)
+    return _statement_falls_through_to_marker(owning_try, tree)
+
+
+def _is_fall_through_marker(stmt: ast.stmt) -> bool:
+    """True iff the statement is a recognised end-of-chain
+    marker: another try (chained parse), a bare logger call
+    (parse-then-log), or a return (parse-then-return-default)."""
+    if isinstance(stmt, ast.Try):
+        return True
+    if _statement_is_logger_call(stmt):
+        return True
+    if isinstance(stmt, ast.Return):
+        return True
+    return False
+
+
+def _statement_falls_through_to_marker(
+    target: ast.stmt,
+    tree: ast.AST,
+) -> bool:
+    """True iff falling out of ``target`` naturally reaches a
+    fall-through marker (another try, a logger call, or a
+    return) within the same control-flow scope.
+
+    Handles three nesting levels:
+
+    1. ``target`` is followed by the marker in the same block::
+
+           try: ...
+           except: pass
+           logger.warning(...)  # marker
+
+    2. ``target`` is the LAST statement in an ``if`` body, and
+       the ``if`` itself is followed by the marker. Falling out
+       of the if-body is equivalent to falling out of the
+       target in this case (since the only statement after
+       the try IS the if-end)::
+
+           if x:
+               try: ...
+               except: pass    # ``target``
+           logger.warning(...)  # marker, after the if
+
+    3. Same as (2) but the enclosing scope is an ``if`` body
+       which is itself the last statement of an outer ``if``.
+       Walk up the chain of if-bodies until we either find a
+       sibling marker or fail.
+
+    ``for``/``while`` bodies do NOT count for the walk-up --
+    falling out of a loop body means ""next iteration"", not
+    fall-through to the next sibling.
+    """
+    parent = _parent_block_and_index(target, tree)
     if parent is None:
         return False
     block, idx = parent
-    # Look at the very next statement in the same block.
-    next_idx = idx + 1
-    if next_idx >= len(block):
-        return False
-    nxt = block[next_idx]
-    if isinstance(nxt, ast.Try):
-        # Another parse attempt follows -> fall-through chain.
-        return True
-    if _statement_is_logger_call(nxt):
-        # Parse failed, fall through, log once at end.
-        return True
-    if isinstance(nxt, ast.Return):
-        # ``except: pass`` then ``return default`` is the
-        # ""tried it, returning the fallback"" idiom -- not a
-        # silent swallow because the default IS the signal.
-        return True
+    # 1. Direct next sibling in the same block.
+    if idx + 1 < len(block):
+        nxt = block[idx + 1]
+        if _is_fall_through_marker(nxt):
+            return True
+    # 2. If target is the last stmt in its parent block AND
+    # the block IS the body of an ``if`` (not else, not a
+    # loop), walk up to the if's siblings.
+    if idx + 1 == len(block):
+        # Find the if statement that owns ``block``.
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and node.body is block:
+                # Recursive walk: treat the if itself as the
+                # new ``target`` and look for its successor.
+                return _statement_falls_through_to_marker(
+                    node, tree,
+                )
     return False
 
 

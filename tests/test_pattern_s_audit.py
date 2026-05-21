@@ -437,3 +437,120 @@ class TestFallThroughChainSkipped:
         # fall-through rule doesn't apply. The handler IS
         # flagged.
         assert len(report.silent_sites) == 1
+
+
+class TestIfBodyFallThroughSkipped:
+    """Refinement #3: when the try is the LAST statement in an
+    ``if`` body (no else), falling out of the if naturally
+    continues to the next sibling at the parent level.
+    """
+
+    def test_try_in_if_body_then_log_after_if(self, tmp_path):
+        """Canonical case: try in if-body, after the if there's
+        a log call. Falling through the if reaches the log."""
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            import logging
+            def parse(s):
+                if s:
+                    try:
+                        return _strict_parse(s)
+                    except (ValueError, TypeError):
+                        pass
+                logging.warning("could not parse %s", s)
+                return None
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert report.has_violations is False
+
+    def test_try_in_if_body_then_return_after_if(self, tmp_path):
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            def parse(s):
+                if s:
+                    try:
+                        return float(s)
+                    except ValueError:
+                        pass
+                return 0.0
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert report.has_violations is False
+
+    def test_try_in_nested_if_bodies(self, tmp_path):
+        """Walk up TWO levels: try in inner-if-body, inner-if
+        is last in outer-if-body, outer-if followed by log."""
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            import logging
+            def parse(s):
+                if s is not None:
+                    if isinstance(s, str):
+                        try:
+                            return float(s)
+                        except ValueError:
+                            pass
+                logging.warning("could not parse %s", s)
+                return None
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert report.has_violations is False
+
+    def test_try_in_for_body_does_NOT_fall_through(
+        self, tmp_path,
+    ):
+        """For-loop body fall-through is next-iteration, not
+        post-loop. Audit conservatively keeps these flagged."""
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            import logging
+            def f(items):
+                for x in items:
+                    try:
+                        do_thing(x)
+                    except Exception:
+                        pass
+                logging.warning("loop finished")
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert len(report.silent_sites) == 1
+
+    def test_try_in_else_body_does_NOT_fall_through(
+        self, tmp_path,
+    ):
+        """Conservative: only ``body`` branch qualifies; the
+        else-body's fall-through depends on which branch
+        executed. Stays flagged."""
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            import logging
+            def f():
+                if cond():
+                    do_it()
+                else:
+                    try:
+                        do_other()
+                    except Exception:
+                        pass
+                logging.warning("done")
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert len(report.silent_sites) == 1
+
+    def test_try_in_if_with_non_marker_sibling(
+        self, tmp_path,
+    ):
+        """Try in if-body, after the if is a non-marker stmt
+        (like a function call) -- not skipped, still flagged."""
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            def f(x):
+                if cond(x):
+                    try:
+                        do_it(x)
+                    except Exception:
+                        pass
+                process(x)
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert len(report.silent_sites) == 1
