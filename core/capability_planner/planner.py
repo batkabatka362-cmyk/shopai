@@ -340,20 +340,28 @@ class Planner:
     })
 
     def _walk_chain(
-        self, root: Capability, depth: int = 4,
+        self, root: Capability, depth: int = 1,
     ) -> list[Capability]:
         """Depth-limited walk along composes_with.
 
         Returns capabilities in a sensible execution order:
-        producers (generators / enrichers / engines) first,
-        then the root, then consumers (appliers / seeders)
-        and any audit verification.
+        direct upstream peers (generators / enrichers /
+        engines feeding the root) first, then the root, then
+        direct downstream peers (appliers / seeders /
+        audits consuming the root).
+
+        Default depth=1: only DIRECT neighbors. The
+        composition graph is densely connected via
+        ``composes_with`` (engines reference engines), and
+        transitive expansion would surface the whole graph
+        from any seed. Direct-only keeps each seed's chain
+        focused on its immediate execution context.
 
         Symmetric: walks composes_with bidirectionally,
-        relying on each peer's ``kind`` to decide whether it
-        comes before or after the root in the emitted order.
+        relying on each peer's ``kind`` to decide upstream
+        vs downstream position.
 
-        Depth cap (4) is paranoid -- the registry is a DAG
+        Depth cap is paranoid -- the registry is a DAG
         today, but a cycle would otherwise infinite-loop.
         """
         order: list[Capability] = []

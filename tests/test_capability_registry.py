@@ -274,3 +274,25 @@ class TestBootstrap:
         assert cap is not None
         # launch_store can close up to 7 audit checks
         assert len(cap.audit_checks_closed) >= 5
+
+    def test_engines_batch_post_launch_engines_registered(self):
+        """The second batch (post-launch operational
+        engines) locks in the Phase 6 writeback set + the
+        recovery / retention engines."""
+        ensure_registered()
+        names = set(get_registry().names())
+        expected = {
+            "loyalty", "discount_strategy",
+            "dynamic_pricing", "tag_management",
+            "affiliate", "product_lifecycle",
+            "cart_recovery", "browse_recovery",
+            "churn_prediction",
+            "bundle", "cross_sell",
+            "cohort_analysis", "customer_journey",
+            "audience_targeting", "demand_analysis",
+            "catalog", "competition_analyzer",
+        }
+        missing = expected - names
+        assert not missing, (
+            f"engines batch missing: {missing}"
+        )
