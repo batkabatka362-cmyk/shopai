@@ -554,3 +554,104 @@ class TestIfBodyFallThroughSkipped:
         ''')
         report = audit_pattern_s(roots=[tmp_path])
         assert len(report.silent_sites) == 1
+
+
+class TestIntentionalMarkerCommentSkipped:
+    """Refinement #4: ``except: pass`` blocks marked as
+    intentional via a recognised comment keyword nearby are
+    skipped. Lets operators explicitly opt out of audit
+    flagging for idioms like ``list.remove`` "not present".
+    """
+
+    def test_silently_marker_skips(self, tmp_path):
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            def f():
+                try:
+                    do_thing()
+                except OSError:
+                    pass  # skip silently
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert report.has_violations is False
+
+    def test_no_op_marker_skips(self, tmp_path):
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            def _touch(self, key):
+                try:
+                    self._access_order.remove(key)
+                except ValueError:
+                    # no-op when not present
+                    pass
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert report.has_violations is False
+
+    def test_fall_through_marker_skips(self, tmp_path):
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            def f():
+                try:
+                    do_thing()
+                except Exception:
+                    pass  # intentional fall-through
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert report.has_violations is False
+
+    def test_marker_on_line_above_skips(self, tmp_path):
+        """Marker comment on the line BEFORE the except is also
+        recognised."""
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            def f():
+                try:
+                    do_thing()
+                # tolerate corrupt rows
+                except Exception:
+                    pass
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert report.has_violations is False
+
+    def test_unmarked_silent_still_flagged(self, tmp_path):
+        """Without a recognised marker, ``except: pass`` is
+        still flagged."""
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            def f():
+                try:
+                    do_thing()
+                except Exception:
+                    pass
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert len(report.silent_sites) == 1
+
+    def test_unrelated_comment_does_not_skip(self, tmp_path):
+        """Comments without one of the recognised markers don't
+        qualify -- e.g. ``# fix this later`` shouldn't be
+        treated as an intentional swallow."""
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            def f():
+                try:
+                    do_thing()
+                except Exception:
+                    pass  # fix this later
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert len(report.silent_sites) == 1
+
+    def test_marker_case_insensitive(self, tmp_path):
+        from engines._pattern_s_audit import audit_pattern_s
+        _write(tmp_path, "mod.py", '''
+            def f():
+                try:
+                    do_thing()
+                except Exception:
+                    pass  # SILENTLY skip
+        ''')
+        report = audit_pattern_s(roots=[tmp_path])
+        assert report.has_violations is False
