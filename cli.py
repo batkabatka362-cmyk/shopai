@@ -141,6 +141,52 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    enrich_desc_p = store_sub.add_parser(
+        "enrich-descriptions",
+        help=(
+            "Generate (and optionally APPLY) product descriptions "
+            "for products that don't have one (or have short "
+            "placeholders). Default is read-only preview; "
+            "pass --apply to write."
+        ),
+    )
+    enrich_desc_p.add_argument(
+        "store_id", nargs="?",
+        help="Store ID (default: active store)",
+    )
+    enrich_desc_p.add_argument(
+        "--niche", default="general",
+        choices=[
+            "general", "beauty", "fashion", "home",
+            "tech", "food",
+        ],
+        help="Niche key for tone (default: general)",
+    )
+    enrich_desc_p.add_argument(
+        "--min-length", type=int, default=80,
+        help=(
+            "Skip products whose existing description is at "
+            "least this many characters. Default 80 -- products "
+            "with longer existing copy are presumed operator-"
+            "authored and preserved."
+        ),
+    )
+    enrich_desc_p.add_argument(
+        "--limit", type=int, default=100,
+        help="Max products to fetch (default: 100)",
+    )
+    enrich_desc_p.add_argument(
+        "--apply", action="store_true",
+        help=(
+            "WRITE: push generated descriptions via "
+            "SHOPIFY_UPDATE_PRODUCT. Default is read-only preview."
+        ),
+    )
+    enrich_desc_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     setup_p = store_sub.add_parser(
         "setup",
         help=(
@@ -5915,6 +5961,187 @@ def _cmd_memory_recall(args) -> None:
                 for k, v in components.items()
             )
             print(comp_line)
+
+
+def _cmd_store_enrich_descriptions(args) -> None:
+    """Generate (and optionally apply) product description
+    bodies for products that don't have one (or have short
+    placeholder copy).
+
+    Default behavior is read-only preview: fetch products via
+    SHOPIFY_LIST_PRODUCTS, run them through ``enrich_products``
+    to generate ``body_html`` only for products whose existing
+    description is shorter than ``--min-length`` (default 80
+    chars). Pass ``--apply`` to write them via
+    SHOPIFY_UPDATE_PRODUCT.
+
+    Preserves operator-authored copy: a product with a long
+    existing description is always skipped (regardless of
+    --apply).
+
+    Exits 0 on success (preview OR apply with 0 failures);
+    exits 1 only when ``--apply`` is set AND at least one
+    update failed.
+    """
+    as_json = bool(getattr(args, "json", False))
+    apply_writes = bool(getattr(args, "apply", False))
+    sm = _get_store_manager()
+    store_id = (
+        getattr(args, "store_id", None) or sm.active_store_id
+    )
+
+    try:
+        from core.adapters import get_router
+        from core.adapters.base import Capability
+        router = get_router()
+        list_result = router.execute(
+            Capability.SHOPIFY_LIST_PRODUCTS,
+            {"limit": int(getattr(args, "limit", 100) or 100)},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "enrich-descriptions router fetch raised: %s", exc,
+        )
+        if as_json:
+            print(json.dumps({
+                "ok": None,
+                "error": "products_fetch_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"Product fetch unavailable: {exc}")
+        return
+
+    if not getattr(list_result, "ok", False):
+        err = getattr(list_result, "error", "unknown")
+        if as_json:
+            print(json.dumps({
+                "ok": None,
+                "error": "products_fetch_failed",
+                "message": str(err),
+            }, indent=2))
+        else:
+            print(f"Product fetch failed: {err}")
+        return
+
+    data = getattr(list_result, "data", None) or {}
+    products = data.get("products") if isinstance(data, dict) else []
+    if not isinstance(products, list):
+        products = []
+
+    try:
+        from engines.store_setup.product_description_enricher import (
+            enrich_products,
+        )
+        gen_result = enrich_products(
+            products,
+            niche=getattr(args, "niche", "general"),
+            min_existing_length=int(
+                getattr(args, "min_length", 80) or 80,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("enrich_products raised: %s", exc)
+        if as_json:
+            print(json.dumps({
+                "ok": None,
+                "error": "enrich_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"enrich_products unavailable: {exc}")
+        return
+
+    generated = gen_result.get("generated") or []
+    skipped = gen_result.get("skipped") or []
+
+    # ── Preview-only path ─────────────────────────────────
+    if not apply_writes:
+        if as_json:
+            print(json.dumps({
+                "ok": True,
+                "applied": False,
+                "generated_count": len(generated),
+                "skipped_count": len(skipped),
+                "generated": generated,
+                "skipped": skipped,
+            }, indent=2))
+            return
+        print(
+            f"enrich-descriptions PREVIEW -- "
+            f"{len(generated)} product(s) would get "
+            f"descriptions ({len(skipped)} skipped)."
+        )
+        for g in generated[:5]:
+            title = g.get("title", "")
+            body_len = len(g.get("body_html", "") or "")
+            print(
+                f"  {g['product_id']}: "
+                f"{title!r} ({body_len} chars)"
+            )
+        if len(generated) > 5:
+            print(f"  ... +{len(generated) - 5} more")
+        print()
+        print("Re-run with --apply to write to Shopify.")
+        return
+
+    # ── Apply path ────────────────────────────────────────
+    try:
+        from engines.store_setup.product_description_enricher import (
+            apply_descriptions,
+        )
+        apply_result = apply_descriptions(
+            generated, store_id=store_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("apply_descriptions raised: %s", exc)
+        if as_json:
+            print(json.dumps({
+                "ok": False,
+                "error": "apply_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"apply_descriptions unavailable: {exc}")
+        sys.exit(1)
+
+    applied_count = int(apply_result.get("applied_count", 0))
+    results = apply_result.get("results") or []
+    failures = [r for r in results if not r.get("ok")]
+
+    if as_json:
+        print(json.dumps({
+            "ok": not failures,
+            "applied": True,
+            "applied_count": applied_count,
+            "generated_count": len(generated),
+            "skipped_count": len(skipped),
+            "failure_count": len(failures),
+            "results": results,
+        }, indent=2))
+        if failures:
+            sys.exit(1)
+        return
+
+    if not failures:
+        print(
+            f"enrich-descriptions APPLIED -- "
+            f"{applied_count} product(s) updated "
+            f"({len(skipped)} skipped)."
+        )
+        return
+
+    print(
+        f"enrich-descriptions PARTIAL -- "
+        f"{applied_count} applied, {len(failures)} failed:"
+    )
+    for f in failures[:5]:
+        pid = f.get("product_id", "?")
+        err = f.get("error", "unknown")
+        print(f"  {pid}: {err}")
+    if len(failures) > 5:
+        print(f"  ... +{len(failures) - 5} more failures")
+    sys.exit(1)
 
 
 def _cmd_store_verify(args) -> None:
@@ -17583,6 +17810,7 @@ def main(argv: list[str] | None = None) -> None:
             "remove": _cmd_store_remove,
             "configure": _cmd_store_configure,
             "design": _cmd_store_design,
+            "enrich-descriptions": _cmd_store_enrich_descriptions,
             "verify": _cmd_store_verify,
             "setup": _cmd_store_setup,
             "report": _cmd_store_report,
@@ -17594,7 +17822,7 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print(
                 "Usage: shopai store "
-                "{add|list|switch|status|connect|remove|configure|design|verify|setup|report|fleet}"
+                "{add|list|switch|status|connect|remove|configure|design|enrich-descriptions|verify|setup|report|fleet}"
             )
         return
 
