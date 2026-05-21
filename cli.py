@@ -394,6 +394,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Activity window in hours (default: 24).",
     )
     daily_p.add_argument(
+        "--launch-readiness", action="store_true",
+        dest="include_launch_readiness",
+        help=(
+            "Include per-store launch-readiness audit "
+            "(completion_pct + next_action). Adds ~9 GraphQL "
+            "calls per store -- opt-in so the default "
+            "cron-able morning scan stays cheap."
+        ),
+    )
+    daily_p.add_argument(
         "--json", action="store_true",
         help="Emit the raw brief as JSON.",
     )
@@ -4327,6 +4337,66 @@ def _cmd_daily_brief(args) -> None:
             "daily-brief fleet_health rollup raised: %s", exc,
         )
 
+    # ── Launch readiness per store (opt-in) ───────────────
+    # Runs the audit for each store. ~9 GraphQL hops per
+    # store, so OFF by default to keep the morning cron
+    # path cheap. Operators wanting "is each store
+    # launchable?" pass --launch-readiness.
+    launch_readiness: dict[str, Any] = {
+        "checked": False, "stores": [],
+    }
+    if bool(getattr(args, "include_launch_readiness", False)):
+        try:
+            from engines.store_setup.launch_audit import (
+                audit_store,
+            )
+            from core.context import active_store
+            checked: list[dict[str, Any]] = []
+            for s in store_rows:
+                sid = s.get("store_id") or ""
+                if not sid:
+                    continue
+                try:
+                    # Scope the per-store thread-local so the
+                    # audit's record_writeback row carries the
+                    # right store_id.
+                    with active_store(sid):
+                        audit = audit_store(store_id=sid)
+                    checked.append({
+                        "store_id": sid,
+                        "ready_to_launch": bool(
+                            audit.get("ready_to_launch")
+                        ),
+                        "completion_pct": int(
+                            audit.get("completion_pct", 0)
+                        ),
+                        "missing_summary": (
+                            audit.get("missing_summary") or ""
+                        ),
+                        "next_action": (
+                            audit.get("next_action") or ""
+                        ),
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "daily-brief launch-readiness audit "
+                        "raised for %s: %s", sid, exc,
+                    )
+                    checked.append({
+                        "store_id": sid,
+                        "ready_to_launch": None,
+                        "completion_pct": None,
+                        "error": str(exc),
+                    })
+            launch_readiness = {
+                "checked": True, "stores": checked,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "daily-brief launch-readiness section "
+                "raised: %s", exc,
+            )
+
     # ── Totals ─────────────────────────────────────────────
     totals = {
         "stores": len(store_rows),
@@ -4345,6 +4415,12 @@ def _cmd_daily_brief(args) -> None:
             fleet_health["verdict_counts"]["unhealthy"]
         ),
     }
+    if launch_readiness["checked"]:
+        ready_count = sum(
+            1 for s in launch_readiness["stores"]
+            if s.get("ready_to_launch") is True
+        )
+        totals["launchable_stores"] = ready_count
 
     # ── JSON envelope ──────────────────────────────────────
     if as_json:
@@ -4356,6 +4432,7 @@ def _cmd_daily_brief(args) -> None:
             "transfer_activity": transfer_activity,
             "quarantine": quarantine_summary,
             "fleet_health": fleet_health,
+            "launch_readiness": launch_readiness,
             "totals": totals,
             "alerts": alerts,
         }, indent=2, default=str))
@@ -4488,6 +4565,33 @@ def _cmd_daily_brief(args) -> None:
                 f"{', '.join(q_pause_cands[:5])}"
                 f"{' ...' if len(q_pause_cands) > 5 else ''}"
             )
+        print()
+
+    # Launch-readiness (only when opted in via flag)
+    if launch_readiness["checked"]:
+        stores_lr = launch_readiness["stores"]
+        ready = [
+            s for s in stores_lr
+            if s.get("ready_to_launch") is True
+        ]
+        print()
+        print(
+            f"Launch readiness: {len(ready)}/{len(stores_lr)} "
+            f"store(s) ready"
+        )
+        for lr in stores_lr:
+            sid = lr.get("store_id", "?")
+            if lr.get("error"):
+                print(f"  {sid}: ERROR ({lr['error']})")
+                continue
+            pct = lr.get("completion_pct", 0)
+            is_ready = bool(lr.get("ready_to_launch"))
+            mark = "READY" if is_ready else "NOT READY"
+            print(f"  {sid}: {mark} ({pct}%)")
+            if not is_ready:
+                nxt = lr.get("next_action") or ""
+                if nxt:
+                    print(f"    Next: {nxt}")
         print()
 
     # Alerts

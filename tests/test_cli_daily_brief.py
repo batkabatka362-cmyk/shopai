@@ -1265,3 +1265,214 @@ class TestRecordScoresWiring:
         # render even when the trajectory writer raises.
         data = json.loads(out)
         assert data["fleet_health"]["checked"] is True
+
+
+class TestLaunchReadiness:
+    """Opt-in launch-readiness section per store.
+
+    Default OFF (no extra GraphQL hops on the cron path). When
+    --launch-readiness is supplied, the audit runs per store
+    and the result carries ready_to_launch / completion_pct /
+    next_action.
+    """
+
+    def test_default_off_no_section(self, cli):
+        """Without the flag, launch_readiness section is
+        present but checked=False."""
+        sm = _fake_sm([
+            {"store_id": "a", "shop_url": "x",
+             "is_active": True},
+        ])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+        ) as audit_mock:
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        # audit_store NEVER called when flag not set
+        audit_mock.assert_not_called()
+        data = json.loads(out)
+        assert data["launch_readiness"]["checked"] is False
+        assert data["launch_readiness"]["stores"] == []
+
+    def test_opt_in_calls_audit_per_store(self, cli):
+        sm = _fake_sm([
+            {"store_id": "a", "shop_url": "x",
+             "is_active": True},
+            {"store_id": "b", "shop_url": "y",
+             "is_active": True},
+        ])
+        audit_result = {
+            "ready_to_launch": False,
+            "completion_pct": 60,
+            "missing_summary": "...",
+            "next_action": "shopai launch ...",
+            "checks": [],
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=audit_result,
+        ) as audit_mock:
+            out = _capture(
+                cli._cmd_daily_brief,
+                _ns(
+                    json=True,
+                    include_launch_readiness=True,
+                ),
+            )
+        # One audit per store
+        assert audit_mock.call_count == 2
+        data = json.loads(out)
+        lr = data["launch_readiness"]
+        assert lr["checked"] is True
+        assert len(lr["stores"]) == 2
+        # Per-store fields surface
+        assert lr["stores"][0]["completion_pct"] == 60
+        assert "shopai launch" in lr["stores"][0]["next_action"]
+
+    def test_opt_in_text_renders_section(self, cli):
+        sm = _fake_sm([
+            {"store_id": "store-a", "shop_url": "x",
+             "is_active": True},
+        ])
+        audit_result = {
+            "ready_to_launch": False,
+            "completion_pct": 55,
+            "missing_summary": "missing brand",
+            "next_action": "shopai launch --logo-url URL",
+            "checks": [],
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=audit_result,
+        ):
+            out = _capture(
+                cli._cmd_daily_brief,
+                _ns(include_launch_readiness=True),
+            )
+        assert "Launch readiness" in out
+        assert "store-a" in out
+        assert "NOT READY" in out
+        assert "(55%)" in out
+        assert "Next: shopai launch --logo-url URL" in out
+
+    def test_opt_in_with_ready_store(self, cli):
+        sm = _fake_sm([
+            {"store_id": "ready-store", "shop_url": "x",
+             "is_active": True},
+        ])
+        audit_result = {
+            "ready_to_launch": True,
+            "completion_pct": 100,
+            "missing_summary": "all checks passed",
+            "next_action": "",
+            "checks": [],
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=audit_result,
+        ):
+            out = _capture(
+                cli._cmd_daily_brief,
+                _ns(include_launch_readiness=True),
+            )
+        # READY mark, no Next line
+        assert "ready-store" in out
+        assert "READY" in out
+        assert "Next:" not in out
+
+    def test_opt_in_audit_raise_per_store_doesnt_break(self, cli):
+        sm = _fake_sm([
+            {"store_id": "good", "shop_url": "x",
+             "is_active": True},
+            {"store_id": "broken", "shop_url": "y",
+             "is_active": True},
+        ])
+        good_result = {
+            "ready_to_launch": True, "completion_pct": 100,
+            "missing_summary": "ok", "next_action": "",
+            "checks": [],
+        }
+
+        def _audit(store_id=None, **_kw):
+            if store_id == "broken":
+                raise RuntimeError("network")
+            return good_result
+
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            side_effect=_audit,
+        ):
+            out = _capture(
+                cli._cmd_daily_brief,
+                _ns(
+                    json=True,
+                    include_launch_readiness=True,
+                ),
+            )
+        data = json.loads(out)
+        # Good store rendered, broken store carries error
+        stores_lr = data["launch_readiness"]["stores"]
+        by_id = {s["store_id"]: s for s in stores_lr}
+        assert by_id["good"]["ready_to_launch"] is True
+        assert by_id["broken"]["error"]
+        assert by_id["broken"]["ready_to_launch"] is None
+
+    def test_launchable_count_in_totals(self, cli):
+        sm = _fake_sm([
+            {"store_id": "a", "shop_url": "x",
+             "is_active": True},
+            {"store_id": "b", "shop_url": "y",
+             "is_active": True},
+        ])
+        results = iter([
+            {"ready_to_launch": True, "completion_pct": 100,
+             "missing_summary": "", "next_action": "",
+             "checks": []},
+            {"ready_to_launch": False, "completion_pct": 50,
+             "missing_summary": "", "next_action": "X",
+             "checks": []},
+        ])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            side_effect=lambda **_: next(results),
+        ):
+            out = _capture(
+                cli._cmd_daily_brief,
+                _ns(
+                    json=True,
+                    include_launch_readiness=True,
+                ),
+            )
+        data = json.loads(out)
+        assert data["totals"]["launchable_stores"] == 1
