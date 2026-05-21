@@ -141,6 +141,56 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    enrich_seo_p = store_sub.add_parser(
+        "enrich-seo",
+        help=(
+            "Generate (and optionally APPLY) SEO title + meta "
+            "description for the store's products. Default is "
+            "read-only preview; pass --apply to write."
+        ),
+    )
+    enrich_seo_p.add_argument(
+        "store_id", nargs="?",
+        help="Store ID (default: active store)",
+    )
+    enrich_seo_p.add_argument(
+        "--niche", default="general",
+        choices=[
+            "general", "beauty", "fashion", "home",
+            "tech", "food",
+        ],
+        help="Niche key for tone (default: general)",
+    )
+    enrich_seo_p.add_argument(
+        "--store-name", default="",
+        help=(
+            "Optional brand suffix appended to the title when "
+            "there's room."
+        ),
+    )
+    enrich_seo_p.add_argument(
+        "--overwrite", action="store_true",
+        help=(
+            "Replace existing SEO metadata even when non-empty "
+            "(use for forced refresh after a brand rename)."
+        ),
+    )
+    enrich_seo_p.add_argument(
+        "--limit", type=int, default=100,
+        help="Max products to fetch (default: 100)",
+    )
+    enrich_seo_p.add_argument(
+        "--apply", action="store_true",
+        help=(
+            "WRITE: push generated SEO via SHOPIFY_UPDATE_PRODUCT. "
+            "Default is read-only preview."
+        ),
+    )
+    enrich_seo_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     setup_p = store_sub.add_parser(
         "setup",
         help=(
@@ -5915,6 +5965,180 @@ def _cmd_memory_recall(args) -> None:
                 for k, v in components.items()
             )
             print(comp_line)
+
+
+def _cmd_store_enrich_seo(args) -> None:
+    """Generate (and optionally apply) SEO metadata for the
+    store's products.
+
+    Default behavior is read-only preview: fetch products via
+    SHOPIFY_LIST_PRODUCTS, run them through ``enrich_seo`` to
+    generate ``seo_title`` + ``seo_description``, then render
+    the proposed changes. Pass ``--apply`` to write them via
+    SHOPIFY_UPDATE_PRODUCT.
+
+    The safety pattern is opt-in writes: a missed ``--apply``
+    flag in a cron job won't accidentally rewrite SEO on
+    hundreds of products.
+
+    Exits 0 on success (preview OR apply with 0 failures);
+    exits 1 only when ``--apply`` is set AND at least one
+    update failed.
+    """
+    as_json = bool(getattr(args, "json", False))
+    apply_writes = bool(getattr(args, "apply", False))
+    sm = _get_store_manager()
+    store_id = (
+        getattr(args, "store_id", None) or sm.active_store_id
+    )
+
+    # Fetch products via the router. The enricher needs at
+    # least ``id`` + ``title``; existing seo_title/description
+    # round-trip via the fetched dict.
+    try:
+        from core.adapters import get_router
+        from core.adapters.base import Capability
+        router = get_router()
+        list_result = router.execute(
+            Capability.SHOPIFY_LIST_PRODUCTS,
+            {"limit": int(getattr(args, "limit", 100) or 100)},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("enrich-seo router fetch raised: %s", exc)
+        if as_json:
+            print(json.dumps({
+                "ok": None,
+                "error": "products_fetch_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"Product fetch unavailable: {exc}")
+        return
+
+    if not getattr(list_result, "ok", False):
+        err = getattr(list_result, "error", "unknown")
+        if as_json:
+            print(json.dumps({
+                "ok": None,
+                "error": "products_fetch_failed",
+                "message": str(err),
+            }, indent=2))
+        else:
+            print(f"Product fetch failed: {err}")
+        return
+
+    data = getattr(list_result, "data", None) or {}
+    products = data.get("products") if isinstance(data, dict) else []
+    if not isinstance(products, list):
+        products = []
+
+    try:
+        from engines.store_setup.seo_meta_enricher import (
+            enrich_seo,
+        )
+        gen_result = enrich_seo(
+            products,
+            niche=getattr(args, "niche", "general"),
+            store_name=(
+                getattr(args, "store_name", "") or ""
+            ),
+            overwrite_existing=bool(
+                getattr(args, "overwrite", False),
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("enrich_seo raised: %s", exc)
+        if as_json:
+            print(json.dumps({
+                "ok": None,
+                "error": "enrich_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"enrich_seo unavailable: {exc}")
+        return
+
+    generated = gen_result.get("generated") or []
+    skipped = gen_result.get("skipped") or []
+
+    # ── Preview-only path ─────────────────────────────────
+    if not apply_writes:
+        if as_json:
+            print(json.dumps({
+                "ok": True,
+                "applied": False,
+                "generated_count": len(generated),
+                "skipped_count": len(skipped),
+                "generated": generated,
+                "skipped": skipped,
+            }, indent=2))
+            return
+        print(
+            f"enrich-seo PREVIEW -- {len(generated)} product(s) "
+            f"would get SEO updates ({len(skipped)} skipped)."
+        )
+        for g in generated[:5]:
+            print(f"  {g['product_id']}: {g['seo_title']}")
+        if len(generated) > 5:
+            print(f"  ... +{len(generated) - 5} more")
+        print()
+        print("Re-run with --apply to write to Shopify.")
+        return
+
+    # ── Apply path ────────────────────────────────────────
+    try:
+        from engines.store_setup.seo_meta_enricher import apply_seo
+        apply_result = apply_seo(
+            generated, store_id=store_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("apply_seo raised: %s", exc)
+        if as_json:
+            print(json.dumps({
+                "ok": False,
+                "error": "apply_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"apply_seo unavailable: {exc}")
+        sys.exit(1)
+
+    applied_count = int(apply_result.get("applied_count", 0))
+    results = apply_result.get("results") or []
+    failures = [r for r in results if not r.get("ok")]
+
+    if as_json:
+        print(json.dumps({
+            "ok": not failures,
+            "applied": True,
+            "applied_count": applied_count,
+            "generated_count": len(generated),
+            "skipped_count": len(skipped),
+            "failure_count": len(failures),
+            "results": results,
+        }, indent=2))
+        if failures:
+            sys.exit(1)
+        return
+
+    if not failures:
+        print(
+            f"enrich-seo APPLIED -- {applied_count} product(s) "
+            f"updated ({len(skipped)} skipped)."
+        )
+        return
+
+    print(
+        f"enrich-seo PARTIAL -- {applied_count} applied, "
+        f"{len(failures)} failed:"
+    )
+    for f in failures[:5]:
+        pid = f.get("product_id", "?")
+        err = f.get("error", "unknown")
+        print(f"  {pid}: {err}")
+    if len(failures) > 5:
+        print(f"  ... +{len(failures) - 5} more failures")
+    sys.exit(1)
 
 
 def _cmd_store_verify(args) -> None:
@@ -17583,6 +17807,7 @@ def main(argv: list[str] | None = None) -> None:
             "remove": _cmd_store_remove,
             "configure": _cmd_store_configure,
             "design": _cmd_store_design,
+            "enrich-seo": _cmd_store_enrich_seo,
             "verify": _cmd_store_verify,
             "setup": _cmd_store_setup,
             "report": _cmd_store_report,
@@ -17594,7 +17819,7 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print(
                 "Usage: shopai store "
-                "{add|list|switch|status|connect|remove|configure|design|verify|setup|report|fleet}"
+                "{add|list|switch|status|connect|remove|configure|design|enrich-seo|verify|setup|report|fleet}"
             )
         return
 
