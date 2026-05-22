@@ -1301,6 +1301,7 @@ class WorldModel:
                     audit.get("next_action") or ""
                 ),
                 "checks": audit.get("checks") or [],
+                "plan": audit.get("plan") or None,
             }
         except Exception as exc:  # noqa: BLE001
             logger.debug(

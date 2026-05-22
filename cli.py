@@ -9347,6 +9347,18 @@ def _cmd_world_model_show(args) -> None:
         )
         if missing and not ready:
             print(f"  Missing: {missing}")
+        # Surface the structured plan's CLI sequence so
+        # operators see actionable commands inline. Mirrors
+        # daily-brief's launch-readiness rendering.
+        plan = launch_readiness.get("plan") or {}
+        cli_seq = (
+            plan.get("cli_sequence") if isinstance(
+                plan, dict,
+            ) else None
+        )
+        if cli_seq and not ready:
+            for cmd in cli_seq[:3]:
+                print(f"  $ {cmd}")
 
 
 def _cmd_model_router(args) -> None:
