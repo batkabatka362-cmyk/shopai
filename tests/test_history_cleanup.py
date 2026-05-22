@@ -53,6 +53,7 @@ class TestDryRun:
         for known in (
             "cycle_history",
             "cycle_alert_history",
+            "cycle_pause_history",
             "auto_demote_history",
             "auto_promote_history",
             "auto_relax_history",

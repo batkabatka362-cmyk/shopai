@@ -47,6 +47,12 @@ _HISTORY_FILES: list[tuple[str, str, str, str]] = [
         "list",
     ),
     (
+        "cycle_pause_history",
+        "SHOPAI_CYCLE_PAUSE_HISTORY_PATH",
+        "data/cycle_pause_history.json",
+        "list",
+    ),
+    (
         "auto_demote_history",
         "SHOPAI_AUTO_DEMOTE_HISTORY_PATH",
         "data/auto_demote_history.json",
