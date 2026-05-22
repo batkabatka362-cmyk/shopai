@@ -32,8 +32,8 @@ def _summary(**kw):
 
 @pytest.fixture(autouse=True)
 def _quiet_subsystems():
-    """Default fixtures: no thrashing, no alerts. Tests
-    that care override one or both."""
+    """Default fixtures: no thrashing, no alerts, no
+    streaks. Tests that care override one or more."""
     with patch(
         "core.capability_planner.auto_demote_history."
         "find_thrashing",
@@ -42,6 +42,10 @@ def _quiet_subsystems():
         "core.autonomous.cycle_alerts."
         "compute_cycle_alerts",
         return_value=[],
+    ), patch(
+        "core.autonomous.cycle_alert_history."
+        "consecutive_days_per_kind",
+        return_value={},
     ):
         yield
 
@@ -111,6 +115,75 @@ class TestRule3CycleAlerts:
             rec = cna.recommend(_summary())
         assert rec.priority == "address_cycle_alerts"
         assert "low_advance_rate" in rec.detail
+
+    def test_persistent_low_advance_promotes_priority(
+        self,
+    ):
+        """3-day streak gets the stronger recommendation."""
+        from core.autonomous.cycle_alerts import CycleAlert
+        with patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[
+                CycleAlert(
+                    kind="low_advance_rate",
+                    detail="20%",
+                ),
+            ],
+        ), patch(
+            "core.autonomous.cycle_alert_history."
+            "consecutive_days_per_kind",
+            return_value={"low_advance_rate": 3},
+        ):
+            rec = cna.recommend(_summary())
+        assert (
+            rec.priority == "persistent_low_advance_rate"
+        )
+        assert "3 distinct days" in rec.detail
+        assert "SHOPAI_AUTO_EXECUTE_THRESHOLD" in rec.detail
+
+    def test_persistent_substrate_shrinking(self):
+        from core.autonomous.cycle_alerts import CycleAlert
+        with patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[
+                CycleAlert(
+                    kind="substrate_shrinking",
+                    detail="ratio 8x",
+                ),
+            ],
+        ), patch(
+            "core.autonomous.cycle_alert_history."
+            "consecutive_days_per_kind",
+            return_value={"substrate_shrinking": 5},
+        ):
+            rec = cna.recommend(_summary())
+        assert (
+            rec.priority
+            == "persistent_substrate_shrinking"
+        )
+        assert "5 distinct days" in rec.detail
+        assert "thrashing" in rec.cmd
+
+    def test_short_streak_uses_regular_priority(self):
+        from core.autonomous.cycle_alerts import CycleAlert
+        with patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[
+                CycleAlert(
+                    kind="low_advance_rate", detail="-",
+                ),
+            ],
+        ), patch(
+            "core.autonomous.cycle_alert_history."
+            "consecutive_days_per_kind",
+            return_value={"low_advance_rate": 2},
+        ):
+            rec = cna.recommend(_summary())
+        # 2-day streak below the persistent threshold
+        assert rec.priority == "address_cycle_alerts"
 
     def test_silent_and_stale_alerts_skipped(self):
         """cycle_silent + stale_cycle don't apply mid-cycle

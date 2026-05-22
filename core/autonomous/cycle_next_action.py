@@ -113,7 +113,8 @@ def recommend(summary: dict[str, Any]) -> NextAction:
         )
 
     # Rule 3: cycle alerts -- low_advance_rate /
-    # substrate_shrinking surface here
+    # substrate_shrinking surface here. Promote severity
+    # when consecutive_days streak is large.
     try:
         from core.autonomous import cycle_alerts as _ca
         alerts = _ca.compute_cycle_alerts(
@@ -128,7 +129,86 @@ def recommend(summary: dict[str, Any]) -> NextAction:
             )
         ]
         if relevant:
+            # Lookup persistent streak so a 3-day pattern
+            # gets the stronger recommendation.
+            streak_per_kind: dict[str, int] = {}
+            try:
+                from core.autonomous import (
+                    cycle_alert_history as _cah,
+                )
+                streak_per_kind = (
+                    _cah.consecutive_days_per_kind(
+                        window_seconds=86400 * 14,
+                    )
+                )
+            except Exception:
+                streak_per_kind = {}
+            max_streak = max(
+                (
+                    streak_per_kind.get(a.kind, 0)
+                    for a in relevant
+                ),
+                default=0,
+            )
             kinds = ", ".join(a.kind for a in relevant)
+            if max_streak >= 3:
+                # Persistent pattern -- stronger phrasing +
+                # specific suggestion based on the dominant
+                # kind.
+                dominant = max(
+                    relevant,
+                    key=lambda a: streak_per_kind.get(
+                        a.kind, 0,
+                    ),
+                )
+                if dominant.kind == "low_advance_rate":
+                    return NextAction(
+                        priority=(
+                            "persistent_low_advance_rate"
+                        ),
+                        detail=(
+                            f"low_advance_rate has fired "
+                            f"on {max_streak} distinct "
+                            "days. Reliability gate may "
+                            "be permanently too tight -- "
+                            "consider lowering "
+                            "SHOPAI_AUTO_EXECUTE_THRESHOLD "
+                            "or running without "
+                            "--require-reliable."
+                        ),
+                        cmd=(
+                            "shopai fleet-plan --execute "
+                            "--yes"
+                        ),
+                    )
+                if dominant.kind == "substrate_shrinking":
+                    return NextAction(
+                        priority=(
+                            "persistent_substrate_shrinking"
+                        ),
+                        detail=(
+                            f"substrate_shrinking has "
+                            f"fired on {max_streak} "
+                            "distinct days. Bridge is "
+                            "over-tight OR the substrate "
+                            "needs structural review."
+                        ),
+                        cmd=(
+                            "shopai capabilities "
+                            "auto-demote-history "
+                            "--thrashing"
+                        ),
+                    )
+                # Generic persistent-pattern fallback
+                return NextAction(
+                    priority="address_persistent_alerts",
+                    detail=(
+                        f"Cycle alerts persistent "
+                        f"({max_streak}d streak): "
+                        f"{kinds}. Address root cause."
+                    ),
+                    cmd="shopai autonomous-cycle --alerts",
+                )
             return NextAction(
                 priority="address_cycle_alerts",
                 detail=(
