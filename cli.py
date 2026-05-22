@@ -387,6 +387,17 @@ def build_parser() -> argparse.ArgumentParser:
             "want this flag for fast cron-able runs."
         ),
     )
+    world_fleet_p.add_argument(
+        "--launch-readiness", action="store_true",
+        dest="include_launch_readiness",
+        help=(
+            "Include launch-readiness audit per store (~10 "
+            "GraphQL hops EACH). OFF by default at fleet "
+            "scale (N stores * 10 hops = potentially "
+            "expensive). Turn on for a 'which stores are "
+            "ready to launch?' empire glance."
+        ),
+    )
 
     # ── Capability registry commands ─────────────────────────
     capabilities_p = sub.add_parser(
@@ -8409,6 +8420,9 @@ def _cmd_world_model_fleet(args) -> None:
     """
     as_json = bool(getattr(args, "json", False))
     skip_live = bool(getattr(args, "skip_live", False))
+    include_launch_readiness = bool(
+        getattr(args, "include_launch_readiness", False),
+    )
 
     sm = _get_store_manager()
     stores = sm.list_stores() or []
@@ -8433,7 +8447,13 @@ def _cmd_world_model_fleet(args) -> None:
     for s in stores:
         sid = s.get("store_id", "")
         try:
-            snap = wm.snapshot(sid, skip_live=skip_live)
+            snap = wm.snapshot(
+                sid,
+                skip_live=skip_live,
+                include_launch_readiness=(
+                    include_launch_readiness
+                ),
+            )
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "world-model fleet: snapshot raised for %s: %s",
@@ -8502,12 +8522,19 @@ def _cmd_world_model_fleet(args) -> None:
             )
         break
     print()
+    # Add READY column when launch-readiness opted in.
+    ready_header = (
+        f" {'READY':>6s}" if include_launch_readiness
+        else ""
+    )
     print(
         f"  {'STORE':<22s} {'NICHE':<10s} {'PROD':>5s} "
         f"{'ORD':>4s} {'REVENUE':>11s} {'SYNC':>6s} "
         f"{'DRIFT':>6s} {'APPRV':>5s} {'DESIGN':>8s}"
+        f"{ready_header}"
     )
-    print("  " + "-" * 87)
+    width = 87 + (7 if include_launch_readiness else 0)
+    print("  " + "-" * width)
     for snap in rows:
         if "error" in snap:
             print(
@@ -8542,6 +8569,17 @@ def _cmd_world_model_fleet(args) -> None:
             f"{lift:.1%}" if isinstance(lift, (int, float))
             else "-"
         )
+        ready_cell = ""
+        if include_launch_readiness:
+            lr = snap.get("launch_readiness") or {}
+            if lr.get("checked"):
+                pct = lr.get("completion_pct")
+                ready_cell = (
+                    f" {pct:>5d}%" if isinstance(pct, int)
+                    else f" {'-':>6s}"
+                )
+            else:
+                ready_cell = f" {'-':>6s}"
         print(
             f"  {snap['store_id']:<22s} "
             f"{(store.get('niche') or '-'):<10s} "
@@ -8550,6 +8588,7 @@ def _cmd_world_model_fleet(args) -> None:
             f"${stats.get('total_revenue', 0.0):>10,.2f} "
             f"{sync_str:>6s} {drift_str:>6s} "
             f"{pending_str:>5s} {design_str:>8s}"
+            f"{ready_cell}"
         )
     print()
     # Quick aggregates
