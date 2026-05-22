@@ -1938,6 +1938,79 @@ class TestRevenueImpactSection:
         )
 
 
+class TestAutoPromoteActivityInBrief:
+    """daily-brief surfaces auto-promote activity from
+    the persistent history."""
+
+    def test_no_activity_silent(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner.auto_promote_history."
+            "promote_stats",
+            return_value={
+                "total": 0,
+                "by_capability": {},
+                "last_promote_at": None,
+            },
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Auto-promotes" not in out
+
+    def test_activity_renders(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner.auto_promote_history."
+            "promote_stats",
+            return_value={
+                "total": 3,
+                "by_capability": {
+                    "winner_a": 1,
+                    "winner_b": 2,
+                },
+                "last_promote_at": time.time() - 100,
+            },
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Auto-promotes" in out
+        assert "3 promoted" in out
+        assert "winner_b(2)" in out
+
+    def test_envelope_has_section(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner.auto_promote_history."
+            "promote_stats",
+            return_value={
+                "total": 1,
+                "by_capability": {"a": 1},
+                "last_promote_at": 1700000000.0,
+            },
+        ):
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        data = json.loads(out)
+        assert "auto_promote_activity" in data
+        assert (
+            data["auto_promote_activity"]["total"] == 1
+        )
+
+
 class TestCycleTransferActivityInBrief:
     """daily-brief surfaces cycle-driven cross-store
     transfer activity."""

@@ -236,6 +236,25 @@ def maybe_auto_promote_reliable(
                 "False; skipping row", cap,
             )
             continue
+        # Audit trail.
+        try:
+            from core.capability_planner import (
+                auto_promote_history as _aph,
+            )
+            _aph.record_promote(
+                capability=cap,
+                reason=reason,
+                metrics={
+                    "success_rate": c["success_rate"],
+                    "executed_count": c["executed_count"],
+                    "success_count": c["success_count"],
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "auto_promote: history record "
+                "raised: %s", exc,
+            )
         applied.append({
             "capability": cap,
             "success_rate": c["success_rate"],

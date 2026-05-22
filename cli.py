@@ -5840,6 +5840,32 @@ def _cmd_daily_brief(args) -> None:
             exc,
         )
 
+    # ── Auto-promote activity (window) -- capability
+    # promotes the bridge applied. Mirrors auto-demote's
+    # bridge_activity surface.
+    auto_promote_activity: dict[str, Any] = {
+        "checked": False,
+        "total": 0,
+        "by_capability": {},
+        "last_promote_at": None,
+    }
+    try:
+        from core.capability_planner import (
+            auto_promote_history as _aph,
+        )
+        stats_pr = _aph.promote_stats(
+            since_seconds=window_hours * 3600,
+        )
+        auto_promote_activity = {
+            "checked": True,
+            **stats_pr,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief auto_promote_activity raised: %s",
+            exc,
+        )
+
     # ── Auto-transfer activity (window) -- cycle-driven
     # cross-store transfers that enqueued. Renders when at
     # least one transfer fired.
@@ -5986,6 +6012,7 @@ def _cmd_daily_brief(args) -> None:
             "revenue_impact": revenue_impact_summary,
             "bridge_activity": bridge_activity,
             "auto_relax_activity": auto_relax_activity,
+            "auto_promote_activity": auto_promote_activity,
             "cycle_transfer_activity": cycle_transfer_activity,
             "cycle_activity": cycle_activity,
             "totals": totals,
@@ -6277,6 +6304,29 @@ def _cmd_daily_brief(args) -> None:
                 f"  Thrashing ({thrash_count}): {names} "
                 "-- needs operator intervention"
             )
+        print()
+
+    # Auto-promote activity -- capability promotes the
+    # bridge applied. Silent on quiet weeks.
+    if auto_promote_activity.get("checked") and (
+        auto_promote_activity["total"] > 0
+    ):
+        n_p = auto_promote_activity["total"]
+        by_cap = auto_promote_activity.get(
+            "by_capability", {},
+        )
+        print(
+            f"Auto-promotes (last {window_hours}h): "
+            f"{n_p} promoted"
+        )
+        top_caps = sorted(
+            by_cap.items(), key=lambda kv: -kv[1],
+        )[:3]
+        if top_caps:
+            names = ", ".join(
+                f"{cap}({n})" for cap, n in top_caps
+            )
+            print(f"  Top: {names}")
         print()
 
     # Cycle-transfer activity -- cross-store transfers
