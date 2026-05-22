@@ -1294,9 +1294,9 @@ def build_parser() -> argparse.ArgumentParser:
         dest="diary_filter",
         help=(
             "Filter --diary output by source: cycle | "
-            "demote | promote | relax | transfer | alert. "
-            "Comma-separated list for multiple. Default: "
-            "all sources."
+            "demote | promote | relax | transfer | pause | "
+            "alert. Comma-separated list for multiple. "
+            "Default: all sources."
         ),
     )
     autonomous_p.add_argument(
@@ -6071,7 +6071,7 @@ def _cmd_daily_brief(args) -> None:
         )
 
     # ── Launch readiness per store (opt-in) ───────────────
-    # Runs the audit for each store. ~9 GraphQL hops per
+    # Runs the audit for each store. ~10 GraphQL hops per
     # store, so OFF by default to keep the morning cron
     # path cheap. Operators wanting "is each store
     # launchable?" pass --launch-readiness.
