@@ -150,6 +150,14 @@ class Planner:
             self._filter_quarantined_seeds(seeds)
         )
 
+        # 1e. Filter unhealthy: env-gated drop of caps
+        # whose engine_health verdict is 'unhealthy'. Finer
+        # than quarantine -- runs automatically from queue
+        # signals without operator action.
+        seeds, unhealthy_dropped = (
+            self._filter_unhealthy_seeds(seeds)
+        )
+
         plan.relevant_capabilities = [c.name for c in seeds]
         if not seeds:
             note = (
@@ -189,6 +197,13 @@ class Planner:
             plan.notes.append(
                 f"Excluded {len(quarantined)} alert-paused "
                 f"capability/-ies: {', '.join(quarantined)}"
+            )
+        if unhealthy_dropped:
+            plan.notes.append(
+                f"Excluded {len(unhealthy_dropped)} "
+                f"unhealthy capability/-ies "
+                f"(engine_health verdict): "
+                f"{', '.join(unhealthy_dropped)}"
             )
         if boost_meta and boost_meta.get("added"):
             plan.notes.append(
@@ -779,6 +794,68 @@ class Planner:
             filtered.append(cap)
             added.append(name)
         return filtered, dropped, added
+
+    def _filter_unhealthy_seeds(
+        self, seeds: list[Capability],
+    ) -> tuple[list[Capability], list[str]]:
+        """Drop capabilities whose name matches an engine
+        whose engine_health verdict is 'unhealthy'.
+
+        Engine quarantine (alert_paused) is a binary
+        operator-driven signal. Engine_health is a finer-
+        grained score (0-10) from queue activity. Both
+        signals filter -- but engine_health is more recent
+        + automatic, while quarantine is operator-curated.
+
+        Env-gated: only runs when SHOPAI_PLANNER_HEALTH_FILTER=1.
+        Default OFF for now (the score's signals can flap
+        on small queues; operator should opt in once their
+        fleet has enough volume).
+
+        Returns ``(filtered_seeds, dropped_names)``. Best-
+        effort: any error returns seeds untouched.
+        """
+        import os as _os
+        if _os.environ.get(
+            "SHOPAI_PLANNER_HEALTH_FILTER",
+        ) != "1":
+            return seeds, []
+        if not seeds:
+            return seeds, []
+        try:
+            from core.approval.engine_health import (
+                score_engine,
+            )
+        except ImportError as exc:
+            logger.debug(
+                "_filter_unhealthy_seeds: import "
+                "raised: %s", exc,
+            )
+            return seeds, []
+
+        dropped: list[str] = []
+        filtered: list[Capability] = []
+        # Cache scores per engine name so we don't compute
+        # twice for the same engine
+        verdicts: dict[str, str] = {}
+        for cap in seeds:
+            engine = cap.name
+            if engine not in verdicts:
+                try:
+                    health = score_engine(engine)
+                    verdicts[engine] = health.verdict
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "_filter_unhealthy_seeds: "
+                        "score raised for %s: %s",
+                        engine, exc,
+                    )
+                    verdicts[engine] = "unknown"
+            if verdicts[engine] == "unhealthy":
+                dropped.append(cap.name)
+            else:
+                filtered.append(cap)
+        return filtered, dropped
 
     def _filter_quarantined_seeds(
         self, seeds: list[Capability],

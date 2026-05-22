@@ -884,6 +884,119 @@ class TestRegistryIsolation:
         assert "loop_b" in names
 
 
+class TestUnhealthyEngineFilter:
+    """``_filter_unhealthy_seeds`` drops caps whose engine_health
+    verdict is 'unhealthy'. Env-gated by
+    SHOPAI_PLANNER_HEALTH_FILTER=1."""
+
+    def _seed_two(self):
+        register_capability(Capability(
+            name="healthy_engine",
+            kind=CapabilityKind.ENGINE,
+            description="works fine",
+            when_to_use="use for foo",
+            module_path="m:healthy",
+            tags=["foo"],
+        ))
+        register_capability(Capability(
+            name="sick_engine",
+            kind=CapabilityKind.ENGINE,
+            description="broken sick foo",
+            when_to_use="use for foo",
+            module_path="m:sick",
+            tags=["foo"],
+        ))
+
+    def _fake_health(self, verdict):
+        from core.approval.engine_health import (
+            EngineHealth,
+        )
+        return EngineHealth(
+            engine="sick_engine",
+            score=2 if verdict == "unhealthy" else 8,
+            verdict=verdict,
+        )
+
+    def test_env_gate_off_no_filter(self, monkeypatch):
+        from unittest.mock import patch
+        # No env var set
+        monkeypatch.delenv(
+            "SHOPAI_PLANNER_HEALTH_FILTER",
+            raising=False,
+        )
+        self._seed_two()
+        with patch(
+            "core.approval.engine_health.score_engine",
+            return_value=self._fake_health("unhealthy"),
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("foo")
+        # Both caps surface (no filter)
+        names = {s.capability_name for s in p.steps}
+        assert "healthy_engine" in names
+        assert "sick_engine" in names
+
+    def test_env_gate_on_drops_unhealthy(
+        self, monkeypatch,
+    ):
+        from unittest.mock import patch
+        monkeypatch.setenv(
+            "SHOPAI_PLANNER_HEALTH_FILTER", "1",
+        )
+        self._seed_two()
+
+        def fake_score(name, **kwargs):
+            from core.approval.engine_health import (
+                EngineHealth,
+            )
+            if name == "sick_engine":
+                return EngineHealth(
+                    engine=name, score=2,
+                    verdict="unhealthy",
+                )
+            return EngineHealth(
+                engine=name, score=8,
+                verdict="healthy",
+            )
+
+        with patch(
+            "core.approval.engine_health.score_engine",
+            side_effect=fake_score,
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("foo")
+        names = {s.capability_name for s in p.steps}
+        assert "healthy_engine" in names
+        assert "sick_engine" not in names
+        # Notes surface the filter result
+        assert any(
+            "unhealthy" in n.lower()
+            and "sick_engine" in n
+            for n in p.notes
+        )
+
+    def test_score_failure_keeps_seed(self, monkeypatch):
+        from unittest.mock import patch
+        monkeypatch.setenv(
+            "SHOPAI_PLANNER_HEALTH_FILTER", "1",
+        )
+        self._seed_two()
+        with patch(
+            "core.approval.engine_health.score_engine",
+            side_effect=RuntimeError("no queue"),
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("foo")
+        # Score raised -> verdict='unknown' -> NOT
+        # filtered as unhealthy. Both caps surface.
+        names = {s.capability_name for s in p.steps}
+        assert "healthy_engine" in names
+        assert "sick_engine" in names
+
+
 class TestRevenueImpactBoost:
     """Planner reorders seeds by historical revenue impact.
     Pure reorder -- no capability added or removed.
