@@ -63,6 +63,7 @@ def _ns(**kw):
         as_context=False,
         execute=False,
         yes=False,
+        require_reliable=False,
         llm=False,
         llm_model="qwen2.5",
         history=False,
@@ -717,6 +718,156 @@ class TestLlmFlag:
             "LLM" in n or "llm" in n
             for n in data["notes"]
         )
+
+
+class TestRequireReliable:
+    """``--require-reliable`` gates execution behind the
+    per-step reliability check. Refuses to write when any
+    step's history fails the threshold."""
+
+    def test_refuses_when_steps_ineligible(self, cli):
+        # Mock eligibility to return some ineligible
+        # steps so the gate fires.
+        elig = {
+            "steps": [
+                {"capability": "shaky_cap",
+                 "eligible": False,
+                 "success_rate": 0.4,
+                 "executed_count": 5},
+                {"capability": "reliable_cap",
+                 "eligible": True,
+                 "success_rate": 0.95,
+                 "executed_count": 10},
+            ],
+            "threshold": 0.9,
+            "min_sample": 5,
+        }
+        with patch(
+            "engines.store_setup.launch_orchestrator."
+            "launch_store",
+        ), patch(
+            "core.autonomous.controller."
+            "_compute_auto_execute_eligibility",
+            return_value=elig,
+        ), patch(
+            "core.capability_planner.plan_for_goal",
+            return_value=_real_plan_with_steps(),
+        ):
+            out, code = _capture(
+                cli._cmd_plan,
+                _ns(
+                    goal="launch",
+                    execute=True,
+                    yes=True,
+                    require_reliable=True,
+                ),
+            )
+        assert code == 1
+        assert "Reliability gate refused" in out
+        assert "shaky_cap" in out
+
+    def test_passes_when_all_eligible(self, cli):
+        # All steps eligible -> execute proceeds.
+        elig = {
+            "steps": [
+                {"capability": "reliable_cap",
+                 "eligible": True,
+                 "success_rate": 0.95,
+                 "executed_count": 10},
+            ],
+            "threshold": 0.9,
+            "min_sample": 5,
+        }
+        with patch(
+            "core.autonomous.controller."
+            "_compute_auto_execute_eligibility",
+            return_value=elig,
+        ), patch(
+            "core.capability_planner.plan_for_goal",
+            return_value=_real_plan_with_steps(),
+        ):
+            out, code = _capture(
+                cli._cmd_plan,
+                _ns(
+                    goal="launch",
+                    execute=True,
+                    yes=True,
+                    require_reliable=True,
+                ),
+            )
+        # Pass-through to normal execute path -- no gate
+        # error.
+        assert "Reliability gate refused" not in out
+
+    def test_json_envelope_on_refusal(self, cli):
+        elig = {
+            "steps": [
+                {"capability": "shaky",
+                 "eligible": False,
+                 "success_rate": 0.5,
+                 "executed_count": 5},
+            ],
+            "threshold": 0.9,
+            "min_sample": 5,
+        }
+        with patch(
+            "core.autonomous.controller."
+            "_compute_auto_execute_eligibility",
+            return_value=elig,
+        ), patch(
+            "core.capability_planner.plan_for_goal",
+            return_value=_real_plan_with_steps(),
+        ):
+            out, code = _capture(
+                cli._cmd_plan,
+                _ns(
+                    goal="launch",
+                    execute=True,
+                    yes=True,
+                    require_reliable=True,
+                    json=True,
+                ),
+            )
+        assert code == 1
+        data = json.loads(out)
+        assert data["error"] == "reliability_gate_failed"
+        assert data["threshold"] == 0.9
+        assert data["min_sample"] == 5
+
+    def test_dry_run_skips_gate(self, cli):
+        """--require-reliable should only fire with --yes.
+        Dry-run still resolves each step + shows what would
+        happen, without the gate refusing."""
+        with patch(
+            "core.capability_planner.plan_for_goal",
+            return_value=_real_plan_with_steps(),
+        ):
+            out, code = _capture(
+                cli._cmd_plan,
+                _ns(
+                    goal="launch",
+                    execute=True,
+                    yes=False,  # dry-run
+                    require_reliable=True,
+                ),
+            )
+        # No gate refusal in dry-run mode
+        assert "Reliability gate refused" not in out
+
+
+def _real_plan_with_steps():
+    """Helper: build a minimal Plan with a step that the
+    --require-reliable tests can exercise."""
+    from core.capability_planner.plan import (
+        Plan, PlanStep,
+    )
+    plan = Plan(goal="launch")
+    plan.steps.append(PlanStep(
+        capability_name="launch_store",
+        role="orchestrator",
+        description="...",
+    ))
+    return plan
 
 
 class TestExecutePiping:

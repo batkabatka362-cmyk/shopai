@@ -713,6 +713,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     plan_p.add_argument(
+        "--require-reliable", action="store_true",
+        dest="require_reliable",
+        help=(
+            "Refuse to --execute when ANY plan step's "
+            "historical reliability is below the auto-"
+            "execute threshold. Gates writes behind proven "
+            "track record. Uses the same "
+            "SHOPAI_AUTO_EXECUTE_THRESHOLD / MIN_SAMPLE "
+            "env vars as Phase 2c eligibility. Useful for "
+            "autonomous cron paths that should only fire "
+            "when reliability is high."
+        ),
+    )
+    plan_p.add_argument(
         "--yes", action="store_true",
         help=(
             "With --execute, actually invoke each step. "
@@ -11658,6 +11672,9 @@ def _cmd_plan(args) -> None:
             as_json=as_json,
             store_id=store_id,
             pre_audit_failing=pre_audit_failing,
+            require_reliable=bool(
+                getattr(args, "require_reliable", False),
+            ),
         )
         return
 
@@ -11849,6 +11866,7 @@ def _run_plan_multi_step(
     plan, *, yes: bool, as_json: bool,
     store_id: str | None = None,
     pre_audit_failing: set | None = None,
+    require_reliable: bool = False,
 ) -> None:
     """Execute each step of a plan via the in-process
     capability executor, using ``suggested_args`` from the
@@ -11904,6 +11922,73 @@ def _run_plan_multi_step(
             scope = nullcontext()
     else:
         scope = nullcontext()
+
+    # ── Reliability gate (when --require-reliable) ─────
+    # Refuse to execute when ANY step's history fails the
+    # gate. Uses the same eligibility logic as Phase 2c.
+    if require_reliable and yes:
+        try:
+            from core.autonomous.controller import (
+                _compute_auto_execute_eligibility,
+            )
+            elig = _compute_auto_execute_eligibility(plan)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "plan --require-reliable: import raised: "
+                "%s", exc,
+            )
+            elig = {
+                "steps": [], "threshold": 0.9,
+                "min_sample": 5,
+            }
+        ineligible = [
+            s for s in (elig.get("steps") or [])
+            if not s.get("eligible")
+        ]
+        if ineligible:
+            payload = {
+                "ok": False,
+                "error": "reliability_gate_failed",
+                "ineligible_steps": ineligible,
+                "threshold": elig.get("threshold"),
+                "min_sample": elig.get("min_sample"),
+            }
+            if as_json:
+                print(json.dumps(
+                    payload, indent=2, default=str,
+                ))
+            else:
+                print(
+                    "Reliability gate refused: "
+                    f"{len(ineligible)} step(s) below "
+                    "threshold."
+                )
+                for s in ineligible[:5]:
+                    rate_pct = (
+                        s.get("success_rate", 0.0) * 100
+                    )
+                    thr = elig.get("threshold", 0.9) * 100
+                    print(
+                        f"  - {s['capability']}: "
+                        f"{rate_pct:.1f}% "
+                        f"over {s.get('executed_count', 0)} "
+                        "past run(s) "
+                        f"(need {thr:.0f}% @ sample >= "
+                        f"{elig.get('min_sample', 5)})"
+                    )
+                if len(ineligible) > 5:
+                    print(
+                        f"  ... +{len(ineligible) - 5} "
+                        "more"
+                    )
+                print()
+                print(
+                    "Drop --require-reliable to force "
+                    "execution, OR populate plan_history "
+                    "by running these capabilities "
+                    "manually first."
+                )
+            sys.exit(1)
 
     executor = CapabilityExecutor()
     steps_out: list[dict] = []
