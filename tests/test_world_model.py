@@ -1624,6 +1624,58 @@ class TestSectionCycle:
         assert sec["engine_regressions"] == []
 
 
+class TestEngineOutcomeAlertsInCycle:
+
+    def test_outcome_alerts_surfaced(self):
+        from core.approval.outcome_trends import EngineAlert
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.approval.outcome_trends."
+            "compute_engine_alerts",
+            return_value=[
+                EngineAlert(
+                    engine="loyalty",
+                    recent_executed=10,
+                    baseline_executed=40,
+                    recent_score=2.5,
+                    baseline_score=4.0,
+                    recent_polarised=8,
+                    baseline_polarised=35,
+                    drop=1.5,
+                    detail="outcome score dropped",
+                ),
+            ],
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        alerts = sec["engine_outcome_alerts"]
+        assert len(alerts) == 1
+        assert alerts[0]["engine"] == "loyalty"
+        assert alerts[0]["drop"] == 1.5
+        assert alerts[0]["recent_score"] == 2.5
+
+    def test_outcome_alerts_default_when_unavailable(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.approval.outcome_trends."
+            "compute_engine_alerts",
+            side_effect=RuntimeError("queue down"),
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        assert sec["engine_outcome_alerts"] == []
+
+
 class TestChronicWarningsInCycle:
 
     def test_chronic_warnings_surfaced(self):

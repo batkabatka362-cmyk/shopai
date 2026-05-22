@@ -942,6 +942,7 @@ class WorldModel:
             pause_frequency_7d: dict | None,
             engine_regressions: list,
             engine_chronic_warnings: list,
+            engine_outcome_alerts: list,
           }
         Fleet scope (no store_id) returns an aggregate roll-
         up instead of per-store stats. ``pause`` /
@@ -1152,6 +1153,45 @@ class WorldModel:
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "world_model engine_regressions "
+                "raised: %s", exc,
+            )
+
+        # Engine outcome alerts (outcome_trends.compute_engine_alerts)
+        # -- degraded engines flagged by the recent-vs-
+        # baseline outcome score detector. Distinct from
+        # health regressions (which compare engine_health
+        # scores). The approval queue's outcomes drive
+        # this; world-model already holds a queue reference
+        # for approvals so the walk is incremental.
+        out["engine_outcome_alerts"] = []
+        try:
+            from core.approval.outcome_trends import (
+                compute_engine_alerts,
+            )
+            queue = self._approval_queue()
+            alerts_list = compute_engine_alerts(
+                queue,
+                recent_hours=24.0,
+                baseline_hours=168.0,
+                threshold=0.2,
+                min_recent=3,
+            )
+            out["engine_outcome_alerts"] = [
+                {
+                    "engine": a.engine,
+                    "recent_score": a.recent_score,
+                    "baseline_score": a.baseline_score,
+                    "drop": a.drop,
+                    "recent_executed": a.recent_executed,
+                    "baseline_executed": a.baseline_executed,
+                    "detail": a.detail,
+                    "kind": a.kind,
+                }
+                for a in alerts_list
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model engine_outcome_alerts "
                 "raised: %s", exc,
             )
 
