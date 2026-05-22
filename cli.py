@@ -10753,6 +10753,58 @@ def _cmd_engine_pulse(args) -> None:
             f"alert_streak_7d={sig.get('alert_streak_7d', 0)}  "
             f"alert_paused={sig.get('alert_paused', False)}"
         )
+        # Engine-health state -- is THIS engine flagged as
+        # regressing or chronically sick? Saves the operator
+        # a separate ``approvals chronic-warnings`` call when
+        # they're already drilling into one engine.
+        try:
+            from core.approval.engine_health_history import (
+                find_regressions, find_chronic_warnings,
+            )
+            engine_name = health.engine
+            regr_match = next(
+                (
+                    r for r in find_regressions(
+                        min_drop=3.0,
+                        baseline_window_seconds=86400.0 * 7.0,
+                        latest_window_seconds=86400.0 * 1.0,
+                        min_baseline_samples=3,
+                    )
+                    if r.engine == engine_name
+                ),
+                None,
+            )
+            chronic_match = next(
+                (
+                    w for w in find_chronic_warnings(
+                        sample_window_seconds=86400.0 * 7.0,
+                        min_samples=3,
+                        healthy_score_floor=7,
+                    )
+                    if w.engine == engine_name
+                ),
+                None,
+            )
+            state_bits: list[str] = []
+            if regr_match:
+                state_bits.append(
+                    f"REGRESSING (-{regr_match.drop:.1f}pts "
+                    f"from baseline {regr_match.baseline_score:.1f})"
+                )
+            if chronic_match:
+                state_bits.append(
+                    f"CHRONIC (avg {chronic_match.avg_score:.1f}/10, "
+                    f"n={chronic_match.samples})"
+                )
+            if state_bits:
+                print(
+                    f"  Health state: {' + '.join(state_bits)}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "engine_pulse health state probe raised: %s",
+                exc,
+            )
         # History trail -- newest first. Render as a tight
         # date / score / verdict table so trends are scannable.
         if getattr(args, "history", False):
