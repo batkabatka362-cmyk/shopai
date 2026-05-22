@@ -1236,6 +1236,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     autonomous_p.add_argument(
+        "--revenue-trend", action="store_true",
+        dest="revenue_trend",
+        help=(
+            "Read-only: fleet revenue trend across cycle "
+            "snapshots. The autonomous loop's overall ROI "
+            "metric -- is total revenue growing as the loop "
+            "runs? Does NOT run a cycle."
+        ),
+    )
+    autonomous_p.add_argument(
         "--history", action="store_true",
         help=(
             "Read-only: render the cycle history (recent "
@@ -13706,6 +13716,58 @@ def _cmd_autonomous_cycle(args) -> None:
         getattr(args, "skip_transfer", False),
     )
 
+    # --revenue-trend is read-only: fleet revenue
+    # trend across cycle snapshots.
+    if bool(getattr(args, "revenue_trend", False)):
+        try:
+            from core.autonomous import (
+                cycle_revenue_history as _crh,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"revenue-trend unavailable: {exc}")
+            return
+        window_days = max(
+            1, int(
+                getattr(
+                    args, "history_window_days", 7,
+                ) or 7,
+            ),
+        )
+        trend = _crh.revenue_trend(
+            since_seconds=window_days * 86400,
+        )
+        if as_json:
+            print(json.dumps({
+                "window_days": window_days,
+                **trend,
+            }, indent=2, default=str))
+            return
+        print(
+            f"Fleet revenue trend "
+            f"(last {window_days} day(s)):"
+        )
+        if trend["snapshots"] == 0:
+            print("  No revenue snapshots recorded yet.")
+            return
+        print(
+            f"  Snapshots:      {trend['snapshots']}"
+        )
+        print(
+            f"  First revenue:  "
+            f"${trend['first_revenue']:,.2f}"
+        )
+        print(
+            f"  Last revenue:   "
+            f"${trend['last_revenue']:,.2f}"
+        )
+        sign = "+" if trend["delta"] >= 0 else ""
+        print(
+            f"  Delta:          "
+            f"{sign}${trend['delta']:,.2f} "
+            f"({sign}{trend['delta_pct']:.1f}%)"
+        )
+        return
+
     # --diary is read-only: unified event log across all
     # history files.
     if bool(getattr(args, "diary", False)):
@@ -14192,6 +14254,43 @@ def _cmd_autonomous_cycle(args) -> None:
         "defend": None,
         "correlate": None,
     }
+
+    # ── Revenue snapshot capture (cycle start) ─────────
+    # Snapshot the fleet's total revenue + store count so
+    # cycle_revenue_history can show whether the autonomous
+    # loop is growing revenue over time. Best-effort; any
+    # failure logged but doesn't break the cycle.
+    try:
+        sm_rev = _get_store_manager()
+        stores_rev = sm_rev.list_stores() or []
+        fleet_rev = 0.0
+        for s in stores_rev:
+            sid = s.get("store_id") or ""
+            if not sid:
+                continue
+            try:
+                stats = sm_rev.get_stats(sid) or {}
+                fleet_rev += float(
+                    stats.get("total_revenue", 0) or 0,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "autonomous-cycle: revenue lookup "
+                    "raised for %s: %s", sid, exc,
+                )
+        from core.autonomous import (
+            cycle_revenue_history as _crh,
+        )
+        _crh.record_snapshot(
+            fleet_revenue=fleet_rev,
+            store_count=len(stores_rev),
+        )
+        summary["fleet_revenue"] = fleet_rev
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "autonomous-cycle: revenue snapshot "
+            "raised: %s", exc,
+        )
 
     # ── Advance phase ──────────────────────────────────
     if not skip_advance:

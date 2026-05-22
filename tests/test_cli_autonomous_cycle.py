@@ -75,6 +75,7 @@ def _ns(**kw):
         show_thresholds=False,
         transfer_effectiveness=False,
         diary=False,
+        revenue_trend=False,
         json=False,
     )
     defaults.update(kw)
@@ -1156,6 +1157,101 @@ class TestAutoRelaxInCycle:
             )
         # Direction none doesn't render the auto-relax line
         assert "Auto-relax" not in out
+
+
+class TestRevenueTrendFlag:
+    """``--revenue-trend`` -- fleet revenue ROI metric."""
+
+    def test_empty_friendly(self, cli):
+        with patch(
+            "core.autonomous.cycle_revenue_history."
+            "revenue_trend",
+            return_value={
+                "snapshots": 0,
+                "first_revenue": None,
+                "last_revenue": None,
+                "delta": 0.0,
+                "delta_pct": 0.0,
+                "first_at": None,
+                "last_at": None,
+            },
+        ):
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(revenue_trend=True),
+            )
+        assert code == 0
+        assert "No revenue snapshots" in out
+
+    def test_renders_growth(self, cli):
+        with patch(
+            "core.autonomous.cycle_revenue_history."
+            "revenue_trend",
+            return_value={
+                "snapshots": 7,
+                "first_revenue": 1000.0,
+                "last_revenue": 1500.0,
+                "delta": 500.0,
+                "delta_pct": 50.0,
+                "first_at": 0,
+                "last_at": 0,
+            },
+        ):
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(revenue_trend=True),
+            )
+        assert code == 0
+        assert "Snapshots:      7" in out
+        assert "$1,000.00" in out
+        assert "$1,500.00" in out
+        assert "+$500.00" in out
+        assert "+50.0%" in out
+
+    def test_json_envelope(self, cli):
+        with patch(
+            "core.autonomous.cycle_revenue_history."
+            "revenue_trend",
+            return_value={
+                "snapshots": 2,
+                "first_revenue": 100.0,
+                "last_revenue": 200.0,
+                "delta": 100.0,
+                "delta_pct": 100.0,
+                "first_at": 0,
+                "last_at": 0,
+            },
+        ):
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(revenue_trend=True, json=True),
+            )
+        data = json.loads(out)
+        assert data["window_days"] == 7
+        assert data["snapshots"] == 2
+
+    def test_skips_cycle_run(self, cli):
+        sm = _fake_sm([{"store_id": "a"}])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ) as mock_sm, patch(
+            "core.autonomous.cycle_revenue_history."
+            "revenue_trend",
+            return_value={
+                "snapshots": 0,
+                "first_revenue": None,
+                "last_revenue": None,
+                "delta": 0.0,
+                "delta_pct": 0.0,
+                "first_at": None,
+                "last_at": None,
+            },
+        ):
+            _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(revenue_trend=True),
+            )
+        mock_sm.assert_not_called()
 
 
 class TestDiaryFlag:
