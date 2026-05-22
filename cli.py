@@ -5600,10 +5600,16 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
         ps = cyc.get("pause") or {}
         if ps.get("active"):
             pause_str = "  [PAUSED]"
+        regr_str = ""
+        regr_count = int(
+            envelope.get("regression_count", 0) or 0
+        )
+        if regr_count > 0:
+            regr_str = f"  [{regr_count} regression(s)]"
         print(
             f"  Cycle:     {cyc['runs_24h']} run(s)/24h  "
             f"last: {last}{alerts_str}{thr_str}{tx_str}"
-            f"{rev_str}{pause_str}"
+            f"{rev_str}{pause_str}{regr_str}"
         )
     else:
         print(
