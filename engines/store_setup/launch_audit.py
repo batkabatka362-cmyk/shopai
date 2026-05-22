@@ -175,13 +175,17 @@ _LAUNCH_CLOSEABLE: frozenset[str] = frozenset({
     "active_products",
 })
 _MANUAL_ADMIN_KEYS: frozenset[str] = frozenset({
-    "shipping_zones", "fulfillable_locations",
+    "shipping_zones",
+    "fulfillable_locations",
+    "shop_identity",
 })
 _MANUAL_ADMIN_URLS: dict[str, str] = {
     "shipping_zones":
         "admin.shopify.com/settings/shipping",
     "fulfillable_locations":
         "admin.shopify.com/settings/locations",
+    "shop_identity":
+        "admin.shopify.com/settings/general",
 }
 
 
@@ -193,8 +197,9 @@ def next_action_hint(checks: list[dict[str, Any]]) -> str:
     (launch-closeable vs Shopify-admin-driven) and picks
     the bucket that closes the most gaps in one shot. The
     seven launch-closeable checks all collapse into a single
-    ``shopai launch`` invocation; the two admin-driven
-    checks each get their own URL.
+    ``shopai launch`` invocation; the three admin-driven
+    checks (shipping_zones, fulfillable_locations,
+    shop_identity) each get their own URL.
 
     Returns "" when there are no failing checks (audit
     passes), so callers can use truthiness to decide whether

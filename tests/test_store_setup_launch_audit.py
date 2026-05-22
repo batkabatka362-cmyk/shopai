@@ -1040,6 +1040,7 @@ class TestNextActionHint:
             "design_tokens", "brand_assets",
             "active_products",
             "shipping_zones", "fulfillable_locations",
+            "shop_identity",
         ]
         checks = [
             {"key": k, "ok": k not in failing_keys,
@@ -1074,6 +1075,12 @@ class TestNextActionHint:
             "shipping_zones",
         })
         assert "admin.shopify.com/settings/shipping" in hint
+
+    def test_shop_identity_manual_admin_url(self):
+        hint = self._result_with_failing({
+            "shop_identity",
+        })
+        assert "admin.shopify.com/settings/general" in hint
 
     def test_audit_result_carries_next_action(self):
         """End-to-end: audit_store()['next_action'] is
