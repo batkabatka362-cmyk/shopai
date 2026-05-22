@@ -3937,6 +3937,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     status_p.add_argument(
+        "--score-trend", action="store_true",
+        dest="score_trend",
+        help=(
+            "Show composite health score trend over a "
+            "window. Captured per cycle run. Does NOT "
+            "render full status."
+        ),
+    )
+    status_p.add_argument(
+        "--score-window-days", type=int, default=7,
+        dest="score_window_days",
+        help=(
+            "Look-back window in days for --score-trend "
+            "(default 7)."
+        ),
+    )
+    status_p.add_argument(
         "--interval", type=int, default=30,
         help=(
             "Refresh interval in seconds for --watch "
@@ -15315,6 +15332,33 @@ def _cmd_autonomous_cycle(args) -> None:
             "error": f"raised: {exc}",
         }
 
+    # Composite health score snapshot at cycle end.
+    # Persists to ``health_score_history`` so operators can
+    # graph score over time + spot drift.
+    try:
+        from core.autonomous import (
+            health_score_history as _hsh,
+        )
+        # Recompute health sections after all phases ran
+        # to capture the post-cycle state.
+        try:
+            health = _build_health_sections()
+            score = health.get("health_score", 100)
+            verdict = health.get("overall", "unknown")
+            _hsh.record_snapshot(
+                score=int(score), verdict=verdict,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "autonomous-cycle: health snapshot "
+                "raised: %s", exc,
+            )
+    except ImportError as exc:
+        logger.debug(
+            "autonomous-cycle: health_score_history "
+            "import failed: %s", exc,
+        )
+
     # Add next-action recommendation to JSON envelope.
     try:
         from core.autonomous import cycle_next_action as _na
@@ -22172,6 +22216,62 @@ def _audit_data_files() -> dict[str, Any]:
 
 
 def _cmd_status(args=None) -> None:
+    # --score-trend: show composite health score trend.
+    if args is not None and getattr(
+        args, "score_trend", False,
+    ):
+        from core.autonomous import (
+            health_score_history as _hsh,
+        )
+        window = max(
+            1, int(
+                getattr(args, "score_window_days", 7)
+                or 7,
+            ),
+        )
+        trend = _hsh.score_trend(
+            since_seconds=window * 86400,
+        )
+        as_json = bool(getattr(args, "json", False))
+        if as_json:
+            print(json.dumps({
+                "window_days": window,
+                **trend,
+            }, indent=2, default=str))
+            return
+        print(
+            f"Health score trend "
+            f"(last {window} day(s)):"
+        )
+        if trend["snapshots"] == 0:
+            print(
+                "  No snapshots recorded. Run cycles to "
+                "populate."
+            )
+            return
+        print(f"  Snapshots:  {trend['snapshots']}")
+        print(
+            f"  First:      {trend['first_score']}/100"
+        )
+        print(
+            f"  Last:       {trend['last_score']}/100"
+        )
+        print(
+            f"  Min:        {trend['min_score']}/100"
+        )
+        print(
+            f"  Max:        {trend['max_score']}/100"
+        )
+        print(
+            f"  Average:    {trend['avg_score']}/100"
+        )
+        sign = "+" if trend["delta"] >= 0 else ""
+        print(
+            f"  Delta:      {sign}{trend['delta']} "
+            f"points"
+        )
+        return
+
     # --line: single-line summary suitable for cron logs
     # or monitoring exporters.
     if args is not None and getattr(args, "line", False):
