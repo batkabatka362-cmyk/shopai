@@ -8362,6 +8362,32 @@ def _cmd_world_model_fleet(args) -> None:
         + ("; live probes on" if not skip_live else "; live probes skipped")
         + ")"
     )
+    # Fleet-wide pause banner -- pause halts every store, so
+    # surfacing it once at the top is the right scope. Pick
+    # from the first non-error row (every snapshot carries
+    # the same fleet pause state).
+    for snap in rows:
+        if "error" in snap:
+            continue
+        pause = (
+            snap.get("cycle", {}).get("pause", {}) or {}
+        )
+        if pause.get("active"):
+            import datetime as _dt
+            until = pause.get("paused_until_at")
+            until_str = (
+                _dt.datetime.fromtimestamp(
+                    until,
+                ).strftime("%Y-%m-%d %H:%M")
+                if until else "unknown"
+            )
+            print(
+                f"  *** FLEET PAUSED until {until_str} "
+                f"-- every store skipped ***"
+            )
+            if pause.get("reason"):
+                print(f"      Reason: {pause['reason']}")
+        break
     print()
     print(
         f"  {'STORE':<22s} {'NICHE':<10s} {'PROD':>5s} "
