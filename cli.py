@@ -22557,6 +22557,24 @@ def _cmd_status(args=None) -> None:
             else "n/a"
         )
         score = health.get("health_score", "?")
+        # Engine health regressions -- count only, cheap
+        # to compute (one engine_health_history read).
+        try:
+            from core.approval.engine_health_history import (
+                find_regressions,
+            )
+            regs = find_regressions(
+                min_drop=3.0,
+                baseline_window_seconds=86400.0 * 7.0,
+                latest_window_seconds=86400.0 * 1.0,
+                min_baseline_samples=3,
+            )
+            regression_count = len(regs)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "--line regressions raised: %s", exc,
+            )
+            regression_count = 0
         print(
             f"{tag} score={score}/100 "
             f"stores={fleet.get('store_count', 0)} "
@@ -22568,6 +22586,7 @@ def _cmd_status(args=None) -> None:
             f"{sub.get('demote_candidates', 0)} "
             f"thrashing="
             f"{br.get('thrashing_count', 0)} "
+            f"regressions={regression_count} "
             f"revenue_7d={rev_pct}"
         )
         if verdict in ("warn", "error"):
