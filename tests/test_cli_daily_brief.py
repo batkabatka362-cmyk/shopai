@@ -1938,6 +1938,73 @@ class TestRevenueImpactSection:
         )
 
 
+class TestPauseInBrief:
+    """Cycle pause state appears prominently in
+    daily-brief."""
+
+    def test_paused_banner_renders(self, cli):
+        import time as _t
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_pause.get_pause_state",
+            return_value={
+                "active": True,
+                "paused_until_at": _t.time() + 3600,
+                "reason": "maintenance",
+                "paused_at": _t.time(),
+            },
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "CYCLE PAUSED" in out
+        assert "maintenance" in out
+
+    def test_not_paused_no_banner(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_pause.get_pause_state",
+            return_value={
+                "active": False,
+                "paused_until_at": None,
+                "reason": "",
+                "paused_at": None,
+            },
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "CYCLE PAUSED" not in out
+
+    def test_envelope_carries_pause_state(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_pause.get_pause_state",
+            return_value={
+                "active": True,
+                "paused_until_at": 1700000000.0,
+                "reason": "test",
+                "paused_at": 1699999000.0,
+            },
+        ):
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        data = json.loads(out)
+        assert data["pause_state"]["active"] is True
+
+
 class TestDiaryInBrief:
     """daily-brief surfaces last 5 events from cycle_diary
     inline."""

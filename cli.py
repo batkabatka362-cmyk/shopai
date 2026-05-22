@@ -6091,6 +6091,20 @@ def _cmd_daily_brief(args) -> None:
             exc,
         )
 
+    # ── Cycle pause state (operator escape hatch) --
+    # surface "cycle is halted" prominently so operators
+    # don't miss it during the morning glance.
+    pause_state_brief: dict[str, Any] = {
+        "active": False, "reason": "", "paused_until_at": None,
+    }
+    try:
+        from core.autonomous import cycle_pause as _cp_br
+        pause_state_brief = _cp_br.get_pause_state()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief pause_state raised: %s", exc,
+        )
+
     # ── Autonomous-cycle activity (window) -- recent
     #     ``shopai autonomous-cycle`` invocations from the
     #     cycle_history audit log. Cron-friendly answer to
@@ -6355,6 +6369,7 @@ def _cmd_daily_brief(args) -> None:
             "cycle_transfer_activity": cycle_transfer_activity,
             "cycle_activity": cycle_activity,
             "diary": diary_events,
+            "pause_state": pause_state_brief,
             "totals": totals,
             "alerts": alerts,
         }, indent=2, default=str))
@@ -6365,6 +6380,27 @@ def _cmd_daily_brief(args) -> None:
         f"Daily brief (last {window_hours}h) "
         f"-- {totals['stores']} store(s)"
     )
+    # Pause banner — prominent if active so operators
+    # spot it before scrolling further.
+    if pause_state_brief.get("active"):
+        import datetime as _dt
+        until = pause_state_brief.get(
+            "paused_until_at",
+        )
+        until_str = (
+            _dt.datetime.fromtimestamp(
+                until,
+            ).strftime("%Y-%m-%d %H:%M")
+            if until else "unknown"
+        )
+        print(
+            f"  *** CYCLE PAUSED until {until_str} ***"
+        )
+        if pause_state_brief.get("reason"):
+            print(
+                f"      Reason: "
+                f"{pause_state_brief['reason']}"
+            )
     print()
     print(
         f"  Totals: {totals['orders']} orders, "
