@@ -940,11 +940,14 @@ class WorldModel:
             alerts: list,
             pause: dict,
             pause_frequency_7d: dict | None,
+            engine_regressions: list,
           }
         Fleet scope (no store_id) returns an aggregate roll-
         up instead of per-store stats. ``pause`` /
-        ``pause_frequency_7d`` are fleet-scoped regardless --
-        the pause switch halts every store at once.
+        ``pause_frequency_7d`` / ``engine_regressions`` are
+        fleet-scoped regardless -- engine health is global,
+        not per-store, and the pause switch halts every
+        store at once.
         """
         out: dict = {
             "checked": True,
@@ -1117,6 +1120,38 @@ class WorldModel:
             logger.debug(
                 "world_model cycle alerts raised: %s",
                 exc,
+            )
+
+        # Fleet-wide engine health regressions. Engine
+        # health is per-engine (not per-engine-per-store),
+        # so this is fleet-scoped just like pause. Keeps
+        # the world-model viewer from having to call the
+        # dedicated regressions CLI separately.
+        out["engine_regressions"] = []
+        try:
+            from core.approval.engine_health_history import (
+                find_regressions,
+            )
+            regs = find_regressions(
+                min_drop=3.0,
+                baseline_window_seconds=86400.0 * 7.0,
+                latest_window_seconds=86400.0 * 1.0,
+                min_baseline_samples=3,
+            )
+            out["engine_regressions"] = [
+                {
+                    "engine": r.engine,
+                    "latest_score": r.latest_score,
+                    "latest_verdict": r.latest_verdict,
+                    "baseline_score": r.baseline_score,
+                    "drop": r.drop,
+                }
+                for r in regs
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model engine_regressions "
+                "raised: %s", exc,
             )
 
         # Fleet-wide cycle pause state + 7d frequency

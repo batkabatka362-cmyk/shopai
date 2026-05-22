@@ -1573,6 +1573,56 @@ class TestSectionCycle:
             == 4.25
         )
 
+    def test_engine_regressions_surfaced(self):
+        """Cycle section carries fleet-wide health
+        regressions from find_regressions()."""
+        from core.approval.engine_health_history import (
+            HealthRegression,
+        )
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_regressions",
+            return_value=[
+                HealthRegression(
+                    engine="loyalty",
+                    latest_score=4,
+                    latest_verdict="warning",
+                    baseline_score=8.0,
+                    drop=4.0,
+                    samples_in_baseline=5,
+                ),
+            ],
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        regs = sec["engine_regressions"]
+        assert len(regs) == 1
+        assert regs[0]["engine"] == "loyalty"
+        assert regs[0]["drop"] == 4.0
+        assert regs[0]["latest_score"] == 4
+
+    def test_engine_regressions_default_when_unavailable(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_regressions",
+            side_effect=RuntimeError("disk"),
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        assert sec["engine_regressions"] == []
+
     def test_pause_state_default_when_unavailable(self):
         wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
         with patch(
