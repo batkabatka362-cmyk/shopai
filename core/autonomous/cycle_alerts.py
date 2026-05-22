@@ -235,3 +235,121 @@ def config_summary() -> dict[str, Any]:
         ),
         "demote_ratio_limit": demote_ratio_limit(),
     }
+
+
+@dataclass
+class PerStoreCycleAlert:
+    """One store-level cycle alert. Same shape as
+    CycleAlert but scoped to a specific store_id."""
+
+    store_id: str
+    kind: str
+    detail: str
+    metrics: dict[str, Any] = field(default_factory=dict)
+
+
+def compute_per_store_alerts(
+    *,
+    window_seconds: int = 86400 * 7,
+    min_attempts: int = 3,
+    now: float | None = None,
+) -> list[PerStoreCycleAlert]:
+    """Detect per-store cycle health issues from
+    cycle_history's per_store_stats.
+
+    Currently emits two alert kinds:
+      - ``store_consistently_refused`` -- store has been
+        attempted ``min_attempts``+ times and the
+        advance-rate is below the fleet-wide threshold
+        (``SHOPAI_CYCLE_MIN_ADVANCE_RATE``). Store-specific
+        reliability gate may be too tight.
+      - ``store_consistently_errored`` -- store has errored
+        on ``min_attempts``+ cycles in the window. Likely
+        infrastructure / credentials / scope issue rather
+        than substrate.
+
+    Args:
+        window_seconds: Look-back window (default 7 days).
+        min_attempts: Minimum cycle attempts before
+            considering a store for alerting (default 3 --
+            single bad cycle isn't a pattern).
+        now: Override timestamp for testing.
+
+    Returns:
+        List sorted by (kind, store_id) for stable output.
+        Empty when every store is healthy.
+    """
+    try:
+        per_store = cycle_history.per_store_stats(
+            since_seconds=window_seconds, now=now,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "compute_per_store_alerts: stats raised: %s",
+            exc,
+        )
+        return []
+
+    if not per_store:
+        return []
+
+    advance_threshold = min_advance_rate_threshold()
+    alerts: list[PerStoreCycleAlert] = []
+    for sid, stats in per_store.items():
+        total = int(stats.get("total", 0) or 0)
+        if total < max(1, int(min_attempts)):
+            continue
+        executed = int(stats.get("executed", 0) or 0)
+        refused = int(stats.get("refused", 0) or 0)
+        errored = int(stats.get("errored", 0) or 0)
+
+        # store_consistently_errored: more than half of
+        # attempts errored
+        if total > 0 and errored / total >= 0.5:
+            alerts.append(PerStoreCycleAlert(
+                store_id=sid,
+                kind="store_consistently_errored",
+                detail=(
+                    f"{errored}/{total} cycles errored on "
+                    f"this store. Check credentials / "
+                    f"scope / connectivity."
+                ),
+                metrics={
+                    "errored": errored,
+                    "total": total,
+                    "error_rate": round(
+                        errored / total, 3,
+                    ),
+                },
+            ))
+            # Don't double-alert as refused -- errored is
+            # the dominant signal
+            continue
+
+        # store_consistently_refused: advance-rate below
+        # threshold. Denominator excludes errored (those
+        # didn't get a fair chance to advance).
+        attemptable = executed + refused
+        if attemptable >= max(1, int(min_attempts)):
+            rate = executed / attemptable
+            if rate < advance_threshold:
+                alerts.append(PerStoreCycleAlert(
+                    store_id=sid,
+                    kind="store_consistently_refused",
+                    detail=(
+                        f"ADVANCE succeeded on "
+                        f"{rate * 100:.0f}% of cycles for "
+                        f"this store ({executed}/"
+                        f"{attemptable}). Reliability gate "
+                        "may be too tight for this store."
+                    ),
+                    metrics={
+                        "executed": executed,
+                        "refused": refused,
+                        "advance_rate": round(rate, 3),
+                        "threshold": advance_threshold,
+                    },
+                ))
+
+    alerts.sort(key=lambda a: (a.kind, a.store_id))
+    return alerts

@@ -1455,3 +1455,76 @@ class TestSectionCycle:
             snap = wm.snapshot("store-x", skip_live=True)
         assert "cycle" in snap
         assert snap["cycle"]["checked"] is True
+
+    def test_per_store_alerts_filtered_to_store(self):
+        """When store_id is given, ``cycle.alerts`` carries
+        ONLY alerts for that store."""
+        from core.autonomous.cycle_alerts import (
+            PerStoreCycleAlert,
+        )
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_alerts."
+            "compute_per_store_alerts",
+            return_value=[
+                PerStoreCycleAlert(
+                    store_id="store-a",
+                    kind="store_consistently_refused",
+                    detail="this-store-alert",
+                ),
+                PerStoreCycleAlert(
+                    store_id="store-b",
+                    kind="store_consistently_errored",
+                    detail="other-store-alert",
+                ),
+            ],
+        ):
+            sec = wm._section_cycle(store_id="store-a")
+        # Only store-a's alert surfaces
+        assert len(sec["alerts"]) == 1
+        assert (
+            sec["alerts"][0]["kind"]
+            == "store_consistently_refused"
+        )
+        assert (
+            sec["alerts"][0]["detail"] == "this-store-alert"
+        )
+
+    def test_fleet_scope_surfaces_all_alerts(self):
+        from core.autonomous.cycle_alerts import (
+            PerStoreCycleAlert,
+        )
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_alerts."
+            "compute_per_store_alerts",
+            return_value=[
+                PerStoreCycleAlert(
+                    store_id="store-a",
+                    kind="store_consistently_refused",
+                    detail="alert-a",
+                ),
+                PerStoreCycleAlert(
+                    store_id="store-b",
+                    kind="store_consistently_errored",
+                    detail="alert-b",
+                ),
+            ],
+        ):
+            sec = wm._section_cycle(store_id=None)
+        # All alerts surface in fleet scope
+        assert len(sec["alerts"]) == 2
+        store_ids = {a["store_id"] for a in sec["alerts"]}
+        assert store_ids == {"store-a", "store-b"}

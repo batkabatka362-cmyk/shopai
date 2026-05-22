@@ -1021,6 +1021,44 @@ class WorldModel:
                     "raised: %s", exc,
                 )
 
+        # Per-store cycle alerts -- the substrate's signal
+        # that THIS store is consistently refused/errored.
+        # When store_id is None (fleet snapshot), surface
+        # ALL per-store alerts as a list.
+        out["alerts"] = []
+        try:
+            from core.autonomous import (
+                cycle_alerts as _ca,
+            )
+            psa_list = _ca.compute_per_store_alerts(
+                window_seconds=86400 * 7,
+            )
+            if store_id is not None:
+                out["alerts"] = [
+                    {
+                        "kind": psa.kind,
+                        "detail": psa.detail,
+                        "metrics": psa.metrics,
+                    }
+                    for psa in psa_list
+                    if psa.store_id == store_id
+                ]
+            else:
+                out["alerts"] = [
+                    {
+                        "store_id": psa.store_id,
+                        "kind": psa.kind,
+                        "detail": psa.detail,
+                        "metrics": psa.metrics,
+                    }
+                    for psa in psa_list
+                ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model cycle alerts raised: %s",
+                exc,
+            )
+
         return out
 
     # ── Public API ──────────────────────────────────────────

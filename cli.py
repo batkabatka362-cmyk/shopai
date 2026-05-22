@@ -5580,6 +5580,24 @@ def _cmd_daily_brief(args) -> None:
             "engine": "autonomous_cycle",
             "detail": ca_row["detail"],
         })
+    # Per-store cycle alerts also merge in -- carry store_id
+    # so the alerts section shows which store the issue
+    # affects.
+    try:
+        from core.autonomous import cycle_alerts as _ca
+        for psa in _ca.compute_per_store_alerts(
+            window_seconds=86400 * 7,
+        ):
+            alerts.append({
+                "kind": psa.kind,
+                "store_id": psa.store_id,
+                "engine": "autonomous_cycle",
+                "detail": psa.detail,
+            })
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief per_store_alerts raised: %s", exc,
+        )
 
     # ── Autonomous-cycle activity (window) -- recent
     #     ``shopai autonomous-cycle`` invocations from the
@@ -12956,6 +12974,9 @@ def _cmd_autonomous_cycle(args) -> None:
         alerts_list = _ca.compute_cycle_alerts(
             window_seconds=window_days * 86400,
         )
+        per_store_alerts = _ca.compute_per_store_alerts(
+            window_seconds=window_days * 86400,
+        )
         config = _ca.config_summary()
         if as_json:
             print(json.dumps({
@@ -12969,18 +12990,37 @@ def _cmd_autonomous_cycle(args) -> None:
                     }
                     for a in alerts_list
                 ],
+                "per_store_alerts": [
+                    {
+                        "store_id": a.store_id,
+                        "kind": a.kind,
+                        "detail": a.detail,
+                        "metrics": a.metrics,
+                    }
+                    for a in per_store_alerts
+                ],
             }, indent=2, default=str))
             return
         print(
             f"Autonomous cycle alerts "
             f"(last {window_days} day(s)):"
         )
-        if not alerts_list:
+        if not alerts_list and not per_store_alerts:
             print()
             print("  No alerts -- cycle looks healthy.")
             return
         for a in alerts_list:
             print(f"  [{a.kind}]  {a.detail}")
+        if per_store_alerts:
+            print()
+            print(
+                f"Per-store alerts ({len(per_store_alerts)}):"
+            )
+            for psa in per_store_alerts:
+                print(
+                    f"  [{psa.kind}]  "
+                    f"{psa.store_id}: {psa.detail}"
+                )
         return
 
     # --history is a read-only shortcut: print cycle log

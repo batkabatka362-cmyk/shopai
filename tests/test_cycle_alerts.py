@@ -273,6 +273,148 @@ class TestSubstrateShrinking:
         assert "substrate_shrinking" not in kinds
 
 
+class TestPerStoreCycleAlerts:
+    """Per-store cycle alerts -- detect store-level health
+    issues separately from fleet-wide patterns."""
+
+    def _stats_map(self, **stores):
+        """Build a fake per_store_stats dict. Each kwarg is
+        store_id=(executed, refused, errored, no_plan)."""
+        out = {}
+        for sid, vals in stores.items():
+            executed, refused, errored, no_plan = vals
+            out[sid] = {
+                "executed": executed,
+                "refused": refused,
+                "errored": errored,
+                "no_plan": no_plan,
+                "total": (
+                    executed + refused
+                    + errored + no_plan
+                ),
+            }
+        return out
+
+    def test_empty_returns_empty(self):
+        with patch(
+            "core.autonomous.cycle_history."
+            "per_store_stats",
+            return_value={},
+        ):
+            alerts = ca.compute_per_store_alerts()
+        assert alerts == []
+
+    def test_skip_below_min_attempts(self):
+        """Only 2 attempts -- below default min_attempts=3."""
+        with patch(
+            "core.autonomous.cycle_history."
+            "per_store_stats",
+            return_value=self._stats_map(
+                store_a=(0, 2, 0, 0),
+            ),
+        ):
+            alerts = ca.compute_per_store_alerts()
+        assert alerts == []
+
+    def test_consistently_refused_fires(self):
+        # 3 attempts, all refused -> 0% advance rate
+        with patch(
+            "core.autonomous.cycle_history."
+            "per_store_stats",
+            return_value=self._stats_map(
+                store_a=(0, 3, 0, 0),
+            ),
+        ):
+            alerts = ca.compute_per_store_alerts()
+        kinds = {(a.store_id, a.kind) for a in alerts}
+        assert (
+            ("store_a", "store_consistently_refused")
+            in kinds
+        )
+
+    def test_consistently_errored_fires(self):
+        # 4 errored / 5 total -> 80% error rate
+        with patch(
+            "core.autonomous.cycle_history."
+            "per_store_stats",
+            return_value=self._stats_map(
+                store_a=(1, 0, 4, 0),
+            ),
+        ):
+            alerts = ca.compute_per_store_alerts()
+        kinds = {(a.store_id, a.kind) for a in alerts}
+        assert (
+            ("store_a", "store_consistently_errored")
+            in kinds
+        )
+
+    def test_errored_takes_precedence_over_refused(self):
+        """When both signals fire, prefer the errored
+        signal (root cause is infra, not substrate)."""
+        with patch(
+            "core.autonomous.cycle_history."
+            "per_store_stats",
+            return_value=self._stats_map(
+                # 5 errored + 0 executed + 5 refused = 10
+                # total; error rate 50% -> errored fires;
+                # refused doesn't (errored short-circuits)
+                store_a=(0, 5, 5, 0),
+            ),
+        ):
+            alerts = ca.compute_per_store_alerts()
+        kinds = [a.kind for a in alerts]
+        assert "store_consistently_errored" in kinds
+        assert "store_consistently_refused" not in kinds
+
+    def test_healthy_store_no_alert(self):
+        # 5 executed of 5 -> 100% advance rate
+        with patch(
+            "core.autonomous.cycle_history."
+            "per_store_stats",
+            return_value=self._stats_map(
+                store_a=(5, 0, 0, 0),
+            ),
+        ):
+            alerts = ca.compute_per_store_alerts()
+        assert alerts == []
+
+    def test_multiple_stores_multiple_alerts(self):
+        with patch(
+            "core.autonomous.cycle_history."
+            "per_store_stats",
+            return_value=self._stats_map(
+                healthy_store=(5, 0, 0, 0),
+                refused_store=(0, 4, 0, 0),
+                errored_store=(0, 0, 3, 0),
+            ),
+        ):
+            alerts = ca.compute_per_store_alerts()
+        store_kinds = {
+            (a.store_id, a.kind) for a in alerts
+        }
+        assert (
+            ("refused_store", "store_consistently_refused")
+            in store_kinds
+        )
+        assert (
+            ("errored_store", "store_consistently_errored")
+            in store_kinds
+        )
+        # healthy_store has no entry
+        assert all(
+            a.store_id != "healthy_store" for a in alerts
+        )
+
+    def test_stats_failure_returns_empty(self):
+        with patch(
+            "core.autonomous.cycle_history."
+            "per_store_stats",
+            side_effect=RuntimeError("disk"),
+        ):
+            alerts = ca.compute_per_store_alerts()
+        assert alerts == []
+
+
 class TestMultipleAlerts:
 
     def test_multiple_can_fire_simultaneously(self):
