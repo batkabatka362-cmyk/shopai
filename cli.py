@@ -23487,6 +23487,25 @@ def _cmd_status(args=None) -> None:
                 f"  Total: {present}/{count} files "
                 f"present  {rows} rows  {total_kb:.1f}KB"
             )
+        # Soft warning when individual files exceed 1MB --
+        # operators should consider running cleanup-history
+        # for those files before they crash a cycle on a
+        # tight-disk box.
+        big_files = [
+            f for f in audit["files"]
+            if f.get("size_bytes", 0) >= 1024 * 1024
+        ]
+        if big_files:
+            print()
+            for f in big_files:
+                mb = f["size_bytes"] / (1024 * 1024)
+                print(
+                    f"  [warn] {f['label']} is {mb:.1f}MB "
+                    f"-- consider `shopai status "
+                    f"--cleanup-history --older-than-days "
+                    f"90 --yes` if data is no longer "
+                    f"needed."
+                )
         return
 
     # --watch: long-poll mode. Re-render every interval
