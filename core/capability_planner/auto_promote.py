@@ -56,10 +56,14 @@ _ENV_ENABLED = "SHOPAI_AUTO_PROMOTE_RELIABLE"
 _ENV_THRESHOLD = "SHOPAI_AUTO_PROMOTE_THRESHOLD"
 _ENV_MIN_SAMPLE = "SHOPAI_AUTO_PROMOTE_MIN_SAMPLE"
 _ENV_WINDOW = "SHOPAI_AUTO_PROMOTE_WINDOW_DAYS"
+_ENV_THRASH_WINDOW = (
+    "SHOPAI_AUTO_PROMOTE_THRASH_WINDOW_DAYS"
+)
 
 _DEFAULT_THRESHOLD = 0.95
 _DEFAULT_MIN_SAMPLE = 5
 _DEFAULT_WINDOW_DAYS = 30
+_DEFAULT_THRASH_WINDOW_DAYS = 14
 
 _AUTO_REASON_PREFIX = "auto_promote_reliable"
 
@@ -99,6 +103,37 @@ def window_days() -> int:
         return max(1, int(raw))
     except (TypeError, ValueError):
         return _DEFAULT_WINDOW_DAYS
+
+
+def thrash_window_days() -> int:
+    """Window for detecting promote-demote cycles. Caps
+    appearing as cycles in this window are blocked from
+    further auto-promote."""
+    raw = os.environ.get(_ENV_THRASH_WINDOW)
+    if not raw:
+        return _DEFAULT_THRASH_WINDOW_DAYS
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return _DEFAULT_THRASH_WINDOW_DAYS
+
+
+def thrashing_capabilities() -> set[str]:
+    """Set of capability names currently in
+    promote-demote cycles. Caps in this set are blocked
+    from auto-promote (operator intervention needed)."""
+    try:
+        rows = find_promote_demote_cycles(
+            window_seconds=thrash_window_days() * 86400,
+            min_cycles=2,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "auto_promote: thrashing lookup raised: %s",
+            exc,
+        )
+        return set()
+    return {r["capability"] for r in rows}
 
 
 def _is_test_environment() -> bool:
@@ -174,6 +209,10 @@ def find_promote_candidates(
     demoted = overrides.demoted_names()
     promoted = overrides.promoted_names()
 
+    # Thrashing guard -- caps cycling between promote and
+    # demote are blocked from further auto-promote.
+    thrashing = thrashing_capabilities()
+
     out: list[dict[str, Any]] = []
     for r in rows:
         rate = float(r.get("success_rate", 0.0) or 0.0)
@@ -185,6 +224,8 @@ def find_promote_candidates(
             blocked = "demoted"
         elif cap in promoted:
             blocked = "already_promoted"
+        elif cap in thrashing:
+            blocked = "thrashing"
         out.append({**r, "blocked_by": blocked})
     out.sort(key=lambda r: -r["success_rate"])
     return out

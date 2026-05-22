@@ -312,6 +312,86 @@ auto_demote_history import AutoDemoteEvent
         assert out[1]["capability"] == "cap_a"
 
 
+class TestThrashingLockOnPromote:
+    """Caps in promote-demote cycles get blocked from
+    further auto-promote until operator clears."""
+
+    def test_thrashing_cap_blocked(self):
+        rows = [{
+            "capability": "shaky_winner",
+            "executed_count": 10,
+            "success_count": 10,
+            "success_rate": 1.0,
+        }]
+        with patch(
+            "core.capability_planner.plan_history."
+            "capability_leaderboard",
+            return_value=rows,
+        ), patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=_overrides(),
+        ), patch(
+            "core.capability_planner.auto_promote."
+            "thrashing_capabilities",
+            return_value={"shaky_winner"},
+        ):
+            out = ap.find_promote_candidates()
+        assert len(out) == 1
+        assert out[0]["blocked_by"] == "thrashing"
+
+    def test_non_thrashing_passes(self):
+        rows = [{
+            "capability": "fresh_winner",
+            "executed_count": 10,
+            "success_count": 10,
+            "success_rate": 1.0,
+        }]
+        with patch(
+            "core.capability_planner.plan_history."
+            "capability_leaderboard",
+            return_value=rows,
+        ), patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=_overrides(),
+        ), patch(
+            "core.capability_planner.auto_promote."
+            "thrashing_capabilities",
+            return_value=set(),
+        ):
+            out = ap.find_promote_candidates()
+        assert out[0]["blocked_by"] is None
+
+    def test_demote_signal_takes_precedence(self):
+        """Demote always wins. Thrashing alone vs demote --
+        demote tag wins."""
+        rows = [{
+            "capability": "double_blocked",
+            "executed_count": 10,
+            "success_count": 10,
+            "success_rate": 1.0,
+        }]
+        with patch(
+            "core.capability_planner.plan_history."
+            "capability_leaderboard",
+            return_value=rows,
+        ), patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=_overrides(
+                demoted=["double_blocked"],
+            ),
+        ), patch(
+            "core.capability_planner.auto_promote."
+            "thrashing_capabilities",
+            return_value={"double_blocked"},
+        ):
+            out = ap.find_promote_candidates()
+        # demoted check comes first in find_promote_candidates
+        assert out[0]["blocked_by"] == "demoted"
+
+
 class TestMaybeAutoPromote:
 
     def test_pattern_j_short_circuits(self):
