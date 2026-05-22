@@ -77,6 +77,11 @@ def _ns(**kw):
         diary=False,
         diary_filter=None,
         revenue_trend=False,
+        pause=False,
+        pause_hours=1.0,
+        pause_reason="",
+        resume=False,
+        show_pause=False,
         json=False,
     )
     defaults.update(kw)
@@ -1158,6 +1163,118 @@ class TestAutoRelaxInCycle:
             )
         # Direction none doesn't render the auto-relax line
         assert "Auto-relax" not in out
+
+
+class TestPauseFlags:
+    """Operator pause / resume / show-pause flags."""
+
+    def test_pause_invokes_module(self, cli):
+        with patch(
+            "core.autonomous.cycle_pause.pause",
+            return_value=True,
+        ) as mock_pause:
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(
+                    pause=True,
+                    pause_hours=2.0,
+                    pause_reason="test",
+                ),
+            )
+        assert code == 0
+        mock_pause.assert_called_once()
+        kwargs = mock_pause.call_args.kwargs
+        assert kwargs["reason"] == "test"
+        assert "Cycle paused" in out
+
+    def test_pause_invalid_hours_exits(self, cli):
+        out, code = _capture(
+            cli._cmd_autonomous_cycle,
+            _ns(pause=True, pause_hours=0),
+        )
+        assert code == 1
+
+    def test_resume_invokes_module(self, cli):
+        with patch(
+            "core.autonomous.cycle_pause.resume",
+            return_value=True,
+        ) as mock_resume:
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(resume=True),
+            )
+        mock_resume.assert_called_once()
+        assert "Cycle resumed" in out
+
+    def test_resume_no_active_pause(self, cli):
+        with patch(
+            "core.autonomous.cycle_pause.resume",
+            return_value=False,
+        ):
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(resume=True),
+            )
+        assert "No active pause" in out
+
+    def test_show_pause_inactive(self, cli):
+        with patch(
+            "core.autonomous.cycle_pause.get_pause_state",
+            return_value={
+                "active": False,
+                "paused_until_at": None,
+                "reason": "",
+                "paused_at": None,
+            },
+        ):
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(show_pause=True),
+            )
+        assert "NOT paused" in out
+
+    def test_show_pause_active(self, cli):
+        import time as _t
+        with patch(
+            "core.autonomous.cycle_pause.get_pause_state",
+            return_value={
+                "active": True,
+                "paused_until_at": _t.time() + 3600,
+                "reason": "maintenance",
+                "paused_at": _t.time(),
+            },
+        ):
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(show_pause=True),
+            )
+        assert "PAUSED until" in out
+        assert "maintenance" in out
+
+    def test_cycle_skips_when_paused(self, cli):
+        """When pause is active and a real cycle runs,
+        every phase is skipped."""
+        import time as _t
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ) as mock_sm, patch(
+            "core.autonomous.cycle_pause.get_pause_state",
+            return_value={
+                "active": True,
+                "paused_until_at": _t.time() + 3600,
+                "reason": "test",
+                "paused_at": _t.time(),
+            },
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(yes=True, json=True),
+            )
+        # Cycle bailed early -- store manager not consulted
+        mock_sm.assert_not_called()
+        data = json.loads(out)
+        assert data.get("paused", {}).get("active") is True
 
 
 class TestRevenueTrendFlag:

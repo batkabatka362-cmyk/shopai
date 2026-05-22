@@ -1256,6 +1256,45 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     autonomous_p.add_argument(
+        "--pause", action="store_true",
+        dest="pause",
+        help=(
+            "Pause the autonomous cycle for "
+            "--pause-hours hours. Cron-driven invocations "
+            "will skip all phases until the pause "
+            "expires or operator runs --resume."
+        ),
+    )
+    autonomous_p.add_argument(
+        "--pause-hours", type=float, default=1.0,
+        dest="pause_hours",
+        help=(
+            "Duration of --pause in hours (default 1.0)."
+        ),
+    )
+    autonomous_p.add_argument(
+        "--pause-reason", default="",
+        dest="pause_reason",
+        help=(
+            "Optional reason recorded with the pause."
+        ),
+    )
+    autonomous_p.add_argument(
+        "--resume", action="store_true",
+        dest="resume",
+        help=(
+            "Clear an active pause and resume the cycle "
+            "immediately."
+        ),
+    )
+    autonomous_p.add_argument(
+        "--show-pause", action="store_true",
+        dest="show_pause",
+        help=(
+            "Read-only: print the current pause state."
+        ),
+    )
+    autonomous_p.add_argument(
         "--history", action="store_true",
         help=(
             "Read-only: render the cycle history (recent "
@@ -13815,6 +13854,94 @@ def _cmd_autonomous_cycle(args) -> None:
         getattr(args, "skip_transfer", False),
     )
 
+    # --pause / --resume / --show-pause: operator
+    # controls for halting the cycle.
+    if bool(getattr(args, "pause", False)):
+        import time as _time
+        from core.autonomous import cycle_pause as _cp
+        # Don't use ``or`` fallback -- it would silently
+        # convert 0.0 into the default, hiding operator
+        # error.
+        raw_hours = getattr(args, "pause_hours", 1.0)
+        try:
+            hours = float(
+                raw_hours
+                if raw_hours is not None else 1.0
+            )
+        except (TypeError, ValueError):
+            print(
+                f"--pause-hours must be a number: "
+                f"{raw_hours!r}"
+            )
+            sys.exit(1)
+            return
+        if hours <= 0 or hours > 720:
+            print(
+                f"--pause-hours must be in (0, 720]: "
+                f"{hours}"
+            )
+            sys.exit(1)
+            return
+        until = _time.time() + hours * 3600.0
+        reason = (
+            getattr(args, "pause_reason", "") or ""
+        )
+        ok = _cp.pause(
+            until_at=until, reason=reason,
+        )
+        if as_json:
+            print(json.dumps({
+                "ok": ok,
+                "paused_until_at": until,
+                "hours": hours,
+                "reason": reason,
+            }, indent=2))
+        elif ok:
+            print(
+                f"Cycle paused for {hours}h "
+                f"(until {_time.strftime('%Y-%m-%d %H:%M', _time.localtime(until))})"
+            )
+        else:
+            print(
+                "Pause failed (test env or I/O error)."
+            )
+        return
+
+    if bool(getattr(args, "resume", False)):
+        from core.autonomous import cycle_pause as _cp
+        ok = _cp.resume()
+        if as_json:
+            print(json.dumps({
+                "ok": ok,
+                "action": "resume",
+            }, indent=2))
+        elif ok:
+            print("Cycle resumed.")
+        else:
+            print("No active pause to resume.")
+        return
+
+    if bool(getattr(args, "show_pause", False)):
+        from core.autonomous import cycle_pause as _cp
+        state = _cp.get_pause_state()
+        if as_json:
+            print(json.dumps(
+                state, indent=2, default=str,
+            ))
+            return
+        if not state["active"]:
+            print("Cycle is NOT paused.")
+            return
+        import time as _time
+        until_str = _time.strftime(
+            "%Y-%m-%d %H:%M:%S",
+            _time.localtime(state["paused_until_at"]),
+        )
+        print(f"Cycle PAUSED until {until_str}")
+        if state.get("reason"):
+            print(f"  Reason: {state['reason']}")
+        return
+
     # --revenue-trend is read-only: fleet revenue
     # trend across cycle snapshots.
     if bool(getattr(args, "revenue_trend", False)):
@@ -14371,6 +14498,44 @@ def _cmd_autonomous_cycle(args) -> None:
         "defend": None,
         "correlate": None,
     }
+
+    # ── Pause check ───────────────────────────────────
+    # If a pause is active, skip every phase + record an
+    # explanatory entry. Operator can clear via --resume.
+    try:
+        from core.autonomous import cycle_pause as _cp
+        pause_state = _cp.get_pause_state()
+        if pause_state.get("active"):
+            summary["paused"] = pause_state
+            if as_json:
+                print(json.dumps(
+                    summary, indent=2, default=str,
+                ))
+                return
+            import time as _time
+            until_str = _time.strftime(
+                "%Y-%m-%d %H:%M",
+                _time.localtime(
+                    pause_state["paused_until_at"],
+                ),
+            )
+            print(
+                f"Cycle PAUSED until {until_str}"
+            )
+            if pause_state.get("reason"):
+                print(
+                    f"  Reason: {pause_state['reason']}"
+                )
+            print(
+                "  Run ``shopai autonomous-cycle "
+                "--resume`` to clear."
+            )
+            return
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "autonomous-cycle: pause check raised: %s",
+            exc,
+        )
 
     # ── Revenue snapshot capture (cycle start) ─────────
     # Snapshot the fleet's total revenue + store count so
