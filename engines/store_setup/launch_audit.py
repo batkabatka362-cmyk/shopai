@@ -312,8 +312,26 @@ def audit_store(
     # Decorate every check with its operator-actionable hint
     # in one place so individual probes stay focused on the
     # read+normalise responsibility. Unknown keys get "".
+    # Special case: when shop_identity reports
+    # ``shop_unreachable`` (router/auth failure), the
+    # generic "set fields at admin.shopify.com" hint is
+    # misleading -- the real fix is OAuth/connection. Swap
+    # the hint to point operators at the connection
+    # diagnostics command instead.
     for check in checks:
-        check["fix_hint"] = _fix_hint(check.get("key", ""))
+        key = check.get("key", "")
+        if (
+            key == "shop_identity"
+            and check.get("missing") == ["shop_unreachable"]
+        ):
+            check["fix_hint"] = (
+                "Connection issue: SHOPIFY_GET_SHOP "
+                "returned nothing. Run `shopai store "
+                "report <store_id>` to verify OAuth + "
+                "re-install the app if needed."
+            )
+        else:
+            check["fix_hint"] = _fix_hint(key)
 
     total = len(checks)
     passed = sum(1 for c in checks if c["ok"])
