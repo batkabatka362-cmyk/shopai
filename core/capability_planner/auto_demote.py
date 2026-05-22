@@ -60,6 +60,7 @@ import os
 from typing import Any
 
 from core.capability_planner import (
+    auto_demote_history,
     capability_overrides,
     plan_history,
 )
@@ -319,6 +320,15 @@ def maybe_auto_demote_degraded(
                 "skipping row", cap,
             )
             continue
+        # Audit trail. Recorder's Pattern J guard short-
+        # circuits under pytest; production fires the event.
+        try:
+            auto_demote_history.record_demote(cap, reason)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "auto_demote: record_demote raised: %s",
+                exc,
+            )
         applied.append({
             "capability": cap,
             "drop": c["drop"],
@@ -581,5 +591,21 @@ def maybe_release_recovered(
                 "skipping row", c["capability"],
             )
             continue
+        # Audit trail with the recovery rate that triggered
+        # the release.
+        try:
+            release_reason = (
+                f"auto_demote_release: "
+                f"recent={c['recent_rate']:.3f}/"
+                f"{c['recent_samples']}"
+            )
+            auto_demote_history.record_release(
+                c["capability"], release_reason,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "auto_demote: record_release raised: %s",
+                exc,
+            )
         released.append(c)
     return released

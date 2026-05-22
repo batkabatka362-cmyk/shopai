@@ -76,6 +76,8 @@ def _ns(**kw):
         recent_days=None,
         baseline_days=None,
         recovery=None,
+        limit=50,
+        thrashing=False,
         json=False,
     )
     defaults.update(kw)
@@ -932,6 +934,134 @@ class TestAutoDemoteDegraded:
             "recent_days": 3,
             "baseline_days": 14,
         }
+
+
+class TestAutoDemoteHistory:
+    """``shopai capabilities auto-demote-history`` -- audit
+    trail of bridge events."""
+
+    def _events(self):
+        from core.capability_planner.\
+auto_demote_history import AutoDemoteEvent
+        return [
+            AutoDemoteEvent(
+                kind="release",
+                capability="cap_a",
+                reason="auto_demote_release: ...",
+                recorded_at=1700000200.0,
+            ),
+            AutoDemoteEvent(
+                kind="demote",
+                capability="cap_a",
+                reason="auto_demote_degraded: ...",
+                recorded_at=1700000100.0,
+            ),
+        ]
+
+    def test_empty_history_friendly(self, cli):
+        with patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            return_value=[],
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action=(
+                        "auto-demote-history"
+                    ),
+                ),
+            )
+        assert code == 0
+        assert "No bridge events recorded" in out
+
+    def test_events_render_newest_first(self, cli):
+        with patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            return_value=self._events(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action=(
+                        "auto-demote-history"
+                    ),
+                ),
+            )
+        assert code == 0
+        # release rendered above demote (mock returns
+        # newest-first)
+        rel_idx = out.find("[RELEASE]")
+        dem_idx = out.find("[DEMOTE]")
+        assert rel_idx > 0
+        assert dem_idx > rel_idx
+
+    def test_json_envelope(self, cli):
+        with patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            return_value=self._events(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action=(
+                        "auto-demote-history"
+                    ),
+                    window_days=7,
+                    json=True,
+                ),
+            )
+        data = json.loads(out)
+        assert data["window_days"] == 7
+        assert len(data["events"]) == 2
+        assert data["events"][0]["kind"] == "release"
+
+    def test_thrashing_flag_shows_thrashing_only(self, cli):
+        thrashing = [{
+            "capability": "thrashy_cap",
+            "demote_count": 3,
+            "release_count": 2,
+            "first_demote_at": 1700000000.0,
+            "last_demote_at": 1700100000.0,
+        }]
+        with patch(
+            "core.capability_planner."
+            "auto_demote_history.find_thrashing",
+            return_value=thrashing,
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action=(
+                        "auto-demote-history"
+                    ),
+                    thrashing=True,
+                ),
+            )
+        assert code == 0
+        assert "Thrashing capabilities" in out
+        assert "thrashy_cap" in out
+        assert "3 demote(s)" in out
+
+    def test_thrashing_empty_friendly(self, cli):
+        with patch(
+            "core.capability_planner."
+            "auto_demote_history.find_thrashing",
+            return_value=[],
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action=(
+                        "auto-demote-history"
+                    ),
+                    thrashing=True,
+                ),
+            )
+        assert code == 0
+        assert "No capability" in out
 
 
 class TestWatchlist:

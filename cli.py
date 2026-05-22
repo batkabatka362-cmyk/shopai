@@ -525,6 +525,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view.",
     )
 
+    cap_auto_history_p = capabilities_sub.add_parser(
+        "auto-demote-history",
+        help=(
+            "Persistent audit trail of bridge events "
+            "(demote + release). Lets operators audit "
+            "'what has the bridge been doing?' + spot "
+            "thrashing (cap demoted then released "
+            "repeatedly)."
+        ),
+    )
+    cap_auto_history_p.add_argument(
+        "--window-days", type=int, default=7,
+        dest="window_days",
+        help="Look-back window in days (default 7).",
+    )
+    cap_auto_history_p.add_argument(
+        "--limit", type=int, default=50,
+        help="Max events to show (default 50).",
+    )
+    cap_auto_history_p.add_argument(
+        "--thrashing", action="store_true",
+        help=(
+            "Show only capabilities that have been "
+            "demoted multiple times in the window "
+            "(min 2 demotes)."
+        ),
+    )
+    cap_auto_history_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view.",
+    )
+
     cap_watchlist_p = capabilities_sub.add_parser(
         "watchlist",
         help=(
@@ -13623,6 +13655,107 @@ capability_overrides import load_overrides
                 f"({r['success_count']:>3}/"
                 f"{r['executed_count']:<3})  "
                 f"{r['capability']}"
+            )
+        return
+
+    if action == "auto-demote-history":
+        try:
+            from core.capability_planner import (
+                auto_demote_history as _ah,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "auto-demote-history: import failed: %s",
+                exc,
+            )
+            print(
+                f"auto-demote-history unavailable: {exc}"
+            )
+            return
+        window_days = max(
+            1, int(getattr(args, "window_days", 7) or 7),
+        )
+        limit = max(1, int(getattr(args, "limit", 50) or 50))
+        thrashing_only = bool(
+            getattr(args, "thrashing", False),
+        )
+
+        if thrashing_only:
+            rows = _ah.find_thrashing(
+                window_seconds=window_days * 86400,
+            )
+            if as_json:
+                print(json.dumps({
+                    "window_days": window_days,
+                    "thrashing": rows,
+                }, indent=2, default=str))
+                return
+            print(
+                f"Thrashing capabilities "
+                f"(last {window_days} day(s), "
+                f"min 2 demotes):"
+            )
+            print()
+            if not rows:
+                print(
+                    "None. No capability has been "
+                    "demoted multiple times in the "
+                    "window."
+                )
+                return
+            for r in rows:
+                print(
+                    f"  {r['capability']}: "
+                    f"{r['demote_count']} demote(s), "
+                    f"{r['release_count']} release(s)"
+                )
+            return
+
+        events = _ah.recent_history(
+            since_seconds=window_days * 86400,
+        )
+        events = events[:limit]
+        if as_json:
+            print(json.dumps({
+                "window_days": window_days,
+                "events": [
+                    {
+                        "kind": e.kind,
+                        "capability": e.capability,
+                        "reason": e.reason,
+                        "recorded_at": e.recorded_at,
+                    }
+                    for e in events
+                ],
+            }, indent=2, default=str))
+            return
+
+        print(
+            f"Auto-demote history "
+            f"(last {window_days} day(s); newest first):"
+        )
+        print()
+        if not events:
+            print(
+                "No bridge events recorded in the window."
+            )
+            return
+        import datetime as _dt
+        for e in events:
+            stamp = _dt.datetime.fromtimestamp(
+                e.recorded_at,
+            ).strftime("%Y-%m-%d %H:%M")
+            tag = (
+                "[DEMOTE] " if e.kind == "demote"
+                else "[RELEASE]"
+            )
+            reason_short = (
+                f"  -- {e.reason[:60]}"
+                if e.reason else ""
+            )
+            print(
+                f"  {stamp}  {tag} {e.capability}"
+                f"{reason_short}"
             )
         return
 
