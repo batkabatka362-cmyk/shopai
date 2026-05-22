@@ -5429,11 +5429,33 @@ capability_overrides import load_overrides
             "checked": False, "error": str(exc),
         }
 
+    # ── Engine health regressions (count only) ─────────────
+    # Cheap enough (one engine_health_history read) to
+    # include in the verdict + score, so a regression
+    # trips --line / --quiet without an extra command.
+    regression_count = 0
+    try:
+        from core.approval.engine_health_history import (
+            find_regressions,
+        )
+        regs = find_regressions(
+            min_drop=3.0,
+            baseline_window_seconds=86400.0 * 7.0,
+            latest_window_seconds=86400.0 * 1.0,
+            min_baseline_samples=3,
+        )
+        regression_count = len(regs)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "status: regression count raised: %s", exc,
+        )
+    envelope["regression_count"] = regression_count
+
     # ── Overall verdict ────────────────────────────────────
     # OK if every section is checked and no cycle alerts +
-    # no thrashing + not paused. WARN if any of: cycle
-    # alerts, thrashing, paused. ERROR if any section failed
-    # to load.
+    # no thrashing + not paused + no regressions. WARN if
+    # any of: cycle alerts, thrashing, paused, regressions.
+    # ERROR if any section failed to load.
     sections = [
         envelope["fleet"],
         envelope["substrate"],
@@ -5449,6 +5471,7 @@ capability_overrides import load_overrides
         envelope["cycle"].get("alert_count", 0) > 0
         or envelope["bridge"].get("thrashing_count", 0) > 0
         or cycle_pause.get("active", False)
+        or regression_count > 0
     ):
         envelope["overall"] = "warn"
     else:
@@ -5469,6 +5492,10 @@ capability_overrides import load_overrides
     score -= min(20, thrash * 10)
     if cycle_pause.get("active", False):
         score -= 15
+    # Each regression is -5pts, capped at -20 (so 4+
+    # regressions all bottom out together rather than
+    # dwarfing every other signal).
+    score -= min(20, regression_count * 5)
     rt = (
         envelope["cycle"].get("revenue_trend_7d") or {}
     )
@@ -22557,24 +22584,11 @@ def _cmd_status(args=None) -> None:
             else "n/a"
         )
         score = health.get("health_score", "?")
-        # Engine health regressions -- count only, cheap
-        # to compute (one engine_health_history read).
-        try:
-            from core.approval.engine_health_history import (
-                find_regressions,
-            )
-            regs = find_regressions(
-                min_drop=3.0,
-                baseline_window_seconds=86400.0 * 7.0,
-                latest_window_seconds=86400.0 * 1.0,
-                min_baseline_samples=3,
-            )
-            regression_count = len(regs)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug(
-                "--line regressions raised: %s", exc,
-            )
-            regression_count = 0
+        # Use the count computed inside _build_health_sections
+        # so verdict + score + --line all use the same number.
+        regression_count = int(
+            health.get("regression_count", 0) or 0
+        )
         print(
             f"{tag} score={score}/100 "
             f"stores={fleet.get('store_count', 0)} "
