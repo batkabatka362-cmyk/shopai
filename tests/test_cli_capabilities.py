@@ -70,10 +70,142 @@ def _ns(**kw):
         window_days=30,
         min_sample_size=2,
         top=20,
+        reason="",
         json=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
+
+
+class TestOverrideCommands:
+    """``shopai capabilities {promote, demote, clear-override,
+    overrides}`` operator surface for explicit capability
+    ranking overrides."""
+
+    def test_unknown_capability_promote_exits_1(self, cli):
+        out, code = _capture(
+            cli._cmd_capabilities,
+            _ns(
+                capability_action="promote",
+                name="ghost_capability",
+            ),
+        )
+        assert code == 1
+        assert "Unknown capability" in out
+
+    def test_promote_known_capability(self, cli):
+        # Patch promote() so we don't actually write to
+        # data/ (test env guard would block writes anyway,
+        # but we want to verify the CLI dispatched).
+        with patch(
+            "core.capability_planner."
+            "capability_overrides.promote",
+            return_value=True,
+        ) as mock_p:
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="promote",
+                    name="launch_store",
+                    reason="winner for beauty stores",
+                ),
+            )
+        assert code == 0
+        mock_p.assert_called_once_with(
+            "launch_store",
+            reason="winner for beauty stores",
+        )
+        assert "promoted" in out
+        assert "launch_store" in out
+        assert "winner for beauty stores" in out
+
+    def test_demote_known_capability_json(self, cli):
+        with patch(
+            "core.capability_planner."
+            "capability_overrides.demote",
+            return_value=True,
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="demote",
+                    name="launch_store",
+                    reason="known broken",
+                    json=True,
+                ),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data["ok"] is True
+        assert data["action"] == "demote"
+        assert data["name"] == "launch_store"
+
+    def test_clear_override(self, cli):
+        with patch(
+            "core.capability_planner."
+            "capability_overrides.clear",
+            return_value=True,
+        ) as mock_c:
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="clear-override",
+                    name="launch_store",
+                ),
+            )
+        assert code == 0
+        mock_c.assert_called_once_with("launch_store")
+        assert "cleared" in out
+
+    def test_overrides_list_empty(self, cli):
+        from core.capability_planner.\
+capability_overrides import CapabilityOverrides
+        with patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            return_value=CapabilityOverrides(entries=[]),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(capability_action="overrides"),
+            )
+        assert code == 0
+        assert "No operator overrides set" in out
+
+    def test_overrides_list_renders(self, cli):
+        from core.capability_planner.\
+capability_overrides import (
+            CapabilityOverride, CapabilityOverrides,
+        )
+        entries = [
+            CapabilityOverride(
+                name="winner",
+                kind="promote",
+                reason="beauty niche",
+                recorded_at=0,
+            ),
+            CapabilityOverride(
+                name="loser",
+                kind="demote",
+                reason="needs fix",
+                recorded_at=0,
+            ),
+        ]
+        with patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            return_value=CapabilityOverrides(
+                entries=entries,
+            ),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(capability_action="overrides"),
+            )
+        assert code == 0
+        assert "[PROMOTE] winner" in out
+        assert "beauty niche" in out
+        assert "[DEMOTE] loser" in out
 
 
 class TestReliability:

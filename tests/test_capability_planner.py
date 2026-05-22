@@ -248,6 +248,115 @@ class TestCliSequenceDedup:
         )
 
 
+class TestOperatorOverrides:
+    """Planner consults the operator-declared promote /
+    demote overrides BEFORE the quarantine filter. Operator's
+    explicit signal beats automatic discovery."""
+
+    def _seed(self):
+        register_capability(Capability(
+            name="ok_cap",
+            kind=CapabilityKind.ENGINE,
+            description="works fine",
+            when_to_use="use for foo",
+            module_path="m:ok",
+            tags=["foo"],
+        ))
+        register_capability(Capability(
+            name="bad_cap",
+            kind=CapabilityKind.ENGINE,
+            description="broken needs fix",
+            when_to_use="don't use right now foo",
+            module_path="m:bad",
+            tags=["foo"],
+        ))
+        # Promote-only target -- doesn't match substring
+        register_capability(Capability(
+            name="hidden_winner",
+            kind=CapabilityKind.ENGINE,
+            description="not surfaced by substring",
+            when_to_use="operator knows it's relevant",
+            module_path="m:hidden",
+            tags=["other"],
+        ))
+
+    def _overrides(self, promoted=None, demoted=None):
+        from core.capability_planner.\
+capability_overrides import (
+            CapabilityOverride, CapabilityOverrides,
+        )
+        entries = []
+        for n in (promoted or []):
+            entries.append(CapabilityOverride(
+                name=n, kind="promote",
+            ))
+        for n in (demoted or []):
+            entries.append(CapabilityOverride(
+                name=n, kind="demote",
+            ))
+        return CapabilityOverrides(entries=entries)
+
+    def test_demoted_seed_excluded(self):
+        from unittest.mock import patch
+        self._seed()
+        with patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides(
+                demoted=["bad_cap"],
+            ),
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("foo")
+        names = {s.capability_name for s in p.steps}
+        assert "ok_cap" in names
+        assert "bad_cap" not in names
+        assert any(
+            "demoted" in n.lower() and "bad_cap" in n
+            for n in p.notes
+        )
+
+    def test_promoted_capability_added(self):
+        from unittest.mock import patch
+        self._seed()
+        # "foo" substring matches ok_cap + bad_cap.
+        # hidden_winner doesn't match substring but is
+        # promoted -> should still appear in steps.
+        with patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides(
+                promoted=["hidden_winner"],
+            ),
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("foo")
+        names = {s.capability_name for s in p.steps}
+        assert "hidden_winner" in names
+        assert any(
+            "promoted" in n.lower() and "hidden_winner" in n
+            for n in p.notes
+        )
+
+    def test_overrides_failure_silent(self):
+        from unittest.mock import patch
+        self._seed()
+        with patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            side_effect=RuntimeError("disk"),
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("foo")
+        # Both seeds still surface (no override applied)
+        names = {s.capability_name for s in p.steps}
+        assert "ok_cap" in names
+        assert "bad_cap" in names
+
+
 class TestQuarantineFilter:
     """Planner refuses to seed plans with engines whose
     ``alert_paused`` state is active. Operator's explicit

@@ -435,6 +435,64 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view.",
     )
 
+    cap_promote_p = capabilities_sub.add_parser(
+        "promote",
+        help=(
+            "Operator override: explicitly promote a "
+            "capability. Planner adds it as a seed even "
+            "when substring matching misses it. "
+            "Counterpart to ``demote``."
+        ),
+    )
+    cap_promote_p.add_argument(
+        "name", help="Capability name (from list).",
+    )
+    cap_promote_p.add_argument(
+        "--reason", default="",
+        help="Free-form note on why this is promoted.",
+    )
+
+    cap_demote_p = capabilities_sub.add_parser(
+        "demote",
+        help=(
+            "Operator override: explicitly demote a "
+            "capability. Planner excludes it from seeds "
+            "even when substring / boost would surface it. "
+            "Use for known-broken-pending-fix without "
+            "needing the full alert_quarantine flow."
+        ),
+    )
+    cap_demote_p.add_argument(
+        "name", help="Capability name.",
+    )
+    cap_demote_p.add_argument(
+        "--reason", default="",
+        help="Free-form note on why this is demoted.",
+    )
+
+    cap_clear_p = capabilities_sub.add_parser(
+        "clear-override",
+        help=(
+            "Remove any promote/demote override for a "
+            "capability."
+        ),
+    )
+    cap_clear_p.add_argument(
+        "name", help="Capability name.",
+    )
+
+    cap_overrides_p = capabilities_sub.add_parser(
+        "overrides",
+        help=(
+            "List active operator overrides "
+            "(promote/demote entries)."
+        ),
+    )
+    cap_overrides_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view.",
+    )
+
     cap_reliability_p = capabilities_sub.add_parser(
         "reliability",
         help=(
@@ -12909,6 +12967,126 @@ def _cmd_capabilities(args) -> None:
             print("  example input:")
             for k, v in cap.example_input.items():
                 print(f"    {k}: {v}")
+        return
+
+    if action in ("promote", "demote"):
+        try:
+            from core.capability_planner.\
+capability_overrides import (
+                demote as _do_demote,
+                promote as _do_promote,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "%s: import failed: %s", action, exc,
+            )
+            print(f"{action} unavailable: {exc}")
+            return
+        # Validate the capability exists in the registry
+        # so operator typos surface immediately.
+        cap = registry.get(args.name)
+        if cap is None:
+            if as_json:
+                print(json.dumps({
+                    "ok": False,
+                    "error": "unknown_capability",
+                    "name": args.name,
+                }, indent=2))
+            else:
+                print(f"Unknown capability: {args.name}")
+            sys.exit(1)
+        reason = getattr(args, "reason", "") or ""
+        fn = _do_promote if action == "promote" else _do_demote
+        ok = fn(args.name, reason=reason)
+        if as_json:
+            print(json.dumps({
+                "ok": ok,
+                "action": action,
+                "name": args.name,
+                "reason": reason,
+            }, indent=2))
+            return
+        if ok:
+            print(
+                f"Capability {action}d: {args.name}"
+                + (f"  ({reason})" if reason else "")
+            )
+        else:
+            print(
+                f"Failed to {action} {args.name} "
+                "(test environment or I/O error)."
+            )
+        return
+
+    if action == "clear-override":
+        try:
+            from core.capability_planner.\
+capability_overrides import clear as _do_clear
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "clear-override: import failed: %s", exc,
+            )
+            print(
+                f"clear-override unavailable: {exc}"
+            )
+            return
+        ok = _do_clear(args.name)
+        if as_json:
+            print(json.dumps({
+                "ok": ok,
+                "action": "clear-override",
+                "name": args.name,
+            }, indent=2))
+            return
+        if ok:
+            print(f"Override cleared: {args.name}")
+        else:
+            print(
+                f"No override found for {args.name} "
+                "(or test environment)."
+            )
+        return
+
+    if action == "overrides":
+        try:
+            from core.capability_planner.\
+capability_overrides import load_overrides
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "overrides: import failed: %s", exc,
+            )
+            print(f"overrides unavailable: {exc}")
+            return
+        overrides = load_overrides()
+        rows = [
+            {
+                "name": e.name,
+                "kind": e.kind,
+                "reason": e.reason,
+                "recorded_at": e.recorded_at,
+            }
+            for e in overrides.entries
+        ]
+        if as_json:
+            print(json.dumps(rows, indent=2, default=str))
+            return
+        if not rows:
+            print(
+                "No operator overrides set. Use "
+                "``shopai capabilities promote <name>`` "
+                "or ``demote <name>`` to add."
+            )
+            return
+        print(f"Operator overrides ({len(rows)}):")
+        for r in rows:
+            kind_tag = (
+                "[PROMOTE]" if r["kind"] == "promote"
+                else "[DEMOTE]"
+            )
+            line = f"  {kind_tag} {r['name']}"
+            if r["reason"]:
+                line += f"  -- {r['reason']}"
+            print(line)
         return
 
     if action == "reliability":

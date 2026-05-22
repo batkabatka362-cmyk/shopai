@@ -125,7 +125,16 @@ class Planner:
             seeds.append(cap)
             seed_names_seen.add(cap.name)
 
-        # 1c. Filter quarantined: drop capabilities whose
+        # 1c. Apply operator overrides: drop demoted +
+        # append promoted. Operator's explicit signal
+        # overrides automatic learning. Runs BEFORE the
+        # quarantine filter so a promoted capability can
+        # still be quarantined if engine_alerts kicks in.
+        seeds, demoted_dropped, promoted_added = (
+            self._apply_operator_overrides(seeds)
+        )
+
+        # 1d. Filter quarantined: drop capabilities whose
         # engine name has an active alert pause. Operator
         # has flagged these as unreliable; planner refuses
         # to recommend them until the pause clears.
@@ -156,6 +165,18 @@ class Planner:
             f"Found {len(seeds)} capability/-ies matching "
             f"'{goal_text}'."
         )
+        if demoted_dropped:
+            plan.notes.append(
+                f"Operator-demoted ({len(demoted_dropped)} "
+                f"excluded): "
+                f"{', '.join(demoted_dropped)}"
+            )
+        if promoted_added:
+            plan.notes.append(
+                f"Operator-promoted "
+                f"({len(promoted_added)} added): "
+                f"{', '.join(promoted_added)}"
+            )
         if quarantined:
             plan.notes.append(
                 f"Excluded {len(quarantined)} alert-paused "
@@ -606,6 +627,58 @@ class Planner:
             "added": added,
         }
         return boost_caps, meta
+
+    def _apply_operator_overrides(
+        self, seeds: list[Capability],
+    ) -> tuple[
+        list[Capability], list[str], list[str],
+    ]:
+        """Apply operator-declared promote/demote overrides
+        to the seed list.
+
+        Demoted capabilities are dropped. Promoted
+        capabilities are appended (if registry-resolvable
+        and not already in the seed list).
+
+        Returns ``(filtered_seeds, dropped_demoted_names,
+        added_promoted_names)``.
+        """
+        try:
+            from .capability_overrides import load_overrides
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "_apply_operator_overrides: import "
+                "raised: %s", exc,
+            )
+            return seeds, [], []
+        try:
+            overrides = load_overrides()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "_apply_operator_overrides: load "
+                "raised: %s", exc,
+            )
+            return seeds, [], []
+        demoted = overrides.demoted_names()
+        promoted = overrides.promoted_names()
+        dropped: list[str] = []
+        filtered: list[Capability] = []
+        for cap in seeds:
+            if cap.name in demoted:
+                dropped.append(cap.name)
+            else:
+                filtered.append(cap)
+        seen = {c.name for c in filtered}
+        added: list[str] = []
+        for name in sorted(promoted):
+            if name in seen:
+                continue
+            cap = self._registry.get(name)
+            if cap is None:
+                continue
+            filtered.append(cap)
+            added.append(name)
+        return filtered, dropped, added
 
     def _filter_quarantined_seeds(
         self, seeds: list[Capability],
