@@ -6002,6 +6002,41 @@ def _cmd_daily_brief(args) -> None:
             "daily-brief fleet_health rollup raised: %s", exc,
         )
 
+    # ── Engine health regressions ─────────────────────────
+    # Cheap (reads engine_health_history) -- if any engine
+    # has dropped >=3 points from its 7d baseline, surface
+    # in the brief. Operators don't have to remember to run
+    # ``shopai approvals health-regressions`` every morning.
+    engine_regressions: list[dict[str, Any]] = []
+    try:
+        from core.approval.engine_health_history import (
+            find_regressions,
+        )
+        regs = find_regressions(
+            min_drop=3.0,
+            baseline_window_seconds=86400.0 * 7.0,
+            latest_window_seconds=86400.0 * 1.0,
+            min_baseline_samples=3,
+        )
+        engine_regressions = [
+            {
+                "engine": r.engine,
+                "latest_score": r.latest_score,
+                "latest_verdict": r.latest_verdict,
+                "baseline_score": r.baseline_score,
+                "drop": r.drop,
+                "samples_in_baseline": (
+                    r.samples_in_baseline
+                ),
+            }
+            for r in regs
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief engine_regressions raised: %s",
+            exc,
+        )
+
     # ── Launch readiness per store (opt-in) ───────────────
     # Runs the audit for each store. ~9 GraphQL hops per
     # store, so OFF by default to keep the morning cron
@@ -6596,6 +6631,7 @@ def _cmd_daily_brief(args) -> None:
             "transfer_activity": transfer_activity,
             "quarantine": quarantine_summary,
             "fleet_health": fleet_health,
+            "engine_regressions": engine_regressions,
             "launch_readiness": launch_readiness,
             "plan_history": plan_history_summary,
             "capability_overrides": overrides_summary,
@@ -6685,6 +6721,23 @@ def _cmd_daily_brief(args) -> None:
                 for r in sickest
             )
             print(f"    Sickest: {sickest_str}")
+    # Health regressions -- 7d baseline drop. Surfaces only
+    # when there's at least one regression so quiet days
+    # stay quiet.
+    if engine_regressions:
+        top = engine_regressions[:3]
+        top_str = ", ".join(
+            f"{r['engine']}(-{r['drop']:.1f}pts)"
+            for r in top
+        )
+        more = (
+            f" +{len(engine_regressions) - 3} more"
+            if len(engine_regressions) > 3 else ""
+        )
+        print(
+            f"  Regressions ({len(engine_regressions)}): "
+            f"{top_str}{more}"
+        )
     print()
 
     # Per-store table (compact)
