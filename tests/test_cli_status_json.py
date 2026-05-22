@@ -409,6 +409,37 @@ class TestHealthSections:
         assert ch["schema_ok"] is False
         assert "json_decode" in (ch.get("error") or "")
 
+    def test_paused_triggers_warn_verdict(self, cli):
+        import time as _t
+        with patch(
+            "core.autonomous.cycle_pause.get_pause_state",
+            return_value={
+                "active": True,
+                "paused_until_at": _t.time() + 3600,
+                "reason": "maintenance",
+                "paused_at": _t.time(),
+            },
+        ):
+            sections = cli._build_health_sections()
+        assert sections["overall"] == "warn"
+        assert (
+            sections["cycle"]["pause"]["active"] is True
+        )
+
+    def test_paused_renders_marker_in_text(self, cli):
+        import time as _t
+        with patch(
+            "core.autonomous.cycle_pause.get_pause_state",
+            return_value={
+                "active": True,
+                "paused_until_at": _t.time() + 3600,
+                "reason": "test",
+                "paused_at": _t.time(),
+            },
+        ):
+            out = _capture(cli._cmd_status, None)
+        assert "[PAUSED]" in out
+
     def test_cleanup_history_dry_run(
         self, cli, tmp_path, monkeypatch,
     ):

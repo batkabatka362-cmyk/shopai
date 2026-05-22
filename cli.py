@@ -5234,6 +5234,15 @@ capability_overrides import load_overrides
             )
         except Exception:
             rev_trend = None
+        # Pause state -- show if active so operators see
+        # "cycle is halted" at a glance.
+        try:
+            from core.autonomous import (
+                cycle_pause as _cp,
+            )
+            pause_state = _cp.get_pause_state()
+        except Exception:
+            pause_state = {"active": False}
         envelope["cycle"] = {
             "checked": True,
             "runs_24h": stats["total_runs"],
@@ -5244,6 +5253,7 @@ capability_overrides import load_overrides
             "threshold": cycle_threshold,
             "transfers_24h": transfers_24h,
             "revenue_trend_7d": rev_trend,
+            "pause": pause_state,
         }
     except Exception as exc:  # noqa: BLE001
         logger.debug("status: cycle raised: %s", exc)
@@ -5290,19 +5300,24 @@ capability_overrides import load_overrides
 
     # ── Overall verdict ────────────────────────────────────
     # OK if every section is checked and no cycle alerts +
-    # no thrashing. WARN if cycle alerts OR thrashing exists.
-    # ERROR if any section failed to load.
+    # no thrashing + not paused. WARN if any of: cycle
+    # alerts, thrashing, paused. ERROR if any section failed
+    # to load.
     sections = [
         envelope["fleet"],
         envelope["substrate"],
         envelope["cycle"],
         envelope["bridge"],
     ]
+    cycle_pause = (
+        envelope["cycle"].get("pause") or {}
+    )
     if any(not s.get("checked") for s in sections):
         envelope["overall"] = "error"
     elif (
         envelope["cycle"].get("alert_count", 0) > 0
         or envelope["bridge"].get("thrashing_count", 0) > 0
+        or cycle_pause.get("active", False)
     ):
         envelope["overall"] = "warn"
     else:
@@ -5393,10 +5408,14 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
                 f"  rev 7d: {sign}${rt['delta']:,.0f} "
                 f"({sign}{rt['delta_pct']:.1f}%)"
             )
+        pause_str = ""
+        ps = cyc.get("pause") or {}
+        if ps.get("active"):
+            pause_str = "  [PAUSED]"
         print(
             f"  Cycle:     {cyc['runs_24h']} run(s)/24h  "
             f"last: {last}{alerts_str}{thr_str}{tx_str}"
-            f"{rev_str}"
+            f"{rev_str}{pause_str}"
         )
     else:
         print(
