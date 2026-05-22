@@ -22346,6 +22346,19 @@ def _audit_data_files() -> dict[str, Any]:
          "list"),
         ("plan_templates", "data/plan_templates.json",
          "dict"),
+        ("cycle_revenue_history",
+         "data/cycle_revenue_history.json", "list"),
+        ("engine_health_history",
+         "data/engine_health_history.json", "list"),
+        ("health_score_history",
+         "data/health_score_history.json", "list"),
+        ("alert_history",
+         "data/alert_history.json", "list"),
+        ("quarantine_state",
+         "data/quarantine_state.json", "dict"),
+        ("alerts", "data/alerts.json", "list"),
+        ("structured_log",
+         "data/structured_log.json", "list"),
     ]
 
     out: dict[str, Any] = {"files": [], "overall": "ok"}

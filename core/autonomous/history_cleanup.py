@@ -88,6 +88,24 @@ _HISTORY_FILES: list[tuple[str, str, str, str]] = [
         "data/plan_history.json",
         "list",
     ),
+    (
+        "engine_health_history",
+        "SHOPAI_ENGINE_HEALTH_HISTORY_PATH",
+        "data/engine_health_history.json",
+        "list",
+    ),
+    (
+        "health_score_history",
+        "SHOPAI_HEALTH_SCORE_HISTORY_PATH",
+        "data/health_score_history.json",
+        "list",
+    ),
+    (
+        "alert_history",
+        "SHOPAI_ALERT_HISTORY_PATH",
+        "data/alert_history.json",
+        "list",
+    ),
 ]
 
 
