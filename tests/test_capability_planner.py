@@ -248,6 +248,156 @@ class TestCliSequenceDedup:
         )
 
 
+class TestPeerSuccessBoost:
+    """Planner auto-boosts seeds with capabilities from
+    peer-store SUCCESSFUL past plans (via plan_history)
+    when the goal is similar. Conservative -- only fires
+    with >=2 past successes."""
+
+    def _seed_registry(self):
+        # The capability that wasn't matched by substring
+        # but should be boosted from peer success.
+        register_capability(Capability(
+            name="boosted_cap",
+            kind=CapabilityKind.ENGINE,
+            description="something obscure",
+            when_to_use="not relevant to query",
+            module_path="m:boosted",
+            tags=["other"],
+        ))
+        # The substring-matched cap.
+        register_capability(Capability(
+            name="matched_cap",
+            kind=CapabilityKind.ENGINE,
+            description="abc widget thing",
+            when_to_use="use for widget plans",
+            module_path="m:matched",
+            tags=["widget"],
+        ))
+
+    def test_boost_adds_capability_from_peer_success(self):
+        from unittest.mock import patch
+        self._seed_registry()
+        # Past plan that succeeded for "widget" goal with
+        # boosted_cap.
+        past_rows = [{
+            "goal": "widget rebrand",
+            "capabilities": ["boosted_cap"],
+            "cli_sequence": [],
+            "success_count": 3,
+            "last_success": 0.0,
+            "stores": ["store-a", "store-b"],
+        }]
+        with patch(
+            "core.capability_planner.plan_history."
+            "successful_plans",
+            return_value=past_rows,
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("widget")
+        names = {s.capability_name for s in p.steps}
+        assert "matched_cap" in names    # substring match
+        assert "boosted_cap" in names    # peer-success
+                                          # boost
+        # Note explains the boost
+        assert any(
+            "Boosted" in n and "boosted_cap" in n
+            for n in p.notes
+        )
+
+    def test_boost_requires_min_two_past_successes(self):
+        from unittest.mock import patch
+        self._seed_registry()
+        # Only 1 past success -- below the conservative
+        # threshold -> no boost.
+        past_rows = [{
+            "goal": "widget rebrand",
+            "capabilities": ["boosted_cap"],
+            "cli_sequence": [],
+            "success_count": 1,
+            "last_success": 0.0,
+            "stores": ["store-a"],
+        }]
+        with patch(
+            "core.capability_planner.plan_history."
+            "successful_plans",
+            return_value=past_rows,
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("widget")
+        names = {s.capability_name for s in p.steps}
+        assert "boosted_cap" not in names
+
+    def test_boost_skipped_when_no_goal_overlap(self):
+        from unittest.mock import patch
+        self._seed_registry()
+        # Past success goal "totally unrelated phrase";
+        # current goal "widget" -- no overlap -> no boost.
+        past_rows = [{
+            "goal": "totally unrelated phrase",
+            "capabilities": ["boosted_cap"],
+            "cli_sequence": [],
+            "success_count": 5,
+            "last_success": 0.0,
+            "stores": ["s"],
+        }]
+        with patch(
+            "core.capability_planner.plan_history."
+            "successful_plans",
+            return_value=past_rows,
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("widget")
+        names = {s.capability_name for s in p.steps}
+        assert "boosted_cap" not in names
+
+    def test_boost_silently_drops_hallucinated_names(self):
+        from unittest.mock import patch
+        self._seed_registry()
+        # Past plan references a capability that's been
+        # removed from the registry. Boost must filter it
+        # out without raising.
+        past_rows = [{
+            "goal": "widget",
+            "capabilities": ["boosted_cap", "ghost_cap"],
+            "cli_sequence": [],
+            "success_count": 3,
+            "last_success": 0.0,
+            "stores": ["s1", "s2"],
+        }]
+        with patch(
+            "core.capability_planner.plan_history."
+            "successful_plans",
+            return_value=past_rows,
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("widget")
+        # boosted_cap surfaces; ghost dropped.
+        names = {s.capability_name for s in p.steps}
+        assert "boosted_cap" in names
+        assert "ghost_cap" not in names
+
+    def test_boost_lookup_failure_is_silent(self):
+        from unittest.mock import patch
+        self._seed_registry()
+        # Lookup raises -> no boost, no crash.
+        with patch(
+            "core.capability_planner.plan_history."
+            "successful_plans",
+            side_effect=RuntimeError("disk"),
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("widget")
+        # Substring match still produced matched_cap
+        names = {s.capability_name for s in p.steps}
+        assert "matched_cap" in names
+
+
 class TestHistoryDecoration:
     """Planner populates ``history_sample_size`` +
     ``history_success_rate`` on each step from

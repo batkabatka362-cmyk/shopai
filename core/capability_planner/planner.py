@@ -101,8 +101,30 @@ class Planner:
             )
             return plan
 
-        # 1. Seed discovery
+        # 1. Seed discovery -- substring AND match against
+        # the registry's LLM-readable fields.
         seeds = self._registry.find(query=goal_text)
+
+        # 1b. Boost: merge in capabilities from peer-store
+        # plans that SUCCEEDED for similar goals (loose
+        # substring match either direction). Bounded: only
+        # fires when >=2 past successes exist + boost
+        # candidates max out at 5 entries to prevent
+        # over-broadening the seed set. Conservative on
+        # purpose -- substring-matched seeds always come
+        # first; peer-success boost capabilities are
+        # appended only when registry-resolvable + not
+        # already present.
+        boost_caps, boost_meta = self._peer_success_boost(
+            goal_text,
+        )
+        seed_names_seen = {c.name for c in seeds}
+        for cap in boost_caps:
+            if cap.name in seed_names_seen:
+                continue
+            seeds.append(cap)
+            seed_names_seen.add(cap.name)
+
         plan.relevant_capabilities = [c.name for c in seeds]
         if not seeds:
             plan.notes.append(
@@ -115,6 +137,15 @@ class Planner:
             f"Found {len(seeds)} capability/-ies matching "
             f"'{goal_text}'."
         )
+        if boost_meta and boost_meta.get("added"):
+            plan.notes.append(
+                f"Boosted {len(boost_meta['added'])} "
+                f"capability/-ies from peer-store success "
+                f"(goal: '{boost_meta['source_goal']}', "
+                f"{boost_meta['success_count']}x across "
+                f"{boost_meta['n_stores']} store(s)): "
+                f"{', '.join(boost_meta['added'])}"
+            )
 
         # 2. Orchestrator shortcut
         orch = self._pick_orchestrator(seeds)
@@ -455,6 +486,102 @@ class Planner:
             "Appended audit_store verification step so the "
             "plan's outcome is checkable."
         )
+
+    def _peer_success_boost(
+        self, goal_text: str,
+    ) -> tuple[list[Capability], dict[str, Any]]:
+        """Look up peer-store successful plans for a goal
+        similar to ``goal_text``. Returns (boost_caps,
+        meta).
+
+        Conservative selection rules:
+          - Sample-size cutoff: only boost when at least
+            2 peer-store successes exist for the matched
+            goal (sparse data is unreliable signal).
+          - Max 5 boost capabilities per call to prevent
+            over-broadening.
+          - Cycle protection: capability name MUST resolve
+            in the registry (hallucinated names dropped).
+          - Best-effort: any import / lookup error returns
+            empty result without raising.
+
+        ``meta`` is a small dict the caller can use to
+        compose a plan.notes line:
+        ``{source_goal, success_count, n_stores, added}``.
+        Empty when no boost fired.
+        """
+        boost_caps: list[Capability] = []
+        meta: dict[str, Any] = {}
+        if not goal_text:
+            return boost_caps, meta
+        try:
+            from .plan_history import successful_plans
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "_peer_success_boost: import raised: %s",
+                exc,
+            )
+            return boost_caps, meta
+        try:
+            rows = successful_plans(
+                since_seconds=86400 * 30, top_n=5,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "_peer_success_boost: lookup raised: %s",
+                exc,
+            )
+            return boost_caps, meta
+        if not rows:
+            return boost_caps, meta
+
+        # Find the best matching past plan by loose
+        # substring similarity. Pick the row with the
+        # highest success_count whose goal phrase overlaps
+        # the current goal in either direction.
+        goal_l = goal_text.lower()
+        candidates: list[dict[str, Any]] = []
+        for r in rows:
+            past_goal = (r.get("goal") or "").lower()
+            if not past_goal:
+                continue
+            if (
+                past_goal in goal_l
+                or goal_l in past_goal
+            ):
+                candidates.append(r)
+        if not candidates:
+            return boost_caps, meta
+
+        # Pick the highest-success match (ties broken by
+        # ``successful_plans`` ordering).
+        candidates.sort(
+            key=lambda r: -int(
+                r.get("success_count", 0) or 0,
+            ),
+        )
+        best = candidates[0]
+        if int(best.get("success_count", 0) or 0) < 2:
+            return boost_caps, meta
+
+        # Resolve capability names against the registry.
+        added: list[str] = []
+        for name in (best.get("capabilities") or [])[:5]:
+            cap = self._registry.get(name)
+            if cap is None:
+                continue
+            boost_caps.append(cap)
+            added.append(name)
+
+        meta = {
+            "source_goal": best.get("goal", ""),
+            "success_count": int(
+                best.get("success_count", 0) or 0,
+            ),
+            "n_stores": len(best.get("stores") or []),
+            "added": added,
+        }
+        return boost_caps, meta
 
     def _add_cross_store_advisory(self, plan: Plan) -> None:
         """Surface peer-store success signal for the plan's
