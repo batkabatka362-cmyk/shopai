@@ -8442,16 +8442,16 @@ def _cmd_world_model_fleet(args) -> None:
         + ("; live probes on" if not skip_live else "; live probes skipped")
         + ")"
     )
-    # Fleet-wide pause banner -- pause halts every store, so
-    # surfacing it once at the top is the right scope. Pick
-    # from the first non-error row (every snapshot carries
-    # the same fleet pause state).
+    # Fleet-wide pause + regressions banners -- both are
+    # fleet-scoped signals, so surface once at the top
+    # rather than per-row noise. Pick from the first non-
+    # error row (every snapshot carries the same fleet
+    # state).
     for snap in rows:
         if "error" in snap:
             continue
-        pause = (
-            snap.get("cycle", {}).get("pause", {}) or {}
-        )
+        cycle_sec = snap.get("cycle", {}) or {}
+        pause = cycle_sec.get("pause", {}) or {}
         if pause.get("active"):
             import datetime as _dt
             until = pause.get("paused_until_at")
@@ -8467,6 +8467,23 @@ def _cmd_world_model_fleet(args) -> None:
             )
             if pause.get("reason"):
                 print(f"      Reason: {pause['reason']}")
+        regressions = (
+            cycle_sec.get("engine_regressions") or []
+        )
+        if regressions:
+            top = regressions[:3]
+            top_str = ", ".join(
+                f"{r['engine']}(-{r['drop']:.1f}pts)"
+                for r in top
+            )
+            more = (
+                f" +{len(regressions) - 3} more"
+                if len(regressions) > 3 else ""
+            )
+            print(
+                f"  *** {len(regressions)} engine "
+                f"regression(s): {top_str}{more} ***"
+            )
         break
     print()
     print(
