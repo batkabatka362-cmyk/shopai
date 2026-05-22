@@ -5971,6 +5971,32 @@ def _cmd_daily_brief(args) -> None:
             "daily-brief per_store_alerts raised: %s", exc,
         )
 
+    # ── Cycle diary (window) -- chronological event log
+    # from every autonomous-loop subsystem. Surfaces the
+    # 5 most-recent events inline so operators see "what
+    # the loop did last" without opening a separate
+    # command.
+    diary_events: list[dict[str, Any]] = []
+    try:
+        from core.autonomous import (
+            cycle_diary as _cd,
+        )
+        for ev in _cd.compile_diary(
+            since_seconds=window_hours * 3600,
+            limit=5,
+        ):
+            diary_events.append({
+                "recorded_at": ev.recorded_at,
+                "source": ev.source,
+                "kind": ev.kind,
+                "detail": ev.detail,
+            })
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief diary section raised: %s",
+            exc,
+        )
+
     # ── Autonomous-cycle activity (window) -- recent
     #     ``shopai autonomous-cycle`` invocations from the
     #     cycle_history audit log. Cron-friendly answer to
@@ -6234,6 +6260,7 @@ def _cmd_daily_brief(args) -> None:
             "auto_promote_activity": auto_promote_activity,
             "cycle_transfer_activity": cycle_transfer_activity,
             "cycle_activity": cycle_activity,
+            "diary": diary_events,
             "totals": totals,
             "alerts": alerts,
         }, indent=2, default=str))
@@ -6626,6 +6653,21 @@ def _cmd_daily_brief(args) -> None:
                 f"def={cycle_activity['demoted_total']}d/"
                 f"{cycle_activity['released_total']}r"
             )
+        print()
+
+    # Diary inline (last 5 events) -- renders when at least
+    # one event was recorded in the window.
+    if diary_events:
+        print(
+            f"Recent loop events "
+            f"(last {window_hours}h):"
+        )
+        import datetime as _dt
+        for ev in diary_events:
+            stamp = _dt.datetime.fromtimestamp(
+                ev["recorded_at"],
+            ).strftime("%H:%M")
+            print(f"  {stamp}  {ev['detail']}")
         print()
 
     # Capability overrides -- operator demote/promote

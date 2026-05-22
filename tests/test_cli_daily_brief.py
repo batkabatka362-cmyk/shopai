@@ -1938,6 +1938,79 @@ class TestRevenueImpactSection:
         )
 
 
+class TestDiaryInBrief:
+    """daily-brief surfaces last 5 events from cycle_diary
+    inline."""
+
+    def _event(self, **kw):
+        from core.autonomous.cycle_diary import DiaryEvent
+        defaults = dict(
+            recorded_at=1700000000.0,
+            source="cycle",
+            kind="exec",
+            detail="[EXEC] cycle ran",
+            metrics={},
+        )
+        defaults.update(kw)
+        return DiaryEvent(**defaults)
+
+    def test_no_events_silent(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_diary.compile_diary",
+            return_value=[],
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Recent loop events" not in out
+
+    def test_events_render(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_diary.compile_diary",
+            return_value=[
+                self._event(
+                    detail="[DEMOTE] shaky_cap -- ...",
+                ),
+                self._event(
+                    recorded_at=1700001000.0,
+                    detail="[EXEC] cycle ran -- adv=2ok",
+                ),
+            ],
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Recent loop events" in out
+        assert "[DEMOTE]" in out
+        assert "[EXEC]" in out
+
+    def test_envelope_has_section(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_diary.compile_diary",
+            return_value=[self._event()],
+        ):
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        data = json.loads(out)
+        assert "diary" in data
+        assert len(data["diary"]) == 1
+
+
 class TestAutoPromoteActivityInBrief:
     """daily-brief surfaces auto-promote activity from
     the persistent history."""
