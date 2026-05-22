@@ -5161,6 +5161,58 @@ def _cmd_daily_brief(args) -> None:
             exc,
         )
 
+    # ── Bridge activity (last window) -- recent demote +
+    #     release events from auto_demote_history. Lets
+    #     operators see "the bridge did X things since
+    #     yesterday" + spot thrashing without having to
+    #     drill into the dedicated CLI. ──────────────────
+    bridge_activity: dict[str, Any] = {
+        "checked": False,
+        "demoted_count": 0,
+        "released_count": 0,
+        "thrashing_count": 0,
+        "thrashing_capabilities": [],
+        "recent_events": [],
+    }
+    try:
+        from core.capability_planner import (
+            auto_demote_history as _adh,
+        )
+        ph_window_bridge = window_hours * 3600
+        events = _adh.recent_history(
+            since_seconds=ph_window_bridge,
+        )
+        thrashing_rows = _adh.find_thrashing(
+            window_seconds=86400 * 14,  # match bridge default
+        )
+        bridge_activity = {
+            "checked": True,
+            "demoted_count": sum(
+                1 for e in events if e.kind == "demote"
+            ),
+            "released_count": sum(
+                1 for e in events if e.kind == "release"
+            ),
+            "thrashing_count": len(thrashing_rows),
+            "thrashing_capabilities": [
+                r["capability"] for r in thrashing_rows
+            ],
+            "recent_events": [
+                {
+                    "kind": e.kind,
+                    "capability": e.capability,
+                    "reason": e.reason,
+                    "recorded_at": e.recorded_at,
+                }
+                for e in events[:5]
+            ],
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief bridge_activity raised: %s",
+            exc,
+        )
+
     # ── Capability overrides (operator demote / promote
     #     declarations, including bridge-driven auto-
     #     demotes). Always rendered when any entry exists;
@@ -5246,6 +5298,7 @@ def _cmd_daily_brief(args) -> None:
             "launch_readiness": launch_readiness,
             "plan_history": plan_history_summary,
             "capability_overrides": overrides_summary,
+            "bridge_activity": bridge_activity,
             "totals": totals,
             "alerts": alerts,
         }, indent=2, default=str))
@@ -5481,6 +5534,32 @@ def _cmd_daily_brief(args) -> None:
                 print(
                     f"    ... +{len(degrades) - 5} more"
                 )
+        print()
+
+    # Bridge activity -- recent auto_demote events. Renders
+    # when something happened in the window OR any thrashing
+    # is currently detected. Silent on a quiet bridge.
+    if bridge_activity.get("checked") and (
+        bridge_activity["demoted_count"] > 0
+        or bridge_activity["released_count"] > 0
+        or bridge_activity["thrashing_count"] > 0
+    ):
+        print(
+            f"Bridge activity (last {window_hours}h): "
+            f"{bridge_activity['demoted_count']} demoted, "
+            f"{bridge_activity['released_count']} released"
+        )
+        thrash_count = bridge_activity["thrashing_count"]
+        if thrash_count > 0:
+            names = ", ".join(
+                bridge_activity["thrashing_capabilities"][:3]
+            )
+            if thrash_count > 3:
+                names += f", +{thrash_count - 3} more"
+            print(
+                f"  Thrashing ({thrash_count}): {names} "
+                "-- needs operator intervention"
+            )
         print()
 
     # Capability overrides -- operator demote/promote

@@ -1803,6 +1803,137 @@ capability_overrides import CapabilityOverrides
         )
 
 
+class TestBridgeActivitySection:
+    """daily-brief surfaces recent auto_demote bridge events
+    (demote / release / thrashing) so operators see the
+    substrate's self-defense activity at a glance."""
+
+    def _event(self, kind, capability, reason="", at=0.0):
+        from core.capability_planner.\
+auto_demote_history import AutoDemoteEvent
+        return AutoDemoteEvent(
+            kind=kind, capability=capability,
+            reason=reason, recorded_at=at,
+        )
+
+    def test_quiet_bridge_no_section(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.find_thrashing",
+            return_value=[],
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Bridge activity" not in out
+
+    def test_envelope_carries_section(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.find_thrashing",
+            return_value=[],
+        ):
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        data = json.loads(out)
+        assert "bridge_activity" in data
+        assert data["bridge_activity"]["checked"] is True
+        assert data["bridge_activity"]["demoted_count"] == 0
+
+    def test_demoted_released_count_renders(self, cli):
+        sm = _fake_sm([])
+        events = [
+            self._event("demote", "cap_a"),
+            self._event("demote", "cap_b"),
+            self._event("release", "cap_c"),
+        ]
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            return_value=events,
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.find_thrashing",
+            return_value=[],
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Bridge activity" in out
+        assert "2 demoted" in out
+        assert "1 released" in out
+
+    def test_thrashing_renders_with_names(self, cli):
+        sm = _fake_sm([])
+        thrashing = [
+            {"capability": "shaky_a"},
+            {"capability": "shaky_b"},
+        ]
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.find_thrashing",
+            return_value=thrashing,
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Bridge activity" in out
+        assert "Thrashing (2)" in out
+        assert "shaky_a" in out
+        assert "shaky_b" in out
+        assert "needs operator intervention" in out
+
+    def test_history_failure_silent(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            side_effect=RuntimeError("disk"),
+        ):
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        data = json.loads(out)
+        # Section degraded but envelope intact
+        assert (
+            data["bridge_activity"]["checked"] is False
+        )
+
+
 class TestCapabilityOverridesSection:
     """daily-brief surfaces active operator + bridge-driven
     capability overrides so the AGI's trail is visible."""
