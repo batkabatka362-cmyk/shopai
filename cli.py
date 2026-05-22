@@ -1216,6 +1216,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     autonomous_p.add_argument(
+        "--transfer-effectiveness", action="store_true",
+        dest="transfer_effectiveness",
+        help=(
+            "Read-only: report transfer bridge effectiveness "
+            "by joining transfer_history with approval queue "
+            "outcomes. Did the bridge's suggestions actually "
+            "produce positive outcomes? Does NOT run a cycle."
+        ),
+    )
+    autonomous_p.add_argument(
         "--history", action="store_true",
         help=(
             "Read-only: render the cycle history (recent "
@@ -13675,6 +13685,85 @@ def _cmd_autonomous_cycle(args) -> None:
     skip_transfer = bool(
         getattr(args, "skip_transfer", False),
     )
+
+    # --transfer-effectiveness is read-only.
+    if bool(getattr(args, "transfer_effectiveness", False)):
+        try:
+            from core.autonomous import (
+                cycle_transfer as _ct,
+            )
+            window_days = max(
+                1, int(
+                    getattr(
+                        args, "history_window_days", 7,
+                    ) or 7,
+                ),
+            )
+            data = _ct.compute_effectiveness(
+                since_seconds=window_days * 86400,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"transfer-effectiveness raised: {exc}"
+            )
+            return
+        if as_json:
+            print(json.dumps({
+                "window_days": window_days,
+                **data,
+            }, indent=2, default=str))
+            return
+        print(
+            f"Transfer effectiveness "
+            f"(last {window_days} day(s)):"
+        )
+        print(
+            f"  Transfers:        "
+            f"{data['transfers_total']}"
+        )
+        print(
+            f"  With outcomes:    "
+            f"{data['with_outcomes']}"
+        )
+        print(
+            f"  Positive:         "
+            f"{data['positive_count']}"
+        )
+        print(
+            f"  Negative:         "
+            f"{data['negative_count']}"
+        )
+        print(
+            f"  Neutral:          "
+            f"{data['neutral_count']}"
+        )
+        sign = (
+            "+" if data["total_revenue"] >= 0 else ""
+        )
+        print(
+            f"  Total revenue:    "
+            f"{sign}${data['total_revenue']:,.2f}"
+        )
+        if data["by_source_store"]:
+            print()
+            print(
+                "  Per-source breakdown:"
+            )
+            for src, stats in sorted(
+                data["by_source_store"].items(),
+                key=lambda kv: -kv[1]["transfers"],
+            )[:5]:
+                rev_sign = (
+                    "+" if stats["revenue"] >= 0 else ""
+                )
+                print(
+                    f"    {src}: "
+                    f"{stats['transfers']} transfer(s), "
+                    f"+{stats['positive']}/"
+                    f"-{stats['negative']}, "
+                    f"{rev_sign}${stats['revenue']:,.2f}"
+                )
+        return
 
     # --show-thresholds is a read-only inspector.
     if bool(getattr(args, "show_thresholds", False)):

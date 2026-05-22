@@ -73,6 +73,7 @@ def _ns(**kw):
         set_threshold=None,
         clear_threshold=False,
         show_thresholds=False,
+        transfer_effectiveness=False,
         json=False,
     )
     defaults.update(kw)
@@ -1154,6 +1155,91 @@ class TestAutoRelaxInCycle:
             )
         # Direction none doesn't render the auto-relax line
         assert "Auto-relax" not in out
+
+
+class TestTransferEffectivenessFlag:
+    """``--transfer-effectiveness`` is a read-only join of
+    transfer_history + queue outcomes."""
+
+    def test_renders_text(self, cli):
+        with patch(
+            "core.autonomous.cycle_transfer."
+            "compute_effectiveness",
+            return_value={
+                "transfers_total": 5,
+                "with_outcomes": 3,
+                "positive_count": 2,
+                "negative_count": 1,
+                "neutral_count": 0,
+                "total_revenue": 1500.0,
+                "by_source_store": {
+                    "store_a": {
+                        "transfers": 3,
+                        "positive": 2,
+                        "negative": 1,
+                        "revenue": 1500.0,
+                    },
+                },
+            },
+        ):
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(transfer_effectiveness=True),
+            )
+        assert code == 0
+        assert "Transfer effectiveness" in out
+        assert "Transfers:        5" in out
+        assert "Positive:         2" in out
+        assert "+$1,500.00" in out
+        assert "store_a" in out
+
+    def test_json_envelope(self, cli):
+        with patch(
+            "core.autonomous.cycle_transfer."
+            "compute_effectiveness",
+            return_value={
+                "transfers_total": 2,
+                "with_outcomes": 0,
+                "positive_count": 0,
+                "negative_count": 0,
+                "neutral_count": 0,
+                "total_revenue": 0.0,
+                "by_source_store": {},
+            },
+        ):
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(
+                    transfer_effectiveness=True,
+                    json=True,
+                ),
+            )
+        data = json.loads(out)
+        assert data["window_days"] == 7
+        assert data["transfers_total"] == 2
+
+    def test_skips_cycle_run(self, cli):
+        sm = _fake_sm([{"store_id": "a"}])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ) as mock_sm, patch(
+            "core.autonomous.cycle_transfer."
+            "compute_effectiveness",
+            return_value={
+                "transfers_total": 0,
+                "with_outcomes": 0,
+                "positive_count": 0,
+                "negative_count": 0,
+                "neutral_count": 0,
+                "total_revenue": 0.0,
+                "by_source_store": {},
+            },
+        ):
+            _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(transfer_effectiveness=True),
+            )
+        mock_sm.assert_not_called()
 
 
 class TestAutoPromoteInDefendPhase:

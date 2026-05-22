@@ -466,3 +466,119 @@ def config_summary() -> dict[str, Any]:
         "max_per_store": max_per_store(),
         "min_outcomes": min_outcomes(),
     }
+
+
+def compute_effectiveness(
+    *,
+    since_seconds: int = 86400 * 30,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Measure the TRANSFER bridge's actual impact.
+
+    Joins ``transfer_history`` (which actions the bridge
+    enqueued) with the approval queue (whether those
+    actions executed and what outcomes they produced).
+    Returns aggregate stats so operators can answer "did
+    the bridge actually pay off?".
+
+    Returns:
+      {
+        "transfers_total": int,
+        "with_outcomes": int,
+        "positive_count": int,
+        "negative_count": int,
+        "neutral_count": int,
+        "total_revenue": float,
+        "by_source_store": {
+          source_id: {
+            transfers, positive, negative, revenue,
+          }
+        },
+      }
+
+    Best-effort: any subsystem failure -> empty envelope.
+    """
+    out: dict[str, Any] = {
+        "transfers_total": 0,
+        "with_outcomes": 0,
+        "positive_count": 0,
+        "negative_count": 0,
+        "neutral_count": 0,
+        "total_revenue": 0.0,
+        "by_source_store": {},
+    }
+    try:
+        from core.autonomous import (
+            transfer_history as _th,
+        )
+        events = _th.recent_history(
+            since_seconds=since_seconds, now=now,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "compute_effectiveness: history "
+            "raised: %s", exc,
+        )
+        return out
+
+    if not events:
+        return out
+
+    out["transfers_total"] = len(events)
+
+    try:
+        from core.approval.queue import (
+            get_approval_queue,
+        )
+        queue = get_approval_queue()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "compute_effectiveness: queue raised: %s",
+            exc,
+        )
+        return out
+
+    for e in events:
+        src = e.source_store_id or "?"
+        bucket = out["by_source_store"].setdefault(src, {
+            "transfers": 0,
+            "positive": 0,
+            "negative": 0,
+            "revenue": 0.0,
+        })
+        bucket["transfers"] += 1
+
+        action_id = e.action_id
+        if not action_id:
+            continue
+        try:
+            outcomes = queue.get_outcomes(action_id) or []
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "compute_effectiveness: outcomes raised "
+                "for %s: %s", action_id, exc,
+            )
+            continue
+        if not outcomes:
+            continue
+        out["with_outcomes"] += 1
+        for o in outcomes:
+            polarity = o.get("polarity", "neutral")
+            if polarity == "positive":
+                out["positive_count"] += 1
+                bucket["positive"] += 1
+            elif polarity == "negative":
+                out["negative_count"] += 1
+                bucket["negative"] += 1
+            else:
+                out["neutral_count"] += 1
+            metrics = o.get("metrics") or {}
+            rev = metrics.get("revenue")
+            if rev is not None:
+                try:
+                    r = float(rev)
+                    out["total_revenue"] += r
+                    bucket["revenue"] += r
+                except (TypeError, ValueError):
+                    pass
+    return out

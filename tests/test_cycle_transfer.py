@@ -301,6 +301,134 @@ class TestMaybeApply:
         mock_record.assert_called_once()
 
 
+class TestComputeEffectiveness:
+    """Join transfer history with queue outcomes."""
+
+    def _event(self, **kw):
+        from core.autonomous.transfer_history import (
+            TransferEvent,
+        )
+        defaults = dict(
+            target_store_id="b",
+            source_store_id="a",
+            engine="loyalty",
+            action_type="mint",
+            capability="cap",
+            recorded_at=1700000000.0,
+            action_id="enq_1",
+            metrics={},
+        )
+        defaults.update(kw)
+        return TransferEvent(**defaults)
+
+    def test_empty_history_zero_stats(self):
+        with patch(
+            "core.autonomous.transfer_history."
+            "recent_history",
+            return_value=[],
+        ):
+            out = ct.compute_effectiveness()
+        assert out["transfers_total"] == 0
+        assert out["with_outcomes"] == 0
+        assert out["positive_count"] == 0
+
+    def test_aggregates_outcomes(self):
+        events = [
+            self._event(action_id="a1"),
+            self._event(
+                action_id="a2",
+                source_store_id="a",
+            ),
+            self._event(
+                action_id="a3",
+                source_store_id="other",
+            ),
+        ]
+        queue = MagicMock()
+        outcomes_by_id = {
+            "a1": [
+                {
+                    "polarity": "positive",
+                    "metrics": {"revenue": 500.0},
+                },
+            ],
+            "a2": [
+                {
+                    "polarity": "negative",
+                    "metrics": {},
+                },
+            ],
+            "a3": [],  # no outcomes recorded yet
+        }
+        queue.get_outcomes.side_effect = lambda aid: (
+            outcomes_by_id.get(aid, [])
+        )
+        with patch(
+            "core.autonomous.transfer_history."
+            "recent_history",
+            return_value=events,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=queue,
+        ):
+            out = ct.compute_effectiveness()
+        assert out["transfers_total"] == 3
+        # Only a1 + a2 had outcomes
+        assert out["with_outcomes"] == 2
+        assert out["positive_count"] == 1
+        assert out["negative_count"] == 1
+        assert out["total_revenue"] == 500.0
+        # Per-source breakdown
+        assert (
+            out["by_source_store"]["a"]["transfers"] == 2
+        )
+        assert (
+            out["by_source_store"]["a"]["positive"] == 1
+        )
+        assert (
+            out["by_source_store"]["a"]["negative"] == 1
+        )
+        assert (
+            out["by_source_store"]["other"]["transfers"]
+            == 1
+        )
+
+    def test_missing_action_id_skipped(self):
+        events = [
+            self._event(action_id=None),
+        ]
+        queue = MagicMock()
+        with patch(
+            "core.autonomous.transfer_history."
+            "recent_history",
+            return_value=events,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=queue,
+        ):
+            out = ct.compute_effectiveness()
+        # Transfer counted, but no outcome lookup attempted
+        assert out["transfers_total"] == 1
+        assert out["with_outcomes"] == 0
+        queue.get_outcomes.assert_not_called()
+
+    def test_queue_failure_returns_partial(self):
+        events = [self._event()]
+        with patch(
+            "core.autonomous.transfer_history."
+            "recent_history",
+            return_value=events,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            side_effect=RuntimeError("queue gone"),
+        ):
+            out = ct.compute_effectiveness()
+        # Transfers counted before queue failure
+        assert out["transfers_total"] == 1
+        # No outcomes joined
+        assert out["with_outcomes"] == 0
+
+
 class TestConfigSummary:
 
     def test_shape(self):
