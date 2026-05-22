@@ -1803,6 +1803,129 @@ capability_overrides import CapabilityOverrides
         )
 
 
+class TestRevenueImpactSection:
+    """daily-brief surfaces top revenue capabilities (last
+    30d). Bible's measurable-outcomes signal at-a-glance."""
+
+    def _rev(self, name, delta, samples=3):
+        return {
+            "capability": name,
+            "total_revenue_delta": delta,
+            "avg_revenue_delta": delta / samples,
+            "sample_size": samples,
+            "positive_count": (
+                samples if delta > 0 else 0
+            ),
+            "negative_count": (
+                samples if delta < 0 else 0
+            ),
+        }
+
+    def test_empty_no_section(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=[],
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Top revenue capabilities" not in out
+
+    def test_envelope_carries_section(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=[],
+        ):
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        data = json.loads(out)
+        assert "revenue_impact" in data
+        assert data["revenue_impact"]["checked"] is True
+        assert (
+            data["revenue_impact"]["total_attributed"] == 0
+        )
+
+    def test_top_rows_render(self, cli):
+        sm = _fake_sm([])
+        rows = [
+            self._rev("winner", 1500.0),
+            self._rev("solid", 800.0),
+        ]
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=rows,
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Top revenue capabilities" in out
+        assert "$2,300.00 total" in out
+        assert "winner" in out
+        assert "solid" in out
+        assert "$  1,500.00" in out
+
+    def test_truncation_with_marker(self, cli):
+        sm = _fake_sm([])
+        rows = [
+            self._rev(f"cap_{i}", 100.0 * (5 - i))
+            for i in range(5)
+        ]
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=rows,
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        # First 3 rendered + "+2 more"
+        assert "cap_0" in out
+        assert "cap_2" in out
+        assert "cap_3" not in out
+        assert "+2 more" in out
+
+    def test_lookup_failure_section_silent(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            side_effect=RuntimeError("disk"),
+        ):
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        data = json.loads(out)
+        # Section degraded but envelope intact
+        assert (
+            data["revenue_impact"]["checked"] is False
+        )
+
+
 class TestBridgeActivitySection:
     """daily-brief surfaces recent auto_demote bridge events
     (demote / release / thrashing) so operators see the

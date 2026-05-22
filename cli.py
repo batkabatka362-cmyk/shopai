@@ -5193,6 +5193,36 @@ def _cmd_daily_brief(args) -> None:
             exc,
         )
 
+    # ── Top revenue capabilities (last 30 days) -- the
+    #     bible's measurable-outcomes signal. Always uses a
+    #     30-day window regardless of --window-hours; revenue
+    #     correlation needs a measurement window to populate.
+    revenue_impact_summary: dict[str, Any] = {
+        "checked": False,
+        "total_attributed": 0.0,
+        "top_rows": [],
+    }
+    try:
+        from core.capability_planner import (
+            capability_revenue_impact as _crv,
+        )
+        rev_rows = _crv(
+            since_seconds=86400 * 30,
+            min_sample_size=1,
+            top_n=5,
+        )
+        revenue_impact_summary = {
+            "checked": True,
+            "total_attributed": round(sum(
+                r["total_revenue_delta"] for r in rev_rows
+            ), 2),
+            "top_rows": rev_rows,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief revenue_impact raised: %s", exc,
+        )
+
     # ── Bridge activity (last window) -- recent demote +
     #     release events from auto_demote_history. Lets
     #     operators see "the bridge did X things since
@@ -5330,6 +5360,7 @@ def _cmd_daily_brief(args) -> None:
             "launch_readiness": launch_readiness,
             "plan_history": plan_history_summary,
             "capability_overrides": overrides_summary,
+            "revenue_impact": revenue_impact_summary,
             "bridge_activity": bridge_activity,
             "totals": totals,
             "alerts": alerts,
@@ -5566,6 +5597,34 @@ def _cmd_daily_brief(args) -> None:
                 print(
                     f"    ... +{len(degrades) - 5} more"
                 )
+        print()
+
+    # Top revenue capabilities -- bible's measurable
+    # outcomes signal. Renders when at least one
+    # correlated revenue row exists.
+    if revenue_impact_summary.get("checked") and (
+        revenue_impact_summary["top_rows"]
+    ):
+        total = revenue_impact_summary["total_attributed"]
+        rows = revenue_impact_summary["top_rows"]
+        print(
+            f"Top revenue capabilities (last 30d, "
+            f"${total:,.2f} total):"
+        )
+        for r in rows[:3]:
+            arrow = (
+                "↑" if r["total_revenue_delta"] > 0
+                else ("↓" if r["total_revenue_delta"] < 0
+                      else "·")
+            )
+            print(
+                f"  {arrow} "
+                f"${r['total_revenue_delta']:>10,.2f}  "
+                f"n={r['sample_size']:>3}  "
+                f"{r['capability']}"
+            )
+        if len(rows) > 3:
+            print(f"  ... +{len(rows) - 3} more")
         print()
 
     # Bridge activity -- recent auto_demote events. Renders
