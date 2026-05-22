@@ -13111,11 +13111,21 @@ def _cmd_autonomous_cycle(args) -> None:
             executed_ok = 0
             refused = 0
             errored = 0
+            # Per-store breakdown -- empire-AGI consumer
+            # (world-model, transfer recommender) can use the
+            # store_id -> outcome mapping rather than just the
+            # aggregate counts.
+            per_store: list[dict[str, Any]] = []
             for s in stores:
                 sid = s.get("store_id") or ""
                 if not sid:
                     continue
                 stores_processed += 1
+                store_entry: dict[str, Any] = {
+                    "store_id": sid,
+                    "outcome": "",
+                    "plan_steps": 0,
+                }
                 try:
                     with active_store(sid):
                         audit = audit_store(
@@ -13135,8 +13145,16 @@ def _cmd_autonomous_cycle(args) -> None:
                         "autonomous-cycle advance: "
                         "store %s raised: %s", sid, exc,
                     )
+                    store_entry["outcome"] = "errored"
+                    store_entry["error"] = str(exc)[:80]
+                    per_store.append(store_entry)
                     continue
+                store_entry["plan_steps"] = (
+                    len(plan.steps) if plan else 0
+                )
                 if not plan or not plan.steps:
+                    store_entry["outcome"] = "no_plan"
+                    per_store.append(store_entry)
                     continue
                 ex = _fleet_execute_one_store(
                     sid=sid,
@@ -13146,15 +13164,31 @@ def _cmd_autonomous_cycle(args) -> None:
                 )
                 if ex.get("refused") == "reliability":
                     refused += 1
+                    store_entry["outcome"] = "refused_reliability"
+                    store_entry["ineligible_count"] = ex.get(
+                        "ineligible_count", 0,
+                    )
                 elif ex.get("error"):
                     errored += 1
+                    store_entry["outcome"] = "errored"
+                    store_entry["error"] = str(
+                        ex.get("error"),
+                    )[:80]
                 elif ex.get("ok"):
                     executed_ok += 1
+                    store_entry["outcome"] = "executed"
+                    store_entry["steps_run"] = ex.get(
+                        "steps_run", 0,
+                    )
+                else:
+                    store_entry["outcome"] = "unknown"
+                per_store.append(store_entry)
             summary["advance"] = {
                 "stores_processed": stores_processed,
                 "executed_ok": executed_ok,
                 "refused_reliability": refused,
                 "errored": errored,
+                "per_store": per_store,
             }
 
     # ── Defend phase ───────────────────────────────────

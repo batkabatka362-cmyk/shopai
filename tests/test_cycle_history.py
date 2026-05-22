@@ -176,3 +176,99 @@ class TestClear:
         ):
             ch.clear()
         assert not tmp_history.exists()
+
+
+class TestPerStoreStats:
+
+    def _w(self):
+        return patch(
+            "core.autonomous.cycle_history."
+            "_is_test_environment",
+            return_value=False,
+        )
+
+    def test_empty_returns_empty_dict(
+        self, tmp_history,
+    ):
+        assert ch.per_store_stats() == {}
+
+    def test_aggregates_per_store_across_events(
+        self, tmp_history,
+    ):
+        with self._w():
+            ch.record_cycle(
+                executed=True,
+                advance={
+                    "per_store": [
+                        {
+                            "store_id": "a",
+                            "outcome": "executed",
+                        },
+                        {
+                            "store_id": "b",
+                            "outcome": "refused_reliability",
+                        },
+                    ],
+                },
+            )
+            ch.record_cycle(
+                executed=True,
+                advance={
+                    "per_store": [
+                        {
+                            "store_id": "a",
+                            "outcome": "executed",
+                        },
+                        {
+                            "store_id": "b",
+                            "outcome": "executed",
+                        },
+                    ],
+                },
+            )
+        stats = ch.per_store_stats()
+        assert stats["a"]["executed"] == 2
+        assert stats["a"]["total"] == 2
+        assert stats["b"]["executed"] == 1
+        assert stats["b"]["refused"] == 1
+        assert stats["b"]["total"] == 2
+
+    def test_missing_per_store_field_skipped(
+        self, tmp_history,
+    ):
+        """Old cycles without per_store don't break the
+        aggregator (backwards-compat)."""
+        with self._w():
+            ch.record_cycle(
+                executed=True,
+                advance={"executed_ok": 1},
+            )
+        # Should return empty -- nothing to aggregate
+        assert ch.per_store_stats() == {}
+
+    def test_outcome_buckets(self, tmp_history):
+        with self._w():
+            ch.record_cycle(
+                executed=True,
+                advance={
+                    "per_store": [
+                        {
+                            "store_id": "a",
+                            "outcome": "executed",
+                        },
+                        {
+                            "store_id": "a",
+                            "outcome": "errored",
+                        },
+                        {
+                            "store_id": "a",
+                            "outcome": "no_plan",
+                        },
+                    ],
+                },
+            )
+        stats = ch.per_store_stats()
+        assert stats["a"]["executed"] == 1
+        assert stats["a"]["errored"] == 1
+        assert stats["a"]["no_plan"] == 1
+        assert stats["a"]["total"] == 3

@@ -912,6 +912,117 @@ class WorldModel:
 
         return out
 
+    def _section_cycle(
+        self, store_id: str | None = None,
+    ) -> dict:
+        """Per-store autonomous-cycle activity. Reads from
+        ``core.autonomous.cycle_history.per_store_stats`` to
+        surface this store's outcome distribution across
+        recent cycles.
+
+        Empire-AGI use: an operator inspecting store A's
+        world-model wants to know "has the cycle been
+        advancing this store, or just refusing it?". The
+        fleet-wide cycle_activity (in daily-brief) doesn't
+        answer that per-store; this section does.
+
+        Returns:
+          {
+            checked: bool,
+            scope: "per_store" | "fleet",
+            store_id: str | None,
+            stats: {executed, refused, errored, no_plan, total},
+            last_outcome: str | None,
+            last_recorded_at: float | None,
+            window_days: int,
+          }
+        Fleet scope (no store_id) returns an aggregate roll-
+        up instead of per-store stats.
+        """
+        out: dict = {
+            "checked": True,
+            "scope": (
+                "per_store" if store_id is not None
+                else "fleet"
+            ),
+            "store_id": store_id,
+            "stats": {
+                "executed": 0, "refused": 0,
+                "errored": 0, "no_plan": 0, "total": 0,
+            },
+            "last_outcome": None,
+            "last_recorded_at": None,
+            "window_days": 7,
+        }
+        try:
+            from core.autonomous import (
+                cycle_history as _ch,
+            )
+        except ImportError as exc:
+            logger.debug(
+                "world_model cycle import failed: %s", exc,
+            )
+            return out
+
+        try:
+            by_store = _ch.per_store_stats(
+                since_seconds=86400 * 7,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model cycle stats raised: %s", exc,
+            )
+            return out
+
+        if store_id is not None:
+            stats = by_store.get(store_id)
+            if stats:
+                out["stats"] = stats
+        else:
+            # Fleet aggregate
+            agg = {
+                "executed": 0, "refused": 0,
+                "errored": 0, "no_plan": 0, "total": 0,
+            }
+            for s in by_store.values():
+                for k in agg:
+                    agg[k] += s.get(k, 0)
+            out["stats"] = agg
+
+        # Last per-store outcome (looking at the most recent
+        # cycle event that mentioned this store)
+        if store_id is not None:
+            try:
+                events = _ch.recent_history(
+                    since_seconds=86400 * 7,
+                )
+                for ev in events:
+                    rows = (
+                        ev.advance.get("per_store") or []
+                    )
+                    for row in rows:
+                        if (
+                            isinstance(row, dict)
+                            and row.get("store_id")
+                            == store_id
+                        ):
+                            out["last_outcome"] = (
+                                row.get("outcome")
+                            )
+                            out["last_recorded_at"] = (
+                                ev.recorded_at
+                            )
+                            break
+                    if out["last_outcome"] is not None:
+                        break
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "world_model cycle last_outcome "
+                    "raised: %s", exc,
+                )
+
+        return out
+
     # ── Public API ──────────────────────────────────────────
 
     def snapshot(
@@ -973,6 +1084,7 @@ class WorldModel:
         quarantine = self._section_quarantine(store_id=store_id)
         fleet_health = self._section_fleet_health()
         substrate = self._section_substrate()
+        cycle = self._section_cycle(store_id=store_id)
 
         return {
             "store_id": store_id,
@@ -990,6 +1102,7 @@ class WorldModel:
             "quarantine": quarantine,
             "fleet_health": fleet_health,
             "substrate": substrate,
+            "cycle": cycle,
         }
 
 

@@ -240,6 +240,56 @@ def cycle_stats(
     return stats
 
 
+def per_store_stats(
+    *,
+    since_seconds: int = 86400 * 7,
+    now: float | None = None,
+) -> dict[str, dict[str, int]]:
+    """Per-store cycle activity rollup. Inspects each event's
+    ``advance.per_store`` slice and counts outcomes per store.
+
+    Returns ``{store_id: {executed, refused, errored,
+    no_plan, total}}``. Stores that never appeared in any
+    cycle aren't in the returned dict.
+
+    The empire-AGI consumer for the world-model "this
+    store's cycle activity" sub-view.
+    """
+    events = recent_history(
+        since_seconds=since_seconds, now=now,
+    )
+    by_store: dict[str, dict[str, int]] = {}
+    for ev in events:
+        adv = ev.advance or {}
+        rows = adv.get("per_store") or []
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            sid = str(row.get("store_id") or "")
+            if not sid:
+                continue
+            entry = by_store.setdefault(sid, {
+                "executed": 0,
+                "refused": 0,
+                "errored": 0,
+                "no_plan": 0,
+                "total": 0,
+            })
+            entry["total"] += 1
+            outcome = str(row.get("outcome") or "")
+            if outcome == "executed":
+                entry["executed"] += 1
+            elif outcome == "refused_reliability":
+                entry["refused"] += 1
+            elif outcome == "errored":
+                entry["errored"] += 1
+            elif outcome == "no_plan":
+                entry["no_plan"] += 1
+    return by_store
+
+
 def clear() -> None:
     """Operator escape hatch -- wipe the history."""
     if _is_test_environment():

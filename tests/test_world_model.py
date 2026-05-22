@@ -1332,3 +1332,126 @@ capability_overrides import CapabilityOverrides
         assert "substrate" in snap
         assert snap["substrate"]["checked"] is True
         assert snap["substrate"]["scope"] == "fleet"
+
+
+class TestSectionCycle:
+    """Per-store cycle activity in the world-model snapshot."""
+
+    def test_default_zeros(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        assert sec["checked"] is True
+        assert sec["scope"] == "per_store"
+        assert sec["store_id"] == "store-x"
+        assert sec["stats"]["total"] == 0
+        assert sec["last_outcome"] is None
+
+    def test_per_store_stats_populate(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={
+                "store-a": {
+                    "executed": 5, "refused": 2,
+                    "errored": 0, "no_plan": 0,
+                    "total": 7,
+                },
+            },
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ):
+            sec = wm._section_cycle(store_id="store-a")
+        assert sec["stats"]["executed"] == 5
+        assert sec["stats"]["refused"] == 2
+        assert sec["stats"]["total"] == 7
+
+    def test_last_outcome_from_recent_events(self):
+        from core.autonomous.cycle_history import CycleEvent
+        ev = CycleEvent(
+            recorded_at=100.0,
+            executed=True,
+            advance={
+                "per_store": [
+                    {
+                        "store_id": "store-a",
+                        "outcome": "executed",
+                    },
+                ],
+            },
+        )
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={
+                "store-a": {
+                    "executed": 1, "refused": 0,
+                    "errored": 0, "no_plan": 0,
+                    "total": 1,
+                },
+            },
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[ev],
+        ):
+            sec = wm._section_cycle(store_id="store-a")
+        assert sec["last_outcome"] == "executed"
+        assert sec["last_recorded_at"] == 100.0
+
+    def test_fleet_scope_aggregates(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={
+                "a": {
+                    "executed": 2, "refused": 0,
+                    "errored": 0, "no_plan": 0,
+                    "total": 2,
+                },
+                "b": {
+                    "executed": 1, "refused": 3,
+                    "errored": 0, "no_plan": 0,
+                    "total": 4,
+                },
+            },
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ):
+            sec = wm._section_cycle(store_id=None)
+        assert sec["scope"] == "fleet"
+        assert sec["stats"]["executed"] == 3
+        assert sec["stats"]["refused"] == 3
+        assert sec["stats"]["total"] == 6
+
+    def test_import_failure_keeps_section(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            side_effect=RuntimeError("disk"),
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        # Stays checked, stats default zeros
+        assert sec["checked"] is True
+        assert sec["stats"]["total"] == 0
+
+    def test_section_appears_in_snapshot(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external(), patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ):
+            snap = wm.snapshot("store-x", skip_live=True)
+        assert "cycle" in snap
+        assert snap["cycle"]["checked"] is True
