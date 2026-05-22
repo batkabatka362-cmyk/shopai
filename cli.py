@@ -8589,6 +8589,9 @@ def _cmd_world_model_fleet(args) -> None:
     if as_json:
         print(json.dumps({
             "skip_live": skip_live,
+            "include_launch_readiness": (
+                include_launch_readiness
+            ),
             "stores": rows,
         }, indent=2, default=str))
         return
