@@ -1302,6 +1302,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     autonomous_p.add_argument(
+        "--extend-pause", action="store_true",
+        dest="extend_pause",
+        help=(
+            "Extend an active pause by --pause-hours "
+            "without overwriting reason/start time. "
+            "No-op when no pause is active."
+        ),
+    )
+    autonomous_p.add_argument(
         "--resume", action="store_true",
         dest="resume",
         help=(
@@ -14079,6 +14088,46 @@ def _cmd_autonomous_cycle(args) -> None:
         else:
             print(
                 "Pause failed (test env or I/O error)."
+            )
+        return
+
+    if bool(getattr(args, "extend_pause", False)):
+        from core.autonomous import cycle_pause as _cp
+        raw_hours = getattr(args, "pause_hours", 1.0)
+        try:
+            hours = float(
+                raw_hours
+                if raw_hours is not None else 1.0
+            )
+        except (TypeError, ValueError):
+            print(
+                f"--pause-hours must be a number: "
+                f"{raw_hours!r}"
+            )
+            sys.exit(1)
+            return
+        ok = _cp.extend(additional_hours=hours)
+        if as_json:
+            print(json.dumps({
+                "ok": ok, "extended_by_hours": hours,
+            }, indent=2))
+        elif ok:
+            state = _cp.get_pause_state()
+            import time as _time
+            until_str = _time.strftime(
+                "%Y-%m-%d %H:%M",
+                _time.localtime(
+                    state["paused_until_at"],
+                ),
+            )
+            print(
+                f"Pause extended by {hours}h "
+                f"(now ends {until_str})."
+            )
+        else:
+            print(
+                "Extend failed -- no active pause "
+                "or test env."
             )
         return
 

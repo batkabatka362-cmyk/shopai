@@ -80,6 +80,7 @@ def _ns(**kw):
         pause=False,
         pause_hours=1.0,
         pause_reason="",
+        extend_pause=False,
         resume=False,
         show_pause=False,
         json=False,
@@ -1250,6 +1251,41 @@ class TestPauseFlags:
             )
         assert "PAUSED until" in out
         assert "maintenance" in out
+
+    def test_extend_pause_invokes_module(self, cli):
+        import time as _t
+        with patch(
+            "core.autonomous.cycle_pause.extend",
+            return_value=True,
+        ) as mock_ext, patch(
+            "core.autonomous.cycle_pause.get_pause_state",
+            return_value={
+                "active": True,
+                "paused_until_at": _t.time() + 7200,
+                "reason": "test",
+                "paused_at": _t.time(),
+            },
+        ):
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(extend_pause=True, pause_hours=2.0),
+            )
+        assert code == 0
+        mock_ext.assert_called_once()
+        kwargs = mock_ext.call_args.kwargs
+        assert kwargs["additional_hours"] == 2.0
+        assert "Pause extended" in out
+
+    def test_extend_no_active_pause(self, cli):
+        with patch(
+            "core.autonomous.cycle_pause.extend",
+            return_value=False,
+        ):
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(extend_pause=True, pause_hours=1.0),
+            )
+        assert "Extend failed" in out
 
     def test_cycle_skips_when_paused(self, cli):
         """When pause is active and a real cycle runs,

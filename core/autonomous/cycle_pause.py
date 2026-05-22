@@ -120,6 +120,30 @@ def pause(
     return True
 
 
+def extend(*, additional_hours: float) -> bool:
+    """Extend the existing pause by ``additional_hours``.
+    No-op when no active pause. Returns True on write."""
+    if _is_test_environment():
+        return False
+    if additional_hours <= 0:
+        return False
+    state = get_pause_state()
+    if not state.get("active"):
+        return False
+    new_until = (
+        float(state["paused_until_at"])
+        + additional_hours * 3600.0
+    )
+    _atomic_write({
+        "paused_until_at": new_until,
+        "reason": state.get("reason", ""),
+        "paused_at": state.get(
+            "paused_at", time.time(),
+        ),
+    })
+    return True
+
+
 def resume() -> bool:
     """Clear the pause file. Returns True when the file
     existed + got removed."""

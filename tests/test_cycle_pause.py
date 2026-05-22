@@ -107,6 +107,50 @@ class TestResume:
         assert ok is False
 
 
+class TestExtend:
+
+    def _w(self):
+        return patch(
+            "core.autonomous.cycle_pause."
+            "_is_test_environment",
+            return_value=False,
+        )
+
+    def test_extend_no_active_returns_false(
+        self, tmp_pause,
+    ):
+        with self._w():
+            ok = cp.extend(additional_hours=1.0)
+        assert ok is False
+
+    def test_extend_adds_to_existing(self, tmp_pause):
+        # Seed active pause
+        original_until = time.time() + 3600
+        tmp_pause.write_text(json.dumps({
+            "paused_until_at": original_until,
+            "reason": "maintenance",
+            "paused_at": time.time(),
+        }))
+        with self._w():
+            ok = cp.extend(additional_hours=2.0)
+        assert ok is True
+        state = cp.get_pause_state()
+        # Extended by 2 hours
+        assert (
+            abs(
+                state["paused_until_at"]
+                - (original_until + 7200)
+            ) < 1
+        )
+        # Reason preserved
+        assert state["reason"] == "maintenance"
+
+    def test_extend_zero_rejected(self, tmp_pause):
+        with self._w():
+            ok = cp.extend(additional_hours=0)
+        assert ok is False
+
+
 class TestInvalidArgs:
 
     def test_negative_until_rejected(self, tmp_pause):
