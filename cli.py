@@ -6777,6 +6777,42 @@ def _cmd_world_model_fleet(args) -> None:
             )
             print(f"    Sickest: {top}")
 
+    # Substrate rollup -- same content in every per-store
+    # snapshot (overrides are fleet-wide). Pulled from the
+    # first successful snapshot; rendered as a single fleet-
+    # level summary line. Stays silent on a healthy substrate.
+    sub = None
+    for r in rows:
+        candidate = r.get("substrate")
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("checked")
+        ):
+            sub = candidate
+            break
+    if sub:
+        ov = sub.get("overrides") or {}
+        n_total = ov.get("total", 0)
+        n_auto = len(ov.get("auto_demoted") or [])
+        n_dem_cand = sub.get("demote_candidates", 0)
+        n_rel_cand = sub.get("release_candidates", 0)
+        n_degs = len(sub.get("recent_degradations") or [])
+        if (
+            n_total > 0 or n_dem_cand > 0
+            or n_rel_cand > 0 or n_degs > 0
+        ):
+            bridge = sub.get("bridge") or {}
+            gate = (
+                "ON" if bridge.get("enabled") else "OFF"
+            )
+            print(
+                f"  Substrate: gate {gate}  "
+                f"{n_total} override(s) ({n_auto} auto)  "
+                f"{n_dem_cand} demote-cand  "
+                f"{n_rel_cand} release-cand  "
+                f"{n_degs} degradation(s)"
+            )
+
 
 def _cmd_world_model_show(args) -> None:
     """Render the per-store world-model snapshot.

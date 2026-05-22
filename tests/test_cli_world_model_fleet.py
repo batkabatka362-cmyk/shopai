@@ -380,3 +380,132 @@ class TestFleetHealthLine:
         # broken store row shows the error inline
         assert "broken" in out
         assert "Engine health:" in out
+
+
+class TestFleetSubstrateRollup:
+    """Fleet view rolls up the (fleet-wide) substrate section
+    when there's anything to report. Silent on healthy
+    substrate."""
+
+    def _clean_substrate(self):
+        return {
+            "checked": True,
+            "scope": "fleet",
+            "overrides": {
+                "total": 0, "promoted": [],
+                "demoted": [], "auto_demoted": [],
+            },
+            "bridge": {
+                "enabled": False,
+                "drop_threshold": 0.4,
+                "min_recent_sample": 3,
+                "recent_window_days": 7,
+                "baseline_window_days": 30,
+                "recovery_threshold": 0.7,
+            },
+            "demote_candidates": 0,
+            "release_candidates": 0,
+            "recent_degradations": [],
+        }
+
+    def _populated_substrate(self):
+        return {
+            "checked": True,
+            "scope": "fleet",
+            "overrides": {
+                "total": 3,
+                "promoted": [{
+                    "name": "winner", "reason": "",
+                    "recorded_at": 0,
+                }],
+                "demoted": [
+                    {
+                        "name": "auto_bad",
+                        "reason": "auto_demote_degraded: ...",
+                        "recorded_at": 0,
+                    },
+                    {
+                        "name": "manual_bad",
+                        "reason": "operator says",
+                        "recorded_at": 0,
+                    },
+                ],
+                "auto_demoted": [{
+                    "name": "auto_bad",
+                    "reason": "auto_demote_degraded: ...",
+                    "recorded_at": 0,
+                }],
+            },
+            "bridge": {
+                "enabled": True,
+                "drop_threshold": 0.4,
+                "min_recent_sample": 3,
+                "recent_window_days": 7,
+                "baseline_window_days": 30,
+                "recovery_threshold": 0.7,
+            },
+            "demote_candidates": 2,
+            "release_candidates": 1,
+            "recent_degradations": [{
+                "capability": "shaky",
+                "baseline_rate": 0.9,
+                "recent_rate": 0.2,
+                "drop": 0.7,
+                "recent_samples": 5,
+                "baseline_samples": 20,
+            }],
+        }
+
+    def test_silent_on_clean_substrate(self, cli):
+        sm = _fake_sm([{"store_id": "a", "shop_url": "x"}])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.world_model.WorldModel",
+        ) as wm_cls:
+            wm_cls.return_value.snapshot.return_value = _snap(
+                "a", substrate=self._clean_substrate(),
+            )
+            out = _capture(cli._cmd_world_model_fleet, _ns())
+        # Healthy substrate stays silent in text view
+        assert "Substrate:" not in out
+
+    def test_renders_on_populated_substrate(self, cli):
+        sm = _fake_sm([{"store_id": "a", "shop_url": "x"}])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.world_model.WorldModel",
+        ) as wm_cls:
+            wm_cls.return_value.snapshot.return_value = _snap(
+                "a", substrate=self._populated_substrate(),
+            )
+            out = _capture(cli._cmd_world_model_fleet, _ns())
+        assert "Substrate:" in out
+        assert "gate ON" in out
+        assert "3 override(s)" in out
+        assert "1 auto" in out
+        assert "2 demote-cand" in out
+        assert "1 release-cand" in out
+        assert "1 degradation(s)" in out
+
+    def test_substrate_in_json_envelope(self, cli):
+        sm = _fake_sm([{"store_id": "a", "shop_url": "x"}])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.world_model.WorldModel",
+        ) as wm_cls:
+            wm_cls.return_value.snapshot.return_value = _snap(
+                "a", substrate=self._populated_substrate(),
+            )
+            out = _capture(
+                cli._cmd_world_model_fleet,
+                _ns(json=True),
+            )
+        data = json.loads(out)
+        assert "substrate" in data["stores"][0]
+        assert (
+            data["stores"][0]["substrate"]
+            ["overrides"]["total"] == 3
+        )
