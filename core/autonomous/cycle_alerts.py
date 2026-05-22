@@ -224,6 +224,46 @@ def compute_cycle_alerts(
                 },
             ))
 
+    # Alert: promote_demote_thrashing -- capabilities
+    # cycling between promote and demote. Investigate
+    # manually. Surfaces alongside the other cycle alerts
+    # so daily-brief / status pick it up automatically.
+    try:
+        from core.capability_planner import (
+            auto_promote as _ap,
+        )
+        thrashing = _ap.find_promote_demote_cycles(
+            window_seconds=window_seconds,
+        )
+        if thrashing:
+            names = ", ".join(
+                r["capability"] for r in thrashing[:3]
+            )
+            if len(thrashing) > 3:
+                names += (
+                    f", +{len(thrashing) - 3} more"
+                )
+            alerts.append(CycleAlert(
+                kind="promote_demote_thrashing",
+                detail=(
+                    f"{len(thrashing)} capability(s) "
+                    f"cycling between promote/demote: "
+                    f"{names}. Manual review needed."
+                ),
+                metrics={
+                    "count": len(thrashing),
+                    "capabilities": [
+                        r["capability"]
+                        for r in thrashing
+                    ],
+                },
+            ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "compute_cycle_alerts: thrashing lookup "
+            "raised: %s", exc,
+        )
+
     return alerts
 
 

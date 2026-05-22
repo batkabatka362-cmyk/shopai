@@ -415,6 +415,72 @@ class TestPerStoreCycleAlerts:
         assert alerts == []
 
 
+class TestPromoteDemoteThrashingAlert:
+    """When promote-demote cycles exist, surface as a
+    cycle alert."""
+
+    def test_no_thrashing_no_alert(self):
+        import time as _t
+        now = _t.time()
+        with patch(
+            "core.autonomous.cycle_history.cycle_stats",
+            return_value=_stats(total_runs=1),
+        ), patch(
+            "core.capability_planner.auto_promote."
+            "find_promote_demote_cycles",
+            return_value=[],
+        ):
+            alerts = ca.compute_cycle_alerts(now=now)
+        kinds = [a.kind for a in alerts]
+        assert "promote_demote_thrashing" not in kinds
+
+    def test_thrashing_fires_alert(self):
+        import time as _t
+        now = _t.time()
+        with patch(
+            "core.autonomous.cycle_history.cycle_stats",
+            return_value=_stats(total_runs=1),
+        ), patch(
+            "core.capability_planner.auto_promote."
+            "find_promote_demote_cycles",
+            return_value=[
+                {
+                    "capability": "shaky_a",
+                    "promote_count": 2,
+                    "demote_count": 2,
+                    "total_events": 4,
+                    "first_event_at": 0.0,
+                    "last_event_at": 1.0,
+                },
+            ],
+        ):
+            alerts = ca.compute_cycle_alerts(now=now)
+        kinds = [a.kind for a in alerts]
+        assert "promote_demote_thrashing" in kinds
+        thrash_alert = next(
+            a for a in alerts
+            if a.kind == "promote_demote_thrashing"
+        )
+        assert "shaky_a" in thrash_alert.detail
+        assert thrash_alert.metrics["count"] == 1
+
+    def test_lookup_failure_skipped(self):
+        import time as _t
+        now = _t.time()
+        with patch(
+            "core.autonomous.cycle_history.cycle_stats",
+            return_value=_stats(total_runs=1),
+        ), patch(
+            "core.capability_planner.auto_promote."
+            "find_promote_demote_cycles",
+            side_effect=RuntimeError("disk"),
+        ):
+            alerts = ca.compute_cycle_alerts(now=now)
+        # Other alerts may still fire, but no thrashing
+        kinds = [a.kind for a in alerts]
+        assert "promote_demote_thrashing" not in kinds
+
+
 class TestMultipleAlerts:
 
     def test_multiple_can_fire_simultaneously(self):
