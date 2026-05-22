@@ -74,12 +74,16 @@ _ENV_MIN_RECENT = "SHOPAI_AUTO_DEMOTE_MIN_RECENT_SAMPLE"
 _ENV_RECENT_WINDOW = "SHOPAI_AUTO_DEMOTE_RECENT_WINDOW_DAYS"
 _ENV_BASELINE_WINDOW = "SHOPAI_AUTO_DEMOTE_BASELINE_WINDOW_DAYS"
 _ENV_RECOVERY = "SHOPAI_AUTO_DEMOTE_RECOVERY_THRESHOLD"
+_ENV_THRASH_LIMIT = "SHOPAI_AUTO_DEMOTE_THRASH_LIMIT"
+_ENV_THRASH_WINDOW = "SHOPAI_AUTO_DEMOTE_THRASH_WINDOW_DAYS"
 
 _DEFAULT_DROP = 0.4
 _DEFAULT_MIN_RECENT = 3
 _DEFAULT_RECENT_WINDOW_DAYS = 7
 _DEFAULT_BASELINE_WINDOW_DAYS = 30
 _DEFAULT_RECOVERY = 0.7
+_DEFAULT_THRASH_LIMIT = 3
+_DEFAULT_THRASH_WINDOW_DAYS = 14
 
 # Free-form reason logged on auto-demote so future override
 # inspections distinguish bridge-driven demotes from operator-
@@ -156,6 +160,63 @@ def recovery_threshold() -> float:
             _ENV_RECOVERY, raw, _DEFAULT_RECOVERY, exc,
         )
         return _DEFAULT_RECOVERY
+
+
+def thrash_limit() -> int:
+    """Min demote count in the thrash window before a
+    capability is considered to be thrashing (cycling
+    around the recovery threshold). Default 3."""
+    raw = os.environ.get(_ENV_THRASH_LIMIT)
+    if not raw:
+        return _DEFAULT_THRASH_LIMIT
+    try:
+        return max(2, int(raw))
+    except (TypeError, ValueError) as exc:
+        logger.debug(
+            "invalid %s=%r; using default %d (%s)",
+            _ENV_THRASH_LIMIT, raw,
+            _DEFAULT_THRASH_LIMIT, exc,
+        )
+        return _DEFAULT_THRASH_LIMIT
+
+
+def thrash_window_days() -> int:
+    raw = os.environ.get(_ENV_THRASH_WINDOW)
+    if not raw:
+        return _DEFAULT_THRASH_WINDOW_DAYS
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError) as exc:
+        logger.debug(
+            "invalid %s=%r; using default %d (%s)",
+            _ENV_THRASH_WINDOW, raw,
+            _DEFAULT_THRASH_WINDOW_DAYS, exc,
+        )
+        return _DEFAULT_THRASH_WINDOW_DAYS
+
+
+def thrashing_capabilities() -> set[str]:
+    """Set of capability names currently thrashing per the
+    auto_demote_history audit log. Cached per-call (each
+    call rereads the history file).
+
+    Capabilities in this set are blocked from auto-release:
+    the bridge has demoted them enough times that releasing
+    again would just trigger another demote. Operator
+    intervention is required (manually clear the override
+    after investigation)."""
+    try:
+        rows = auto_demote_history.find_thrashing(
+            window_seconds=thrash_window_days() * 86400,
+            min_cycles=thrash_limit(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "auto_demote: thrashing lookup raised: %s",
+            exc,
+        )
+        return set()
+    return {r["capability"] for r in rows}
 
 
 def baseline_window_days() -> int:
@@ -352,6 +413,8 @@ def config_summary() -> dict[str, Any]:
         "recent_window_days": recent_window_days(),
         "baseline_window_days": baseline_window_days(),
         "recovery_threshold": recovery_threshold(),
+        "thrash_limit": thrash_limit(),
+        "thrash_window_days": thrash_window_days(),
     }
 
 
@@ -530,6 +593,11 @@ def find_release_candidates(
     rates_by_cap: dict[str, dict[str, Any]] = {
         r["capability"]: r for r in leaderboard
     }
+    # Thrashing guard -- capabilities that have been
+    # demoted/released enough times in the thrash window
+    # are excluded from auto-release. Operator must
+    # intervene manually.
+    thrashing = thrashing_capabilities()
 
     out: list[dict[str, Any]] = []
     for entry in auto_demoted:
@@ -540,6 +608,11 @@ def find_release_candidates(
             # want to retry.
             continue
         if row["success_rate"] < rec_th:
+            continue
+        if entry.name in thrashing:
+            # Skip thrashing capabilities -- the bridge has
+            # released them before and they re-demoted.
+            # Operator intervention required.
             continue
         out.append({
             "capability": entry.name,

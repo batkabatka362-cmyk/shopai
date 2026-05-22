@@ -29,6 +29,8 @@ _BRIDGE_ENV_VARS = (
     "SHOPAI_AUTO_DEMOTE_RECENT_WINDOW_DAYS",
     "SHOPAI_AUTO_DEMOTE_BASELINE_WINDOW_DAYS",
     "SHOPAI_AUTO_DEMOTE_RECOVERY_THRESHOLD",
+    "SHOPAI_AUTO_DEMOTE_THRASH_LIMIT",
+    "SHOPAI_AUTO_DEMOTE_THRASH_WINDOW_DAYS",
 )
 
 
@@ -800,6 +802,131 @@ capability_overrides import CapabilityOverrides
         assert out[0]["demote_reason"].startswith(
             "auto_demote_degraded",
         )
+
+
+class TestThrashingGuard:
+    """Capabilities the bridge has demoted+released enough
+    times to be considered "thrashing" are excluded from
+    auto-release. Operator intervention required."""
+
+    def _override(self, name, reason="", at=0.0):
+        from core.capability_planner.\
+capability_overrides import CapabilityOverride
+        return CapabilityOverride(
+            name=name, kind="demote", reason=reason,
+            recorded_at=at,
+        )
+
+    def _overrides_for(self, *entries):
+        from core.capability_planner.\
+capability_overrides import CapabilityOverrides
+        return CapabilityOverrides(entries=list(entries))
+
+    def test_thrash_limit_defaults(self):
+        assert auto_demote.thrash_limit() == 3
+        assert auto_demote.thrash_window_days() == 14
+
+    def test_thrash_limit_env_override(self):
+        os.environ[
+            "SHOPAI_AUTO_DEMOTE_THRASH_LIMIT"
+        ] = "5"
+        os.environ[
+            "SHOPAI_AUTO_DEMOTE_THRASH_WINDOW_DAYS"
+        ] = "21"
+        assert auto_demote.thrash_limit() == 5
+        assert auto_demote.thrash_window_days() == 21
+
+    def test_thrash_limit_min_2(self):
+        """Anything less than 2 demotes can't be thrashing."""
+        os.environ[
+            "SHOPAI_AUTO_DEMOTE_THRASH_LIMIT"
+        ] = "1"
+        assert auto_demote.thrash_limit() == 2
+
+    def test_config_summary_includes_thrash(self):
+        cfg = auto_demote.config_summary()
+        assert cfg["thrash_limit"] == 3
+        assert cfg["thrash_window_days"] == 14
+
+    def test_thrashing_capabilities_returns_set(self):
+        with patch(
+            "core.capability_planner.auto_demote."
+            "auto_demote_history.find_thrashing",
+            return_value=[
+                {"capability": "shaky"},
+                {"capability": "wobbly"},
+            ],
+        ):
+            out = auto_demote.thrashing_capabilities()
+        assert out == {"shaky", "wobbly"}
+
+    def test_thrashing_lookup_failure_returns_empty(self):
+        with patch(
+            "core.capability_planner.auto_demote."
+            "auto_demote_history.find_thrashing",
+            side_effect=RuntimeError("disk gone"),
+        ):
+            out = auto_demote.thrashing_capabilities()
+        assert out == set()
+
+    def test_release_candidates_excludes_thrashing(self):
+        leaderboard = [{
+            "capability": "thrashy",
+            "executed_count": 5,
+            "success_count": 5,
+            "success_rate": 1.0,
+        }]
+        with patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides_for(
+                self._override(
+                    "thrashy",
+                    reason="auto_demote_degraded: ...",
+                ),
+            ),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "plan_history.capability_leaderboard",
+            return_value=leaderboard,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "auto_demote_history.find_thrashing",
+            return_value=[{"capability": "thrashy"}],
+        ):
+            out = auto_demote.find_release_candidates()
+        # Recovered AND blocked because thrashing -> not
+        # a release candidate.
+        assert out == []
+
+    def test_release_candidates_includes_non_thrashing(self):
+        leaderboard = [{
+            "capability": "fresh_recovery",
+            "executed_count": 5,
+            "success_count": 5,
+            "success_rate": 1.0,
+        }]
+        with patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides_for(
+                self._override(
+                    "fresh_recovery",
+                    reason="auto_demote_degraded: ...",
+                ),
+            ),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "plan_history.capability_leaderboard",
+            return_value=leaderboard,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "auto_demote_history.find_thrashing",
+            return_value=[],
+        ):
+            out = auto_demote.find_release_candidates()
+        assert len(out) == 1
+        assert out[0]["capability"] == "fresh_recovery"
 
 
 class TestMaybeReleaseRecovered:
