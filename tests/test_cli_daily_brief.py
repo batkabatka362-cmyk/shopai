@@ -1938,6 +1938,126 @@ class TestRevenueImpactSection:
         )
 
 
+class TestFleetRevenueTrendInBrief:
+    """daily-brief surfaces fleet revenue trend + top
+    growers/losers."""
+
+    def test_silent_with_single_snapshot(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_revenue_history."
+            "revenue_trend",
+            return_value={
+                "snapshots": 1,
+                "first_revenue": None,
+                "last_revenue": 1000.0,
+                "delta": 0.0,
+                "delta_pct": 0.0,
+                "first_at": None,
+                "last_at": 0,
+            },
+        ), patch(
+            "core.autonomous.cycle_revenue_history."
+            "recent_history",
+            return_value=[],
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Fleet revenue trend" not in out
+
+    def test_growth_renders(self, cli):
+        from core.autonomous.cycle_revenue_history import (
+            RevenueSnapshot,
+        )
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_revenue_history."
+            "revenue_trend",
+            return_value={
+                "snapshots": 5,
+                "first_revenue": 1000.0,
+                "last_revenue": 1500.0,
+                "delta": 500.0,
+                "delta_pct": 50.0,
+                "first_at": 0,
+                "last_at": 0,
+            },
+        ), patch(
+            "core.autonomous.cycle_revenue_history."
+            "recent_history",
+            return_value=[
+                RevenueSnapshot(
+                    fleet_revenue=1500.0,
+                    store_count=2,
+                    recorded_at=1700000000.0,
+                    per_store={
+                        "store_a": 800.0,
+                        "store_b": 700.0,
+                    },
+                ),
+                RevenueSnapshot(
+                    fleet_revenue=1000.0,
+                    store_count=2,
+                    recorded_at=1699000000.0,
+                    per_store={
+                        "store_a": 600.0,
+                        "store_b": 400.0,
+                    },
+                ),
+            ],
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Fleet revenue trend" in out
+        assert "+$500.00" in out
+        assert "+50.0%" in out
+        # store_a: +200, store_b: +300 -- both growers
+        assert "store_a" in out
+        assert "store_b" in out
+
+    def test_envelope_carries_section(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_revenue_history."
+            "revenue_trend",
+            return_value={
+                "snapshots": 1,
+                "first_revenue": 0,
+                "last_revenue": 0,
+                "delta": 0,
+                "delta_pct": 0,
+                "first_at": 0,
+                "last_at": 0,
+            },
+        ), patch(
+            "core.autonomous.cycle_revenue_history."
+            "recent_history",
+            return_value=[],
+        ):
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        data = json.loads(out)
+        assert "fleet_revenue_trend" in data
+        assert (
+            data["fleet_revenue_trend"]["checked"]
+            is True
+        )
+
+
 class TestPauseInBrief:
     """Cycle pause state appears prominently in
     daily-brief."""

@@ -6113,6 +6113,72 @@ def _cmd_daily_brief(args) -> None:
             exc,
         )
 
+    # ── Fleet revenue trend (7d) -- bible's
+    # measurable-outcomes signal at the cycle level. Shows
+    # whether the autonomous loop is actually growing fleet
+    # revenue.
+    rev_trend_summary: dict[str, Any] = {
+        "checked": False,
+        "fleet": None,
+        "top_growers": [],
+        "top_losers": [],
+    }
+    try:
+        from core.autonomous import (
+            cycle_revenue_history as _crh_brief,
+        )
+        fleet_trend = _crh_brief.revenue_trend(
+            since_seconds=86400 * 7,
+        )
+        rev_trend_summary["checked"] = True
+        rev_trend_summary["fleet"] = fleet_trend
+        # Identify top growers / losers per store
+        try:
+            snaps = _crh_brief.recent_history(
+                since_seconds=86400 * 7,
+            )
+            if len(snaps) >= 2:
+                # Latest + earliest per-store revenue
+                # snapshots
+                latest = snaps[0]
+                earliest = snaps[-1]
+                deltas: list[tuple[str, float]] = []
+                for sid, last_rev in (
+                    latest.per_store or {}
+                ).items():
+                    first_rev = (
+                        earliest.per_store or {}
+                    ).get(sid)
+                    if first_rev is None:
+                        continue
+                    deltas.append(
+                        (sid, last_rev - first_rev),
+                    )
+                deltas.sort(key=lambda x: -x[1])
+                rev_trend_summary["top_growers"] = [
+                    {
+                        "store_id": sid, "delta": d,
+                    }
+                    for sid, d in deltas[:3]
+                    if d > 0
+                ]
+                rev_trend_summary["top_losers"] = [
+                    {
+                        "store_id": sid, "delta": d,
+                    }
+                    for sid, d in reversed(deltas[-3:])
+                    if d < 0
+                ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "daily-brief growers/losers raised: %s",
+                exc,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief revenue_trend raised: %s", exc,
+        )
+
     # ── Cycle pause state (operator escape hatch) --
     # surface "cycle is halted" prominently so operators
     # don't miss it during the morning glance.
@@ -6392,6 +6458,7 @@ def _cmd_daily_brief(args) -> None:
             "cycle_activity": cycle_activity,
             "diary": diary_events,
             "pause_state": pause_state_brief,
+            "fleet_revenue_trend": rev_trend_summary,
             "totals": totals,
             "alerts": alerts,
         }, indent=2, default=str))
@@ -6806,6 +6873,37 @@ def _cmd_daily_brief(args) -> None:
                 f"{cycle_activity['released_total']}r"
             )
         print()
+
+    # Fleet revenue trend (7d) -- renders when 2+ snapshots
+    # exist (single snapshot is meaningless).
+    if rev_trend_summary.get("checked"):
+        fleet = rev_trend_summary.get("fleet") or {}
+        if fleet.get("snapshots", 0) >= 2:
+            sign = "+" if fleet["delta"] >= 0 else ""
+            print(
+                f"Fleet revenue trend (last 7d):  "
+                f"{sign}${fleet['delta']:,.2f}  "
+                f"({sign}{fleet['delta_pct']:.1f}%)"
+            )
+            growers = rev_trend_summary.get(
+                "top_growers", [],
+            )
+            losers = rev_trend_summary.get(
+                "top_losers", [],
+            )
+            if growers:
+                names = ", ".join(
+                    f"{g['store_id']}(+${g['delta']:,.0f})"
+                    for g in growers
+                )
+                print(f"  Top growers: {names}")
+            if losers:
+                names = ", ".join(
+                    f"{l['store_id']}(${l['delta']:,.0f})"
+                    for l in losers
+                )
+                print(f"  Top losers:  {names}")
+            print()
 
     # Diary inline (last 5 events) -- renders when at least
     # one event was recorded in the window.
