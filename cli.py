@@ -354,6 +354,16 @@ def build_parser() -> argparse.ArgumentParser:
             "and always run."
         ),
     )
+    world_show_p.add_argument(
+        "--launch-readiness", action="store_true",
+        dest="include_launch_readiness",
+        help=(
+            "Include launch-readiness audit (~10 GraphQL "
+            "hops). OFF by default to keep the snapshot "
+            "cheap; turn on when you need 'is this store "
+            "launchable?' answered in the same payload."
+        ),
+    )
 
     world_fleet_p = world_sub.add_parser(
         "fleet",
@@ -8637,6 +8647,9 @@ def _cmd_world_model_show(args) -> None:
     """
     as_json = bool(getattr(args, "json", False))
     skip_live = bool(getattr(args, "skip_live", False))
+    include_launch_readiness = bool(
+        getattr(args, "include_launch_readiness", False),
+    )
 
     sm = _get_store_manager()
     store_id = args.store_id or sm.active_store_id
@@ -8653,7 +8666,11 @@ def _cmd_world_model_show(args) -> None:
 
     from core.world_model import WorldModel
 
-    snap = WorldModel(sm=sm).snapshot(store_id, skip_live=skip_live)
+    snap = WorldModel(sm=sm).snapshot(
+        store_id,
+        skip_live=skip_live,
+        include_launch_readiness=include_launch_readiness,
+    )
 
     if as_json:
         print(json.dumps(snap, indent=2, default=str))

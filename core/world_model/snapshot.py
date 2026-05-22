@@ -1189,6 +1189,60 @@ class WorldModel:
 
         return out
 
+    def _section_launch_readiness(
+        self,
+        *,
+        store_id: str,
+        include: bool = False,
+    ) -> dict[str, Any]:
+        """Per-store launch-readiness via the 10-check audit.
+
+        Opt-in (``include=True``) because the audit makes
+        ~10 GraphQL hops -- callers hitting world-model.show()
+        repeatedly shouldn't pay that cost on every probe.
+
+        Returns ``{"checked": False, ...}`` when opted out
+        so the section shape is stable.
+        """
+        if not include:
+            return {
+                "checked": False,
+                "ready_to_launch": None,
+                "completion_pct": None,
+                "missing_summary": "",
+                "next_action": "",
+            }
+        try:
+            from engines.store_setup.launch_audit import (
+                audit_store,
+            )
+            audit = audit_store(store_id=store_id)
+            return {
+                "checked": True,
+                "ready_to_launch": bool(
+                    audit.get("ready_to_launch")
+                ),
+                "completion_pct": int(
+                    audit.get("completion_pct", 0)
+                ),
+                "missing_summary": (
+                    audit.get("missing_summary") or ""
+                ),
+                "next_action": (
+                    audit.get("next_action") or ""
+                ),
+                "checks": audit.get("checks") or [],
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model launch_readiness raised: %s",
+                exc,
+            )
+            return {
+                "checked": False,
+                "error": str(exc),
+            }
+
     # ── Public API ──────────────────────────────────────────
 
     def snapshot(
@@ -1196,6 +1250,7 @@ class WorldModel:
         store_id: str,
         *,
         skip_live: bool = False,
+        include_launch_readiness: bool = False,
     ) -> dict[str, Any]:
         """Build the per-store world-model snapshot.
 
@@ -1205,6 +1260,12 @@ class WorldModel:
                 probes (the two sections that call Shopify).
                 Sync / design / approvals / decisions are local
                 reads so they always run.
+            include_launch_readiness: When True, runs the
+                launch-audit (~10 GraphQL hops) and includes
+                the result. OFF by default because callers
+                hitting world-model.show() repeatedly (LLM
+                orchestrators, dashboards) shouldn't pay the
+                audit cost every probe.
 
         Returns:
             Snapshot dict with the section structure documented
@@ -1251,6 +1312,10 @@ class WorldModel:
         fleet_health = self._section_fleet_health()
         substrate = self._section_substrate()
         cycle = self._section_cycle(store_id=store_id)
+        launch_readiness = self._section_launch_readiness(
+            store_id=store_id,
+            include=include_launch_readiness,
+        )
 
         return {
             "store_id": store_id,
@@ -1269,15 +1334,25 @@ class WorldModel:
             "fleet_health": fleet_health,
             "substrate": substrate,
             "cycle": cycle,
+            "launch_readiness": launch_readiness,
         }
 
 
-def snapshot(store_id: str, *, skip_live: bool = False) -> dict[str, Any]:
+def snapshot(
+    store_id: str,
+    *,
+    skip_live: bool = False,
+    include_launch_readiness: bool = False,
+) -> dict[str, Any]:
     """Module-level convenience: equivalent to
-    ``WorldModel().snapshot(store_id, skip_live=skip_live)``.
+    ``WorldModel().snapshot(store_id, ...)``.
 
     The class form exists so tests + callers can inject fake
     store managers / approval queues; this is the right entry
     point for everyone else.
     """
-    return WorldModel().snapshot(store_id, skip_live=skip_live)
+    return WorldModel().snapshot(
+        store_id,
+        skip_live=skip_live,
+        include_launch_readiness=include_launch_readiness,
+    )

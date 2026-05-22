@@ -1623,6 +1623,91 @@ class TestSectionCycle:
             sec = wm._section_cycle(store_id="store-x")
         assert sec["engine_regressions"] == []
 
+
+class TestLaunchReadinessSection:
+    """``cycle.launch_readiness`` -- opt-in section that
+    pipes the launch-audit result through world-model.show."""
+
+    def test_default_unchecked(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        sec = wm._section_launch_readiness(
+            store_id="store-x", include=False,
+        )
+        assert sec["checked"] is False
+        assert sec["ready_to_launch"] is None
+        assert sec["completion_pct"] is None
+
+    def test_include_runs_audit(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        fake_audit = {
+            "ready_to_launch": True,
+            "completion_pct": 100,
+            "missing_summary": "all checks passed",
+            "next_action": "",
+            "checks": [
+                {"key": "shop_identity", "ok": True},
+            ],
+        }
+        with patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=fake_audit,
+        ):
+            sec = wm._section_launch_readiness(
+                store_id="store-x", include=True,
+            )
+        assert sec["checked"] is True
+        assert sec["ready_to_launch"] is True
+        assert sec["completion_pct"] == 100
+        assert len(sec["checks"]) == 1
+
+    def test_include_audit_failure_degrades(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "engines.store_setup.launch_audit.audit_store",
+            side_effect=RuntimeError("router down"),
+        ):
+            sec = wm._section_launch_readiness(
+                store_id="store-x", include=True,
+            )
+        assert sec["checked"] is False
+        assert "router down" in sec.get("error", "")
+
+    def test_snapshot_default_skips_readiness(self):
+        """The full snapshot doesn't run the audit unless
+        include_launch_readiness=True."""
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "engines.store_setup.launch_audit.audit_store",
+        ) as mock_audit:
+            snap = wm.snapshot("store-x", skip_live=True)
+        assert mock_audit.call_count == 0
+        assert (
+            snap["launch_readiness"]["checked"] is False
+        )
+
+    def test_snapshot_opt_in_runs_audit(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value={
+                "ready_to_launch": False,
+                "completion_pct": 60,
+                "missing_summary": "x",
+                "next_action": "y",
+                "checks": [],
+            },
+        ) as mock_audit:
+            snap = wm.snapshot(
+                "store-x",
+                skip_live=True,
+                include_launch_readiness=True,
+            )
+        assert mock_audit.call_count == 1
+        assert snap["launch_readiness"]["checked"] is True
+        assert (
+            snap["launch_readiness"]["completion_pct"] == 60
+        )
+
     def test_pause_state_default_when_unavailable(self):
         wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
         with patch(
