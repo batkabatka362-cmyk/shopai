@@ -924,6 +924,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     autonomous_p.add_argument(
+        "--skip-defend", action="store_true",
+        dest="skip_defend",
+        help=(
+            "Skip the defend phase (auto-demote degraded "
+            "capabilities). The defend phase only writes "
+            "when SHOPAI_AUTO_DEMOTE_DEGRADED=1; otherwise "
+            "it's a no-op anyway."
+        ),
+    )
+    autonomous_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON cycle summary.",
     )
@@ -11966,21 +11976,26 @@ def _cmd_plan(args) -> None:
 
 
 def _cmd_autonomous_cycle(args) -> None:
-    """Bundled autonomous loop. Runs two phases in
+    """Bundled autonomous loop. Runs three phases in
     sequence:
 
       1. ADVANCE: fleet-plan --execute --require-reliable
          (with --yes when supplied). Tries to advance every
          store via reliability-gated plan execution.
-      2. MEASURE: plan --auto-correlate. Updates the
+      2. DEFEND: capabilities auto-demote-degraded (with
+         --yes when supplied). Demotes severely-regressed
+         capabilities so the next ADVANCE phase stops
+         seeding them. Env-gated; no-op without
+         SHOPAI_AUTO_DEMOTE_DEGRADED=1.
+      3. MEASURE: plan --auto-correlate. Updates the
          outcome of past plans whose measurement window
          has expired.
 
     Cron-friendly: a single ``shopai autonomous-cycle
-    --yes`` call advances + measures the fleet. The two
-    phases are decoupled (``--skip-advance`` /
-    ``--skip-correlate`` flags) so operators can wire
-    different schedules if needed.
+    --yes`` call advances + defends + measures the fleet.
+    The phases are decoupled (``--skip-advance`` /
+    ``--skip-defend`` / ``--skip-correlate`` flags) so
+    operators can wire different schedules if needed.
 
     Refuses to actually write unless --yes is set --
     default is a dry-run preview that shows what would
@@ -11994,10 +12009,14 @@ def _cmd_autonomous_cycle(args) -> None:
     skip_correlate = bool(
         getattr(args, "skip_correlate", False),
     )
+    skip_defend = bool(
+        getattr(args, "skip_defend", False),
+    )
 
     summary: dict[str, Any] = {
         "executed": yes,
         "advance": None,
+        "defend": None,
         "correlate": None,
     }
 
@@ -12075,6 +12094,53 @@ def _cmd_autonomous_cycle(args) -> None:
                 "refused_reliability": refused,
                 "errored": errored,
             }
+
+    # ── Defend phase ───────────────────────────────────
+    # Bridges capability_degradations -> operator demote so
+    # next cycle's plans stop seeding regressed capabilities.
+    # Env-gated; without SHOPAI_AUTO_DEMOTE_DEGRADED=1, the
+    # phase still computes candidates (visibility) but writes
+    # nothing.
+    if not skip_defend:
+        try:
+            from core.capability_planner import auto_demote
+        except Exception as exc:  # noqa: BLE001
+            summary["defend"] = {
+                "error": f"import_failed: {exc}",
+            }
+        else:
+            try:
+                config = auto_demote.config_summary()
+                candidates = (
+                    auto_demote.find_demote_candidates()
+                )
+                if yes:
+                    demoted = (
+                        auto_demote
+                        .maybe_auto_demote_degraded()
+                    )
+                else:
+                    demoted = []
+                summary["defend"] = {
+                    "gate_enabled": config["enabled"],
+                    "candidates": len(candidates),
+                    "actionable": sum(
+                        1 for c in candidates
+                        if c["blocked_by"] is None
+                    ),
+                    "demoted": len(demoted),
+                    "demoted_capabilities": [
+                        d["capability"] for d in demoted
+                    ],
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "autonomous-cycle defend: raised: %s",
+                    exc,
+                )
+                summary["defend"] = {
+                    "error": f"raised: {exc}",
+                }
 
     # ── Measure phase ──────────────────────────────────
     if not skip_correlate:
@@ -12156,6 +12222,28 @@ def _cmd_autonomous_cycle(args) -> None:
                 f"{adv['errored']} errored "
                 f"({adv['stores_processed']} store(s))"
             )
+    dfn = summary.get("defend")
+    if dfn:
+        if dfn.get("error"):
+            print(f"  Defend:  ERROR ({dfn['error']})")
+        else:
+            gate = "ON" if dfn["gate_enabled"] else "OFF"
+            print(
+                f"  Defend:  "
+                f"{dfn['demoted']} demoted / "
+                f"{dfn['actionable']} actionable / "
+                f"{dfn['candidates']} candidates  "
+                f"(gate {gate})"
+            )
+            if dfn.get("demoted_capabilities"):
+                names = ", ".join(
+                    dfn["demoted_capabilities"][:5],
+                )
+                if len(dfn["demoted_capabilities"]) > 5:
+                    names += (
+                        f", +{len(dfn['demoted_capabilities']) - 5} more"
+                    )
+                print(f"           -> {names}")
     cor = summary.get("correlate")
     if cor:
         if cor.get("error"):

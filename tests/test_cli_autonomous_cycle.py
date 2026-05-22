@@ -60,6 +60,7 @@ def _ns(**kw):
         yes=False,
         skip_correlate=False,
         skip_advance=False,
+        skip_defend=False,
         json=False,
     )
     defaults.update(kw)
@@ -152,6 +153,214 @@ class TestExecuted:
             )
         data = json.loads(out)
         assert data["executed"] is True
+
+
+class TestDefendPhase:
+    """Defend phase runs auto-demote-degraded against the
+    captured plan history. Env-gated; safe by default."""
+
+    def test_defend_dry_run_reports_zero_actionable(
+        self, cli,
+    ):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value={
+                "enabled": False,
+                "drop_threshold": 0.4,
+                "min_recent_sample": 3,
+                "recent_window_days": 7,
+                "baseline_window_days": 30,
+            },
+        ):
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(json=True),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data["defend"] == {
+            "gate_enabled": False,
+            "candidates": 0,
+            "actionable": 0,
+            "demoted": 0,
+            "demoted_capabilities": [],
+        }
+
+    def test_defend_yes_calls_apply(self, cli):
+        sm = _fake_sm([])
+        candidates = [
+            {
+                "capability": "cap_x",
+                "baseline_rate": 0.9,
+                "recent_rate": 0.1,
+                "drop": 0.8,
+                "recent_samples": 5,
+                "baseline_samples": 20,
+                "blocked_by": None,
+            },
+        ]
+        applied = [{
+            "capability": "cap_x",
+            "drop": 0.8,
+            "baseline_rate": 0.9,
+            "recent_rate": 0.1,
+            "recent_samples": 5,
+            "baseline_samples": 20,
+            "reason": "auto_demote_degraded: ...",
+        }]
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=candidates,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value={
+                "enabled": True,
+                "drop_threshold": 0.4,
+                "min_recent_sample": 3,
+                "recent_window_days": 7,
+                "baseline_window_days": 30,
+            },
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "maybe_auto_demote_degraded",
+            return_value=applied,
+        ) as mock_apply:
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(yes=True, json=True),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert mock_apply.call_count == 1
+        assert data["defend"]["gate_enabled"] is True
+        assert data["defend"]["actionable"] == 1
+        assert data["defend"]["demoted"] == 1
+        assert data["defend"]["demoted_capabilities"] == [
+            "cap_x",
+        ]
+
+    def test_defend_dry_run_does_not_call_apply(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value={
+                "enabled": True,
+                "drop_threshold": 0.4,
+                "min_recent_sample": 3,
+                "recent_window_days": 7,
+                "baseline_window_days": 30,
+            },
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "maybe_auto_demote_degraded",
+        ) as mock_apply:
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(yes=False, json=True),
+            )
+        assert code == 0
+        # Dry-run: apply must NOT be called
+        assert mock_apply.call_count == 0
+
+    def test_skip_defend_omits_phase(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ):
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(skip_defend=True, json=True),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data["defend"] is None
+
+    def test_defend_text_view_shows_demoted_capabilities(
+        self, cli,
+    ):
+        sm = _fake_sm([])
+        candidates = [{
+            "capability": "cap_y",
+            "baseline_rate": 0.9,
+            "recent_rate": 0.1,
+            "drop": 0.8,
+            "recent_samples": 5,
+            "baseline_samples": 20,
+            "blocked_by": None,
+        }]
+        applied = [{
+            "capability": "cap_y",
+            "drop": 0.8,
+            "baseline_rate": 0.9,
+            "recent_rate": 0.1,
+            "recent_samples": 5,
+            "baseline_samples": 20,
+            "reason": "auto_demote_degraded: ...",
+        }]
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=candidates,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value={
+                "enabled": True,
+                "drop_threshold": 0.4,
+                "min_recent_sample": 3,
+                "recent_window_days": 7,
+                "baseline_window_days": 30,
+            },
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "maybe_auto_demote_degraded",
+            return_value=applied,
+        ):
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(yes=True),
+            )
+        assert code == 0
+        assert "Defend:" in out
+        assert "1 demoted" in out
+        assert "cap_y" in out
+        assert "gate ON" in out
 
 
 class TestCorrelatePhase:
