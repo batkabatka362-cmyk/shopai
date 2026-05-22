@@ -75,6 +75,7 @@ def _ns(**kw):
         show_thresholds=False,
         transfer_effectiveness=False,
         diary=False,
+        diary_filter=None,
         revenue_trend=False,
         json=False,
     )
@@ -1333,6 +1334,85 @@ class TestDiaryFlag:
                 _ns(diary=True),
             )
         mock_sm.assert_not_called()
+
+    def test_filter_drops_non_matching(self, cli):
+        from core.autonomous.cycle_diary import DiaryEvent
+        events = [
+            DiaryEvent(
+                recorded_at=1000.0,
+                source="cycle",
+                kind="exec",
+                detail="[EXEC] cycle ran",
+            ),
+            DiaryEvent(
+                recorded_at=2000.0,
+                source="transfer",
+                kind="enqueue",
+                detail="[TRANSFER] loyalty/mint",
+            ),
+            DiaryEvent(
+                recorded_at=3000.0,
+                source="demote",
+                kind="demote",
+                detail="[DEMOTE] shaky",
+            ),
+        ]
+        with patch(
+            "core.autonomous.cycle_diary.compile_diary",
+            return_value=events,
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(
+                    diary=True,
+                    diary_filter="transfer",
+                    json=True,
+                ),
+            )
+        data = json.loads(out)
+        # Only transfer events
+        assert len(data["events"]) == 1
+        assert (
+            data["events"][0]["source"] == "transfer"
+        )
+
+    def test_filter_accepts_multiple(self, cli):
+        from core.autonomous.cycle_diary import DiaryEvent
+        events = [
+            DiaryEvent(
+                recorded_at=1000.0,
+                source="cycle",
+                kind="exec",
+                detail="[EXEC]",
+            ),
+            DiaryEvent(
+                recorded_at=2000.0,
+                source="transfer",
+                kind="enqueue",
+                detail="[TRANSFER]",
+            ),
+            DiaryEvent(
+                recorded_at=3000.0,
+                source="demote",
+                kind="demote",
+                detail="[DEMOTE]",
+            ),
+        ]
+        with patch(
+            "core.autonomous.cycle_diary.compile_diary",
+            return_value=events,
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(
+                    diary=True,
+                    diary_filter="cycle,demote",
+                    json=True,
+                ),
+            )
+        data = json.loads(out)
+        sources = {e["source"] for e in data["events"]}
+        assert sources == {"cycle", "demote"}
 
 
 class TestTransferEffectivenessFlag:

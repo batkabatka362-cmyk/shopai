@@ -1236,6 +1236,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     autonomous_p.add_argument(
+        "--diary-filter", default=None,
+        dest="diary_filter",
+        help=(
+            "Filter --diary output by source: cycle | "
+            "demote | promote | relax | transfer | alert. "
+            "Comma-separated list for multiple. Default: "
+            "all sources."
+        ),
+    )
+    autonomous_p.add_argument(
         "--revenue-trend", action="store_true",
         dest="revenue_trend",
         help=(
@@ -13855,8 +13865,26 @@ def _cmd_autonomous_cycle(args) -> None:
         )
         events = _cd.compile_diary(
             since_seconds=window_days * 86400,
-            limit=limit,
+            limit=limit * 5 if (
+                getattr(args, "diary_filter", None)
+            ) else limit,
         )
+        # Apply source filter if requested. Pull more
+        # events from compile_diary upstream (limit*5) so
+        # post-filter we still have a reasonable count.
+        filter_str = (
+            getattr(args, "diary_filter", None) or ""
+        )
+        if filter_str:
+            allowed = {
+                s.strip().lower()
+                for s in filter_str.split(",")
+                if s.strip()
+            }
+            events = [
+                e for e in events
+                if e.source.lower() in allowed
+            ][:limit]
         if as_json:
             print(json.dumps({
                 "window_days": window_days,
