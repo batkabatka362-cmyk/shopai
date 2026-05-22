@@ -1720,6 +1720,106 @@ class TestAutoDemoteReleaseCandidates:
         }
 
 
+class TestOrphans:
+    """``shopai capabilities orphans`` finds override
+    entries for caps not in the registry."""
+
+    def _override(self, name, kind="promote"):
+        from core.capability_planner.\
+capability_overrides import CapabilityOverride
+        return CapabilityOverride(
+            name=name, kind=kind, reason="r",
+            recorded_at=0,
+        )
+
+    def _overrides_for(self, *entries):
+        from core.capability_planner.\
+capability_overrides import CapabilityOverrides
+        return CapabilityOverrides(
+            entries=list(entries),
+        )
+
+    def test_no_orphans_friendly(self, cli):
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=self._overrides_for(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(capability_action="orphans"),
+            )
+        assert code == 0
+        assert "No orphan overrides" in out
+
+    def test_orphan_detected(self, cli):
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=self._overrides_for(
+                self._override("ghost_cap"),
+                # launch_store IS registered so it won't
+                # appear in the orphans list
+                self._override("launch_store"),
+            ),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(capability_action="orphans"),
+            )
+        assert code == 0
+        assert "ghost_cap" in out
+        assert "Orphan overrides (1)" in out
+        # launch_store registered -> NOT orphan
+        assert (
+            "launch_store" not in out
+            or "Dry-run only" in out
+        )
+
+    def test_yes_removes(self, cli):
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=self._overrides_for(
+                self._override("ghost"),
+            ),
+        ), patch(
+            "core.capability_planner.capability_overrides."
+            "clear",
+            return_value=True,
+        ) as mock_clear:
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="orphans",
+                    yes=True,
+                ),
+            )
+        assert code == 0
+        mock_clear.assert_called_once_with("ghost")
+        assert "Removed 1 orphan" in out
+
+    def test_json_envelope(self, cli):
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=self._overrides_for(
+                self._override("ghost"),
+            ),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="orphans",
+                    json=True,
+                ),
+            )
+        data = json.loads(out)
+        assert len(data["orphans"]) == 1
+        assert data["orphans"][0]["name"] == "ghost"
+        assert data["applied"] is False
+
+
 class TestPromoteDemoteCyclesCLI:
     """``shopai capabilities promote-demote-cycles`` --
     surface cross-history thrashing."""

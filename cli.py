@@ -462,6 +462,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view.",
     )
 
+    cap_orphans_p = capabilities_sub.add_parser(
+        "orphans",
+        help=(
+            "Find capability overrides referencing names "
+            "that no longer exist in the registry. "
+            "Operator housekeeping after refactors / "
+            "deletions. Default --dry-run; --yes removes "
+            "the orphan overrides."
+        ),
+    )
+    cap_orphans_p.add_argument(
+        "--yes", action="store_true",
+        help=(
+            "Actually remove the orphan overrides. "
+            "Without --yes the command is a preview."
+        ),
+    )
+    cap_orphans_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view.",
+    )
+
     cap_lifecycle_p = capabilities_sub.add_parser(
         "lifecycle",
         help=(
@@ -16613,6 +16635,81 @@ capability_overrides import load_overrides
             print(
                 f"  {stamp}  {tag} {e.capability}"
                 f"{reason_short}"
+            )
+        return
+
+    if action == "orphans":
+        try:
+            from core.capability_planner.\
+capability_overrides import (
+                load_overrides,
+                clear as _clear_override,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"orphans unavailable: {exc}")
+            return
+        overrides = load_overrides()
+        registered = {
+            c.name for c in registry.all()
+        }
+        orphans = [
+            e for e in overrides.entries
+            if e.name not in registered
+        ]
+        yes = bool(getattr(args, "yes", False))
+        if as_json:
+            removed: list[str] = []
+            if yes:
+                for e in orphans:
+                    if _clear_override(e.name):
+                        removed.append(e.name)
+            print(json.dumps({
+                "orphans": [
+                    {
+                        "name": e.name,
+                        "kind": e.kind,
+                        "reason": e.reason,
+                        "recorded_at": e.recorded_at,
+                    }
+                    for e in orphans
+                ],
+                "removed": removed,
+                "applied": yes,
+            }, indent=2, default=str))
+            return
+        if not orphans:
+            print(
+                "No orphan overrides -- every override "
+                "references a registered capability."
+            )
+            return
+        print(
+            f"Orphan overrides ({len(orphans)}):"
+        )
+        for e in orphans:
+            tag = (
+                "PROMOTE" if e.kind == "promote"
+                else "DEMOTE"
+            )
+            line = f"  [{tag}] {e.name}"
+            if e.reason:
+                line += f"  -- {e.reason[:60]}"
+            print(line)
+        if yes:
+            print()
+            removed_names = []
+            for e in orphans:
+                if _clear_override(e.name):
+                    removed_names.append(e.name)
+            print(
+                f"Removed {len(removed_names)} orphan "
+                f"override(s)."
+            )
+        else:
+            print()
+            print(
+                "  Dry-run only. Re-run with --yes to "
+                "remove these orphan overrides."
             )
         return
 
