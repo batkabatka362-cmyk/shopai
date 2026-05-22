@@ -228,6 +228,120 @@ def pause_history(
     return events
 
 
+def pause_frequency(
+    *,
+    since_seconds: int = 86400 * 7,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Rollup metrics over the pause-history window.
+
+    Answers "how often is the loop paused, and for how long?".
+
+    Returns:
+      {
+        "window_days": float,
+        "pause_count": int,
+        "resume_count": int,
+        "extend_count": int,
+        "total_downtime_hours": float,
+        "avg_pause_duration_hours": float,
+        "last_pause_at": float | None,
+      }
+
+    Downtime is computed by pairing each pause with the next
+    resume (or pause expiry if no resume). Ongoing pauses
+    count downtime up to ``now``.
+    """
+    now = now if now is not None else time.time()
+    cutoff = now - since_seconds
+    raw = _load_history()
+    in_window = [
+        r for r in raw
+        if float(r.get("recorded_at", 0) or 0) >= cutoff
+    ]
+    in_window.sort(
+        key=lambda r: float(
+            r.get("recorded_at", 0) or 0,
+        ),
+    )
+
+    pause_count = sum(
+        1 for r in in_window
+        if r.get("kind") == "pause"
+    )
+    resume_count = sum(
+        1 for r in in_window
+        if r.get("kind") == "resume"
+    )
+    extend_count = sum(
+        1 for r in in_window
+        if r.get("kind") == "extend"
+    )
+
+    total_downtime_secs = 0.0
+    durations: list[float] = []
+    last_pause_at: float | None = None
+    open_start: float | None = None
+    open_until: float | None = None
+
+    for r in in_window:
+        kind = r.get("kind")
+        ts = float(r.get("recorded_at", 0) or 0)
+        until = r.get("paused_until_at")
+        until_f = (
+            float(until) if until is not None else None
+        )
+        if kind == "pause":
+            if open_start is not None:
+                # New pause without an intervening resume:
+                # close prior at this ts (defensive).
+                end = min(
+                    ts,
+                    open_until if open_until else ts,
+                )
+                dur = max(0.0, end - open_start)
+                total_downtime_secs += dur
+                durations.append(dur)
+            open_start = ts
+            open_until = until_f
+            last_pause_at = ts
+        elif kind == "extend":
+            if open_until is not None and until_f:
+                open_until = until_f
+        elif kind == "resume":
+            if open_start is not None:
+                dur = max(0.0, ts - open_start)
+                total_downtime_secs += dur
+                durations.append(dur)
+                open_start = None
+                open_until = None
+
+    if open_start is not None:
+        end = min(now, open_until or now)
+        dur = max(0.0, end - open_start)
+        total_downtime_secs += dur
+        durations.append(dur)
+
+    avg_dur_hrs = (
+        round(
+            sum(durations) / len(durations) / 3600.0,
+            2,
+        )
+        if durations else 0.0
+    )
+    return {
+        "window_days": round(since_seconds / 86400.0, 2),
+        "pause_count": pause_count,
+        "resume_count": resume_count,
+        "extend_count": extend_count,
+        "total_downtime_hours": round(
+            total_downtime_secs / 3600.0, 2,
+        ),
+        "avg_pause_duration_hours": avg_dur_hrs,
+        "last_pause_at": last_pause_at,
+    }
+
+
 def pause(
     *,
     until_at: float,

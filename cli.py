@@ -5358,6 +5358,12 @@ capability_overrides import load_overrides
             pause_state = _cp.get_pause_state()
         except Exception:
             pause_state = {"active": False}
+        try:
+            pause_freq = _cp.pause_frequency(
+                since_seconds=86400 * 7,
+            )
+        except Exception:
+            pause_freq = None
         envelope["cycle"] = {
             "checked": True,
             "runs_24h": stats["total_runs"],
@@ -5369,6 +5375,7 @@ capability_overrides import load_overrides
             "transfers_24h": transfers_24h,
             "revenue_trend_7d": rev_trend,
             "pause": pause_state,
+            "pause_frequency_7d": pause_freq,
         }
     except Exception as exc:  # noqa: BLE001
         logger.debug("status: cycle raised: %s", exc)
@@ -14262,13 +14269,30 @@ def _cmd_autonomous_cycle(args) -> None:
     if bool(getattr(args, "show_pause", False)):
         from core.autonomous import cycle_pause as _cp
         state = _cp.get_pause_state()
+        try:
+            freq = _cp.pause_frequency(
+                since_seconds=86400 * 7,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "show-pause freq raised: %s", exc,
+            )
+            freq = {}
         if as_json:
-            print(json.dumps(
-                state, indent=2, default=str,
-            ))
+            print(json.dumps({
+                **state,
+                "frequency_7d": freq,
+            }, indent=2, default=str))
             return
         if not state["active"]:
             print("Cycle is NOT paused.")
+            if freq.get("pause_count", 0):
+                print(
+                    f"  Last 7d: {freq['pause_count']} "
+                    f"pause(s), "
+                    f"{freq['total_downtime_hours']:.1f}h "
+                    f"downtime"
+                )
             return
         import time as _time
         until_str = _time.strftime(
@@ -14278,6 +14302,13 @@ def _cmd_autonomous_cycle(args) -> None:
         print(f"Cycle PAUSED until {until_str}")
         if state.get("reason"):
             print(f"  Reason: {state['reason']}")
+        if freq.get("pause_count", 0):
+            print(
+                f"  Last 7d: {freq['pause_count']} "
+                f"pause(s), "
+                f"{freq['total_downtime_hours']:.1f}h "
+                f"downtime"
+            )
         return
 
     if bool(getattr(args, "pause_history", False)):

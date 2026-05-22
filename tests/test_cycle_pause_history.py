@@ -164,6 +164,115 @@ class TestPauseHistoryQuery:
         assert cp.pause_history() == []
 
 
+class TestPauseFrequency:
+
+    def test_empty_returns_zeroes(self, tmp_paths):
+        out = cp.pause_frequency()
+        assert out["pause_count"] == 0
+        assert out["resume_count"] == 0
+        assert out["extend_count"] == 0
+        assert out["total_downtime_hours"] == 0.0
+        assert out["avg_pause_duration_hours"] == 0.0
+        assert out["last_pause_at"] is None
+
+    def test_counts_events_in_window(self, tmp_paths):
+        _, hist_path = tmp_paths
+        now = time.time()
+        hist_path.write_text(json.dumps([
+            {
+                "kind": "pause",
+                "paused_until_at": now - 86400 * 5 + 3600,
+                "recorded_at": now - 86400 * 5,
+            },
+            {
+                "kind": "resume",
+                "recorded_at": now - 86400 * 5 + 1800,
+            },
+            {
+                "kind": "pause",
+                "paused_until_at": now - 86400 + 7200,
+                "recorded_at": now - 86400,
+            },
+            {
+                "kind": "extend",
+                "paused_until_at": now - 86400 + 10800,
+                "recorded_at": now - 86400 + 600,
+            },
+            {
+                "kind": "resume",
+                "recorded_at": now - 86400 + 7200,
+            },
+        ]))
+        out = cp.pause_frequency(
+            since_seconds=86400 * 7,
+        )
+        assert out["pause_count"] == 2
+        assert out["resume_count"] == 2
+        assert out["extend_count"] == 1
+
+    def test_downtime_paired_pause_resume(self, tmp_paths):
+        _, hist_path = tmp_paths
+        now = time.time()
+        # 30-minute pause
+        hist_path.write_text(json.dumps([
+            {
+                "kind": "pause",
+                "paused_until_at": now - 3600,
+                "recorded_at": now - 5400,
+            },
+            {
+                "kind": "resume",
+                "recorded_at": now - 3600,
+            },
+        ]))
+        out = cp.pause_frequency(
+            since_seconds=86400,
+        )
+        assert out["total_downtime_hours"] == pytest.approx(
+            0.5, abs=0.01,
+        )
+        assert out["avg_pause_duration_hours"] == \
+            pytest.approx(0.5, abs=0.01)
+
+    def test_ongoing_pause_counts_to_now(self, tmp_paths):
+        _, hist_path = tmp_paths
+        now = time.time()
+        hist_path.write_text(json.dumps([
+            {
+                "kind": "pause",
+                "paused_until_at": now + 86400,
+                "recorded_at": now - 7200,
+            },
+        ]))
+        out = cp.pause_frequency(
+            since_seconds=86400, now=now,
+        )
+        # 2 hours of ongoing downtime
+        assert out["total_downtime_hours"] == pytest.approx(
+            2.0, abs=0.01,
+        )
+
+    def test_window_excludes_old_events(self, tmp_paths):
+        _, hist_path = tmp_paths
+        now = time.time()
+        hist_path.write_text(json.dumps([
+            {
+                "kind": "pause",
+                "paused_until_at": now - 86400 * 60,
+                "recorded_at": now - 86400 * 61,
+            },
+            {
+                "kind": "resume",
+                "recorded_at": now - 86400 * 60,
+            },
+        ]))
+        out = cp.pause_frequency(
+            since_seconds=86400 * 7,
+        )
+        assert out["pause_count"] == 0
+        assert out["total_downtime_hours"] == 0.0
+
+
 class TestClearHistory:
 
     def test_under_pytest_no_op(self, tmp_paths):
