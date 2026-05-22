@@ -934,6 +934,130 @@ class TestAutoDemoteDegraded:
         }
 
 
+class TestWatchlist:
+    """``shopai capabilities watchlist`` -- early-warning
+    surface for capabilities approaching demote threshold."""
+
+    def _config(self):
+        return {
+            "enabled": False,
+            "drop_threshold": 0.4,
+            "min_recent_sample": 3,
+            "recent_window_days": 7,
+            "baseline_window_days": 30,
+            "recovery_threshold": 0.7,
+        }
+
+    def _sample_rows(self):
+        return [
+            {
+                "capability": "mild_cap",
+                "baseline_rate": 0.9,
+                "recent_rate": 0.6,
+                "drop": 0.3,
+                "recent_samples": 4,
+                "baseline_samples": 12,
+                "bridge_status": "watching",
+            },
+        ]
+
+    def test_empty_friendly(self, cli):
+        with patch(
+            "core.capability_planner.auto_demote."
+            "find_watchlist",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value=self._config(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(capability_action="watchlist"),
+            )
+        assert code == 0
+        assert "No capabilities on the watchlist" in out
+
+    def test_renders_text(self, cli):
+        with patch(
+            "core.capability_planner.auto_demote."
+            "find_watchlist",
+            return_value=self._sample_rows(),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value=self._config(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(capability_action="watchlist"),
+            )
+        assert code == 0
+        assert "Watching (1 capabilit" in out
+        assert "mild_cap" in out
+        assert "90% baseline" in out
+        assert "60% recent" in out
+        assert "-30pp" in out
+
+    def test_json_envelope(self, cli):
+        with patch(
+            "core.capability_planner.auto_demote."
+            "find_watchlist",
+            return_value=self._sample_rows(),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value=self._config(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="watchlist",
+                    json=True,
+                ),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert "config" in data
+        assert len(data["watchlist"]) == 1
+        assert (
+            data["watchlist"][0]["bridge_status"]
+            == "watching"
+        )
+
+    def test_thresholds_pass_through(self, cli):
+        calls = {}
+
+        def fake_find(**kwargs):
+            calls.update(kwargs)
+            return []
+
+        with patch(
+            "core.capability_planner.auto_demote."
+            "find_watchlist",
+            side_effect=fake_find,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value=self._config(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="watchlist",
+                    recent_days=5,
+                    baseline_days=14,
+                    min_recent=4,
+                ),
+            )
+        assert code == 0
+        assert calls == {
+            "recent_days": 5,
+            "baseline_days": 14,
+            "min_recent": 4,
+        }
+
+
 class TestAutoDemoteReleaseCandidates:
     """``shopai capabilities auto-demote-release-candidates``
     -- clear bridge-demoted capabilities that have recovered."""

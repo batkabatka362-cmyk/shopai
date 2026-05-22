@@ -514,6 +514,127 @@ capability_overrides import (
         ]
 
 
+class TestFindWatchlist:
+    """``find_watchlist`` returns the ``watching`` tier of
+    annotated degradations -- regressing but not severe."""
+
+    def _fake_overrides(self, demoted=None, promoted=None):
+        from core.capability_planner.\
+capability_overrides import (
+            CapabilityOverride, CapabilityOverrides,
+        )
+        entries = []
+        for n in (promoted or []):
+            entries.append(CapabilityOverride(
+                name=n, kind="promote",
+            ))
+        for n in (demoted or []):
+            entries.append(CapabilityOverride(
+                name=n, kind="demote",
+            ))
+        return CapabilityOverrides(entries=entries)
+
+    def test_returns_only_watching_tier(self):
+        degs = [
+            {
+                "capability": "severe",
+                "baseline_rate": 0.9, "recent_rate": 0.2,
+                "drop": 0.7, "recent_samples": 5,
+                "baseline_samples": 20,
+            },
+            {
+                "capability": "mild",
+                "baseline_rate": 0.9, "recent_rate": 0.65,
+                "drop": 0.25, "recent_samples": 5,
+                "baseline_samples": 20,
+            },
+        ]
+        with patch(
+            "core.capability_planner.auto_demote."
+            "plan_history.capability_degradations",
+            return_value=degs,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._fake_overrides(),
+        ):
+            out = auto_demote.find_watchlist()
+        assert len(out) == 1
+        assert out[0]["capability"] == "mild"
+        assert out[0]["bridge_status"] == "watching"
+
+    def test_excludes_already_demoted(self):
+        degs = [{
+            "capability": "old_already",
+            "baseline_rate": 0.9, "recent_rate": 0.65,
+            "drop": 0.25, "recent_samples": 5,
+            "baseline_samples": 20,
+        }]
+        with patch(
+            "core.capability_planner.auto_demote."
+            "plan_history.capability_degradations",
+            return_value=degs,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._fake_overrides(
+                demoted=["old_already"],
+            ),
+        ):
+            out = auto_demote.find_watchlist()
+        # Already demoted -> NOT in watchlist
+        assert out == []
+
+    def test_uses_default_thresholds(self):
+        # find_watchlist should always use 0.2 as the inner
+        # degradation threshold (not the bridge severe
+        # threshold) so the watching tier exists.
+        called = {}
+
+        def fake_degs(**kwargs):
+            called.update(kwargs)
+            return []
+
+        with patch(
+            "core.capability_planner.auto_demote."
+            "plan_history.capability_degradations",
+            side_effect=fake_degs,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._fake_overrides(),
+        ):
+            auto_demote.find_watchlist()
+        assert called["drop_threshold"] == 0.2
+
+    def test_threshold_overrides_passed_through(self):
+        called = {}
+
+        def fake_degs(**kwargs):
+            called.update(kwargs)
+            return []
+
+        with patch(
+            "core.capability_planner.auto_demote."
+            "plan_history.capability_degradations",
+            side_effect=fake_degs,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._fake_overrides(),
+        ):
+            auto_demote.find_watchlist(
+                recent_days=3,
+                baseline_days=14,
+                min_recent=5,
+            )
+        assert called["recent_window_seconds"] == 3 * 86400
+        assert (
+            called["baseline_window_seconds"] == 14 * 86400
+        )
+        assert called["min_recent_sample"] == 5
+
+
 class TestRecoveryThreshold:
 
     def test_default(self):

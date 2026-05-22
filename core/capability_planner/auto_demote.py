@@ -391,6 +391,68 @@ def annotate_degradations(
     return out
 
 
+def find_watchlist(
+    *,
+    recent_days: int | None = None,
+    baseline_days: int | None = None,
+    min_recent: int | None = None,
+) -> list[dict[str, Any]]:
+    """Read-only: capabilities approaching the bridge
+    threshold but not yet at it.
+
+    Calls ``capability_degradations`` with the default
+    operational drop threshold (0.2 -- the degradation
+    flag), then annotates each row and filters to just the
+    ``watching`` tier. The result is the operator's early-
+    warning surface: "these capabilities are regressing
+    but the bridge isn't acting yet -- investigate before
+    they cross severity."
+
+    Args:
+        recent_days: Recent window in days. Default:
+            env-tuned ``recent_window_days()``.
+        baseline_days: Baseline window in days. Default:
+            env-tuned ``baseline_window_days()``.
+        min_recent: Min recent sample size. Default:
+            env-tuned ``min_recent_sample()``.
+
+    Returns:
+        Each row carries the same fields as
+        ``capability_degradations`` plus
+        ``bridge_status="watching"``. Sorted highest-drop
+        first (same as upstream).
+    """
+    rec_days = (
+        recent_days if recent_days is not None
+        else recent_window_days()
+    )
+    base_days = (
+        baseline_days if baseline_days is not None
+        else baseline_window_days()
+    )
+    min_rec = (
+        min_recent if min_recent is not None
+        else min_recent_sample()
+    )
+
+    # Use the operational degradation threshold (0.2) not
+    # the bridge's severe threshold -- we want the wider
+    # set so we can extract the "below severe but above
+    # operational" subset.
+    degs = plan_history.capability_degradations(
+        recent_window_seconds=rec_days * 86400,
+        baseline_window_seconds=base_days * 86400,
+        min_recent_sample=min_rec,
+        min_baseline_sample=max(min_rec * 2, 5),
+        drop_threshold=0.2,
+    )
+    annotated = annotate_degradations(degs)
+    return [
+        r for r in annotated
+        if r.get("bridge_status") == "watching"
+    ]
+
+
 def find_release_candidates(
     *,
     recovery: float | None = None,

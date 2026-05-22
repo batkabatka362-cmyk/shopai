@@ -525,6 +525,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view.",
     )
 
+    cap_watchlist_p = capabilities_sub.add_parser(
+        "watchlist",
+        help=(
+            "Capabilities approaching but not yet at the "
+            "auto-demote threshold. Operator's early-"
+            "warning surface -- investigate before the "
+            "bridge acts."
+        ),
+    )
+    cap_watchlist_p.add_argument(
+        "--recent-days", type=int, default=None,
+        dest="recent_days",
+        help="Recent window in days (default: env-tuned or 7).",
+    )
+    cap_watchlist_p.add_argument(
+        "--baseline-days", type=int, default=None,
+        dest="baseline_days",
+        help="Baseline window in days (default: env-tuned or 30).",
+    )
+    cap_watchlist_p.add_argument(
+        "--min-recent", type=int, default=None,
+        dest="min_recent",
+        help="Min recent sample size (default: 3).",
+    )
+    cap_watchlist_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view.",
+    )
+
     cap_auto_release_p = capabilities_sub.add_parser(
         "auto-demote-release-candidates",
         help=(
@@ -13595,6 +13624,68 @@ capability_overrides import load_overrides
                 f"{r['executed_count']:<3})  "
                 f"{r['capability']}"
             )
+        return
+
+    if action == "watchlist":
+        try:
+            from core.capability_planner import auto_demote
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "watchlist: import failed: %s", exc,
+            )
+            print(f"watchlist unavailable: {exc}")
+            return
+        recent_days = getattr(args, "recent_days", None)
+        baseline_days = getattr(args, "baseline_days", None)
+        min_recent = getattr(args, "min_recent", None)
+
+        config = auto_demote.config_summary()
+        rows = auto_demote.find_watchlist(
+            recent_days=recent_days,
+            baseline_days=baseline_days,
+            min_recent=min_recent,
+        )
+
+        if as_json:
+            print(json.dumps({
+                "config": config,
+                "watchlist": rows,
+            }, indent=2, default=str))
+            return
+
+        print(
+            f"Capability watchlist "
+            f"(recent={config['recent_window_days']}d  "
+            f"baseline={config['baseline_window_days']}d  "
+            f"severe_threshold="
+            f"{config['drop_threshold']:.2f}):"
+        )
+        print()
+        if not rows:
+            print(
+                "No capabilities on the watchlist. The "
+                "substrate is healthy at the regression "
+                "level."
+            )
+            return
+        print(f"Watching ({len(rows)} capabilit(ies)):")
+        for r in rows:
+            base_pct = r["baseline_rate"] * 100
+            recent_pct = r["recent_rate"] * 100
+            drop_pp = r["drop"] * 100
+            print(
+                f"  {r['capability']}: "
+                f"{base_pct:.0f}% baseline -> "
+                f"{recent_pct:.0f}% recent "
+                f"(-{drop_pp:.0f}pp)  "
+                f"({r['recent_samples']} sample(s))"
+            )
+        print()
+        print(
+            "Tip: ``shopai capabilities show <name>`` for "
+            "details, or ``shopai capabilities reliability "
+            "--top 50`` for the full leaderboard."
+        )
         return
 
     if action == "auto-demote-release-candidates":
