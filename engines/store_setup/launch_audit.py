@@ -737,6 +737,19 @@ def _check_shop_identity() -> dict[str, Any]:
     if not isinstance(shop, dict):
         shop = {}
 
+    # Distinguish "shop unreachable" (router/auth failure)
+    # from "shop fields missing". The empty dict means the
+    # router call returned nothing -- almost always an OAuth
+    # / connection issue, not a 4-field-empty store.
+    if not shop:
+        return {
+            "key": "shop_identity",
+            "ok": False,
+            "applied": 0,
+            "expected": len(_REQUIRED_SHOP_FIELDS),
+            "missing": ["shop_unreachable"],
+        }
+
     missing: list[str] = []
     if not str(shop.get("name") or "").strip():
         missing.append("name")

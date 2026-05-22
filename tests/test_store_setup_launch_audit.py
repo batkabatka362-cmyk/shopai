@@ -1293,12 +1293,14 @@ class TestShopIdentityCheck:
         assert check["ok"] is False
         assert "primary_host" in check["missing"]
 
-    def test_router_failure_returns_all_missing(self):
-        """If SHOPIFY_GET_SHOP fails, every required field is
-        flagged so the operator sees the gap."""
+    def test_router_failure_returns_shop_unreachable(self):
+        """If SHOPIFY_GET_SHOP fails, the missing list is a
+        single 'shop_unreachable' marker rather than every
+        field -- helps operators distinguish auth/network
+        issues from 'store has empty fields'."""
         responses = dict(_ALL_GOOD)
         responses["shopify_get_shop"] = _fail()
         check = self._shop_check(self._run(responses))
         assert check["ok"] is False
         assert check["applied"] == 0
-        assert len(check["missing"]) == 4
+        assert check["missing"] == ["shop_unreachable"]
