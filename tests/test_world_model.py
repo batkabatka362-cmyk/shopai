@@ -1108,3 +1108,227 @@ class TestSectionQuarantine:
         # Section still renders; recent_alerts degrades to []
         assert sec["checked"] is True
         assert sec["recent_alerts"] == []
+
+
+class TestSectionSubstrate:
+    """``_section_substrate`` surfaces capability-layer
+    overrides + bridge config + degradation candidates."""
+
+    def _override(
+        self, name, kind="demote", reason="", at=0.0,
+    ):
+        from core.capability_planner.\
+capability_overrides import CapabilityOverride
+        return CapabilityOverride(
+            name=name, kind=kind, reason=reason,
+            recorded_at=at,
+        )
+
+    def _overrides_for(self, *entries):
+        from core.capability_planner.\
+capability_overrides import CapabilityOverrides
+        return CapabilityOverrides(entries=list(entries))
+
+    def test_empty_substrate_envelope(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=self._overrides_for(),
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=[],
+        ):
+            sec = wm._section_substrate()
+        assert sec["checked"] is True
+        assert sec["scope"] == "fleet"
+        assert sec["overrides"]["total"] == 0
+        assert sec["overrides"]["promoted"] == []
+        assert sec["overrides"]["demoted"] == []
+        assert sec["overrides"]["auto_demoted"] == []
+        assert sec["demote_candidates"] == 0
+        assert sec["release_candidates"] == 0
+        assert sec["recent_degradations"] == []
+        assert sec["bridge"]["enabled"] is False
+        assert (
+            sec["bridge"]["recovery_threshold"] == 0.7
+        )
+
+    def test_overrides_populate_separated(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        overrides = self._overrides_for(
+            self._override(
+                "winner", kind="promote",
+                reason="beauty niche", at=100.0,
+            ),
+            self._override(
+                "regressed",
+                reason="auto_demote_degraded: drop=0.6 ...",
+                at=200.0,
+            ),
+            self._override(
+                "manual_broken",
+                reason="operator says",
+                at=300.0,
+            ),
+        )
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=overrides,
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=[],
+        ):
+            sec = wm._section_substrate()
+        assert sec["overrides"]["total"] == 3
+        assert len(sec["overrides"]["promoted"]) == 1
+        assert (
+            sec["overrides"]["promoted"][0]["name"]
+            == "winner"
+        )
+        assert len(sec["overrides"]["demoted"]) == 2
+        # Bridge-driven demote separated into auto bucket
+        assert len(sec["overrides"]["auto_demoted"]) == 1
+        assert (
+            sec["overrides"]["auto_demoted"][0]["name"]
+            == "regressed"
+        )
+
+    def test_demote_candidates_filters_blocked(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        candidates = [
+            {
+                "capability": "cap_a",
+                "blocked_by": None,
+            },
+            {
+                "capability": "cap_b",
+                "blocked_by": "promoted",
+            },
+            {
+                "capability": "cap_c",
+                "blocked_by": "already_demoted",
+            },
+        ]
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=self._overrides_for(),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=candidates,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ):
+            sec = wm._section_substrate()
+        # Only the unblocked candidate counted
+        assert sec["demote_candidates"] == 1
+
+    def test_recent_degradations_capped_at_5(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        degs = [
+            {
+                "capability": f"cap_{i}",
+                "baseline_rate": 0.9,
+                "recent_rate": 0.1,
+                "drop": 0.8,
+                "recent_samples": 5,
+                "baseline_samples": 20,
+            }
+            for i in range(8)
+        ]
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=self._overrides_for(),
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=degs,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=[],
+        ):
+            sec = wm._section_substrate()
+        assert len(sec["recent_degradations"]) == 5
+
+    def test_load_failure_fails_open(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            side_effect=RuntimeError("disk corrupt"),
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=[],
+        ):
+            sec = wm._section_substrate()
+        assert sec["checked"] is True
+        # Overrides empty (couldn't load) but section
+        # remains usable
+        assert sec["overrides"]["total"] == 0
+
+    def test_section_appears_in_full_snapshot(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external(), patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=self._overrides_for(),
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=[],
+        ):
+            snap = wm.snapshot("test-store", skip_live=True)
+        assert "substrate" in snap
+        assert snap["substrate"]["checked"] is True
+        assert snap["substrate"]["scope"] == "fleet"

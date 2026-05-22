@@ -6980,6 +6980,69 @@ def _cmd_world_model_show(args) -> None:
                         f"{', '.join(this_released)}"
                     )
 
+    # Substrate section (capability-layer self-defense).
+    substrate = snap.get("substrate") or {}
+    if substrate.get("checked"):
+        overrides = substrate.get("overrides") or {}
+        bridge = substrate.get("bridge") or {}
+        n_total = overrides.get("total", 0)
+        n_promote = len(overrides.get("promoted") or [])
+        n_demote = len(overrides.get("demoted") or [])
+        n_auto = len(overrides.get("auto_demoted") or [])
+        n_demote_cand = substrate.get("demote_candidates", 0)
+        n_release_cand = substrate.get(
+            "release_candidates", 0,
+        )
+        degrades = substrate.get("recent_degradations") or []
+        # Only render when there's something to say -- a
+        # healthy substrate with no overrides + no
+        # degradations stays silent in the text view.
+        if (
+            n_total > 0
+            or n_demote_cand > 0
+            or n_release_cand > 0
+            or degrades
+        ):
+            print()
+            print("Substrate (fleet-wide):")
+            if bridge:
+                gate = (
+                    "ON" if bridge.get("enabled") else "OFF"
+                )
+                print(
+                    f"  Bridge: gate {gate}  "
+                    f"drop>={bridge.get('drop_threshold', 0.4):.2f}  "
+                    f"recovery>="
+                    f"{bridge.get('recovery_threshold', 0.7):.2f}"
+                )
+            if n_total > 0:
+                print(
+                    f"  Overrides ({n_total}): "
+                    f"{n_promote} promote, "
+                    f"{n_demote} demote ({n_auto} auto)"
+                )
+            if n_demote_cand or n_release_cand:
+                print(
+                    f"  Candidates: "
+                    f"{n_demote_cand} would-demote, "
+                    f"{n_release_cand} would-release"
+                )
+            if degrades:
+                print(
+                    f"  Recent degradations "
+                    f"({len(degrades)}):"
+                )
+                for d in degrades[:3]:
+                    base_pct = d["baseline_rate"] * 100
+                    recent_pct = d["recent_rate"] * 100
+                    drop_pp = d["drop"] * 100
+                    print(
+                        f"    {d['capability']}: "
+                        f"{base_pct:.0f}% -> "
+                        f"{recent_pct:.0f}% "
+                        f"(-{drop_pp:.0f}pp)"
+                    )
+
 
 def _cmd_model_router(args) -> None:
     """Dispatcher for ``shopai model-router <verb>``."""

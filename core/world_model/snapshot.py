@@ -763,6 +763,145 @@ class WorldModel:
             "bridge": bridge,
         }
 
+    def _section_substrate(self) -> dict:
+        """Capability-layer self-defense state.
+
+        Surfaces operator + bridge-driven capability overrides
+        alongside the auto-demote bridge config + recovery
+        candidate count. The complement of
+        ``_section_quarantine`` (which is engine-level): this
+        is capability-level.
+
+        Fleet-wide by design -- capability overrides currently
+        apply across all stores. When per-store overrides land
+        (parallel to per-store alert_paused), this section will
+        gain a ``for_this_store`` sub-block mirroring the
+        quarantine pattern.
+
+        Fail-open: any subsystem missing -> the corresponding
+        field becomes ``None`` and the section stays
+        ``checked: True`` so the snapshot remains usable.
+        """
+        out: dict = {
+            "checked": True,
+            "scope": "fleet",
+            "overrides": {
+                "total": 0,
+                "promoted": [],
+                "demoted": [],
+                "auto_demoted": [],
+            },
+            "bridge": None,
+            "demote_candidates": 0,
+            "release_candidates": 0,
+            "recent_degradations": [],
+        }
+
+        try:
+            from core.capability_planner import (
+                capability_overrides as _cap_overrides,
+            )
+            loaded = _cap_overrides.load_overrides()
+            promoted_rows: list[dict] = []
+            demoted_rows: list[dict] = []
+            auto_rows: list[dict] = []
+            for entry in loaded.entries:
+                row = {
+                    "name": entry.name,
+                    "reason": entry.reason or "",
+                    "recorded_at": entry.recorded_at,
+                }
+                if entry.kind == "promote":
+                    promoted_rows.append(row)
+                else:
+                    demoted_rows.append(row)
+                    if entry.reason.startswith(
+                        "auto_demote_degraded",
+                    ):
+                        auto_rows.append(row)
+            out["overrides"] = {
+                "total": len(loaded.entries),
+                "promoted": promoted_rows,
+                "demoted": demoted_rows,
+                "auto_demoted": auto_rows,
+            }
+        except ImportError as exc:
+            logger.debug(
+                "world_model substrate overrides import "
+                "failed: %s", exc,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model substrate overrides readout "
+                "raised: %s", exc,
+            )
+
+        try:
+            from core.capability_planner import auto_demote
+            out["bridge"] = auto_demote.config_summary()
+            # Read-only previews -- safe to call regardless
+            # of env gate. Counts only; full rows live in
+            # the dedicated CLI surfaces.
+            try:
+                out["demote_candidates"] = len(
+                    [
+                        c for c in
+                        auto_demote.find_demote_candidates()
+                        if c.get("blocked_by") is None
+                    ],
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "world_model substrate demote "
+                    "candidates raised: %s", exc,
+                )
+            try:
+                out["release_candidates"] = len(
+                    auto_demote.find_release_candidates(),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "world_model substrate release "
+                    "candidates raised: %s", exc,
+                )
+        except ImportError as exc:
+            logger.debug(
+                "world_model substrate bridge import "
+                "failed: %s", exc,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model substrate bridge readout "
+                "raised: %s", exc,
+            )
+
+        # Recent capability degradations -- the input to the
+        # bridge. Capped at 5 so the snapshot stays
+        # inspectable. Even when the bridge env-gate is OFF,
+        # operators see "these capabilities are regressing"
+        # in the same surface.
+        try:
+            from core.capability_planner import (
+                capability_degradations,
+            )
+            degs = capability_degradations(
+                recent_window_seconds=86400 * 7,
+                baseline_window_seconds=86400 * 30,
+            )
+            out["recent_degradations"] = degs[:5]
+        except ImportError as exc:
+            logger.debug(
+                "world_model substrate degradations "
+                "import failed: %s", exc,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model substrate degradations "
+                "readout raised: %s", exc,
+            )
+
+        return out
+
     # ── Public API ──────────────────────────────────────────
 
     def snapshot(
@@ -823,6 +962,7 @@ class WorldModel:
         )
         quarantine = self._section_quarantine(store_id=store_id)
         fleet_health = self._section_fleet_health()
+        substrate = self._section_substrate()
 
         return {
             "store_id": store_id,
@@ -839,6 +979,7 @@ class WorldModel:
             "recent_outcomes": recent_outcomes,
             "quarantine": quarantine,
             "fleet_health": fleet_health,
+            "substrate": substrate,
         }
 
 
