@@ -8607,6 +8607,23 @@ def _cmd_world_model_fleet(args) -> None:
                 f"  *** {len(chronics)} chronic warning(s): "
                 f"{top_str}{more} ***"
             )
+        outcome_alerts = (
+            cycle_sec.get("engine_outcome_alerts") or []
+        )
+        if outcome_alerts:
+            top = outcome_alerts[:3]
+            top_str = ", ".join(
+                f"{a['engine']}(-{a['drop']:.2f})"
+                for a in top
+            )
+            more = (
+                f" +{len(outcome_alerts) - 3} more"
+                if len(outcome_alerts) > 3 else ""
+            )
+            print(
+                f"  *** {len(outcome_alerts)} engine "
+                f"outcome alert(s): {top_str}{more} ***"
+            )
         break
     print()
     # Add READY column when launch-readiness opted in.
