@@ -769,6 +769,49 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the raw brief as JSON.",
     )
 
+    # ── Autonomous cycle -- bundled operator workflow ───────
+    autonomous_p = sub.add_parser(
+        "autonomous-cycle",
+        help=(
+            "Run the autonomous-loop cycle: advance the "
+            "fleet via fleet-plan --execute, then measure "
+            "outcomes via plan --auto-correlate. The "
+            "single-command 'do the autonomous bit' for "
+            "cron schedules. Refuses writes unless --yes "
+            "AND --require-reliable (or "
+            "SHOPAI_AUTONOMOUS_FORCE=1) is set."
+        ),
+    )
+    autonomous_p.add_argument(
+        "--yes", action="store_true",
+        help=(
+            "Actually execute. Default is dry-run preview "
+            "of both phases."
+        ),
+    )
+    autonomous_p.add_argument(
+        "--skip-correlate", action="store_true",
+        dest="skip_correlate",
+        help=(
+            "Run only the advance phase, skip outcome "
+            "correlation. Useful when scheduling "
+            "advance + correlate on different timers."
+        ),
+    )
+    autonomous_p.add_argument(
+        "--skip-advance", action="store_true",
+        dest="skip_advance",
+        help=(
+            "Run only the correlate phase, skip fleet "
+            "advance. Use when advance is on a separate "
+            "schedule + you just want outcome updates."
+        ),
+    )
+    autonomous_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON cycle summary.",
+    )
+
     # ── Fleet plan -- empire-scale planning surface ─────────
     fleet_plan_p = sub.add_parser(
         "fleet-plan",
@@ -11806,6 +11849,222 @@ def _cmd_plan(args) -> None:
             print(f"  - {n}")
 
 
+def _cmd_autonomous_cycle(args) -> None:
+    """Bundled autonomous loop. Runs two phases in
+    sequence:
+
+      1. ADVANCE: fleet-plan --execute --require-reliable
+         (with --yes when supplied). Tries to advance every
+         store via reliability-gated plan execution.
+      2. MEASURE: plan --auto-correlate. Updates the
+         outcome of past plans whose measurement window
+         has expired.
+
+    Cron-friendly: a single ``shopai autonomous-cycle
+    --yes`` call advances + measures the fleet. The two
+    phases are decoupled (``--skip-advance`` /
+    ``--skip-correlate`` flags) so operators can wire
+    different schedules if needed.
+
+    Refuses to actually write unless --yes is set --
+    default is a dry-run preview that shows what would
+    happen across the fleet.
+    """
+    as_json = bool(getattr(args, "json", False))
+    yes = bool(getattr(args, "yes", False))
+    skip_advance = bool(
+        getattr(args, "skip_advance", False),
+    )
+    skip_correlate = bool(
+        getattr(args, "skip_correlate", False),
+    )
+
+    summary: dict[str, Any] = {
+        "executed": yes,
+        "advance": None,
+        "correlate": None,
+    }
+
+    # ── Advance phase ──────────────────────────────────
+    if not skip_advance:
+        try:
+            sm = _get_store_manager()
+            stores = sm.list_stores() or []
+        except Exception as exc:  # noqa: BLE001
+            stores = []
+            logger.debug(
+                "autonomous-cycle: list_stores raised: %s",
+                exc,
+            )
+
+        try:
+            from core.capability_planner import (
+                plan_for_audit_gaps,
+            )
+            from core.context import active_store
+            from engines.store_setup.launch_audit import (
+                audit_store,
+            )
+        except Exception as exc:  # noqa: BLE001
+            summary["advance"] = {
+                "error": f"import_failed: {exc}",
+            }
+        else:
+            stores_processed = 0
+            executed_ok = 0
+            refused = 0
+            errored = 0
+            for s in stores:
+                sid = s.get("store_id") or ""
+                if not sid:
+                    continue
+                stores_processed += 1
+                try:
+                    with active_store(sid):
+                        audit = audit_store(
+                            store_id=sid,
+                        )
+                        failing = [
+                            c.get("key", "")
+                            for c in (
+                                audit.get("checks") or []
+                            )
+                            if not c.get("ok")
+                        ]
+                        plan = plan_for_audit_gaps(failing)
+                except Exception as exc:  # noqa: BLE001
+                    errored += 1
+                    logger.debug(
+                        "autonomous-cycle advance: "
+                        "store %s raised: %s", sid, exc,
+                    )
+                    continue
+                if not plan or not plan.steps:
+                    continue
+                ex = _fleet_execute_one_store(
+                    sid=sid,
+                    plan=plan,
+                    yes=yes,
+                    require_reliable=True,
+                )
+                if ex.get("refused") == "reliability":
+                    refused += 1
+                elif ex.get("error"):
+                    errored += 1
+                elif ex.get("ok"):
+                    executed_ok += 1
+            summary["advance"] = {
+                "stores_processed": stores_processed,
+                "executed_ok": executed_ok,
+                "refused_reliability": refused,
+                "errored": errored,
+            }
+
+    # ── Measure phase ──────────────────────────────────
+    if not skip_correlate:
+        try:
+            from core.capability_planner import (
+                correlate_outcome_by_stats,
+                recent_history,
+            )
+        except Exception as exc:  # noqa: BLE001
+            summary["correlate"] = {
+                "error": f"import_failed: {exc}",
+            }
+        else:
+            sm = _get_store_manager()
+            events = recent_history(
+                since_seconds=86400 * 90,
+            )
+            now = time.time()
+            UNCORRELATED = {"", "executed_ok"}
+            stats_cache: dict[str, dict[str, Any]] = {}
+            candidates = 0
+            correlated = 0
+            outcomes: dict[str, int] = {}
+            for e in events:
+                ts = float(e.get("timestamp", 0) or 0)
+                if (now - ts) < 86400:
+                    continue
+                if not e.get("executed"):
+                    continue
+                outcome = str(e.get("outcome") or "")
+                if outcome not in UNCORRELATED:
+                    continue
+                if not (e.get("pre_stats") or {}):
+                    continue
+                candidates += 1
+                sid = e.get("store_id", "") or ""
+                if sid not in stats_cache:
+                    try:
+                        stats_cache[sid] = (
+                            sm.get_stats(sid) or {}
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "autonomous-cycle measure: "
+                            "get_stats raised: %s",
+                            exc,
+                        )
+                        stats_cache[sid] = {}
+                result = correlate_outcome_by_stats(
+                    e.get("event_id", ""),
+                    stats_cache[sid],
+                )
+                if result.get("ok"):
+                    correlated += 1
+                    oc = str(result.get("outcome") or "")
+                    outcomes[oc] = outcomes.get(oc, 0) + 1
+            summary["correlate"] = {
+                "candidates": candidates,
+                "correlated": correlated,
+                "by_outcome": outcomes,
+            }
+
+    if as_json:
+        print(json.dumps(summary, indent=2, default=str))
+        return
+
+    mode = "EXECUTED" if yes else "DRY-RUN"
+    print(f"Autonomous cycle -- {mode}")
+    print()
+    adv = summary.get("advance")
+    if adv:
+        if adv.get("error"):
+            print(f"  Advance: ERROR ({adv['error']})")
+        else:
+            print(
+                f"  Advance: "
+                f"{adv['executed_ok']} ok / "
+                f"{adv['refused_reliability']} refused / "
+                f"{adv['errored']} errored "
+                f"({adv['stores_processed']} store(s))"
+            )
+    cor = summary.get("correlate")
+    if cor:
+        if cor.get("error"):
+            print(f"  Measure: ERROR ({cor['error']})")
+        else:
+            outcomes_str = ", ".join(
+                f"{k}={v}"
+                for k, v in cor.get(
+                    "by_outcome", {},
+                ).items()
+            ) or "(no outcomes recorded)"
+            print(
+                f"  Measure: "
+                f"{cor['correlated']}/"
+                f"{cor['candidates']} correlated  "
+                f"{outcomes_str}"
+            )
+    if not yes:
+        print()
+        print(
+            "Dry-run only. Pass --yes to actually advance "
+            "the fleet + persist correlation outcomes."
+        )
+
+
 def _fleet_execute_one_store(
     *,
     sid: str,
@@ -21297,6 +21556,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "fleet-plan":
         _cmd_fleet_plan(args)
+        return
+
+    if args.command == "autonomous-cycle":
+        _cmd_autonomous_cycle(args)
         return
 
     if args.command == "launch":
