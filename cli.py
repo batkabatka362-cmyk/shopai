@@ -1099,6 +1099,34 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     autonomous_p.add_argument(
+        "--set-threshold", type=float, default=None,
+        dest="set_threshold",
+        help=(
+            "Persist a new auto-execute reliability "
+            "threshold (0.0-1.0). Survives restarts; the "
+            "controller's _compute_auto_execute_eligibility "
+            "reads this BEFORE the env var. Use to relax "
+            "when low_advance_rate has been firing."
+        ),
+    )
+    autonomous_p.add_argument(
+        "--clear-threshold", action="store_true",
+        dest="clear_threshold",
+        help=(
+            "Remove the persistent threshold override so "
+            "the env var (or default 0.9) takes over again."
+        ),
+    )
+    autonomous_p.add_argument(
+        "--show-thresholds", action="store_true",
+        dest="show_thresholds",
+        help=(
+            "Read-only: show the effective thresholds "
+            "(override > env > default) the controller "
+            "would use."
+        ),
+    )
+    autonomous_p.add_argument(
         "--emit-cron", action="store_true",
         dest="emit_cron",
         help=(
@@ -13095,6 +13123,110 @@ def _cmd_autonomous_cycle(args) -> None:
     skip_defend = bool(
         getattr(args, "skip_defend", False),
     )
+
+    # --show-thresholds is a read-only inspector.
+    if bool(getattr(args, "show_thresholds", False)):
+        try:
+            from core.autonomous import (
+                cycle_overrides as _co,
+            )
+            data = {
+                "auto_execute_threshold": (
+                    _co.resolve_threshold()
+                ),
+                "auto_execute_min_sample": (
+                    _co.resolve_min_sample()
+                ),
+                "overrides_file": _co.load_overrides(),
+            }
+        except Exception as exc:  # noqa: BLE001
+            data = {"error": str(exc)}
+        if as_json:
+            print(json.dumps(data, indent=2, default=str))
+        else:
+            print("Effective cycle thresholds:")
+            print(
+                f"  auto_execute_threshold: "
+                f"{data.get('auto_execute_threshold')}"
+            )
+            print(
+                f"  auto_execute_min_sample: "
+                f"{data.get('auto_execute_min_sample')}"
+            )
+            ovr = data.get("overrides_file") or {}
+            if ovr:
+                print("  Active overrides:")
+                for k, v in ovr.items():
+                    print(f"    {k} = {v}")
+            else:
+                print(
+                    "  (no overrides set; using env / "
+                    "defaults)"
+                )
+        return
+
+    # --set-threshold writes a persistent override.
+    if getattr(args, "set_threshold", None) is not None:
+        new_val = float(args.set_threshold)
+        if new_val < 0.0 or new_val > 1.0:
+            print(
+                f"Threshold must be in [0.0, 1.0]: "
+                f"{new_val}"
+            )
+            sys.exit(1)
+            return
+        try:
+            from core.autonomous import (
+                cycle_overrides as _co,
+            )
+            ok = _co.set_override(
+                "auto_execute_threshold", new_val,
+            )
+            if as_json:
+                print(json.dumps({
+                    "ok": ok,
+                    "key": "auto_execute_threshold",
+                    "value": new_val,
+                }, indent=2))
+            elif ok:
+                print(
+                    f"Persisted auto_execute_threshold = "
+                    f"{new_val}"
+                )
+            else:
+                print(
+                    "Set failed (test environment or I/O)."
+                )
+        except Exception as exc:  # noqa: BLE001
+            print(f"set-threshold failed: {exc}")
+        return
+
+    # --clear-threshold removes the persistent override.
+    if bool(getattr(args, "clear_threshold", False)):
+        try:
+            from core.autonomous import (
+                cycle_overrides as _co,
+            )
+            ok = _co.clear_override(
+                "auto_execute_threshold",
+            )
+            if as_json:
+                print(json.dumps({
+                    "ok": ok,
+                    "key": "auto_execute_threshold",
+                }, indent=2))
+            elif ok:
+                print(
+                    "Cleared auto_execute_threshold "
+                    "override."
+                )
+            else:
+                print(
+                    "Nothing to clear (or test env)."
+                )
+        except Exception as exc:  # noqa: BLE001
+            print(f"clear-threshold failed: {exc}")
+        return
 
     # --clear-alerts wipes the persistent log and returns.
     # Operator escape hatch after addressing an underlying

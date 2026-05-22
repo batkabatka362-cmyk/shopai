@@ -333,23 +333,33 @@ def _compute_auto_execute_eligibility(
     Best-effort: any plan_history lookup error -> all
     steps reported as ineligible without raising.
     """
-    import os as _os
+    # Layered lookup: persistent overrides file > env var
+    # > default. Lets operators (and the future auto-relax
+    # bridge) nudge thresholds without restarting the
+    # process. Fail-open if the overrides module is
+    # missing (older deployments).
     try:
-        threshold = float(
-            _os.environ.get(
-                "SHOPAI_AUTO_EXECUTE_THRESHOLD", "0.9",
-            ),
-        )
-    except (ValueError, TypeError):
-        threshold = 0.9
-    try:
-        min_sample = int(
-            _os.environ.get(
-                "SHOPAI_AUTO_EXECUTE_MIN_SAMPLE", "5",
-            ),
-        )
-    except (ValueError, TypeError):
-        min_sample = 5
+        from core.autonomous import cycle_overrides as _co
+        threshold = _co.resolve_threshold()
+        min_sample = _co.resolve_min_sample()
+    except Exception:  # noqa: BLE001
+        import os as _os
+        try:
+            threshold = float(
+                _os.environ.get(
+                    "SHOPAI_AUTO_EXECUTE_THRESHOLD", "0.9",
+                ),
+            )
+        except (ValueError, TypeError):
+            threshold = 0.9
+        try:
+            min_sample = int(
+                _os.environ.get(
+                    "SHOPAI_AUTO_EXECUTE_MIN_SAMPLE", "5",
+                ),
+            )
+        except (ValueError, TypeError):
+            min_sample = 5
 
     steps_info: list[dict[str, Any]] = []
     eligible_count = 0

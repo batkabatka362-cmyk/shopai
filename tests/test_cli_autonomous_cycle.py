@@ -69,6 +69,9 @@ def _ns(**kw):
         emit_cron=False,
         cron_format="crontab",
         cron_interval="30m",
+        set_threshold=None,
+        clear_threshold=False,
+        show_thresholds=False,
         json=False,
     )
     defaults.update(kw)
@@ -939,6 +942,120 @@ class TestClearAlerts:
             )
         data = json.loads(out)
         assert data == {"status": "cleared"}
+
+
+class TestThresholdOverrides:
+    """``--set-threshold`` / ``--clear-threshold`` /
+    ``--show-thresholds`` operator surface for the
+    persistent override file."""
+
+    def test_show_thresholds_text(self, cli):
+        with patch(
+            "core.autonomous.cycle_overrides."
+            "resolve_threshold",
+            return_value=0.75,
+        ), patch(
+            "core.autonomous.cycle_overrides."
+            "resolve_min_sample",
+            return_value=4,
+        ), patch(
+            "core.autonomous.cycle_overrides."
+            "load_overrides",
+            return_value={"auto_execute_threshold": 0.75},
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(show_thresholds=True),
+            )
+        assert "auto_execute_threshold: 0.75" in out
+        assert "auto_execute_min_sample: 4" in out
+
+    def test_show_thresholds_json(self, cli):
+        with patch(
+            "core.autonomous.cycle_overrides."
+            "resolve_threshold",
+            return_value=0.5,
+        ), patch(
+            "core.autonomous.cycle_overrides."
+            "resolve_min_sample",
+            return_value=3,
+        ), patch(
+            "core.autonomous.cycle_overrides."
+            "load_overrides",
+            return_value={},
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(show_thresholds=True, json=True),
+            )
+        data = json.loads(out)
+        assert data["auto_execute_threshold"] == 0.5
+        assert data["auto_execute_min_sample"] == 3
+        assert data["overrides_file"] == {}
+
+    def test_set_threshold_persists(self, cli):
+        with patch(
+            "core.autonomous.cycle_overrides."
+            "set_override",
+            return_value=True,
+        ) as mock_set:
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(set_threshold=0.6),
+            )
+        mock_set.assert_called_once_with(
+            "auto_execute_threshold", 0.6,
+        )
+        assert "Persisted" in out
+        assert "0.6" in out
+
+    def test_set_threshold_out_of_range_exits_1(
+        self, cli,
+    ):
+        out, code = _capture(
+            cli._cmd_autonomous_cycle,
+            _ns(set_threshold=1.5),
+        )
+        assert code == 1
+        assert "must be in [0.0, 1.0]" in out
+
+    def test_clear_threshold(self, cli):
+        with patch(
+            "core.autonomous.cycle_overrides."
+            "clear_override",
+            return_value=True,
+        ) as mock_clear:
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(clear_threshold=True),
+            )
+        mock_clear.assert_called_once_with(
+            "auto_execute_threshold",
+        )
+        assert "Cleared" in out
+
+    def test_threshold_flags_skip_cycle_run(self, cli):
+        sm = _fake_sm([{"store_id": "a"}])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ) as mock_sm, patch(
+            "core.autonomous.cycle_overrides."
+            "resolve_threshold",
+            return_value=0.9,
+        ), patch(
+            "core.autonomous.cycle_overrides."
+            "resolve_min_sample",
+            return_value=5,
+        ), patch(
+            "core.autonomous.cycle_overrides."
+            "load_overrides",
+            return_value={},
+        ):
+            _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(show_thresholds=True),
+            )
+        mock_sm.assert_not_called()
 
 
 class TestIntervalParser:
