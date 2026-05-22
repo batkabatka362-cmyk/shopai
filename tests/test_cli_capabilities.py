@@ -71,6 +71,10 @@ def _ns(**kw):
         min_sample_size=2,
         top=20,
         reason="",
+        drop=None,
+        min_recent=None,
+        recent_days=None,
+        baseline_days=None,
         json=False,
     )
     defaults.update(kw)
@@ -721,3 +725,209 @@ class TestEndToEnd:
         )
         assert code == 0
         assert "apply_starter_products" in out
+
+
+class TestAutoDemoteDegraded:
+    """``shopai capabilities auto-demote-degraded`` --
+    bridge that auto-demotes regressed capabilities."""
+
+    def _sample_candidates(self):
+        return [
+            {
+                "capability": "cap_a",
+                "baseline_rate": 0.9,
+                "recent_rate": 0.2,
+                "drop": 0.7,
+                "recent_samples": 4,
+                "baseline_samples": 20,
+                "blocked_by": None,
+            },
+            {
+                "capability": "cap_b_promoted",
+                "baseline_rate": 0.8,
+                "recent_rate": 0.2,
+                "drop": 0.6,
+                "recent_samples": 3,
+                "baseline_samples": 15,
+                "blocked_by": "promoted",
+            },
+        ]
+
+    def _config(self, enabled=False):
+        return {
+            "enabled": enabled,
+            "drop_threshold": 0.4,
+            "min_recent_sample": 3,
+            "recent_window_days": 7,
+            "baseline_window_days": 30,
+        }
+
+    def test_dry_run_default_shows_candidates(self, cli):
+        with patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=self._sample_candidates(),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value=self._config(enabled=False),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "maybe_auto_demote_degraded",
+            return_value=[],
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="auto-demote-degraded",
+                ),
+            )
+        assert code == 0
+        assert "DRY-RUN" in out
+        assert "OFF" in out
+        assert "cap_a" in out
+        assert "cap_b_promoted" in out
+        assert "SKIP: promoted" in out
+        assert "Dry-run only" in out
+
+    def test_dry_run_json_envelope(self, cli):
+        with patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=self._sample_candidates(),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value=self._config(enabled=True),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "maybe_auto_demote_degraded",
+            return_value=[],
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="auto-demote-degraded",
+                    json=True,
+                ),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data["applied"] is False
+        assert data["config"]["enabled"] is True
+        assert len(data["candidates"]) == 2
+        assert data["demoted"] == []
+
+    def test_yes_applies_when_gate_on(self, cli):
+        applied_rows = [{
+            "capability": "cap_a",
+            "drop": 0.7,
+            "baseline_rate": 0.9,
+            "recent_rate": 0.2,
+            "recent_samples": 4,
+            "baseline_samples": 20,
+            "reason": "auto_demote_degraded: drop=0.700 ...",
+        }]
+        with patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=self._sample_candidates(),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value=self._config(enabled=True),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "maybe_auto_demote_degraded",
+            return_value=applied_rows,
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="auto-demote-degraded",
+                    yes=True,
+                ),
+            )
+        assert code == 0
+        assert "APPLIED" in out
+        assert "Demoted 1" in out
+        assert "cap_a" in out
+
+    def test_yes_without_gate_explains(self, cli):
+        with patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=self._sample_candidates(),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value=self._config(enabled=False),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "maybe_auto_demote_degraded",
+            return_value=[],
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="auto-demote-degraded",
+                    yes=True,
+                ),
+            )
+        assert code == 0
+        assert "APPLIED" in out
+        assert "bridge gate is OFF" in out
+        assert "SHOPAI_AUTO_DEMOTE_DEGRADED=1" in out
+
+    def test_no_candidates_friendly(self, cli):
+        with patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value=self._config(enabled=True),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="auto-demote-degraded",
+                ),
+            )
+        assert code == 0
+        assert "No degradation candidates" in out
+
+    def test_threshold_overrides_passed_through(self, cli):
+        calls = {}
+
+        def fake_find(**kwargs):
+            calls.update(kwargs)
+            return []
+
+        with patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            side_effect=fake_find,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value=self._config(enabled=True),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="auto-demote-degraded",
+                    drop=0.55,
+                    min_recent=5,
+                    recent_days=3,
+                    baseline_days=14,
+                ),
+            )
+        assert code == 0
+        assert calls == {
+            "drop": 0.55,
+            "min_recent": 5,
+            "recent_days": 3,
+            "baseline_days": 14,
+        }

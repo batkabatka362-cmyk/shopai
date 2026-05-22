@@ -61,6 +61,7 @@ from .plan_history import (
     recent_history,
     successful_plans,
 )
+from . import auto_demote
 
 __all__ = [
     "Plan",
@@ -81,4 +82,5 @@ __all__ = [
     "capability_degradations",
     "correlate_outcome_by_stats",
     "clear_plan_history",
+    "auto_demote",
 ]

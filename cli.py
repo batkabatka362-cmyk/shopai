@@ -525,6 +525,64 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view.",
     )
 
+    cap_auto_demote_p = capabilities_sub.add_parser(
+        "auto-demote-degraded",
+        help=(
+            "Bridge the capability-degradation detector to "
+            "the operator-overrides system. Severely-"
+            "regressed capabilities self-demote so future "
+            "plans stop seeding them. Default: dry-run "
+            "preview (always computes regardless of env "
+            "gate); --yes applies the demotes (still "
+            "requires SHOPAI_AUTO_DEMOTE_DEGRADED=1)."
+        ),
+    )
+    cap_auto_demote_p.add_argument(
+        "--yes", action="store_true",
+        help=(
+            "Apply auto-demotes. Without --yes, the command "
+            "is a dry-run preview. Even with --yes, requires "
+            "SHOPAI_AUTO_DEMOTE_DEGRADED=1 to actually flip "
+            "the override file."
+        ),
+    )
+    cap_auto_demote_p.add_argument(
+        "--drop", type=float, default=None,
+        help=(
+            "Override drop threshold (default: env-tuned "
+            "SHOPAI_AUTO_DEMOTE_DROP_THRESHOLD or 0.4)."
+        ),
+    )
+    cap_auto_demote_p.add_argument(
+        "--min-recent", type=int, default=None,
+        dest="min_recent",
+        help=(
+            "Override min recent-window sample size (default: "
+            "env-tuned SHOPAI_AUTO_DEMOTE_MIN_RECENT_SAMPLE "
+            "or 3)."
+        ),
+    )
+    cap_auto_demote_p.add_argument(
+        "--recent-days", type=int, default=None,
+        dest="recent_days",
+        help=(
+            "Override recent window in days (default: "
+            "env-tuned or 7)."
+        ),
+    )
+    cap_auto_demote_p.add_argument(
+        "--baseline-days", type=int, default=None,
+        dest="baseline_days",
+        help=(
+            "Override baseline window in days (default: "
+            "env-tuned or 30)."
+        ),
+    )
+    cap_auto_demote_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view.",
+    )
+
     cap_run_p = capabilities_sub.add_parser(
         "run",
         help=(
@@ -13145,6 +13203,109 @@ capability_overrides import load_overrides
                 f"({r['success_count']:>3}/"
                 f"{r['executed_count']:<3})  "
                 f"{r['capability']}"
+            )
+        return
+
+    if action == "auto-demote-degraded":
+        try:
+            from core.capability_planner import auto_demote
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "auto-demote-degraded: import failed: %s",
+                exc,
+            )
+            print(
+                f"auto-demote-degraded unavailable: {exc}"
+            )
+            return
+        yes = bool(getattr(args, "yes", False))
+        drop = getattr(args, "drop", None)
+        min_recent = getattr(args, "min_recent", None)
+        recent_days = getattr(args, "recent_days", None)
+        baseline_days = getattr(args, "baseline_days", None)
+
+        config = auto_demote.config_summary()
+        candidates = auto_demote.find_demote_candidates(
+            drop=drop,
+            min_recent=min_recent,
+            recent_days=recent_days,
+            baseline_days=baseline_days,
+        )
+
+        if yes:
+            applied = auto_demote.maybe_auto_demote_degraded(
+                drop=drop,
+                min_recent=min_recent,
+                recent_days=recent_days,
+                baseline_days=baseline_days,
+            )
+        else:
+            applied = []
+
+        if as_json:
+            print(json.dumps({
+                "applied": yes,
+                "config": config,
+                "candidates": candidates,
+                "demoted": applied,
+            }, indent=2, default=str))
+            return
+
+        # Text view
+        mode = "APPLIED" if yes else "DRY-RUN"
+        gate = "ON" if config["enabled"] else "OFF (env gate)"
+        print(
+            f"auto-demote-degraded ({mode}) — bridge gate: "
+            f"{gate}"
+        )
+        print(
+            f"  drop_threshold={config['drop_threshold']:.2f}  "
+            f"min_recent={config['min_recent_sample']}  "
+            f"recent={config['recent_window_days']}d  "
+            f"baseline={config['baseline_window_days']}d"
+        )
+        print()
+        if not candidates:
+            print(
+                "No degradation candidates above threshold."
+            )
+            return
+        print(f"Candidates ({len(candidates)}):")
+        for c in candidates:
+            block = (
+                f" [SKIP: {c['blocked_by']}]"
+                if c["blocked_by"] else ""
+            )
+            print(
+                f"  -{c['drop']*100:>5.1f}pp  "
+                f"baseline={c['baseline_rate']:.2f}/"
+                f"{c['baseline_samples']}  "
+                f"recent={c['recent_rate']:.2f}/"
+                f"{c['recent_samples']}  "
+                f"{c['capability']}{block}"
+            )
+        if yes:
+            print()
+            if not applied:
+                if not config["enabled"]:
+                    print(
+                        "No demotes applied: bridge gate is "
+                        "OFF. Set "
+                        "SHOPAI_AUTO_DEMOTE_DEGRADED=1 to "
+                        "enable."
+                    )
+                else:
+                    print("No demotes applied.")
+            else:
+                print(f"Demoted {len(applied)} capabilit(ies):")
+                for a in applied:
+                    print(f"  - {a['capability']}")
+        else:
+            print()
+            print(
+                "Dry-run only. Re-run with --yes to apply "
+                "(also requires "
+                "SHOPAI_AUTO_DEMOTE_DEGRADED=1)."
             )
         return
 
