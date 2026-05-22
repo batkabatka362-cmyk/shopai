@@ -398,6 +398,17 @@ def build_parser() -> argparse.ArgumentParser:
             "ready to launch?' empire glance."
         ),
     )
+    world_fleet_p.add_argument(
+        "--sort", default="id",
+        choices=("id", "revenue", "sync", "readiness"),
+        help=(
+            "Row sort: id (alphabetical, default), "
+            "revenue (desc -- highest first), sync (oldest "
+            "first -- staleness flag), or readiness "
+            "(lowest completion_pct first; requires "
+            "--launch-readiness)."
+        ),
+    )
 
     # ── Capability registry commands ─────────────────────────
     capabilities_p = sub.add_parser(
@@ -8693,7 +8704,52 @@ def _cmd_world_model_fleet(args) -> None:
     )
     width = 87 + (7 if include_launch_readiness else 0)
     print("  " + "-" * width)
-    for snap in rows:
+
+    # Apply --sort. Error rows always sort to the end so
+    # they don't obscure the operationally-interesting ones.
+    sort_mode = getattr(args, "sort", "id") or "id"
+
+    def _sort_key(snap_row: dict) -> tuple:
+        is_err = "error" in snap_row
+        if sort_mode == "revenue":
+            rev = -float(
+                (snap_row.get("stats") or {})
+                .get("total_revenue", 0.0)
+            )
+            return (is_err, rev, snap_row.get(
+                "store_id", "",
+            ))
+        if sort_mode == "sync":
+            age = (
+                (snap_row.get("sync") or {})
+                .get("age_seconds")
+            )
+            # Never-synced first (age=None -> -infty),
+            # then oldest -> newest.
+            sort_age = -1e18 if age is None else -float(age)
+            return (is_err, sort_age, snap_row.get(
+                "store_id", "",
+            ))
+        if sort_mode == "readiness":
+            lr = snap_row.get("launch_readiness") or {}
+            pct = lr.get("completion_pct")
+            # Unchecked first (None -> -1), then lowest %
+            # ascending.
+            sort_pct = (
+                -1 if pct is None else int(pct)
+            )
+            return (is_err, sort_pct, snap_row.get(
+                "store_id", "",
+            ))
+        # "id" default
+        return (is_err, snap_row.get("store_id", ""))
+
+    rows_sorted = sorted(rows, key=_sort_key)
+    if sort_mode == "sync":
+        # Reverse so oldest-age FIRST (we negated age to
+        # sort, but want "never" / oldest at the top).
+        pass  # negation already correct
+    for snap in rows_sorted:
         if "error" in snap:
             print(
                 f"  {snap['store_id']:<22s} (snapshot error: "
