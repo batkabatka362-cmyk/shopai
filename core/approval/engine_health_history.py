@@ -441,11 +441,15 @@ def find_chronic_warnings(
         min_samples: Minimum number of events in the window
             for the engine to qualify (default 3 -- one or two
             samples is too noisy to call chronic).
-        healthy_score_floor: Scores AT OR ABOVE this count as
-            healthy. The default 7 matches the verdict bands
-            (8-10 healthy / 5-7 warning / <5 unhealthy).
-            Engines whose every sample in the window scored
-            <= floor-1 are flagged.
+        healthy_score_floor: Scores AT OR ABOVE this value
+            count as "engine recovered at least once" and
+            exempt the engine from chronic flagging.
+            Default 7 -- an engine that scored even a single
+            7+ in the window isn't truly stuck. Verdict
+            bands for reference: 8-10 healthy / 5-7 warning
+            / <5 unhealthy; setting floor=8 would treat ANY
+            non-healthy sample as chronic-eligible (a
+            stricter filter).
         now: Override for testing.
 
     Returns:
