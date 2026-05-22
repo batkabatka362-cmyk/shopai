@@ -8818,6 +8818,28 @@ def _cmd_world_model_fleet(args) -> None:
         f"  Total: ${total_revenue:,.2f} revenue, "
         f"{total_pending} pending approval(s) across fleet"
     )
+    # Launch-readiness rollup -- only when --launch-readiness
+    # was opted in (otherwise per-row launch_readiness is
+    # unchecked and the rollup is meaningless).
+    if include_launch_readiness:
+        ready_count = 0
+        checked_count = 0
+        not_ready_count = 0
+        for r in rows:
+            lr = r.get("launch_readiness") or {}
+            if lr.get("checked"):
+                checked_count += 1
+                if lr.get("ready_to_launch"):
+                    ready_count += 1
+                else:
+                    not_ready_count += 1
+        if checked_count > 0:
+            print(
+                f"  Launch readiness: "
+                f"{ready_count} ready, "
+                f"{not_ready_count} not ready  "
+                f"({checked_count} audited)"
+            )
     # Fleet engine-health rollup -- ``fleet_health`` is GLOBAL
     # (same content in every per-store snapshot) so we pull it
     # from the first store that scored successfully. Omitted
