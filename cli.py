@@ -11092,7 +11092,31 @@ def _engine_pulse_fleet(args, *, as_json: bool) -> None:
         }, indent=2, default=str))
     else:
         if not results:
-            print("(no engines match)")
+            # Be specific about why no engines matched --
+            # operators running --regressing on a quiet
+            # fleet expect a "healthy" message, not just
+            # "(no match)".
+            reasons: list[str] = []
+            if verdict_filter:
+                reasons.append(
+                    f"verdict={verdict_filter}"
+                )
+            if only_regressing:
+                reasons.append("regressing")
+            if only_chronic:
+                reasons.append("chronic")
+            if reasons:
+                print(
+                    f"(no engines match filter: "
+                    f"{', '.join(reasons)})"
+                )
+                if only_regressing or only_chronic:
+                    print(
+                        "  Fleet is currently clear on "
+                        "this signal class."
+                    )
+            else:
+                print("(no engines match)")
         else:
             rollup = _verdict_rollup(results)
             print(

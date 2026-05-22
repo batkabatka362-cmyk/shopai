@@ -330,7 +330,10 @@ class TestFleetMode:
                 _ns(fleet=True, verdict="unhealthy"),
             )
         assert code == 0
-        assert "(no engines match)" in out
+        # Message format: "(no engines match filter:
+        # verdict=unhealthy)"
+        assert "no engines match" in out
+        assert "verdict=unhealthy" in out
 
     def test_no_engine_no_fleet_exits_two(self, cli):
         """Calling pulse with neither a name nor --fleet is a
