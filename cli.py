@@ -6091,6 +6091,37 @@ def _cmd_daily_brief(args) -> None:
             exc,
         )
 
+    # ── Chronic-warning engines ───────────────────────────
+    # Complements regressions: an engine stuck at warning/
+    # unhealthy for every sample in the window. A regression
+    # might recover; a chronic warning typically won't
+    # without intervention.
+    chronic_warnings: list[dict[str, Any]] = []
+    try:
+        from core.approval.engine_health_history import (
+            find_chronic_warnings,
+        )
+        chronics = find_chronic_warnings(
+            sample_window_seconds=86400.0 * 7.0,
+            min_samples=3,
+            healthy_score_floor=7,
+        )
+        chronic_warnings = [
+            {
+                "engine": w.engine,
+                "latest_score": w.latest_score,
+                "latest_verdict": w.latest_verdict,
+                "samples": w.samples,
+                "avg_score": w.avg_score,
+            }
+            for w in chronics
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief chronic_warnings raised: %s",
+            exc,
+        )
+
     # ── Launch readiness per store (opt-in) ───────────────
     # Runs the audit for each store. ~10 GraphQL hops per
     # store, so OFF by default to keep the morning cron
@@ -6686,6 +6717,7 @@ def _cmd_daily_brief(args) -> None:
             "quarantine": quarantine_summary,
             "fleet_health": fleet_health,
             "engine_regressions": engine_regressions,
+            "engine_chronic_warnings": chronic_warnings,
             "launch_readiness": launch_readiness,
             "plan_history": plan_history_summary,
             "capability_overrides": overrides_summary,
@@ -6790,6 +6822,22 @@ def _cmd_daily_brief(args) -> None:
         )
         print(
             f"  Regressions ({len(engine_regressions)}): "
+            f"{top_str}{more}"
+        )
+    # Chronic-warning engines -- stuck below healthy floor
+    # across the whole window. Surface only when present.
+    if chronic_warnings:
+        top = chronic_warnings[:3]
+        top_str = ", ".join(
+            f"{w['engine']}(avg {w['avg_score']:.1f}/10)"
+            for w in top
+        )
+        more = (
+            f" +{len(chronic_warnings) - 3} more"
+            if len(chronic_warnings) > 3 else ""
+        )
+        print(
+            f"  Chronic ({len(chronic_warnings)}): "
             f"{top_str}{more}"
         )
     print()

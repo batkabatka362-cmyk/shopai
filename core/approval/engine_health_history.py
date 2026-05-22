@@ -403,3 +403,83 @@ def find_regressions(
 
     out.sort(key=lambda r: -r.drop)
     return out
+
+
+@dataclass(frozen=True)
+class ChronicWarning:
+    """One engine stuck in warning/unhealthy across the
+    sample window. Distinct from ``HealthRegression`` --
+    a chronic warning is a STATE (consistently sick),
+    while a regression is a CHANGE (got worse)."""
+
+    engine: str
+    latest_score: int
+    latest_verdict: str
+    samples: int
+    avg_score: float
+
+
+def find_chronic_warnings(
+    *,
+    sample_window_seconds: float = 86400.0 * 7.0,
+    min_samples: int = 3,
+    healthy_score_floor: int = 7,
+    now: float | None = None,
+) -> list[ChronicWarning]:
+    """Detect engines whose last N samples have ALL been
+    below the healthy-score floor.
+
+    Complements ``find_regressions``: a regression compares
+    baseline-vs-latest (a CHANGE signal), while a chronic
+    warning flags engines that have been consistently
+    unhealthy across the window (a STATE signal). Both
+    matter -- a regression can resolve on its own; a chronic
+    warning typically can't.
+
+    Args:
+        sample_window_seconds: Look-back window (default 7d).
+        min_samples: Minimum number of events in the window
+            for the engine to qualify (default 3 -- one or two
+            samples is too noisy to call chronic).
+        healthy_score_floor: Scores AT OR ABOVE this count as
+            healthy. The default 7 matches the verdict bands
+            (8-10 healthy / 5-7 warning / <5 unhealthy).
+            Engines whose every sample in the window scored
+            <= floor-1 are flagged.
+        now: Override for testing.
+
+    Returns:
+        List of :class:`ChronicWarning`, sorted by latest
+        score ascending (sickest first).
+    """
+    if now is None:
+        now = time.time()
+    cutoff = now - max(0.0, float(sample_window_seconds))
+
+    events = _load_raw_events()
+    by_engine: dict[str, list[ScoreEvent]] = {}
+    for e in events:
+        if e.recorded_at < cutoff:
+            continue
+        by_engine.setdefault(e.engine, []).append(e)
+
+    out: list[ChronicWarning] = []
+    for engine, bucket in by_engine.items():
+        if len(bucket) < min_samples:
+            continue
+        if any(
+            ev.score >= healthy_score_floor for ev in bucket
+        ):
+            continue
+        latest = max(bucket, key=lambda ev: ev.recorded_at)
+        avg = sum(ev.score for ev in bucket) / len(bucket)
+        out.append(ChronicWarning(
+            engine=engine,
+            latest_score=latest.score,
+            latest_verdict=latest.verdict,
+            samples=len(bucket),
+            avg_score=round(avg, 1),
+        ))
+
+    out.sort(key=lambda c: c.latest_score)
+    return out
