@@ -310,6 +310,113 @@ class TestGoalBreakdown:
         assert len(rows) == 3
 
 
+class TestCapabilityLeaderboard:
+    """Per-capability reliability ranking. Operator-facing
+    leaderboard primitive: ``shopai capabilities
+    reliability``."""
+
+    def _record_outcome(
+        self, caps, outcome, store_id="s",
+    ):
+        eid = ph.record_plan_invocation(
+            goal="g",
+            plan={
+                "steps": [
+                    {"capability_name": c} for c in caps
+                ],
+            },
+            store_id=store_id,
+            executed=True,
+        )
+        ph.record_outcome(eid, outcome)
+
+    def test_per_cap_success_rate_computed(
+        self, temp_history,
+    ):
+        # cap_a: 3 plans, 3 success -> 100%
+        # cap_b: 4 plans, 2 success -> 50%
+        for _ in range(3):
+            self._record_outcome(
+                ["cap_a"], "success",
+            )
+        for _ in range(2):
+            self._record_outcome(
+                ["cap_b"], "success",
+            )
+        for _ in range(2):
+            self._record_outcome(["cap_b"], "fail")
+        rows = ph.capability_leaderboard(
+            since_seconds=3600,
+        )
+        by_cap = {r["capability"]: r for r in rows}
+        assert by_cap["cap_a"]["success_rate"] == 1.0
+        assert by_cap["cap_b"]["success_rate"] == 0.5
+
+    def test_sample_size_cutoff(self, temp_history):
+        # cap_x: 1 success -> below default min (2),
+        # excluded
+        # cap_y: 2 successes -> included
+        self._record_outcome(["cap_x"], "success")
+        self._record_outcome(["cap_y"], "success")
+        self._record_outcome(["cap_y"], "success")
+        rows = ph.capability_leaderboard(
+            since_seconds=3600, min_sample_size=2,
+        )
+        names = {r["capability"] for r in rows}
+        assert "cap_x" not in names
+        assert "cap_y" in names
+
+    def test_ranking_by_success_rate(self, temp_history):
+        # higher rate ranks first
+        for _ in range(3):
+            self._record_outcome(["high"], "success")
+        for _ in range(3):
+            self._record_outcome(["low"], "fail")
+        # low needs at least 2 executed for visibility
+        rows = ph.capability_leaderboard(
+            since_seconds=3600, min_sample_size=2,
+        )
+        assert rows[0]["capability"] == "high"
+        if "low" in [r["capability"] for r in rows]:
+            assert (
+                [r["capability"] for r in rows].index(
+                    "high",
+                )
+                < [r["capability"] for r in rows].index(
+                    "low",
+                )
+            )
+
+    def test_duplicate_step_in_plan_counted_once(
+        self, temp_history,
+    ):
+        # A plan with cap_a appearing twice should still
+        # count as ONE outcome contribution for cap_a.
+        eid = ph.record_plan_invocation(
+            goal="g",
+            plan={
+                "steps": [
+                    {"capability_name": "cap_a"},
+                    {"capability_name": "cap_a"},
+                ],
+            },
+            store_id="s",
+            executed=True,
+        )
+        ph.record_outcome(eid, "success")
+        # need one more to clear min_sample_size=2
+        self._record_outcome(["cap_a"], "success")
+        rows = ph.capability_leaderboard(
+            since_seconds=3600,
+        )
+        cap_a = next(
+            r for r in rows
+            if r["capability"] == "cap_a"
+        )
+        # 2 plans, both counted -> executed=2
+        assert cap_a["executed_count"] == 2
+
+
 class TestSuccessfulPlans:
     """Cross-store recommendation surface. Lists successful
     past plans ranked by frequency + recency."""

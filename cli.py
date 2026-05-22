@@ -435,6 +435,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view.",
     )
 
+    cap_reliability_p = capabilities_sub.add_parser(
+        "reliability",
+        help=(
+            "Per-capability reliability leaderboard from "
+            "plan_history. Shows which capabilities have "
+            "succeeded most often across past plans. The "
+            "learning-loop's operator surface."
+        ),
+    )
+    cap_reliability_p.add_argument(
+        "--window-days", type=int, default=30,
+        dest="window_days",
+        help="Look-back window in days (default 30).",
+    )
+    cap_reliability_p.add_argument(
+        "--min-sample-size", type=int, default=2,
+        dest="min_sample_size",
+        help=(
+            "Skip capabilities with fewer than N executed "
+            "appearances (default 2 -- single-event noise "
+            "filter)."
+        ),
+    )
+    cap_reliability_p.add_argument(
+        "--top", type=int, default=20,
+        help="Max rows to return (default 20).",
+    )
+    cap_reliability_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view.",
+    )
+
     cap_run_p = capabilities_sub.add_parser(
         "run",
         help=(
@@ -11976,6 +12008,65 @@ def _cmd_capabilities(args) -> None:
             print("  example input:")
             for k, v in cap.example_input.items():
                 print(f"    {k}: {v}")
+        return
+
+    if action == "reliability":
+        try:
+            from core.capability_planner import (
+                capability_leaderboard,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "capability reliability: import "
+                "failed: %s", exc,
+            )
+            print(f"reliability unavailable: {exc}")
+            return
+        window_days = max(
+            1, int(
+                getattr(args, "window_days", 30) or 30,
+            ),
+        )
+        min_sample = max(
+            1, int(
+                getattr(args, "min_sample_size", 2) or 2,
+            ),
+        )
+        top = max(1, int(getattr(args, "top", 20) or 20))
+        rows = capability_leaderboard(
+            since_seconds=window_days * 86400,
+            min_sample_size=min_sample,
+            top_n=top,
+        )
+        if as_json:
+            print(json.dumps({
+                "window_days": window_days,
+                "min_sample_size": min_sample,
+                "rows": rows,
+            }, indent=2))
+            return
+        if not rows:
+            print(
+                f"No capability reliability data in the "
+                f"last {window_days} day(s) (need >= "
+                f"{min_sample} executed appearance(s) per "
+                f"capability)."
+            )
+            return
+        print(
+            f"Capability reliability "
+            f"(last {window_days} day(s), min sample "
+            f"{min_sample}):"
+        )
+        print()
+        for i, r in enumerate(rows, start=1):
+            pct = r["success_rate"] * 100
+            print(
+                f"  {i:>3}. {pct:>5.1f}%  "
+                f"({r['success_count']:>3}/"
+                f"{r['executed_count']:<3})  "
+                f"{r['capability']}"
+            )
         return
 
     if action == "run":

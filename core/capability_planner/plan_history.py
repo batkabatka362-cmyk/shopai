@@ -400,6 +400,91 @@ def goal_breakdown(
     return rows[:max(1, int(top_n))]
 
 
+def capability_leaderboard(
+    *,
+    since_seconds: int = 86400 * 30,
+    min_sample_size: int = 2,
+    top_n: int = 20,
+) -> list[dict[str, Any]]:
+    """Per-capability reliability ranking from plan history.
+
+    For each capability that appears in past plans, compute:
+      - executed count (how many executed plans included it)
+      - success count (how many of those resulted in
+        ``outcome=success``)
+      - success_rate = success / executed
+
+    Filters:
+      - ``min_sample_size`` -- skip capabilities below this
+        executed-count threshold (small samples are noise).
+        Default 2.
+
+    Returns a list of ``{capability, executed_count,
+    success_count, success_rate}`` sorted by success_rate
+    desc, tie-broken by executed_count desc. Top ``top_n``
+    returned.
+
+    The operator-facing leaderboard primitive:
+      ``shopai capabilities reliability`` -- "which
+      capabilities have been most/least reliable across my
+      fleet?"
+
+    Future planner integration: when two candidates are
+    tied at the same chain position, prefer the
+    higher-reliability one.
+    """
+    events = recent_history(since_seconds=since_seconds)
+    # Aggregate per-capability counts
+    per_cap: dict[str, dict[str, int]] = {}
+    for e in events:
+        if not e.get("executed"):
+            continue
+        plan = e.get("plan") or {}
+        steps = plan.get("steps") or []
+        success = e.get("outcome") == "success"
+        # Use a set per event so a single plan that
+        # mentions a capability twice doesn't double-count
+        # its outcome contribution.
+        seen_this_event: set[str] = set()
+        for s in steps:
+            if not isinstance(s, dict):
+                continue
+            name = s.get("capability_name", "")
+            if not name or name in seen_this_event:
+                continue
+            seen_this_event.add(name)
+            entry = per_cap.setdefault(name, {
+                "executed": 0, "success": 0,
+            })
+            entry["executed"] += 1
+            if success:
+                entry["success"] += 1
+
+    rows: list[dict[str, Any]] = []
+    for name, stats in per_cap.items():
+        executed = stats["executed"]
+        if executed < max(1, int(min_sample_size)):
+            continue
+        rate = (
+            stats["success"] / executed
+            if executed > 0 else 0.0
+        )
+        rows.append({
+            "capability": name,
+            "executed_count": executed,
+            "success_count": stats["success"],
+            "success_rate": round(rate, 3),
+        })
+    rows.sort(
+        key=lambda r: (
+            -r["success_rate"],
+            -r["executed_count"],
+            r["capability"],
+        ),
+    )
+    return rows[:max(1, int(top_n))]
+
+
 def successful_plans(
     *,
     since_seconds: int = 86400 * 30,

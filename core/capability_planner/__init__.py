@@ -50,6 +50,7 @@ from .planner import Planner, plan_for_goal, plan_for_audit_gaps
 from .llm_planner import LLMPlanner, plan_for_goal_with_llm
 from .plan_history import (
     PlanEvent,
+    capability_leaderboard,
     clear as clear_plan_history,
     goal_breakdown,
     outcome_breakdown,
@@ -74,5 +75,6 @@ __all__ = [
     "outcome_breakdown",
     "goal_breakdown",
     "successful_plans",
+    "capability_leaderboard",
     "clear_plan_history",
 ]

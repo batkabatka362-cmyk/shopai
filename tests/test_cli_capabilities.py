@@ -67,10 +67,103 @@ def _ns(**kw):
         depth=2,
         args="{}",
         yes=False,
+        window_days=30,
+        min_sample_size=2,
+        top=20,
         json=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
+
+
+class TestReliability:
+    """``shopai capabilities reliability`` renders the
+    per-capability success-rate leaderboard."""
+
+    def test_empty_leaderboard_friendly(self, cli):
+        with patch(
+            "core.capability_planner."
+            "capability_leaderboard",
+            return_value=[],
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(capability_action="reliability"),
+            )
+        assert code == 0
+        assert "No capability reliability data" in out
+
+    def test_renders_rows_sorted(self, cli):
+        rows = [
+            {"capability": "high_cap",
+             "executed_count": 5,
+             "success_count": 5, "success_rate": 1.0},
+            {"capability": "mid_cap",
+             "executed_count": 4,
+             "success_count": 2, "success_rate": 0.5},
+        ]
+        with patch(
+            "core.capability_planner."
+            "capability_leaderboard",
+            return_value=rows,
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(capability_action="reliability"),
+            )
+        assert code == 0
+        # Header + each row's percentage + ratio rendered
+        # (the ratio is padded for alignment so we don't
+        # match strict "(5/5)" -- substring search).
+        assert "Capability reliability" in out
+        assert "100.0%" in out
+        assert "5/5" in out
+        assert "high_cap" in out
+        assert "50.0%" in out
+        assert "2/4" in out
+        assert "mid_cap" in out
+
+    def test_json_output(self, cli):
+        rows = [{
+            "capability": "x", "executed_count": 3,
+            "success_count": 2, "success_rate": 0.667,
+        }]
+        with patch(
+            "core.capability_planner."
+            "capability_leaderboard",
+            return_value=rows,
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="reliability",
+                    json=True,
+                ),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data["rows"] == rows
+        assert data["window_days"] == 30
+
+    def test_args_propagate(self, cli):
+        with patch(
+            "core.capability_planner."
+            "capability_leaderboard",
+            return_value=[],
+        ) as mock_lb:
+            _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="reliability",
+                    window_days=7,
+                    min_sample_size=5,
+                    top=10,
+                ),
+            )
+        kwargs = mock_lb.call_args.kwargs
+        assert kwargs["since_seconds"] == 7 * 86400
+        assert kwargs["min_sample_size"] == 5
+        assert kwargs["top_n"] == 10
 
 
 class TestRun:
