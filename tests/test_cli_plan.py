@@ -71,6 +71,8 @@ def _ns(**kw):
         recommend_window=86400 * 30,
         recommend_top=10,
         correlate=None,
+        auto_correlate=False,
+        auto_correlate_min_age=86400,
         json=False,
     )
     defaults.update(kw)
@@ -137,6 +139,171 @@ class TestGoalPath:
         assert "apply_design" in names
         assert isinstance(data["cli_sequence"], list)
         assert isinstance(data["audit_coverage"], list)
+
+
+class TestAutoCorrelate:
+    """``shopai plan --auto-correlate`` batch-runs outcome
+    correlation for past events that haven't been
+    correlated yet. Cron-friendly self-updating learning
+    loop."""
+
+    def test_no_candidates_friendly(self, cli):
+        with patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ), patch.object(
+            cli, "_get_store_manager",
+            return_value=_fake_sm(),
+        ):
+            out, code = _capture(
+                cli._cmd_plan,
+                _ns(auto_correlate=True),
+            )
+        assert code == 0
+        assert "no candidates" in out
+
+    def test_filters_by_age_executed_pre_stats(self, cli):
+        import time as _time
+        now = _time.time()
+        events = [
+            # candidate: old enough, executed, has
+            # pre_stats, outcome=executed_ok
+            {
+                "event_id": "good",
+                "timestamp": now - 86400 * 2,  # 48h old
+                "goal": "g",
+                "store_id": "s",
+                "executed": True,
+                "outcome": "executed_ok",
+                "pre_stats": {"total_revenue": 100.0},
+            },
+            # skip: too recent
+            {
+                "event_id": "fresh",
+                "timestamp": now - 60,  # 1m old
+                "goal": "g",
+                "store_id": "s",
+                "executed": True,
+                "outcome": "executed_ok",
+                "pre_stats": {"total_revenue": 100.0},
+            },
+            # skip: dry-run (not executed)
+            {
+                "event_id": "dry",
+                "timestamp": now - 86400 * 3,
+                "goal": "g",
+                "store_id": "s",
+                "executed": False,
+                "outcome": "skipped",
+                "pre_stats": {},
+            },
+            # skip: already correlated
+            {
+                "event_id": "done",
+                "timestamp": now - 86400 * 2,
+                "goal": "g",
+                "store_id": "s",
+                "executed": True,
+                "outcome": "revenue_up",
+                "pre_stats": {"total_revenue": 100.0},
+            },
+            # skip: no pre_stats baseline
+            {
+                "event_id": "no_base",
+                "timestamp": now - 86400 * 2,
+                "goal": "g",
+                "store_id": "s",
+                "executed": True,
+                "outcome": "executed_ok",
+                "pre_stats": {},
+            },
+        ]
+        sm = _fake_sm()
+        sm.get_stats = lambda sid: {
+            "total_revenue": 150.0,
+        }
+        with patch(
+            "core.capability_planner.recent_history",
+            return_value=events,
+        ), patch(
+            "core.capability_planner."
+            "correlate_outcome_by_stats",
+            return_value={
+                "ok": True,
+                "outcome": "revenue_up",
+                "revenue_delta_pct": 50.0,
+            },
+        ) as mock_corr, patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ):
+            out, code = _capture(
+                cli._cmd_plan,
+                _ns(
+                    auto_correlate=True,
+                    json=True,
+                ),
+            )
+        assert code == 0
+        data = json.loads(out)
+        # Only the "good" event correlates
+        assert data["summary"]["candidates"] == 1
+        assert data["summary"]["correlated"] == 1
+        # correlate called once
+        assert mock_corr.call_count == 1
+        call_args = mock_corr.call_args
+        assert call_args[0][0] == "good"
+
+    def test_stats_cache_per_store(self, cli):
+        """Two events for the same store should only fetch
+        stats once (per-store cache)."""
+        import time as _time
+        now = _time.time()
+        events = [
+            {
+                "event_id": "e1",
+                "timestamp": now - 86400 * 2,
+                "goal": "g1", "store_id": "shared",
+                "executed": True,
+                "outcome": "executed_ok",
+                "pre_stats": {"total_revenue": 100.0},
+            },
+            {
+                "event_id": "e2",
+                "timestamp": now - 86400 * 2,
+                "goal": "g2", "store_id": "shared",
+                "executed": True,
+                "outcome": "executed_ok",
+                "pre_stats": {"total_revenue": 100.0},
+            },
+        ]
+        sm = _fake_sm()
+        call_count = {"n": 0}
+
+        def _stats(sid):
+            call_count["n"] += 1
+            return {"total_revenue": 200.0}
+
+        sm.get_stats = _stats
+        with patch(
+            "core.capability_planner.recent_history",
+            return_value=events,
+        ), patch(
+            "core.capability_planner."
+            "correlate_outcome_by_stats",
+            return_value={
+                "ok": True,
+                "outcome": "revenue_up",
+                "revenue_delta_pct": 100.0,
+            },
+        ), patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ):
+            _capture(
+                cli._cmd_plan,
+                _ns(auto_correlate=True),
+            )
+        # 2 events / same store -> 1 get_stats call
+        assert call_count["n"] == 1
 
 
 class TestCorrelate:

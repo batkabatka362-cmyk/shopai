@@ -624,6 +624,29 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     plan_p.add_argument(
+        "--auto-correlate", action="store_true",
+        dest="auto_correlate",
+        help=(
+            "Batch correlation. Scans plan_history for "
+            "events older than --auto-correlate-min-age "
+            "(default 24h) whose outcome hasn't been "
+            "correlated yet (still 'executed_ok'), and "
+            "runs the revenue/orders delta correlation on "
+            "each. Cron-friendly: makes the learning loop "
+            "self-updating without operator intervention."
+        ),
+    )
+    plan_p.add_argument(
+        "--auto-correlate-min-age", type=int,
+        default=86400, dest="auto_correlate_min_age",
+        help=(
+            "With --auto-correlate, minimum event age in "
+            "seconds before correlation runs (default "
+            "86400 = 24h). Skip too-recent events so the "
+            "store has time to react."
+        ),
+    )
+    plan_p.add_argument(
         "--recommend", action="store_true",
         help=(
             "Empire-AGI recommendation surface. Shows past "
@@ -11060,6 +11083,157 @@ def _cmd_shopify_scopes_audit(args) -> None:
     sys.exit(1)
 
 
+def _cmd_plan_auto_correlate(args) -> None:
+    """Batch outcome correlation. Walks plan_history for
+    events:
+      - older than ``--auto-correlate-min-age`` (default 24h)
+      - executed=True
+      - outcome still ``executed_ok`` (or empty -- not yet
+        correlated)
+      - pre_stats populated (otherwise we can't correlate)
+
+    For each, fetches the store's current stats + runs the
+    same correlation logic as ``--correlate <id>``, updating
+    the event's outcome in place.
+
+    Cron-friendly: operators (or systemd timer) can run
+    ``shopai plan --auto-correlate`` nightly and the
+    learning loop self-updates without per-event work.
+    """
+    as_json = bool(getattr(args, "json", False))
+    min_age = max(
+        0, int(
+            getattr(args, "auto_correlate_min_age", 86400)
+            or 86400,
+        ),
+    )
+
+    try:
+        from core.capability_planner import (
+            correlate_outcome_by_stats,
+            recent_history,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "auto-correlate: import failed: %s", exc,
+        )
+        if as_json:
+            print(json.dumps({
+                "ok": False,
+                "error": "correlate_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"auto-correlate unavailable: {exc}")
+        return
+
+    sm = _get_store_manager()
+    # Wide look-back -- we want anything in the last 90
+    # days that hasn't been correlated yet.
+    events = recent_history(since_seconds=86400 * 90)
+    now = time.time()
+
+    # Filter to events that ARE candidates.
+    OUTCOME_NOT_YET_CORRELATED = {
+        "", "executed_ok",
+    }
+    candidates = []
+    for e in events:
+        ts = float(e.get("timestamp", 0) or 0)
+        if (now - ts) < min_age:
+            continue
+        if not e.get("executed"):
+            continue
+        outcome = str(e.get("outcome") or "")
+        if outcome not in OUTCOME_NOT_YET_CORRELATED:
+            continue
+        if not (e.get("pre_stats") or {}):
+            continue
+        candidates.append(e)
+
+    # Cache per-store stats so we don't re-fetch for every
+    # event on the same store.
+    stats_cache: dict[str, dict[str, Any]] = {}
+    results: list[dict[str, Any]] = []
+    for e in candidates:
+        sid = e.get("store_id", "") or ""
+        if sid not in stats_cache:
+            try:
+                stats_cache[sid] = (
+                    sm.get_stats(sid) or {}
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "auto-correlate: get_stats raised "
+                    "for %s: %s", sid, exc,
+                )
+                stats_cache[sid] = {}
+        cur = stats_cache[sid]
+        result = correlate_outcome_by_stats(
+            e.get("event_id", ""), cur,
+        )
+        results.append({
+            "event_id": e.get("event_id", ""),
+            "store_id": sid,
+            "goal": e.get("goal", ""),
+            "outcome": result.get("outcome"),
+            "ok": result.get("ok", False),
+            "revenue_delta_pct": result.get(
+                "revenue_delta_pct"
+            ),
+            "error": result.get("error"),
+        })
+
+    summary = {
+        "candidates": len(candidates),
+        "correlated": sum(
+            1 for r in results if r.get("ok")
+        ),
+        "skipped_no_pre_stats": sum(
+            1 for r in results
+            if r.get("error") == "no_pre_stats_baseline"
+        ),
+        "by_outcome": {},
+    }
+    for r in results:
+        if not r.get("ok"):
+            continue
+        oc = str(r.get("outcome") or "")
+        summary["by_outcome"][oc] = (
+            summary["by_outcome"].get(oc, 0) + 1
+        )
+
+    if as_json:
+        print(json.dumps({
+            "summary": summary,
+            "results": results,
+            "min_age_seconds": min_age,
+        }, indent=2, default=str))
+        return
+
+    if not candidates:
+        print(
+            f"Auto-correlate: no candidates "
+            f"(events older than "
+            f"{min_age // 3600}h + executed + "
+            f"un-correlated + with pre_stats)."
+        )
+        return
+
+    print(
+        f"Auto-correlate: {summary['correlated']} "
+        f"of {summary['candidates']} candidate event(s) "
+        f"correlated."
+    )
+    for k, v in summary["by_outcome"].items():
+        print(f"  {k}: {v}")
+    if summary["skipped_no_pre_stats"]:
+        print(
+            f"  skipped (no pre_stats): "
+            f"{summary['skipped_no_pre_stats']}"
+        )
+
+
 def _cmd_plan_correlate(args, event_id: str) -> None:
     """Outcome correlation v2. Look up a past plan event,
     fetch the store's current stats, compute the delta vs
@@ -11386,6 +11560,11 @@ def _cmd_plan(args) -> None:
     correlate_id = getattr(args, "correlate", None)
     if correlate_id:
         _cmd_plan_correlate(args, correlate_id)
+        return
+
+    # ── --auto-correlate: batch correlation -------------
+    if bool(getattr(args, "auto_correlate", False)):
+        _cmd_plan_auto_correlate(args)
         return
 
     try:
