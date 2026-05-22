@@ -935,9 +935,16 @@ class WorldModel:
             last_outcome: str | None,
             last_recorded_at: float | None,
             window_days: int,
+            revenue_trend_7d: dict | None,
+            recent_transfers: list,
+            alerts: list,
+            pause: dict,
+            pause_frequency_7d: dict | None,
           }
         Fleet scope (no store_id) returns an aggregate roll-
-        up instead of per-store stats.
+        up instead of per-store stats. ``pause`` /
+        ``pause_frequency_7d`` are fleet-scoped regardless --
+        the pause switch halts every store at once.
         """
         out: dict = {
             "checked": True,
@@ -1109,6 +1116,39 @@ class WorldModel:
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "world_model cycle alerts raised: %s",
+                exc,
+            )
+
+        # Fleet-wide cycle pause state + 7d frequency
+        # rollup. Pause is fleet-scoped (one switch halts
+        # every store) so it's surfaced regardless of
+        # whether this snapshot is per-store or fleet.
+        out["pause"] = {
+            "active": False,
+            "paused_until_at": None,
+            "reason": "",
+            "paused_at": None,
+        }
+        out["pause_frequency_7d"] = None
+        try:
+            from core.autonomous import (
+                cycle_pause as _cp,
+            )
+            out["pause"] = _cp.get_pause_state()
+            try:
+                out["pause_frequency_7d"] = (
+                    _cp.pause_frequency(
+                        since_seconds=86400 * 7,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "world_model pause_frequency "
+                    "raised: %s", exc,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model cycle_pause raised: %s",
                 exc,
             )
 

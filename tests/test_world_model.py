@@ -1534,6 +1534,62 @@ class TestSectionCycle:
             sec["alerts"][0]["detail"] == "this-store-alert"
         )
 
+    def test_pause_state_surfaced(self):
+        """Cycle section carries fleet-wide pause state +
+        7d frequency rollup."""
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_pause.get_pause_state",
+            return_value={
+                "active": True,
+                "paused_until_at": 1700000000.0,
+                "reason": "maint",
+                "paused_at": 1699996400.0,
+            },
+        ), patch(
+            "core.autonomous.cycle_pause.pause_frequency",
+            return_value={
+                "pause_count": 3,
+                "resume_count": 2,
+                "extend_count": 1,
+                "total_downtime_hours": 4.25,
+                "avg_pause_duration_hours": 1.4,
+                "last_pause_at": 1699996400.0,
+                "window_days": 7.0,
+            },
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        assert sec["pause"]["active"] is True
+        assert sec["pause"]["reason"] == "maint"
+        assert sec["pause_frequency_7d"]["pause_count"] == 3
+        assert (
+            sec["pause_frequency_7d"]["total_downtime_hours"]
+            == 4.25
+        )
+
+    def test_pause_state_default_when_unavailable(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_pause.get_pause_state",
+            side_effect=RuntimeError("disk"),
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        # Soft default (no exception bubbled up)
+        assert sec["pause"]["active"] is False
+        assert sec["pause_frequency_7d"] is None
+
     def test_fleet_scope_surfaces_all_alerts(self):
         from core.autonomous.cycle_alerts import (
             PerStoreCycleAlert,
