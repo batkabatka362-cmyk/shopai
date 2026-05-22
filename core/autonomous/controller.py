@@ -277,6 +277,13 @@ def _planner_consultation_phase(
     except Exception as exc:  # noqa: BLE001
         return {"error": f"planner_failed: {exc}"}
 
+    # Auto-execute eligibility: for each plan step, check
+    # whether its capability has high enough historical
+    # reliability to qualify for autonomous execution.
+    # Surfaces as observability only -- actual execution
+    # gated behind explicit env-var opt-in (future PR).
+    auto_exec = _compute_auto_execute_eligibility(plan)
+
     return {
         "ready_to_launch": bool(
             audit.get("ready_to_launch"),
@@ -291,6 +298,92 @@ def _planner_consultation_phase(
             s.capability_name for s in plan.steps
         ],
         "cli_sequence": plan.cli_sequence,
+        "auto_execute": auto_exec,
+    }
+
+
+def _compute_auto_execute_eligibility(
+    plan: Any,
+) -> dict[str, Any]:
+    """Compute per-step auto-execute eligibility based on
+    historical reliability.
+
+    A step qualifies when its capability has:
+      - executed_count >= SHOPAI_AUTO_EXECUTE_MIN_SAMPLE
+        (default 5; sparse data is unreliable)
+      - success_rate >= SHOPAI_AUTO_EXECUTE_THRESHOLD
+        (default 0.9; conservative)
+
+    Returns:
+        {
+          "eligible_count": int,
+          "total_steps": int,
+          "min_sample": int,
+          "threshold": float,
+          "steps": [
+            {capability, eligible, success_rate,
+             executed_count}, ...
+          ],
+        }
+
+    Observability only -- no actual execution. Future PR
+    behind ``SHOPAI_AUTO_EXECUTE_PLAN=1`` can use this
+    eligibility map to actually invoke qualifying steps.
+
+    Best-effort: any plan_history lookup error -> all
+    steps reported as ineligible without raising.
+    """
+    import os as _os
+    try:
+        threshold = float(
+            _os.environ.get(
+                "SHOPAI_AUTO_EXECUTE_THRESHOLD", "0.9",
+            ),
+        )
+    except (ValueError, TypeError):
+        threshold = 0.9
+    try:
+        min_sample = int(
+            _os.environ.get(
+                "SHOPAI_AUTO_EXECUTE_MIN_SAMPLE", "5",
+            ),
+        )
+    except (ValueError, TypeError):
+        min_sample = 5
+
+    steps_info: list[dict[str, Any]] = []
+    eligible_count = 0
+    total = len(plan.steps) if plan and plan.steps else 0
+
+    for step in (plan.steps if plan else []):
+        # PlanStep already carries history_sample_size +
+        # history_success_rate (set by planner._finalise).
+        sample = int(
+            getattr(step, "history_sample_size", 0) or 0,
+        )
+        rate = float(
+            getattr(step, "history_success_rate", 0.0)
+            or 0.0,
+        )
+        eligible = (
+            sample >= min_sample
+            and rate >= threshold
+        )
+        if eligible:
+            eligible_count += 1
+        steps_info.append({
+            "capability": step.capability_name,
+            "eligible": eligible,
+            "success_rate": rate,
+            "executed_count": sample,
+        })
+
+    return {
+        "eligible_count": eligible_count,
+        "total_steps": total,
+        "min_sample": min_sample,
+        "threshold": threshold,
+        "steps": steps_info,
     }
 
 
