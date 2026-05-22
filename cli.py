@@ -10773,6 +10773,42 @@ def _cmd_engine_pulse(args) -> None:
             f"alert_streak_7d={sig.get('alert_streak_7d', 0)}  "
             f"alert_paused={sig.get('alert_paused', False)}"
         )
+        # Writeback state -- does this engine actually act on
+        # Shopify, or is it advisory-only? Operators
+        # investigating a sick engine want to know whether the
+        # 'sick' affects production writes or just
+        # recommendations.
+        try:
+            from engines._writeback_audit import (
+                audit_writeback_coverage,
+            )
+            wb_report = audit_writeback_coverage("engines")
+            wb = next(
+                (
+                    s for s in wb_report.engines
+                    if s.name == health.engine
+                ),
+                None,
+            )
+            if wb:
+                writer_str = (
+                    ", ".join(wb.writer_files)
+                    if wb.writer_files else "none"
+                )
+                opt_str = (
+                    ", ".join(wb.opt_in_flags)
+                    if wb.opt_in_flags else "none"
+                )
+                print(
+                    f"  writeback={wb.status}  "
+                    f"writers=[{writer_str}]  "
+                    f"opt_ins=[{opt_str}]"
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "engine_pulse writeback probe raised: %s",
+                exc,
+            )
         # Engine-health state -- is THIS engine flagged as
         # regressing or chronically sick? Saves the operator
         # a separate ``approvals chronic-warnings`` call when
