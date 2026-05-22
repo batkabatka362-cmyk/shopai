@@ -5450,14 +5450,16 @@ capability_overrides import load_overrides
             "checked": False, "error": str(exc),
         }
 
-    # ── Engine health regressions (count only) ─────────────
-    # Cheap enough (one engine_health_history read) to
-    # include in the verdict + score, so a regression
-    # trips --line / --quiet without an extra command.
+    # ── Engine health regressions + chronics (count) ───────
+    # Cheap enough (engine_health_history reads) to include
+    # in the verdict + score, so either signal trips
+    # --line / --quiet without a separate command.
     regression_count = 0
+    chronic_count = 0
     try:
         from core.approval.engine_health_history import (
             find_regressions,
+            find_chronic_warnings,
         )
         regs = find_regressions(
             min_drop=3.0,
@@ -5466,16 +5468,24 @@ capability_overrides import load_overrides
             min_baseline_samples=3,
         )
         regression_count = len(regs)
+        chronics = find_chronic_warnings(
+            sample_window_seconds=86400.0 * 7.0,
+            min_samples=3,
+            healthy_score_floor=7,
+        )
+        chronic_count = len(chronics)
     except Exception as exc:  # noqa: BLE001
         logger.debug(
-            "status: regression count raised: %s", exc,
+            "status: engine health count raised: %s", exc,
         )
     envelope["regression_count"] = regression_count
+    envelope["chronic_count"] = chronic_count
 
     # ── Overall verdict ────────────────────────────────────
     # OK if every section is checked and no cycle alerts +
-    # no thrashing + not paused + no regressions. WARN if
-    # any of: cycle alerts, thrashing, paused, regressions.
+    # no thrashing + not paused + no regressions + no
+    # chronic warnings. WARN if any of: cycle alerts,
+    # thrashing, paused, regressions, chronic warnings.
     # ERROR if any section failed to load.
     sections = [
         envelope["fleet"],
@@ -5493,6 +5503,7 @@ capability_overrides import load_overrides
         or envelope["bridge"].get("thrashing_count", 0) > 0
         or cycle_pause.get("active", False)
         or regression_count > 0
+        or chronic_count > 0
     ):
         envelope["overall"] = "warn"
     else:
@@ -5517,6 +5528,11 @@ capability_overrides import load_overrides
     # regressions all bottom out together rather than
     # dwarfing every other signal).
     score -= min(20, regression_count * 5)
+    # Chronic warnings (stuck-state) are softer than
+    # regressions (active deterioration): -3pts each,
+    # capped at -15. A chronic warning is still a real
+    # problem but the merchant isn't actively dying.
+    score -= min(15, chronic_count * 3)
     rt = (
         envelope["cycle"].get("revenue_trend_7d") or {}
     )
@@ -5627,10 +5643,16 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
         )
         if regr_count > 0:
             regr_str = f"  [{regr_count} regression(s)]"
+        chronic_str = ""
+        chronic_count = int(
+            envelope.get("chronic_count", 0) or 0
+        )
+        if chronic_count > 0:
+            chronic_str = f"  [{chronic_count} chronic]"
         print(
             f"  Cycle:     {cyc['runs_24h']} run(s)/24h  "
             f"last: {last}{alerts_str}{thr_str}{tx_str}"
-            f"{rev_str}{pause_str}{regr_str}"
+            f"{rev_str}{pause_str}{regr_str}{chronic_str}"
         )
     else:
         print(
@@ -22730,10 +22752,13 @@ def _cmd_status(args=None) -> None:
             else "n/a"
         )
         score = health.get("health_score", "?")
-        # Use the count computed inside _build_health_sections
-        # so verdict + score + --line all use the same number.
+        # Use counts computed inside _build_health_sections
+        # so verdict + score + --line all align.
         regression_count = int(
             health.get("regression_count", 0) or 0
+        )
+        chronic_count = int(
+            health.get("chronic_count", 0) or 0
         )
         print(
             f"{tag} score={score}/100 "
@@ -22747,6 +22772,7 @@ def _cmd_status(args=None) -> None:
             f"thrashing="
             f"{br.get('thrashing_count', 0)} "
             f"regressions={regression_count} "
+            f"chronic={chronic_count} "
             f"revenue_7d={rev_pct}"
         )
         if verdict in ("warn", "error"):
