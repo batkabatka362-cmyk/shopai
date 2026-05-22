@@ -9095,6 +9095,90 @@ def _cmd_world_model_show(args) -> None:
                         f"(-{drop_pp:.0f}pp){tag}"
                     )
 
+    # Cycle health section (pause + 3 engine-degradation
+    # signal classes). Renders only when something is
+    # non-quiet -- keeps a healthy snapshot short.
+    cycle_sec = snap.get("cycle") or {}
+    pause = cycle_sec.get("pause") or {}
+    regressions = (
+        cycle_sec.get("engine_regressions") or []
+    )
+    chronics = (
+        cycle_sec.get("engine_chronic_warnings") or []
+    )
+    outcome_alerts = (
+        cycle_sec.get("engine_outcome_alerts") or []
+    )
+    cycle_alerts = cycle_sec.get("alerts") or []
+    has_signal = (
+        pause.get("active")
+        or regressions
+        or chronics
+        or outcome_alerts
+        or cycle_alerts
+    )
+    if has_signal:
+        print()
+        print("Cycle health:")
+        if pause.get("active"):
+            import datetime as _dt
+            until = pause.get("paused_until_at")
+            until_str = (
+                _dt.datetime.fromtimestamp(
+                    until,
+                ).strftime("%Y-%m-%d %H:%M")
+                if until else "unknown"
+            )
+            reason = pause.get("reason") or ""
+            print(
+                f"  PAUSED until {until_str}"
+                + (f"  ({reason})" if reason else "")
+            )
+        if cycle_alerts:
+            print(
+                f"  Cycle alerts ({len(cycle_alerts)}):"
+            )
+            for a in cycle_alerts[:3]:
+                kind = a.get("kind", "?")
+                detail = (a.get("detail") or "")[:60]
+                print(f"    [{kind}]  {detail}")
+        if regressions:
+            print(
+                f"  Health regressions "
+                f"({len(regressions)}):"
+            )
+            for r in regressions[:3]:
+                print(
+                    f"    {r['engine']}: "
+                    f"baseline={r['baseline_score']:.1f} -> "
+                    f"latest={r['latest_score']} "
+                    f"(-{r['drop']:.1f}pts)"
+                )
+        if chronics:
+            print(
+                f"  Chronic warnings ({len(chronics)}):"
+            )
+            for w in chronics[:3]:
+                print(
+                    f"    {w['engine']}: "
+                    f"avg={w['avg_score']:.1f}/10 "
+                    f"latest={w['latest_score']} "
+                    f"(n={w['samples']})"
+                )
+        if outcome_alerts:
+            print(
+                f"  Outcome alerts "
+                f"({len(outcome_alerts)}):"
+            )
+            for a in outcome_alerts[:3]:
+                print(
+                    f"    {a['engine']}: "
+                    f"score "
+                    f"{a['baseline_score']:.2f} -> "
+                    f"{a['recent_score']:.2f} "
+                    f"(-{a['drop']:.2f})"
+                )
+
     # Launch-readiness section (opt-in; only renders when
     # --launch-readiness was passed so default snapshots
     # stay short).
