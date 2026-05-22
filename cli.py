@@ -16001,6 +16001,32 @@ def _cmd_autonomous_cycle(args) -> None:
                 f"{adv['errored']} errored "
                 f"({adv['stores_processed']} store(s))"
             )
+            # Surface per-store outcomes when there's
+            # HETEROGENEITY (refused or errored) AND
+            # multiple stores -- single-store or uniform
+            # all-ok stays terse.
+            per_store = adv.get("per_store") or []
+            has_problem = bool(
+                adv.get("refused_reliability", 0)
+                or adv.get("errored", 0)
+            )
+            if (
+                isinstance(per_store, list)
+                and len(per_store) > 1
+                and has_problem
+            ):
+                for row in per_store:
+                    if not isinstance(row, dict):
+                        continue
+                    sid = row.get("store_id", "?")
+                    outcome = row.get("outcome", "?")
+                    tag = {
+                        "executed": "[ok  ]",
+                        "refused": "[REFU]",
+                        "errored": "[ERR ]",
+                        "no_plan": "[skip]",
+                    }.get(outcome, "[?   ]")
+                    print(f"    {tag}  {sid}")
     trf = summary.get("transfer")
     if trf and trf.get("checked"):
         gate = (
