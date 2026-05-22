@@ -98,6 +98,127 @@ class TestRule2Thrashing:
         assert "clear-override shaky" in rec.cmd
 
 
+class TestRule2bEngineHealth:
+    """Engine-health degradation triggers a recommendation
+    when total (regressions + chronic) >= 3."""
+
+    def test_below_threshold_no_recommendation(self):
+        from core.approval.engine_health_history import (
+            HealthRegression,
+        )
+        with patch(
+            "core.capability_planner.auto_demote_history."
+            "find_thrashing",
+            return_value=[],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_regressions",
+            return_value=[
+                HealthRegression(
+                    engine="loyalty",
+                    latest_score=4,
+                    latest_verdict="warning",
+                    baseline_score=8.0,
+                    drop=4.0,
+                    samples_in_baseline=5,
+                ),
+            ],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_chronic_warnings",
+            return_value=[],
+        ):
+            s = _summary()
+            rec = cna.recommend(s)
+        # 1 < 3 -- not surfaced
+        assert rec.priority != "address_engine_health"
+
+    def test_above_threshold_surfaces(self):
+        from core.approval.engine_health_history import (
+            HealthRegression, ChronicWarning,
+        )
+        with patch(
+            "core.capability_planner.auto_demote_history."
+            "find_thrashing",
+            return_value=[],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_regressions",
+            return_value=[
+                HealthRegression(
+                    engine="loyalty",
+                    latest_score=4,
+                    latest_verdict="warning",
+                    baseline_score=8.0,
+                    drop=4.0,
+                    samples_in_baseline=5,
+                ),
+                HealthRegression(
+                    engine="bundle",
+                    latest_score=3,
+                    latest_verdict="unhealthy",
+                    baseline_score=9.0,
+                    drop=6.0,
+                    samples_in_baseline=5,
+                ),
+            ],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_chronic_warnings",
+            return_value=[
+                ChronicWarning(
+                    engine="discount_strategy",
+                    latest_score=5,
+                    latest_verdict="warning",
+                    samples=4,
+                    avg_score=5.5,
+                ),
+            ],
+        ):
+            s = _summary()
+            rec = cna.recommend(s)
+        assert rec.priority == "address_engine_health"
+        assert "2 regression(s)" in rec.detail
+        assert "1 chronic" in rec.detail
+        assert "loyalty" in rec.detail
+        assert (
+            rec.cmd == "shopai approvals health-regressions"
+        )
+
+    def test_only_chronic_picks_chronic_cmd(self):
+        from core.approval.engine_health_history import (
+            ChronicWarning,
+        )
+        with patch(
+            "core.capability_planner.auto_demote_history."
+            "find_thrashing",
+            return_value=[],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_regressions",
+            return_value=[],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_chronic_warnings",
+            return_value=[
+                ChronicWarning(
+                    engine=f"engine_{i}",
+                    latest_score=5,
+                    latest_verdict="warning",
+                    samples=3,
+                    avg_score=5.0,
+                )
+                for i in range(3)
+            ],
+        ):
+            s = _summary()
+            rec = cna.recommend(s)
+        assert rec.priority == "address_engine_health"
+        assert (
+            rec.cmd == "shopai approvals chronic-warnings"
+        )
+
+
 class TestRule3CycleAlerts:
 
     def test_low_advance_rate_alert_surfaces(self):

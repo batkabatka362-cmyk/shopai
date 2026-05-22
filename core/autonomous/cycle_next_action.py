@@ -112,6 +112,64 @@ def recommend(summary: dict[str, Any]) -> NextAction:
             exc,
         )
 
+    # Rule 2b: engine-health degradations (regressions +
+    # chronic warnings). Surface when significant (3+
+    # total) so operators see them in the cycle output
+    # alongside the cycle's own alerts.
+    try:
+        from core.approval.engine_health_history import (
+            find_regressions, find_chronic_warnings,
+        )
+        regs = find_regressions(
+            min_drop=3.0,
+            baseline_window_seconds=86400.0 * 7.0,
+            latest_window_seconds=86400.0 * 1.0,
+            min_baseline_samples=3,
+        )
+        chronics = find_chronic_warnings(
+            sample_window_seconds=86400.0 * 7.0,
+            min_samples=3,
+            healthy_score_floor=7,
+        )
+        total = len(regs) + len(chronics)
+        if total >= 3:
+            parts: list[str] = []
+            if regs:
+                top_reg = ", ".join(
+                    r.engine for r in regs[:3]
+                )
+                parts.append(
+                    f"{len(regs)} regression(s) "
+                    f"({top_reg})"
+                )
+            if chronics:
+                top_chr = ", ".join(
+                    w.engine for w in chronics[:3]
+                )
+                parts.append(
+                    f"{len(chronics)} chronic ({top_chr})"
+                )
+            return NextAction(
+                priority="address_engine_health",
+                detail=(
+                    f"Engine health degraded: "
+                    + " + ".join(parts)
+                    + ". Inspect via approvals CLIs to "
+                    "decide whether to quarantine or "
+                    "investigate root cause."
+                ),
+                cmd=(
+                    "shopai approvals health-regressions"
+                    if regs
+                    else "shopai approvals chronic-warnings"
+                ),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "next_action: engine_health lookup raised: %s",
+            exc,
+        )
+
     # Rule 3: cycle alerts -- low_advance_rate /
     # substrate_shrinking surface here. Promote severity
     # when consecutive_days streak is large.
