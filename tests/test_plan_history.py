@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -753,3 +754,200 @@ class TestFailOpen:
         )
         monkeypatch.setattr(ph, "_HISTORY_PATH", bad)
         assert ph.recent_history(since_seconds=3600) == []
+
+
+class TestCapabilityRevenueImpact:
+    """Per-capability revenue-impact rollup. Bridges the
+    substrate's reliability tracking to the bible's
+    measurable-outcomes mandate."""
+
+    def _record_correlated(
+        self, caps, outcome, delta, store_id="s",
+    ):
+        eid = ph.record_plan_invocation(
+            goal="g",
+            plan={
+                "steps": [
+                    {"capability_name": c} for c in caps
+                ],
+            },
+            store_id=store_id,
+            executed=True,
+        )
+        with patch(
+            "core.capability_planner.plan_history."
+            "_is_test_environment",
+            return_value=False,
+        ):
+            events = ph._load_history()
+            for e in events:
+                if e.get("event_id") == eid:
+                    e["outcome"] = outcome
+                    e["revenue_delta"] = delta
+                    break
+            ph._atomic_write(events)
+
+    def test_returns_empty_when_no_correlation(
+        self, temp_history,
+    ):
+        ph.record_plan_invocation(
+            goal="g",
+            plan={"steps": [
+                {"capability_name": "cap_a"},
+            ]},
+            store_id="s",
+            executed=True,
+        )
+        rows = ph.capability_revenue_impact(
+            since_seconds=3600,
+        )
+        assert rows == []
+
+    def test_attributes_delta_per_capability(
+        self, temp_history,
+    ):
+        self._record_correlated(
+            ["cap_a"], "revenue_up", 500.0,
+        )
+        self._record_correlated(
+            ["cap_a"], "revenue_up", 300.0,
+        )
+        self._record_correlated(
+            ["cap_b"], "revenue_down", -100.0,
+        )
+        rows = ph.capability_revenue_impact(
+            since_seconds=3600,
+        )
+        by_cap = {r["capability"]: r for r in rows}
+        assert by_cap["cap_a"]["total_revenue_delta"] == 800
+        assert by_cap["cap_a"]["sample_size"] == 2
+        assert by_cap["cap_a"]["positive_count"] == 2
+        assert by_cap["cap_a"]["avg_revenue_delta"] == 400
+        assert (
+            by_cap["cap_b"]["total_revenue_delta"] == -100
+        )
+        assert by_cap["cap_b"]["negative_count"] == 1
+
+    def test_ranking_by_total_delta_desc(
+        self, temp_history,
+    ):
+        self._record_correlated(
+            ["high_impact"], "revenue_up", 1000.0,
+        )
+        self._record_correlated(
+            ["low_impact"], "revenue_up", 100.0,
+        )
+        rows = ph.capability_revenue_impact(
+            since_seconds=3600,
+        )
+        assert rows[0]["capability"] == "high_impact"
+        assert rows[1]["capability"] == "low_impact"
+
+    def test_uncorrelated_executed_ok_ignored(
+        self, temp_history,
+    ):
+        eid = ph.record_plan_invocation(
+            goal="g",
+            plan={"steps": [
+                {"capability_name": "cap_a"},
+            ]},
+            store_id="s",
+            executed=True,
+        )
+        ph.record_outcome(eid, "executed_ok")
+        rows = ph.capability_revenue_impact(
+            since_seconds=3600,
+        )
+        assert rows == []
+
+    def test_revenue_flat_counts_as_sample(
+        self, temp_history,
+    ):
+        """A flat outcome ($0 delta) still increments
+        sample_size -- the capability was correlated, just
+        didn't move revenue."""
+        self._record_correlated(
+            ["cap_a"], "revenue_flat", 0.0,
+        )
+        rows = ph.capability_revenue_impact(
+            since_seconds=3600,
+        )
+        assert len(rows) == 1
+        assert rows[0]["sample_size"] == 1
+        assert rows[0]["total_revenue_delta"] == 0
+        assert rows[0]["positive_count"] == 0
+        assert rows[0]["negative_count"] == 0
+
+    def test_duplicate_step_in_plan_counted_once(
+        self, temp_history,
+    ):
+        eid = ph.record_plan_invocation(
+            goal="g",
+            plan={"steps": [
+                {"capability_name": "cap_a"},
+                {"capability_name": "cap_a"},
+            ]},
+            store_id="s",
+            executed=True,
+        )
+        with patch(
+            "core.capability_planner.plan_history."
+            "_is_test_environment",
+            return_value=False,
+        ):
+            events = ph._load_history()
+            for e in events:
+                if e.get("event_id") == eid:
+                    e["outcome"] = "revenue_up"
+                    e["revenue_delta"] = 500.0
+                    break
+            ph._atomic_write(events)
+        rows = ph.capability_revenue_impact(
+            since_seconds=3600,
+        )
+        assert len(rows) == 1
+        assert rows[0]["sample_size"] == 1
+
+    def test_min_sample_size_cutoff(self, temp_history):
+        self._record_correlated(
+            ["cap_a"], "revenue_up", 500.0,
+        )
+        rows = ph.capability_revenue_impact(
+            since_seconds=3600, min_sample_size=2,
+        )
+        assert rows == []
+
+    def test_correlate_persists_revenue_delta(
+        self, temp_history,
+    ):
+        """correlate_outcome_by_stats writes the structured
+        revenue_delta so the rollup can aggregate."""
+        eid = ph.record_plan_invocation(
+            goal="g",
+            plan={"steps": [
+                {"capability_name": "cap_a"},
+            ]},
+            store_id="s",
+            executed=True,
+            pre_stats={"total_revenue": 1000.0},
+        )
+        with patch(
+            "core.capability_planner.plan_history."
+            "_is_test_environment",
+            return_value=False,
+        ):
+            ph.correlate_outcome_by_stats(
+                eid,
+                {"total_revenue": 1500.0},
+            )
+            events = ph._load_history()
+        target = next(
+            e for e in events if e["event_id"] == eid
+        )
+        assert target["outcome"] == "revenue_up"
+        assert target["revenue_delta"] == 500.0
+        rows = ph.capability_revenue_impact(
+            since_seconds=3600,
+        )
+        assert len(rows) == 1
+        assert rows[0]["total_revenue_delta"] == 500

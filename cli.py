@@ -525,6 +525,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view.",
     )
 
+    cap_revenue_p = capabilities_sub.add_parser(
+        "revenue-impact",
+        help=(
+            "Per-capability revenue-impact rollup from "
+            "correlated plan_history. Bridges the "
+            "substrate to the bible's measurable-outcomes "
+            "mandate -- which capabilities actually moved "
+            "revenue?"
+        ),
+    )
+    cap_revenue_p.add_argument(
+        "--window-days", type=int, default=30,
+        dest="window_days",
+        help="Look-back window in days (default 30).",
+    )
+    cap_revenue_p.add_argument(
+        "--min-sample-size", type=int, default=1,
+        dest="min_sample_size",
+        help=(
+            "Skip capabilities below this correlated-"
+            "appearance count (default 1)."
+        ),
+    )
+    cap_revenue_p.add_argument(
+        "--top", type=int, default=20,
+        help="Max rows (default 20).",
+    )
+    cap_revenue_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view.",
+    )
+
     cap_auto_history_p = capabilities_sub.add_parser(
         "auto-demote-history",
         help=(
@@ -13735,6 +13767,76 @@ capability_overrides import load_overrides
                 f"{r['executed_count']:<3})  "
                 f"{r['capability']}"
             )
+        return
+
+    if action == "revenue-impact":
+        try:
+            from core.capability_planner import (
+                capability_revenue_impact,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "revenue-impact: import failed: %s", exc,
+            )
+            print(f"revenue-impact unavailable: {exc}")
+            return
+        window_days = max(
+            1, int(getattr(args, "window_days", 30) or 30),
+        )
+        min_sample = max(
+            1, int(
+                getattr(args, "min_sample_size", 1) or 1,
+            ),
+        )
+        top = max(1, int(getattr(args, "top", 20) or 20))
+        rows = capability_revenue_impact(
+            since_seconds=window_days * 86400,
+            min_sample_size=min_sample,
+            top_n=top,
+        )
+        if as_json:
+            print(json.dumps({
+                "window_days": window_days,
+                "min_sample_size": min_sample,
+                "rows": rows,
+            }, indent=2, default=str))
+            return
+        if not rows:
+            print(
+                f"No correlated revenue impact in the last "
+                f"{window_days} day(s). Run "
+                f"``shopai plan --auto-correlate`` after a "
+                f"measurement window passes to populate."
+            )
+            return
+        print(
+            f"Capability revenue impact "
+            f"(last {window_days} day(s); attribution = "
+            f"full delta to each cap in plan):"
+        )
+        print()
+        total_revenue_delta = sum(
+            r["total_revenue_delta"] for r in rows
+        )
+        for i, r in enumerate(rows, start=1):
+            arrow = "↑" if r["total_revenue_delta"] > 0 else (
+                "↓" if r["total_revenue_delta"] < 0 else "·"
+            )
+            print(
+                f"  {i:>3}. {arrow} "
+                f"${r['total_revenue_delta']:>10,.2f}  "
+                f"avg ${r['avg_revenue_delta']:>8,.2f}  "
+                f"n={r['sample_size']:>3} "
+                f"(+{r['positive_count']} / "
+                f"-{r['negative_count']})  "
+                f"{r['capability']}"
+            )
+        print()
+        print(
+            f"  Total attributed: "
+            f"${total_revenue_delta:,.2f} across "
+            f"{len(rows)} capabilit(ies)"
+        )
         return
 
     if action == "auto-demote-history":

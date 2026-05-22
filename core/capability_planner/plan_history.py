@@ -591,6 +591,113 @@ def capability_leaderboard(
     return rows[:max(1, int(top_n))]
 
 
+def capability_revenue_impact(
+    *,
+    since_seconds: int = 86400 * 30,
+    min_sample_size: int = 1,
+    top_n: int = 20,
+) -> list[dict[str, Any]]:
+    """Per-capability revenue-impact rollup from correlated
+    plan history.
+
+    Walks events with a populated ``revenue_delta`` field
+    (i.e. events that ran ``correlate_outcome_by_stats``
+    after a measurement window). For each capability in the
+    event's plan, attributes the FULL revenue_delta to it.
+
+    Caveat: when a plan contains N capabilities, each gets
+    credited the same delta. We don't have causal attribution
+    -- if delta=$100 with 5 caps, every cap sees +$100.
+    Operators reading this should treat it as a correlation
+    signal, not a causal one. Tie-breaks rely on the count
+    (a cap that's seen +$1000 across 10 events with avg
+    delta $100 is more reliable than a single $1000 win).
+
+    Filters:
+      - ``since_seconds`` -- look-back window (default 30
+        days).
+      - ``min_sample_size`` -- skip capabilities below this
+        appearance count.
+      - ``top_n`` -- return top N by total delta.
+
+    Returns each row:
+      {capability, total_revenue_delta, avg_revenue_delta,
+       sample_size, positive_count, negative_count}
+    sorted by total_revenue_delta desc.
+    """
+    events = recent_history(since_seconds=since_seconds)
+    per_cap: dict[str, dict[str, Any]] = {}
+    for e in events:
+        if not e.get("executed"):
+            continue
+        # Only count events with a real revenue
+        # correlation. Skip un-correlated events (outcome
+        # not in revenue_* set) so a plan with no
+        # measurement window doesn't dilute the average.
+        outcome = str(e.get("outcome") or "")
+        if outcome not in (
+            "revenue_up", "revenue_flat", "revenue_down",
+        ):
+            continue
+        try:
+            delta = float(e.get("revenue_delta") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        plan = e.get("plan") or {}
+        steps = plan.get("steps") or []
+        seen: set[str] = set()
+        for s in steps:
+            if not isinstance(s, dict):
+                continue
+            name = s.get("capability_name", "")
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            entry = per_cap.setdefault(name, {
+                "capability": name,
+                "total_revenue_delta": 0.0,
+                "sample_size": 0,
+                "positive_count": 0,
+                "negative_count": 0,
+            })
+            entry["total_revenue_delta"] += delta
+            entry["sample_size"] += 1
+            if delta > 0:
+                entry["positive_count"] += 1
+            elif delta < 0:
+                entry["negative_count"] += 1
+
+    rows: list[dict[str, Any]] = []
+    for entry in per_cap.values():
+        if entry["sample_size"] < max(
+            1, int(min_sample_size),
+        ):
+            continue
+        avg = (
+            entry["total_revenue_delta"]
+            / entry["sample_size"]
+            if entry["sample_size"] > 0 else 0.0
+        )
+        rows.append({
+            "capability": entry["capability"],
+            "total_revenue_delta": round(
+                entry["total_revenue_delta"], 2,
+            ),
+            "avg_revenue_delta": round(avg, 2),
+            "sample_size": entry["sample_size"],
+            "positive_count": entry["positive_count"],
+            "negative_count": entry["negative_count"],
+        })
+    rows.sort(
+        key=lambda r: (
+            -r["total_revenue_delta"],
+            -r["sample_size"],
+            r["capability"],
+        ),
+    )
+    return rows[:max(1, int(top_n))]
+
+
 def successful_plans(
     *,
     since_seconds: int = 86400 * 30,
@@ -791,6 +898,10 @@ def correlate_outcome_by_stats(
     # Persist the new outcome + notes. Idempotent overwrite.
     target["outcome"] = outcome
     target["notes"] = notes
+    # Structured revenue delta so per-capability revenue
+    # impact can be aggregated without parsing notes strings.
+    target["revenue_delta"] = rev_delta
+    target["revenue_delta_pct"] = round(rev_delta_pct, 2)
     if not _is_test_environment():
         _atomic_write(events)
 

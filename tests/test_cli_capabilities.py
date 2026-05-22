@@ -936,6 +936,89 @@ class TestAutoDemoteDegraded:
         }
 
 
+class TestRevenueImpact:
+    """``shopai capabilities revenue-impact`` -- bridges
+    substrate to bible's measurable-outcomes mandate."""
+
+    def _rows(self):
+        return [
+            {
+                "capability": "winner",
+                "total_revenue_delta": 1500.50,
+                "avg_revenue_delta": 750.25,
+                "sample_size": 2,
+                "positive_count": 2,
+                "negative_count": 0,
+            },
+            {
+                "capability": "loser",
+                "total_revenue_delta": -200.00,
+                "avg_revenue_delta": -200.00,
+                "sample_size": 1,
+                "positive_count": 0,
+                "negative_count": 1,
+            },
+        ]
+
+    def test_empty_friendly(self, cli):
+        with patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=[],
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="revenue-impact",
+                ),
+            )
+        assert code == 0
+        assert "No correlated revenue impact" in out
+        assert "--auto-correlate" in out
+
+    def test_renders_text(self, cli):
+        with patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=self._rows(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="revenue-impact",
+                ),
+            )
+        assert code == 0
+        assert "Capability revenue impact" in out
+        assert "winner" in out
+        assert "loser" in out
+        assert "$  1,500.50" in out
+        # negative shows down arrow + minus dollars
+        assert "-200.00" in out
+        # total attributed
+        assert "$1,300.50" in out
+
+    def test_json_envelope(self, cli):
+        with patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=self._rows(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="revenue-impact",
+                    min_sample_size=1,
+                    json=True,
+                ),
+            )
+        data = json.loads(out)
+        assert data["window_days"] == 30
+        assert data["min_sample_size"] == 1
+        assert len(data["rows"]) == 2
+        assert data["rows"][0]["capability"] == "winner"
+
+
 class TestAutoDemoteHistory:
     """``shopai capabilities auto-demote-history`` -- audit
     trail of bridge events."""
