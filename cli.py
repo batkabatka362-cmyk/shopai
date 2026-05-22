@@ -3763,6 +3763,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    approvals_chronic_warnings = approvals_sub.add_parser(
+        "chronic-warnings",
+        help=(
+            "Find engines stuck below the healthy score "
+            "floor across every sample in the window. "
+            "Complement of health-regressions: detects "
+            "STATE (stuck-low) rather than CHANGE (dropped)"
+        ),
+    )
+    approvals_chronic_warnings.add_argument(
+        "--window-days", type=float, default=7.0,
+        help="Sample window in days (default 7)",
+    )
+    approvals_chronic_warnings.add_argument(
+        "--min-samples", type=int, default=3,
+        help=(
+            "Minimum samples in window to qualify "
+            "(default 3 -- statistically noisy below)"
+        ),
+    )
+    approvals_chronic_warnings.add_argument(
+        "--healthy-floor", type=int, default=7,
+        help=(
+            "Scores AT OR ABOVE this count as healthy. "
+            "Engines whose every sample scored below "
+            "this floor are flagged. Default 7 matches "
+            "the 8-10 healthy band."
+        ),
+    )
+    approvals_chronic_warnings.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     approvals_alert_history = approvals_sub.add_parser(
         "alert-history",
         help=(
@@ -23721,6 +23755,9 @@ def _cmd_approvals(args) -> None:
     if verb == "health-regressions":
         _cmd_approvals_health_regressions(args)
         return
+    if verb == "chronic-warnings":
+        _cmd_approvals_chronic_warnings(args)
+        return
     if verb == "auto-approve-candidates":
         _cmd_approvals_auto_candidates(args)
         return
@@ -24511,6 +24548,93 @@ def _cmd_approvals_health_regressions(args) -> None:
                 f"drop={r['drop']:>4.1f}pts  "
                 f"({r['latest_verdict']}, "
                 f"n={r['samples_in_baseline']})"
+            )
+
+    if rows:
+        sys.exit(1)
+
+
+def _cmd_approvals_chronic_warnings(args) -> None:
+    """Surface engines stuck at warning/unhealthy for every
+    sample in the window.
+
+    Reads ``engine_health_history.find_chronic_warnings``.
+    Cron-friendly: exits 1 when any chronic warning is
+    flagged so monitoring pipelines fail-fast on stuck
+    states the same way they do on regressions.
+    """
+    as_json = bool(getattr(args, "json", False))
+    window_days = float(
+        getattr(args, "window_days", 7.0) or 7.0,
+    )
+    min_samples = int(
+        getattr(args, "min_samples", 3) or 3,
+    )
+    healthy_floor = int(
+        getattr(args, "healthy_floor", 7) or 7,
+    )
+
+    try:
+        from core.approval.engine_health_history import (
+            find_chronic_warnings,
+        )
+        chronics = find_chronic_warnings(
+            sample_window_seconds=86400.0 * window_days,
+            min_samples=min_samples,
+            healthy_score_floor=healthy_floor,
+        )
+    except Exception as exc:  # noqa: BLE001
+        msg = (
+            f"engine_health_history unavailable: {exc}"
+        )
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(msg)
+        sys.exit(1)
+        return
+
+    rows = [
+        {
+            "engine": w.engine,
+            "latest_score": w.latest_score,
+            "latest_verdict": w.latest_verdict,
+            "samples": w.samples,
+            "avg_score": w.avg_score,
+        }
+        for w in chronics
+    ]
+
+    if as_json:
+        print(json.dumps({
+            "window_days": window_days,
+            "min_samples": min_samples,
+            "healthy_floor": healthy_floor,
+            "chronic_warnings": rows,
+        }, indent=2, default=str))
+    else:
+        if not rows:
+            print("No chronic warnings flagged.")
+            print(
+                f"  (window={window_days}d "
+                f"min_samples={min_samples} "
+                f"healthy_floor={healthy_floor})"
+            )
+            return
+        print(
+            f"Chronic warnings ({len(rows)} engine(s)):"
+        )
+        print()
+        for r in rows:
+            print(
+                f"  {r['engine']:<28s}  "
+                f"latest={r['latest_score']:>2d}/10  "
+                f"avg={r['avg_score']:>4.1f}/10  "
+                f"({r['latest_verdict']}, "
+                f"n={r['samples']})"
             )
 
     if rows:
