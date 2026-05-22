@@ -5402,6 +5402,32 @@ capability_overrides import load_overrides
         envelope["overall"] = "warn"
     else:
         envelope["overall"] = "ok"
+
+    # Composite health score (0-100). Single number for
+    # operators to track over time / wire to dashboards.
+    # Starts at 100, penalized by each problem signal.
+    score = 100
+    if any(not s.get("checked") for s in sections):
+        # Subsystem failures dominate the score
+        score -= 40
+    alerts = envelope["cycle"].get("alert_count", 0)
+    score -= min(30, alerts * 10)
+    thrash = envelope["bridge"].get(
+        "thrashing_count", 0,
+    )
+    score -= min(20, thrash * 10)
+    if cycle_pause.get("active", False):
+        score -= 15
+    rt = (
+        envelope["cycle"].get("revenue_trend_7d") or {}
+    )
+    if rt and rt.get("snapshots", 0) >= 2:
+        delta_pct = float(rt.get("delta_pct", 0) or 0)
+        if delta_pct < -5:
+            score -= 10  # significant decline
+        elif delta_pct > 5:
+            score = min(100, score + 5)  # bonus growth
+    envelope["health_score"] = max(0, min(100, score))
     return envelope
 
 
@@ -5416,7 +5442,11 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
         "error": "[ERR]",
         "unknown": "[?]",
     }.get(envelope["overall"], "[?]")
-    print(f"Health {tag}")
+    score = envelope.get("health_score")
+    if isinstance(score, int):
+        print(f"Health {tag}  score={score}/100")
+    else:
+        print(f"Health {tag}")
 
     fleet = envelope["fleet"]
     if fleet.get("checked"):
@@ -22137,8 +22167,10 @@ def _cmd_status(args=None) -> None:
             if rt and rt.get("snapshots", 0) >= 2
             else "n/a"
         )
+        score = health.get("health_score", "?")
         print(
-            f"{tag} stores={fleet.get('store_count', 0)} "
+            f"{tag} score={score}/100 "
+            f"stores={fleet.get('store_count', 0)} "
             f"cycle_runs_24h="
             f"{cyc.get('runs_24h', 0)} "
             f"paused={paused} "

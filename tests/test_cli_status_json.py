@@ -409,6 +409,68 @@ class TestHealthSections:
         assert ch["schema_ok"] is False
         assert "json_decode" in (ch.get("error") or "")
 
+    def test_health_score_perfect_on_clean(self, cli):
+        with patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote_history."
+            "find_thrashing",
+            return_value=[],
+        ):
+            sections = cli._build_health_sections()
+        assert sections["health_score"] == 100
+
+    def test_health_score_penalized_for_alerts(
+        self, cli,
+    ):
+        from core.autonomous.cycle_alerts import CycleAlert
+        with patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[
+                CycleAlert(
+                    kind="stale_cycle", detail="x",
+                ),
+            ],
+        ):
+            sections = cli._build_health_sections()
+        # Score < 100 because 1 alert
+        assert sections["health_score"] < 100
+
+    def test_health_score_clamped_to_zero(self, cli):
+        """Many problems together still clamp at 0."""
+        from core.autonomous.cycle_alerts import CycleAlert
+        import time as _t
+        with patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[
+                CycleAlert(kind=f"a{i}", detail="x")
+                for i in range(20)
+            ],
+        ), patch(
+            "core.capability_planner.auto_demote_history."
+            "find_thrashing",
+            return_value=[
+                {"capability": f"c{i}"}
+                for i in range(20)
+            ],
+        ), patch(
+            "core.autonomous.cycle_pause.get_pause_state",
+            return_value={
+                "active": True,
+                "paused_until_at": _t.time() + 3600,
+                "reason": "x",
+                "paused_at": _t.time(),
+            },
+        ):
+            sections = cli._build_health_sections()
+        assert sections["health_score"] >= 0
+        # Should be MUCH lower than 100
+        assert sections["health_score"] < 50
+
     def test_line_format_ok(self, cli):
         import argparse as _ap
         with patch.object(
