@@ -3801,6 +3801,16 @@ def build_parser() -> argparse.ArgumentParser:
             "default). Useful for testing / bounded runs."
         ),
     )
+    status_p.add_argument(
+        "--audit-data", action="store_true",
+        dest="audit_data",
+        help=(
+            "Walk every persistent state file and report "
+            "schema sanity + size. Catches corrupt files "
+            "before they crash a cycle. Does NOT run a "
+            "cycle or render full status."
+        ),
+    )
 
     loop_p = sub.add_parser(
         "loop",
@@ -21148,7 +21158,127 @@ def _build_status_dict() -> dict:
     }
 
 
+def _audit_data_files() -> dict[str, Any]:
+    """Walk every persistent state file used by ShopAI's
+    autonomous loop. Report file size + JSON schema sanity
+    + event counts. Helps catch corruption / disk-full
+    issues before they crash a cycle."""
+    import os as _os
+
+    files = [
+        ("cycle_history", "data/cycle_history.json",
+         "list"),
+        ("cycle_alert_history",
+         "data/cycle_alert_history.json", "list"),
+        ("cycle_overrides", "data/cycle_overrides.json",
+         "dict"),
+        ("auto_demote_history",
+         "data/auto_demote_history.json", "list"),
+        ("auto_promote_history",
+         "data/auto_promote_history.json", "list"),
+        ("auto_relax_history",
+         "data/auto_relax_history.json", "list"),
+        ("transfer_history",
+         "data/transfer_history.json", "list"),
+        ("capability_overrides",
+         "data/capability_overrides.json", "list"),
+        ("plan_history", "data/plan_history.json",
+         "list"),
+        ("plan_templates", "data/plan_templates.json",
+         "dict"),
+    ]
+
+    out: dict[str, Any] = {"files": [], "overall": "ok"}
+    for label, path, expected_shape in files:
+        entry: dict[str, Any] = {
+            "label": label,
+            "path": path,
+            "exists": False,
+            "size_bytes": 0,
+            "schema_ok": None,
+            "row_count": None,
+            "error": None,
+        }
+        try:
+            if not _os.path.exists(path):
+                entry["exists"] = False
+                out["files"].append(entry)
+                continue
+            entry["exists"] = True
+            entry["size_bytes"] = _os.path.getsize(path)
+            with open(
+                path, "r", encoding="utf-8",
+            ) as f:
+                data = json.load(f)
+            if (
+                expected_shape == "list"
+                and isinstance(data, list)
+            ):
+                entry["schema_ok"] = True
+                entry["row_count"] = len(data)
+            elif (
+                expected_shape == "dict"
+                and isinstance(data, dict)
+            ):
+                entry["schema_ok"] = True
+                entry["row_count"] = len(data)
+            else:
+                entry["schema_ok"] = False
+                entry["error"] = (
+                    f"expected {expected_shape}, got "
+                    f"{type(data).__name__}"
+                )
+                out["overall"] = "error"
+        except json.JSONDecodeError as exc:
+            entry["schema_ok"] = False
+            entry["error"] = f"json_decode: {exc}"
+            out["overall"] = "error"
+        except OSError as exc:
+            entry["error"] = f"os_error: {exc}"
+            out["overall"] = "error"
+        out["files"].append(entry)
+    return out
+
+
 def _cmd_status(args=None) -> None:
+    # --audit-data: walk every persistent file and report
+    # schema sanity. Read-only, no other status render.
+    if args is not None and getattr(
+        args, "audit_data", False,
+    ):
+        audit = _audit_data_files()
+        as_json = bool(getattr(args, "json", False))
+        if as_json:
+            print(json.dumps(audit, indent=2, default=str))
+            return
+        tag = {
+            "ok": "[OK]",
+            "error": "[ERR]",
+        }.get(audit["overall"], "[?]")
+        print(f"Data file audit {tag}")
+        print()
+        for entry in audit["files"]:
+            label = entry["label"]
+            if not entry["exists"]:
+                print(
+                    f"  [.]    {label:<24s} "
+                    f"(not present)"
+                )
+                continue
+            if entry["schema_ok"]:
+                size_kb = entry["size_bytes"] / 1024.0
+                print(
+                    f"  [ok]   {label:<24s} "
+                    f"{entry['row_count']:>5d} rows  "
+                    f"{size_kb:.1f}KB"
+                )
+            else:
+                print(
+                    f"  [ERR]  {label:<24s} "
+                    f"{entry.get('error', 'unknown')}"
+                )
+        return
+
     # --watch: long-poll mode. Re-render every interval
     # seconds. Single source-of-truth ops dashboard.
     if args is not None and getattr(args, "watch", False):

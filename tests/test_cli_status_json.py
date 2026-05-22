@@ -308,6 +308,76 @@ class TestHealthSections:
         assert "override_set" in thr
         assert "auto_relax_enabled" in thr
 
+    def test_audit_data_returns_envelope(
+        self, cli, tmp_path, monkeypatch,
+    ):
+        # Change cwd so the auditor looks at tmp_path
+        monkeypatch.chdir(tmp_path)
+        import argparse as _ap
+        ns = _ap.Namespace(
+            json=True, audit_data=True,
+            watch=False, interval=30, iterations=0,
+        )
+        out = _capture(cli._cmd_status, ns)
+        data = json.loads(out)
+        assert "files" in data
+        assert "overall" in data
+        # Every known file label is in the audit
+        labels = {f["label"] for f in data["files"]}
+        for expected in (
+            "cycle_history",
+            "cycle_alert_history",
+            "auto_demote_history",
+            "auto_promote_history",
+            "auto_relax_history",
+            "transfer_history",
+            "cycle_overrides",
+            "capability_overrides",
+            "plan_history",
+            "plan_templates",
+        ):
+            assert expected in labels
+
+    def test_audit_data_detects_corrupt(
+        self, cli, tmp_path, monkeypatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+        # Create a corrupt cycle_history.json
+        (tmp_path / "data").mkdir()
+        (tmp_path / "data" / "cycle_history.json").write_text(
+            "not json{",
+        )
+        import argparse as _ap
+        ns = _ap.Namespace(
+            json=True, audit_data=True,
+            watch=False, interval=30, iterations=0,
+        )
+        out = _capture(cli._cmd_status, ns)
+        data = json.loads(out)
+        # Overall should flag error
+        assert data["overall"] == "error"
+        # Specific file marked
+        ch = next(
+            f for f in data["files"]
+            if f["label"] == "cycle_history"
+        )
+        assert ch["schema_ok"] is False
+        assert "json_decode" in (ch.get("error") or "")
+
+    def test_audit_data_text_render(
+        self, cli, tmp_path, monkeypatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+        import argparse as _ap
+        ns = _ap.Namespace(
+            json=False, audit_data=True,
+            watch=False, interval=30, iterations=0,
+        )
+        out = _capture(cli._cmd_status, ns)
+        assert "Data file audit" in out
+        # Files missing render as [.]
+        assert "(not present)" in out
+
     def test_watch_mode_runs_iterations(self, cli):
         """--watch with --iterations limits the loop."""
         import argparse as _ap
