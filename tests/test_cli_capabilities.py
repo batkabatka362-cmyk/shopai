@@ -624,6 +624,280 @@ class TestShow:
         assert "audit_checks_closed" in data
         assert "composes_with" in data
         assert "example_input" in data
+        # Operational state envelope present (may be empty)
+        assert "operational" in data
+        assert "reliability" in data["operational"]
+        assert "revenue_impact" in data["operational"]
+        assert "override" in data["operational"]
+        assert "bridge_status" in data["operational"]
+
+
+class TestShowOperational:
+    """``shopai capabilities show <name>`` now includes
+    operational state alongside the registry metadata."""
+
+    def _override(self, name, kind="demote", reason="", at=0):
+        from core.capability_planner.\
+capability_overrides import CapabilityOverride
+        return CapabilityOverride(
+            name=name, kind=kind, reason=reason,
+            recorded_at=at,
+        )
+
+    def _overrides_for(self, *entries):
+        from core.capability_planner.\
+capability_overrides import CapabilityOverrides
+        return CapabilityOverrides(entries=list(entries))
+
+    def test_clean_substrate_silent_in_text(self, cli):
+        """No reliability / revenue / override / bridge
+        signal -- text view stays silent."""
+        with patch(
+            "core.capability_planner."
+            "capability_leaderboard",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides_for(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="show",
+                    name="launch_store",
+                ),
+            )
+        assert code == 0
+        # No "Operational state" section
+        assert "Operational state" not in out
+
+    def test_reliability_renders(self, cli):
+        rel_row = {
+            "capability": "launch_store",
+            "executed_count": 5,
+            "success_count": 4,
+            "success_rate": 0.8,
+        }
+        with patch(
+            "core.capability_planner."
+            "capability_leaderboard",
+            return_value=[rel_row],
+        ), patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides_for(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="show",
+                    name="launch_store",
+                ),
+            )
+        assert code == 0
+        assert "Operational state" in out
+        assert "Reliability: 80.0%" in out
+        assert "4/5" in out
+
+    def test_revenue_renders(self, cli):
+        rev_row = {
+            "capability": "launch_store",
+            "total_revenue_delta": 1500.0,
+            "avg_revenue_delta": 500.0,
+            "sample_size": 3,
+            "positive_count": 3,
+            "negative_count": 0,
+        }
+        with patch(
+            "core.capability_planner."
+            "capability_leaderboard",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=[rev_row],
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides_for(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="show",
+                    name="launch_store",
+                ),
+            )
+        assert code == 0
+        assert "Revenue:" in out
+        assert "+$1,500.00" in out
+        assert "n=3" in out
+
+    def test_override_renders_with_tag(self, cli):
+        with patch(
+            "core.capability_planner."
+            "capability_leaderboard",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides_for(
+                self._override(
+                    "launch_store",
+                    kind="promote",
+                    reason="winner",
+                ),
+            ),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="show",
+                    name="launch_store",
+                ),
+            )
+        assert code == 0
+        assert "Override:" in out
+        assert "[PROMOTE]" in out
+        assert "winner" in out
+
+    def test_auto_demote_override_uses_special_tag(
+        self, cli,
+    ):
+        with patch(
+            "core.capability_planner."
+            "capability_leaderboard",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides_for(
+                self._override(
+                    "launch_store",
+                    kind="demote",
+                    reason=(
+                        "auto_demote_degraded: drop=0.6 ..."
+                    ),
+                ),
+            ),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="show",
+                    name="launch_store",
+                ),
+            )
+        assert code == 0
+        assert "[DEMOTE/AUTO]" in out
+
+    def test_bridge_status_renders(self, cli):
+        deg = {
+            "capability": "launch_store",
+            "baseline_rate": 0.9,
+            "recent_rate": 0.3,
+            "drop": 0.6,
+            "recent_samples": 5,
+            "baseline_samples": 20,
+        }
+        with patch(
+            "core.capability_planner."
+            "capability_leaderboard",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[deg],
+        ), patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides_for(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="show",
+                    name="launch_store",
+                ),
+            )
+        assert code == 0
+        assert "Bridge:" in out
+        assert "WOULD_DEMOTE" in out
+        assert "-60pp" in out
+
+    def test_load_failure_keeps_show_working(self, cli):
+        """If the operational subsystem raises, the registry
+        view still renders -- we just lose the operational
+        state section."""
+        with patch(
+            "core.capability_planner."
+            "capability_leaderboard",
+            side_effect=RuntimeError("disk"),
+        ), patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides_for(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="show",
+                    name="launch_store",
+                ),
+            )
+        assert code == 0
+        # Registry metadata still rendered
+        assert "launch_store" in out
+        assert "orchestrator" in out
 
     def test_show_json_unknown(self, cli):
         out, code = _capture(

@@ -13551,8 +13551,115 @@ def _cmd_capabilities(args) -> None:
                     for s in similar[:5]:
                         print(f"  {s.name}")
             sys.exit(1)
+
+        # Operational state: reliability + revenue impact +
+        # override status + bridge annotation. Cheap local-
+        # file reads. Fail-open: each subsystem missing
+        # degrades silently to its empty value.
+        operational: dict[str, Any] = {
+            "reliability": None,
+            "revenue_impact": None,
+            "override": None,
+            "bridge_status": None,
+        }
+        try:
+            from core.capability_planner import (
+                capability_leaderboard,
+                capability_revenue_impact,
+                capability_degradations,
+            )
+            from core.capability_planner.\
+capability_overrides import load_overrides
+            from core.capability_planner import auto_demote
+            # Reliability -- our cap might be below default
+            # leaderboard min_sample_size, so query with =1
+            # then filter.
+            try:
+                rel_rows = capability_leaderboard(
+                    since_seconds=86400 * 30,
+                    min_sample_size=1,
+                    top_n=1000,
+                )
+                for r in rel_rows:
+                    if r["capability"] == cap.name:
+                        operational["reliability"] = r
+                        break
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "capability show reliability "
+                    "raised: %s", exc,
+                )
+            # Revenue impact
+            try:
+                rev_rows = capability_revenue_impact(
+                    since_seconds=86400 * 30,
+                    min_sample_size=1,
+                    top_n=1000,
+                )
+                for r in rev_rows:
+                    if r["capability"] == cap.name:
+                        operational["revenue_impact"] = r
+                        break
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "capability show revenue raised: %s",
+                    exc,
+                )
+            # Override status
+            try:
+                overrides = load_overrides()
+                entry = overrides.get(cap.name)
+                if entry is not None:
+                    operational["override"] = {
+                        "kind": entry.kind,
+                        "reason": entry.reason,
+                        "recorded_at": entry.recorded_at,
+                    }
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "capability show override raised: %s",
+                    exc,
+                )
+            # Bridge status -- if this cap appears in recent
+            # degradations, surface its tier.
+            try:
+                degs = capability_degradations(
+                    recent_window_seconds=86400 * 7,
+                    baseline_window_seconds=86400 * 30,
+                )
+                degs = auto_demote.annotate_degradations(
+                    degs,
+                )
+                for d in degs:
+                    if d["capability"] == cap.name:
+                        operational["bridge_status"] = {
+                            "tier": d.get(
+                                "bridge_status",
+                            ),
+                            "baseline_rate": d[
+                                "baseline_rate"
+                            ],
+                            "recent_rate": d["recent_rate"],
+                            "drop": d["drop"],
+                        }
+                        break
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "capability show bridge raised: %s",
+                    exc,
+                )
+        except ImportError as exc:
+            logger.debug(
+                "capability show operational import "
+                "failed: %s", exc,
+            )
+
         if as_json:
-            print(json.dumps(cap.to_dict(), indent=2, default=str))
+            envelope = cap.to_dict()
+            envelope["operational"] = operational
+            print(json.dumps(
+                envelope, indent=2, default=str,
+            ))
             return
         print(f"{cap.name}")
         print(f"  kind:        {cap.kind}")
@@ -13588,6 +13695,66 @@ def _cmd_capabilities(args) -> None:
             print("  example input:")
             for k, v in cap.example_input.items():
                 print(f"    {k}: {v}")
+        # Operational state rendered only when at least one
+        # signal exists. Silent on a brand-new capability
+        # with no history.
+        any_op = any(
+            v is not None for v in operational.values()
+        )
+        if any_op:
+            print()
+            print("  Operational state (last 30 days):")
+            rel = operational["reliability"]
+            if rel:
+                pct = rel["success_rate"] * 100
+                print(
+                    f"    Reliability: {pct:.1f}% "
+                    f"({rel['success_count']}/"
+                    f"{rel['executed_count']} runs)"
+                )
+            rev = operational["revenue_impact"]
+            if rev:
+                arrow = (
+                    "+" if rev["total_revenue_delta"] >= 0
+                    else ""
+                )
+                print(
+                    f"    Revenue:     "
+                    f"{arrow}${rev['total_revenue_delta']:,.2f} "
+                    f"total (avg "
+                    f"{arrow}${rev['avg_revenue_delta']:,.2f}, "
+                    f"n={rev['sample_size']})"
+                )
+            ov = operational["override"]
+            if ov:
+                tag = (
+                    "PROMOTE" if ov["kind"] == "promote"
+                    else "DEMOTE"
+                )
+                if (
+                    ov["kind"] == "demote"
+                    and ov["reason"].startswith(
+                        "auto_demote_degraded",
+                    )
+                ):
+                    tag = "DEMOTE/AUTO"
+                reason_tag = (
+                    f"  ({ov['reason'][:60]})"
+                    if ov["reason"] else ""
+                )
+                print(
+                    f"    Override:    [{tag}]{reason_tag}"
+                )
+            bs = operational["bridge_status"]
+            if bs:
+                tier = bs["tier"] or ""
+                drop_pp = bs["drop"] * 100
+                print(
+                    f"    Bridge:      [{tier.upper()}] "
+                    f"recent {bs['recent_rate']*100:.0f}% "
+                    f"vs baseline {bs['baseline_rate']*100:.0f}% "
+                    f"(-{drop_pp:.0f}pp)"
+                )
         return
 
     if action in ("promote", "demote"):
