@@ -10858,7 +10858,40 @@ def _engine_pulse_fleet(args, *, as_json: bool) -> None:
     # is deterministic.
     results.sort(key=lambda r: (int(r["score"]), r["engine"]))
 
+    # Pre-compute the regression + chronic sets so each row
+    # can be tagged in one pass without N queue walks.
+    regressing_set: set[str] = set()
+    chronic_set: set[str] = set()
+    try:
+        from core.approval.engine_health_history import (
+            find_regressions, find_chronic_warnings,
+        )
+        regressing_set = {
+            r.engine for r in find_regressions(
+                min_drop=3.0,
+                baseline_window_seconds=86400.0 * 7.0,
+                latest_window_seconds=86400.0 * 1.0,
+                min_baseline_samples=3,
+            )
+        }
+        chronic_set = {
+            w.engine for w in find_chronic_warnings(
+                sample_window_seconds=86400.0 * 7.0,
+                min_samples=3,
+                healthy_score_floor=7,
+            )
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine_pulse_fleet health probes raised: %s",
+            exc,
+        )
+
     if as_json:
+        for row in results:
+            engine = row.get("engine", "")
+            row["regressing"] = engine in regressing_set
+            row["chronic"] = engine in chronic_set
         print(json.dumps({
             "fleet": results,
             "verdict_counts": _verdict_rollup(results),
@@ -10881,11 +10914,17 @@ def _engine_pulse_fleet(args, *, as_json: bool) -> None:
                     f"  [{'; '.join(concerns[:2])}]"
                     if concerns else ""
                 )
+                tag_str = ""
+                engine = r.get("engine", "")
+                if engine in regressing_set:
+                    tag_str += "  [REG]"
+                if engine in chronic_set:
+                    tag_str += "  [CHR]"
                 print(
                     f"  {r['score']:>2d}/10  "
                     f"{r['verdict']:<9s}  "
                     f"{r['engine']:<28s}"
-                    f"{concerns_str}"
+                    f"{concerns_str}{tag_str}"
                 )
 
     if any(r["verdict"] == "unhealthy" for r in results):
