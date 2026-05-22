@@ -74,6 +74,7 @@ def _ns(**kw):
         clear_threshold=False,
         show_thresholds=False,
         transfer_effectiveness=False,
+        diary=False,
         json=False,
     )
     defaults.update(kw)
@@ -1155,6 +1156,87 @@ class TestAutoRelaxInCycle:
             )
         # Direction none doesn't render the auto-relax line
         assert "Auto-relax" not in out
+
+
+class TestDiaryFlag:
+    """``--diary`` is a read-only unified event log."""
+
+    def _event(self, **kw):
+        from core.autonomous.cycle_diary import DiaryEvent
+        defaults = dict(
+            recorded_at=1700000000.0,
+            source="cycle",
+            kind="exec",
+            detail="[EXEC] cycle ran",
+            metrics={},
+        )
+        defaults.update(kw)
+        return DiaryEvent(**defaults)
+
+    def test_renders_text(self, cli):
+        with patch(
+            "core.autonomous.cycle_diary.compile_diary",
+            return_value=[
+                self._event(
+                    detail="[EXEC] cycle ran -- adv=2ok/0ref",
+                ),
+                self._event(
+                    recorded_at=1700001000.0,
+                    source="demote",
+                    detail="[DEMOTE] shaky_cap -- ...",
+                ),
+            ],
+        ):
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(diary=True),
+            )
+        assert code == 0
+        assert "diary" in out.lower()
+        assert "[EXEC] cycle ran" in out
+        assert "[DEMOTE]" in out
+
+    def test_empty_friendly(self, cli):
+        with patch(
+            "core.autonomous.cycle_diary.compile_diary",
+            return_value=[],
+        ):
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(diary=True),
+            )
+        assert code == 0
+        assert "No events recorded" in out
+
+    def test_json_envelope(self, cli):
+        with patch(
+            "core.autonomous.cycle_diary.compile_diary",
+            return_value=[
+                self._event(),
+            ],
+        ):
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(diary=True, json=True),
+            )
+        data = json.loads(out)
+        assert data["window_days"] == 7
+        assert len(data["events"]) == 1
+        assert data["events"][0]["source"] == "cycle"
+
+    def test_skips_cycle_run(self, cli):
+        sm = _fake_sm([{"store_id": "a"}])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ) as mock_sm, patch(
+            "core.autonomous.cycle_diary.compile_diary",
+            return_value=[],
+        ):
+            _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(diary=True),
+            )
+        mock_sm.assert_not_called()
 
 
 class TestTransferEffectivenessFlag:

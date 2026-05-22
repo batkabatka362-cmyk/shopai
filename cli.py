@@ -1226,6 +1226,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     autonomous_p.add_argument(
+        "--diary", action="store_true",
+        dest="diary",
+        help=(
+            "Unified chronological log of every autonomous-"
+            "loop event (cycle runs + demote/promote/relax/"
+            "transfer/alert). Single answer to 'what did "
+            "the loop do recently?'. Does NOT run a cycle."
+        ),
+    )
+    autonomous_p.add_argument(
         "--history", action="store_true",
         help=(
             "Read-only: render the cycle history (recent "
@@ -13695,6 +13705,65 @@ def _cmd_autonomous_cycle(args) -> None:
     skip_transfer = bool(
         getattr(args, "skip_transfer", False),
     )
+
+    # --diary is read-only: unified event log across all
+    # history files.
+    if bool(getattr(args, "diary", False)):
+        try:
+            from core.autonomous import (
+                cycle_diary as _cd,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"diary unavailable: {exc}")
+            return
+        window_days = max(
+            1, int(
+                getattr(
+                    args, "history_window_days", 7,
+                ) or 7,
+            ),
+        )
+        limit = max(
+            1, int(
+                getattr(args, "history_limit", 50) or 50,
+            ),
+        )
+        events = _cd.compile_diary(
+            since_seconds=window_days * 86400,
+            limit=limit,
+        )
+        if as_json:
+            print(json.dumps({
+                "window_days": window_days,
+                "events": [
+                    {
+                        "recorded_at": e.recorded_at,
+                        "source": e.source,
+                        "kind": e.kind,
+                        "detail": e.detail,
+                        "metrics": e.metrics,
+                    }
+                    for e in events
+                ],
+            }, indent=2, default=str))
+            return
+        print(
+            f"Autonomous loop diary "
+            f"(last {window_days} day(s), newest first):"
+        )
+        print()
+        if not events:
+            print(
+                "  No events recorded in the window."
+            )
+            return
+        import datetime as _dt
+        for e in events:
+            stamp = _dt.datetime.fromtimestamp(
+                e.recorded_at,
+            ).strftime("%Y-%m-%d %H:%M")
+            print(f"  {stamp}  {e.detail}")
+        return
 
     # --transfer-effectiveness is read-only.
     if bool(getattr(args, "transfer_effectiveness", False)):
