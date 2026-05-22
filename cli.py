@@ -1070,6 +1070,31 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     autonomous_p.add_argument(
+        "--history", action="store_true",
+        help=(
+            "Read-only: render the cycle history (recent "
+            "invocations + per-window rollup stats). Does "
+            "NOT run a cycle. Useful for cron-tail "
+            "inspection."
+        ),
+    )
+    autonomous_p.add_argument(
+        "--history-window-days", type=int, default=7,
+        dest="history_window_days",
+        help=(
+            "Look-back window in days for --history "
+            "(default 7)."
+        ),
+    )
+    autonomous_p.add_argument(
+        "--history-limit", type=int, default=10,
+        dest="history_limit",
+        help=(
+            "Max events to render with --history "
+            "(default 10)."
+        ),
+    )
+    autonomous_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON cycle summary.",
     )
@@ -12511,6 +12536,98 @@ def _cmd_autonomous_cycle(args) -> None:
         getattr(args, "skip_defend", False),
     )
 
+    # --history is a read-only shortcut: print cycle log
+    # and return. Doesn't run a cycle.
+    if bool(getattr(args, "history", False)):
+        try:
+            from core.autonomous import cycle_history as _ch
+        except Exception as exc:  # noqa: BLE001
+            print(f"cycle history unavailable: {exc}")
+            return
+        window_days = max(
+            1, int(
+                getattr(
+                    args, "history_window_days", 7,
+                ) or 7,
+            ),
+        )
+        limit = max(
+            1, int(
+                getattr(args, "history_limit", 10) or 10,
+            ),
+        )
+        events = _ch.recent_history(
+            since_seconds=window_days * 86400,
+        )[:limit]
+        stats = _ch.cycle_stats(
+            since_seconds=window_days * 86400,
+        )
+        if as_json:
+            print(json.dumps({
+                "window_days": window_days,
+                "stats": stats,
+                "events": [
+                    {
+                        "recorded_at": e.recorded_at,
+                        "executed": e.executed,
+                        "advance": e.advance,
+                        "defend": e.defend,
+                        "correlate": e.correlate,
+                        "flags": e.flags,
+                    }
+                    for e in events
+                ],
+            }, indent=2, default=str))
+            return
+        print(
+            f"Autonomous cycle history "
+            f"(last {window_days} day(s)):"
+        )
+        print(
+            f"  Runs: {stats['total_runs']} total  "
+            f"({stats['executed_runs']} executed, "
+            f"{stats['dry_run_count']} dry-run)"
+        )
+        if stats["total_runs"] > 0:
+            import datetime as _dt
+            last = _dt.datetime.fromtimestamp(
+                stats["last_run_at"],
+            ).strftime("%Y-%m-%d %H:%M")
+            print(f"  Last run: {last}")
+            print(
+                f"  Totals: "
+                f"{stats['stores_advanced_total']} stores "
+                f"advanced, "
+                f"{stats['stores_refused_total']} refused, "
+                f"{stats['demoted_total']} demoted, "
+                f"{stats['released_total']} released, "
+                f"{stats['correlated_total']} correlated"
+            )
+        if not events:
+            print()
+            print("  No recent invocations.")
+            return
+        print()
+        print(f"Recent invocations (newest first):")
+        import datetime as _dt
+        for e in events:
+            stamp = _dt.datetime.fromtimestamp(
+                e.recorded_at,
+            ).strftime("%Y-%m-%d %H:%M")
+            mode = "EXEC" if e.executed else "DRY "
+            adv = e.advance or {}
+            dfn = e.defend or {}
+            cor = e.correlate or {}
+            print(
+                f"  {stamp}  [{mode}]  "
+                f"adv={adv.get('executed_ok', 0)}ok/"
+                f"{adv.get('refused_reliability', 0)}ref  "
+                f"def={dfn.get('demoted', 0)}d/"
+                f"{dfn.get('released', 0)}r  "
+                f"cor={cor.get('correlated', 0)}c"
+            )
+        return
+
     summary: dict[str, Any] = {
         "executed": yes,
         "advance": None,
@@ -12715,6 +12832,29 @@ def _cmd_autonomous_cycle(args) -> None:
                 "correlated": correlated,
                 "by_outcome": outcomes,
             }
+
+    # Persist this invocation to the cycle history audit log.
+    # Pattern J guard short-circuits under pytest. Fail-open:
+    # any persist error is logged but doesn't break the
+    # cycle's response.
+    try:
+        from core.autonomous import cycle_history as _ch
+        _ch.record_cycle(
+            executed=yes,
+            advance=summary.get("advance") or {},
+            defend=summary.get("defend") or {},
+            correlate=summary.get("correlate") or {},
+            flags={
+                "skip_advance": skip_advance,
+                "skip_defend": skip_defend,
+                "skip_correlate": skip_correlate,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "autonomous-cycle: record_cycle raised: %s",
+            exc,
+        )
 
     if as_json:
         print(json.dumps(summary, indent=2, default=str))

@@ -61,6 +61,9 @@ def _ns(**kw):
         skip_correlate=False,
         skip_advance=False,
         skip_defend=False,
+        history=False,
+        history_window_days=7,
+        history_limit=10,
         json=False,
     )
     defaults.update(kw)
@@ -503,3 +506,193 @@ class TestCorrelatePhase:
             data["correlate"]["by_outcome"]["revenue_up"]
             == 1
         )
+
+
+class TestCycleHistory:
+    """Cycle invocations persist to cycle_history audit log
+    + ``--history`` flag inspects them."""
+
+    def _event(self, **kw):
+        from core.autonomous.cycle_history import CycleEvent
+        defaults = dict(
+            recorded_at=1700000000.0,
+            executed=True,
+            advance={
+                "stores_processed": 1,
+                "executed_ok": 1,
+                "refused_reliability": 0,
+                "errored": 0,
+            },
+            defend={
+                "demoted": 0, "released": 0,
+                "gate_enabled": False, "candidates": 0,
+                "actionable": 0,
+                "demoted_capabilities": [],
+                "recovered_candidates": 0,
+                "released_capabilities": [],
+            },
+            correlate={
+                "candidates": 0, "correlated": 0,
+                "by_outcome": {},
+            },
+            flags={},
+        )
+        defaults.update(kw)
+        return CycleEvent(**defaults)
+
+    def test_record_cycle_called_on_invocation(self, cli):
+        """The cycle handler records the invocation to the
+        history log after computing the summary."""
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_history.record_cycle",
+        ) as mock_record:
+            _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(yes=True, json=True),
+            )
+        assert mock_record.call_count == 1
+        # Check key kwargs forwarded
+        call_kwargs = mock_record.call_args.kwargs
+        assert call_kwargs["executed"] is True
+        assert "advance" in call_kwargs
+        assert "defend" in call_kwargs
+        assert "correlate" in call_kwargs
+        assert "flags" in call_kwargs
+
+    def test_dry_run_also_records(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_history.record_cycle",
+        ) as mock_record:
+            _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(yes=False, json=True),
+            )
+        assert mock_record.call_count == 1
+        assert (
+            mock_record.call_args.kwargs["executed"]
+            is False
+        )
+
+    def test_history_flag_skips_cycle_run(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ) as mock_sm, patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_history.cycle_stats",
+            return_value={
+                "total_runs": 0,
+                "executed_runs": 0,
+                "dry_run_count": 0,
+                "last_run_at": None,
+                "stores_advanced_total": 0,
+                "stores_refused_total": 0,
+                "demoted_total": 0,
+                "released_total": 0,
+                "correlated_total": 0,
+            },
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(history=True),
+            )
+            return_code = 0
+        # --history is read-only; store-manager should not
+        # be consulted (no cycle ran)
+        mock_sm.assert_not_called()
+        assert "Autonomous cycle history" in out
+        assert "No recent invocations" in out
+
+    def test_history_renders_events(self, cli):
+        events = [
+            self._event(
+                recorded_at=1700000100.0,
+                executed=True,
+                advance={
+                    "stores_processed": 3,
+                    "executed_ok": 2,
+                    "refused_reliability": 1,
+                    "errored": 0,
+                },
+                defend={
+                    "demoted": 1, "released": 0,
+                    "gate_enabled": True,
+                },
+                correlate={"correlated": 2},
+            ),
+        ]
+        stats = {
+            "total_runs": 1, "executed_runs": 1,
+            "dry_run_count": 0,
+            "last_run_at": 1700000100.0,
+            "stores_advanced_total": 2,
+            "stores_refused_total": 1,
+            "demoted_total": 1,
+            "released_total": 0,
+            "correlated_total": 2,
+        }
+        with patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=events,
+        ), patch(
+            "core.autonomous.cycle_history.cycle_stats",
+            return_value=stats,
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(history=True),
+            )
+        assert "Autonomous cycle history" in out
+        assert "Runs: 1 total" in out
+        # Aggregate totals visible
+        assert "2 stores advanced" in out
+        assert "1 refused" in out
+        assert "1 demoted" in out
+        # Per-event detail rendered
+        assert "[EXEC]" in out
+        assert "adv=2ok/1ref" in out
+        assert "def=1d/0r" in out
+        assert "cor=2c" in out
+
+    def test_history_json_envelope(self, cli):
+        events = [self._event()]
+        stats = {
+            "total_runs": 1, "executed_runs": 1,
+            "dry_run_count": 0,
+            "last_run_at": 1700000000.0,
+            "stores_advanced_total": 1,
+            "stores_refused_total": 0,
+            "demoted_total": 0,
+            "released_total": 0,
+            "correlated_total": 0,
+        }
+        with patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=events,
+        ), patch(
+            "core.autonomous.cycle_history.cycle_stats",
+            return_value=stats,
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(history=True, json=True),
+            )
+        data = json.loads(out)
+        assert data["window_days"] == 7
+        assert data["stats"]["total_runs"] == 1
+        assert len(data["events"]) == 1
+        assert data["events"][0]["executed"] is True
