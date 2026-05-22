@@ -409,6 +409,88 @@ class TestHealthSections:
         assert ch["schema_ok"] is False
         assert "json_decode" in (ch.get("error") or "")
 
+    def test_quiet_silent_when_ok(self, cli):
+        """--quiet exits silently with code 0 when verdict
+        is OK. Cron-friendly: no email noise on healthy
+        runs."""
+        import argparse as _ap
+        with patch.object(
+            cli, "_build_health_sections",
+            return_value={
+                "overall": "ok",
+                "fleet": {"checked": True},
+                "substrate": {"checked": True},
+                "cycle": {"checked": True},
+                "bridge": {"checked": True},
+            },
+        ):
+            buf = StringIO()
+            code = 0
+            try:
+                with patch("sys.stdout", buf):
+                    cli._cmd_status(_ap.Namespace(
+                        json=False,
+                        quiet=True,
+                        watch=False,
+                        interval=30,
+                        iterations=0,
+                        audit_data=False,
+                        cleanup_history=False,
+                        older_than_days=180,
+                        yes=False,
+                    ))
+            except SystemExit as e:
+                code = int(e.code) if e.code is not None else 0
+        # No output, exit 0
+        assert buf.getvalue() == ""
+        assert code == 0
+
+    def test_quiet_renders_and_exits_1_on_warn(
+        self, cli,
+    ):
+        import argparse as _ap
+        with patch.object(
+            cli, "_build_health_sections",
+            return_value={
+                "overall": "warn",
+                "fleet": {"checked": True},
+                "substrate": {"checked": True},
+                "cycle": {
+                    "checked": True,
+                    "runs_24h": 0,
+                    "executed_runs_24h": 0,
+                    "last_run_age_hours": None,
+                    "alert_count": 0,
+                    "alert_kinds": [],
+                    "threshold": None,
+                    "transfers_24h": 0,
+                    "revenue_trend_7d": None,
+                    "pause": {"active": False},
+                },
+                "bridge": {"checked": True},
+            },
+        ):
+            buf = StringIO()
+            code = 0
+            try:
+                with patch("sys.stdout", buf):
+                    cli._cmd_status(_ap.Namespace(
+                        json=False,
+                        quiet=True,
+                        watch=False,
+                        interval=30,
+                        iterations=0,
+                        audit_data=False,
+                        cleanup_history=False,
+                        older_than_days=180,
+                        yes=False,
+                    ))
+            except SystemExit as e:
+                code = int(e.code) if e.code is not None else 0
+        # WARN -> output rendered + exit 1
+        assert "Health" in buf.getvalue()
+        assert code == 1
+
     def test_paused_triggers_warn_verdict(self, cli):
         import time as _t
         with patch(

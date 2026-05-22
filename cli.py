@@ -3888,6 +3888,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     status_p.add_argument(
+        "--quiet", action="store_true",
+        help=(
+            "When the overall verdict is OK, output "
+            "nothing and exit 0. When verdict is WARN or "
+            "ERROR, print full status and exit 1. "
+            "Cron-friendly: only mails on real issues."
+        ),
+    )
+    status_p.add_argument(
         "--interval", type=int, default=30,
         help=(
             "Refresh interval in seconds for --watch "
@@ -21994,6 +22003,33 @@ def _audit_data_files() -> dict[str, Any]:
 
 
 def _cmd_status(args=None) -> None:
+    # --quiet: exit silently when verdict is OK; otherwise
+    # render full status + exit 1. Mailbox-friendly cron
+    # mode -- operators only get noise when there's
+    # actually a problem.
+    if args is not None and getattr(args, "quiet", False):
+        try:
+            health = _build_health_sections()
+        except Exception as exc:  # noqa: BLE001
+            print(f"status build failed: {exc}")
+            sys.exit(1)
+            return
+        verdict = health.get("overall", "unknown")
+        if verdict == "ok":
+            return
+        # Render the full status as if --quiet wasn't set
+        # so the operator sees what's wrong.
+        inner_args = type(args)(**{
+            **vars(args),
+            "quiet": False,
+        }) if hasattr(args, "__dict__") else None
+        try:
+            _cmd_status(inner_args)
+        except Exception:
+            pass
+        sys.exit(1)
+        return
+
     # --cleanup-history: prune old events from every
     # history file. Operator housekeeping.
     if args is not None and getattr(
