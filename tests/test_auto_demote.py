@@ -359,3 +359,281 @@ capability_overrides import (
         ):
             applied = auto_demote.maybe_auto_demote_degraded()
         assert applied == []
+
+
+class TestRecoveryThreshold:
+
+    def test_default(self):
+        assert auto_demote.recovery_threshold() == 0.7
+
+    def test_env_override(self):
+        os.environ[
+            "SHOPAI_AUTO_DEMOTE_RECOVERY_THRESHOLD"
+        ] = "0.85"
+        assert auto_demote.recovery_threshold() == 0.85
+
+    def test_out_of_range_falls_back(self):
+        os.environ[
+            "SHOPAI_AUTO_DEMOTE_RECOVERY_THRESHOLD"
+        ] = "1.5"
+        assert auto_demote.recovery_threshold() == 0.7
+        os.environ[
+            "SHOPAI_AUTO_DEMOTE_RECOVERY_THRESHOLD"
+        ] = "-0.1"
+        assert auto_demote.recovery_threshold() == 0.7
+
+    def test_invalid_falls_back(self):
+        os.environ[
+            "SHOPAI_AUTO_DEMOTE_RECOVERY_THRESHOLD"
+        ] = "abc"
+        assert auto_demote.recovery_threshold() == 0.7
+
+    def test_config_summary_includes_recovery(self):
+        cfg = auto_demote.config_summary()
+        assert cfg["recovery_threshold"] == 0.7
+
+
+class TestFindReleaseCandidates:
+
+    def _override(
+        self, name, kind="demote", reason="", at=0.0,
+    ):
+        from core.capability_planner.\
+capability_overrides import CapabilityOverride
+        return CapabilityOverride(
+            name=name, kind=kind, reason=reason,
+            recorded_at=at,
+        )
+
+    def _overrides_for(self, *entries):
+        from core.capability_planner.\
+capability_overrides import CapabilityOverrides
+        return CapabilityOverrides(entries=list(entries))
+
+    def test_no_bridge_demotes_returns_empty(self):
+        # Only manual demote present -- bridge entries
+        # required.
+        with patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides_for(
+                self._override(
+                    "manual", reason="operator says",
+                ),
+            ),
+        ):
+            out = auto_demote.find_release_candidates()
+        assert out == []
+
+    def test_promote_entries_ignored(self):
+        with patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides_for(
+                self._override(
+                    "winner", kind="promote",
+                    reason="auto_demote_degraded: stale",
+                ),
+            ),
+        ):
+            out = auto_demote.find_release_candidates()
+        assert out == []
+
+    def test_demoted_with_no_recent_samples_skipped(self):
+        with patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides_for(
+                self._override(
+                    "cap_a",
+                    reason="auto_demote_degraded: ...",
+                ),
+            ),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "plan_history.capability_leaderboard",
+            return_value=[],
+        ):
+            out = auto_demote.find_release_candidates()
+        assert out == []
+
+    def test_demoted_below_recovery_threshold_skipped(self):
+        leaderboard = [{
+            "capability": "cap_a",
+            "executed_count": 5,
+            "success_count": 2,
+            "success_rate": 0.4,
+        }]
+        with patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides_for(
+                self._override(
+                    "cap_a",
+                    reason="auto_demote_degraded: ...",
+                ),
+            ),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "plan_history.capability_leaderboard",
+            return_value=leaderboard,
+        ):
+            out = auto_demote.find_release_candidates()
+        # 0.4 < 0.7 default -> not a candidate
+        assert out == []
+
+    def test_recovered_capability_returned(self):
+        leaderboard = [
+            {
+                "capability": "recovered",
+                "executed_count": 5,
+                "success_count": 5,
+                "success_rate": 1.0,
+            },
+            {
+                "capability": "still_bad",
+                "executed_count": 5,
+                "success_count": 1,
+                "success_rate": 0.2,
+            },
+        ]
+        with patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides_for(
+                self._override(
+                    "recovered",
+                    reason="auto_demote_degraded: A",
+                    at=100.0,
+                ),
+                self._override(
+                    "still_bad",
+                    reason="auto_demote_degraded: B",
+                    at=200.0,
+                ),
+            ),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "plan_history.capability_leaderboard",
+            return_value=leaderboard,
+        ):
+            out = auto_demote.find_release_candidates()
+        assert len(out) == 1
+        assert out[0]["capability"] == "recovered"
+        assert out[0]["recent_rate"] == 1.0
+        assert out[0]["recent_samples"] == 5
+        assert out[0]["demoted_at"] == 100.0
+        assert out[0]["demote_reason"].startswith(
+            "auto_demote_degraded",
+        )
+
+
+class TestMaybeReleaseRecovered:
+
+    def _override(self, name, reason="", at=0.0):
+        from core.capability_planner.\
+capability_overrides import CapabilityOverride
+        return CapabilityOverride(
+            name=name, kind="demote", reason=reason,
+            recorded_at=at,
+        )
+
+    def _overrides_for(self, *entries):
+        from core.capability_planner.\
+capability_overrides import CapabilityOverrides
+        return CapabilityOverrides(entries=list(entries))
+
+    def test_pattern_j_under_pytest(self):
+        # Even with recovered candidates available, the
+        # default Pattern J guard short-circuits writes.
+        with patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides_for(
+                self._override(
+                    "recovered",
+                    reason="auto_demote_degraded: ...",
+                ),
+            ),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "plan_history.capability_leaderboard",
+            return_value=[{
+                "capability": "recovered",
+                "executed_count": 5,
+                "success_count": 5,
+                "success_rate": 1.0,
+            }],
+        ):
+            released = auto_demote.maybe_release_recovered()
+        assert released == []
+
+    def test_clears_recovered_demotes(self):
+        cleared: list[str] = []
+
+        def fake_clear(name):
+            cleared.append(name)
+            return True
+
+        with patch(
+            "core.capability_planner.auto_demote."
+            "_is_test_environment",
+            return_value=False,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides_for(
+                self._override(
+                    "recovered",
+                    reason="auto_demote_degraded: ...",
+                ),
+            ),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "plan_history.capability_leaderboard",
+            return_value=[{
+                "capability": "recovered",
+                "executed_count": 5,
+                "success_count": 5,
+                "success_rate": 1.0,
+            }],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.clear",
+            side_effect=fake_clear,
+        ):
+            released = auto_demote.maybe_release_recovered()
+        assert len(released) == 1
+        assert released[0]["capability"] == "recovered"
+        assert cleared == ["recovered"]
+
+    def test_clear_failure_skipped(self):
+        with patch(
+            "core.capability_planner.auto_demote."
+            "_is_test_environment",
+            return_value=False,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._overrides_for(
+                self._override(
+                    "recovered",
+                    reason="auto_demote_degraded: ...",
+                ),
+            ),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "plan_history.capability_leaderboard",
+            return_value=[{
+                "capability": "recovered",
+                "executed_count": 5,
+                "success_count": 5,
+                "success_rate": 1.0,
+            }],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.clear",
+            return_value=False,
+        ):
+            released = auto_demote.maybe_release_recovered()
+        assert released == []

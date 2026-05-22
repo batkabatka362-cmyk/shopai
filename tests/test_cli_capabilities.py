@@ -75,6 +75,7 @@ def _ns(**kw):
         min_recent=None,
         recent_days=None,
         baseline_days=None,
+        recovery=None,
         json=False,
     )
     defaults.update(kw)
@@ -930,4 +931,179 @@ class TestAutoDemoteDegraded:
             "min_recent": 5,
             "recent_days": 3,
             "baseline_days": 14,
+        }
+
+
+class TestAutoDemoteReleaseCandidates:
+    """``shopai capabilities auto-demote-release-candidates``
+    -- clear bridge-demoted capabilities that have recovered."""
+
+    def _config(self):
+        return {
+            "enabled": True,
+            "drop_threshold": 0.4,
+            "min_recent_sample": 3,
+            "recent_window_days": 7,
+            "baseline_window_days": 30,
+            "recovery_threshold": 0.7,
+        }
+
+    def _sample(self):
+        return [
+            {
+                "capability": "recovered_a",
+                "recent_rate": 0.95,
+                "recent_samples": 8,
+                "demote_reason": "auto_demote_degraded: ...",
+                "demoted_at": 100.0,
+            },
+            {
+                "capability": "recovered_b",
+                "recent_rate": 0.85,
+                "recent_samples": 5,
+                "demote_reason": "auto_demote_degraded: ...",
+                "demoted_at": 200.0,
+            },
+        ]
+
+    def test_dry_run_lists_recovered(self, cli):
+        with patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=self._sample(),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value=self._config(),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "maybe_release_recovered",
+            return_value=[],
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action=(
+                        "auto-demote-release-candidates"
+                    ),
+                ),
+            )
+        assert code == 0
+        assert "DRY-RUN" in out
+        assert "Recovered candidates (2)" in out
+        assert "recovered_a" in out
+        assert "recovered_b" in out
+        assert "95.0%" in out
+        assert "Dry-run only" in out
+
+    def test_yes_clears_recovered(self, cli):
+        with patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=self._sample(),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value=self._config(),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "maybe_release_recovered",
+            return_value=self._sample(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action=(
+                        "auto-demote-release-candidates"
+                    ),
+                    yes=True,
+                ),
+            )
+        assert code == 0
+        assert "APPLIED" in out
+        assert "Released 2 demote(s)" in out
+        assert "recovered_a" in out
+
+    def test_no_candidates_friendly(self, cli):
+        with patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value=self._config(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action=(
+                        "auto-demote-release-candidates"
+                    ),
+                ),
+            )
+        assert code == 0
+        assert "No bridge-demoted capabilities" in out
+
+    def test_json_envelope(self, cli):
+        with patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=self._sample(),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value=self._config(),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "maybe_release_recovered",
+            return_value=self._sample(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action=(
+                        "auto-demote-release-candidates"
+                    ),
+                    yes=True,
+                    json=True,
+                ),
+            )
+        data = json.loads(out)
+        assert data["applied"] is True
+        assert len(data["candidates"]) == 2
+        assert len(data["released"]) == 2
+
+    def test_threshold_overrides_passed_through(self, cli):
+        calls = {}
+
+        def fake_find(**kwargs):
+            calls.update(kwargs)
+            return []
+
+        with patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            side_effect=fake_find,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value=self._config(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action=(
+                        "auto-demote-release-candidates"
+                    ),
+                    recovery=0.85,
+                    min_recent=4,
+                    recent_days=5,
+                ),
+            )
+        assert code == 0
+        assert calls == {
+            "recovery": 0.85,
+            "min_recent": 4,
+            "recent_days": 5,
         }

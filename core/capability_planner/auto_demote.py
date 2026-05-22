@@ -72,11 +72,13 @@ _ENV_DROP = "SHOPAI_AUTO_DEMOTE_DROP_THRESHOLD"
 _ENV_MIN_RECENT = "SHOPAI_AUTO_DEMOTE_MIN_RECENT_SAMPLE"
 _ENV_RECENT_WINDOW = "SHOPAI_AUTO_DEMOTE_RECENT_WINDOW_DAYS"
 _ENV_BASELINE_WINDOW = "SHOPAI_AUTO_DEMOTE_BASELINE_WINDOW_DAYS"
+_ENV_RECOVERY = "SHOPAI_AUTO_DEMOTE_RECOVERY_THRESHOLD"
 
 _DEFAULT_DROP = 0.4
 _DEFAULT_MIN_RECENT = 3
 _DEFAULT_RECENT_WINDOW_DAYS = 7
 _DEFAULT_BASELINE_WINDOW_DAYS = 30
+_DEFAULT_RECOVERY = 0.7
 
 # Free-form reason logged on auto-demote so future override
 # inspections distinguish bridge-driven demotes from operator-
@@ -134,6 +136,25 @@ def recent_window_days() -> int:
             _DEFAULT_RECENT_WINDOW_DAYS, exc,
         )
         return _DEFAULT_RECENT_WINDOW_DAYS
+
+
+def recovery_threshold() -> float:
+    """Minimum recent success rate for a bridge-demoted
+    capability to be considered "recovered". Default 0.7."""
+    raw = os.environ.get(_ENV_RECOVERY)
+    if not raw:
+        return _DEFAULT_RECOVERY
+    try:
+        v = float(raw)
+        if v <= 0 or v > 1.0:
+            return _DEFAULT_RECOVERY
+        return v
+    except (TypeError, ValueError) as exc:
+        logger.debug(
+            "invalid %s=%r; using default %s (%s)",
+            _ENV_RECOVERY, raw, _DEFAULT_RECOVERY, exc,
+        )
+        return _DEFAULT_RECOVERY
 
 
 def baseline_window_days() -> int:
@@ -320,4 +341,137 @@ def config_summary() -> dict[str, Any]:
         "min_recent_sample": min_recent_sample(),
         "recent_window_days": recent_window_days(),
         "baseline_window_days": baseline_window_days(),
+        "recovery_threshold": recovery_threshold(),
     }
+
+
+def find_release_candidates(
+    *,
+    recovery: float | None = None,
+    min_recent: int | None = None,
+    recent_days: int | None = None,
+) -> list[dict[str, Any]]:
+    """Read-only: bridge-demoted capabilities whose recent
+    reliability has recovered enough to clear the demote.
+
+    Sister to ``find_demote_candidates`` -- the demote side
+    detects regressions; this one detects recoveries. The
+    bridge demoted capabilities silently in the
+    ``maybe_auto_demote_degraded`` call; without a recovery
+    helper, those demotes stay forever even after the
+    underlying issue is fixed.
+
+    Only ``auto_demote_degraded``-prefixed demotes are
+    considered. Operator-driven demotes (manual ``shopai
+    capabilities demote``) are left alone because the
+    operator's reason may persist even if reliability has
+    recovered.
+
+    Args:
+        recovery: Minimum recent success rate to qualify.
+            Default: env-tuned ``recovery_threshold()``
+            (0.7).
+        min_recent: Minimum recent-window sample size for
+            the candidate to be considered. Default: env-
+            tuned ``min_recent_sample()``.
+        recent_days: Recent window in days. Default: env-
+            tuned ``recent_window_days()``.
+
+    Returns:
+        Highest-recovery first. Each row:
+          {capability, recent_rate, recent_samples,
+           demote_reason, demoted_at}
+        Empty when no bridge demotes exist or no demoted
+        capability has recovered.
+    """
+    rec_th = recovery if recovery is not None else recovery_threshold()
+    min_rec = (
+        min_recent if min_recent is not None
+        else min_recent_sample()
+    )
+    rec_days = (
+        recent_days if recent_days is not None
+        else recent_window_days()
+    )
+
+    overrides = capability_overrides.load_overrides()
+    # Filter to bridge-driven demotes only.
+    auto_demoted = [
+        e for e in overrides.entries
+        if e.kind == "demote"
+        and e.reason.startswith("auto_demote_degraded")
+    ]
+    if not auto_demoted:
+        return []
+
+    leaderboard = plan_history.capability_leaderboard(
+        since_seconds=rec_days * 86400,
+        min_sample_size=min_rec,
+        top_n=1000,
+    )
+    rates_by_cap: dict[str, dict[str, Any]] = {
+        r["capability"]: r for r in leaderboard
+    }
+
+    out: list[dict[str, Any]] = []
+    for entry in auto_demoted:
+        row = rates_by_cap.get(entry.name)
+        if row is None:
+            # No recent samples -- can't confirm recovery,
+            # skip. Operator can clear manually if they
+            # want to retry.
+            continue
+        if row["success_rate"] < rec_th:
+            continue
+        out.append({
+            "capability": entry.name,
+            "recent_rate": row["success_rate"],
+            "recent_samples": row["executed_count"],
+            "demote_reason": entry.reason,
+            "demoted_at": entry.recorded_at,
+        })
+    out.sort(key=lambda r: -r["recent_rate"])
+    return out
+
+
+def maybe_release_recovered(
+    *,
+    recovery: float | None = None,
+    min_recent: int | None = None,
+    recent_days: int | None = None,
+) -> list[dict[str, Any]]:
+    """Compute + apply release of recovered bridge-demoted
+    capabilities.
+
+    Pattern J short-circuit returns ``[]`` under pytest.
+    Unlike ``maybe_auto_demote_degraded`` this function is
+    NOT env-gated -- the bridge's demote requires explicit
+    opt-in (because flipping a previously-OK capability is
+    a write that affects future plans), but RELEASING is the
+    safe direction. An operator who finds the bridge has
+    quarantined too aggressively can always re-add a manual
+    demote.
+
+    Returns the list of rows actually released (same shape
+    as ``find_release_candidates``).
+    """
+    if _is_test_environment():
+        return []
+    candidates = find_release_candidates(
+        recovery=recovery,
+        min_recent=min_recent,
+        recent_days=recent_days,
+    )
+    if not candidates:
+        return []
+    released: list[dict[str, Any]] = []
+    for c in candidates:
+        ok = capability_overrides.clear(c["capability"])
+        if not ok:
+            logger.debug(
+                "auto_demote: clear(%s) returned False; "
+                "skipping row", c["capability"],
+            )
+            continue
+        released.append(c)
+    return released

@@ -174,6 +174,10 @@ class TestDefendPhase:
             return_value=[],
         ), patch(
             "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
             "config_summary",
             return_value={
                 "enabled": False,
@@ -181,6 +185,7 @@ class TestDefendPhase:
                 "min_recent_sample": 3,
                 "recent_window_days": 7,
                 "baseline_window_days": 30,
+                "recovery_threshold": 0.7,
             },
         ):
             out, code = _capture(
@@ -195,6 +200,9 @@ class TestDefendPhase:
             "actionable": 0,
             "demoted": 0,
             "demoted_capabilities": [],
+            "recovered_candidates": 0,
+            "released": 0,
+            "released_capabilities": [],
         }
 
     def test_defend_yes_calls_apply(self, cli):
@@ -230,6 +238,10 @@ class TestDefendPhase:
             return_value=candidates,
         ), patch(
             "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
             "config_summary",
             return_value={
                 "enabled": True,
@@ -237,12 +249,17 @@ class TestDefendPhase:
                 "min_recent_sample": 3,
                 "recent_window_days": 7,
                 "baseline_window_days": 30,
+                "recovery_threshold": 0.7,
             },
         ), patch(
             "core.capability_planner.auto_demote."
             "maybe_auto_demote_degraded",
             return_value=applied,
-        ) as mock_apply:
+        ) as mock_apply, patch(
+            "core.capability_planner.auto_demote."
+            "maybe_release_recovered",
+            return_value=[],
+        ):
             out, code = _capture(
                 cli._cmd_autonomous_cycle,
                 _ns(yes=True, json=True),
@@ -256,6 +273,7 @@ class TestDefendPhase:
         assert data["defend"]["demoted_capabilities"] == [
             "cap_x",
         ]
+        assert data["defend"]["released"] == 0
 
     def test_defend_dry_run_does_not_call_apply(self, cli):
         sm = _fake_sm([])
@@ -270,6 +288,10 @@ class TestDefendPhase:
             return_value=[],
         ), patch(
             "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
             "config_summary",
             return_value={
                 "enabled": True,
@@ -277,18 +299,23 @@ class TestDefendPhase:
                 "min_recent_sample": 3,
                 "recent_window_days": 7,
                 "baseline_window_days": 30,
+                "recovery_threshold": 0.7,
             },
         ), patch(
             "core.capability_planner.auto_demote."
             "maybe_auto_demote_degraded",
-        ) as mock_apply:
+        ) as mock_apply, patch(
+            "core.capability_planner.auto_demote."
+            "maybe_release_recovered",
+        ) as mock_release:
             out, code = _capture(
                 cli._cmd_autonomous_cycle,
                 _ns(yes=False, json=True),
             )
         assert code == 0
-        # Dry-run: apply must NOT be called
+        # Dry-run: neither apply NOR release should fire
         assert mock_apply.call_count == 0
+        assert mock_release.call_count == 0
 
     def test_skip_defend_omits_phase(self, cli):
         sm = _fake_sm([])
@@ -339,6 +366,10 @@ class TestDefendPhase:
             return_value=candidates,
         ), patch(
             "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
             "config_summary",
             return_value={
                 "enabled": True,
@@ -346,11 +377,16 @@ class TestDefendPhase:
                 "min_recent_sample": 3,
                 "recent_window_days": 7,
                 "baseline_window_days": 30,
+                "recovery_threshold": 0.7,
             },
         ), patch(
             "core.capability_planner.auto_demote."
             "maybe_auto_demote_degraded",
             return_value=applied,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "maybe_release_recovered",
+            return_value=[],
         ):
             out, code = _capture(
                 cli._cmd_autonomous_cycle,
@@ -361,6 +397,65 @@ class TestDefendPhase:
         assert "1 demoted" in out
         assert "cap_y" in out
         assert "gate ON" in out
+
+    def test_defend_release_text_view(self, cli):
+        sm = _fake_sm([])
+        release_cands = [{
+            "capability": "recovered_cap",
+            "recent_rate": 0.95,
+            "recent_samples": 5,
+            "demote_reason": "auto_demote_degraded: ...",
+            "demoted_at": 100.0,
+        }]
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=release_cands,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "config_summary",
+            return_value={
+                "enabled": True,
+                "drop_threshold": 0.4,
+                "min_recent_sample": 3,
+                "recent_window_days": 7,
+                "baseline_window_days": 30,
+                "recovery_threshold": 0.7,
+            },
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "maybe_auto_demote_degraded",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "maybe_release_recovered",
+            return_value=release_cands,
+        ) as mock_release:
+            out, code = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(yes=True, json=True),
+            )
+        assert code == 0
+        # Release is called even without gate-on
+        assert mock_release.call_count == 1
+        data = json.loads(out)
+        assert data["defend"]["released"] == 1
+        assert (
+            data["defend"]["recovered_candidates"] == 1
+        )
+        assert (
+            data["defend"]["released_capabilities"]
+            == ["recovered_cap"]
+        )
 
 
 class TestCorrelatePhase:

@@ -525,6 +525,49 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view.",
     )
 
+    cap_auto_release_p = capabilities_sub.add_parser(
+        "auto-demote-release-candidates",
+        help=(
+            "Find bridge-demoted capabilities whose recent "
+            "reliability has recovered. Default: dry-run "
+            "preview; --yes clears the recovered demotes "
+            "(unlike --demote, RELEASE is not env-gated -- "
+            "release is the safe direction)."
+        ),
+    )
+    cap_auto_release_p.add_argument(
+        "--yes", action="store_true",
+        help=(
+            "Clear the recovered demotes. Without --yes, "
+            "the command is a dry-run preview."
+        ),
+    )
+    cap_auto_release_p.add_argument(
+        "--recovery", type=float, default=None,
+        help=(
+            "Override min recent success rate (default: "
+            "env-tuned SHOPAI_AUTO_DEMOTE_RECOVERY_THRESHOLD "
+            "or 0.7)."
+        ),
+    )
+    cap_auto_release_p.add_argument(
+        "--min-recent", type=int, default=None,
+        dest="min_recent",
+        help=(
+            "Min recent-window sample size (default: "
+            "env-tuned or 3)."
+        ),
+    )
+    cap_auto_release_p.add_argument(
+        "--recent-days", type=int, default=None,
+        dest="recent_days",
+        help="Recent window in days (default: env-tuned or 7).",
+    )
+    cap_auto_release_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view.",
+    )
+
     cap_auto_demote_p = capabilities_sub.add_parser(
         "auto-demote-degraded",
         help=(
@@ -12208,13 +12251,21 @@ def _cmd_autonomous_cycle(args) -> None:
                 candidates = (
                     auto_demote.find_demote_candidates()
                 )
+                release_candidates = (
+                    auto_demote.find_release_candidates()
+                )
                 if yes:
                     demoted = (
                         auto_demote
                         .maybe_auto_demote_degraded()
                     )
+                    # Release is always safe -- no env gate.
+                    released = (
+                        auto_demote.maybe_release_recovered()
+                    )
                 else:
                     demoted = []
+                    released = []
                 summary["defend"] = {
                     "gate_enabled": config["enabled"],
                     "candidates": len(candidates),
@@ -12225,6 +12276,13 @@ def _cmd_autonomous_cycle(args) -> None:
                     "demoted": len(demoted),
                     "demoted_capabilities": [
                         d["capability"] for d in demoted
+                    ],
+                    "recovered_candidates": len(
+                        release_candidates,
+                    ),
+                    "released": len(released),
+                    "released_capabilities": [
+                        r["capability"] for r in released
                     ],
                 }
             except Exception as exc:  # noqa: BLE001
@@ -12338,6 +12396,27 @@ def _cmd_autonomous_cycle(args) -> None:
                         f", +{len(dfn['demoted_capabilities']) - 5} more"
                     )
                 print(f"           -> {names}")
+            n_rel = dfn.get("released", 0)
+            n_rec = dfn.get("recovered_candidates", 0)
+            if n_rel or n_rec:
+                print(
+                    f"  Release: "
+                    f"{n_rel} released / "
+                    f"{n_rec} recovered candidates"
+                )
+                if dfn.get("released_capabilities"):
+                    names = ", ".join(
+                        dfn["released_capabilities"][:5],
+                    )
+                    if len(
+                        dfn["released_capabilities"]
+                    ) > 5:
+                        names += (
+                            f", +"
+                            f"{len(dfn['released_capabilities']) - 5} "
+                            f"more"
+                        )
+                    print(f"           -> {names}")
     cor = summary.get("correlate")
     if cor:
         if cor.get("error"):
@@ -13385,6 +13464,91 @@ capability_overrides import load_overrides
                 f"({r['success_count']:>3}/"
                 f"{r['executed_count']:<3})  "
                 f"{r['capability']}"
+            )
+        return
+
+    if action == "auto-demote-release-candidates":
+        try:
+            from core.capability_planner import auto_demote
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "auto-demote-release-candidates: "
+                "import failed: %s", exc,
+            )
+            print(
+                f"auto-demote-release-candidates "
+                f"unavailable: {exc}"
+            )
+            return
+        yes = bool(getattr(args, "yes", False))
+        recovery = getattr(args, "recovery", None)
+        min_recent = getattr(args, "min_recent", None)
+        recent_days = getattr(args, "recent_days", None)
+
+        config = auto_demote.config_summary()
+        candidates = auto_demote.find_release_candidates(
+            recovery=recovery,
+            min_recent=min_recent,
+            recent_days=recent_days,
+        )
+        if yes:
+            released = auto_demote.maybe_release_recovered(
+                recovery=recovery,
+                min_recent=min_recent,
+                recent_days=recent_days,
+            )
+        else:
+            released = []
+
+        if as_json:
+            print(json.dumps({
+                "applied": yes,
+                "config": config,
+                "candidates": candidates,
+                "released": released,
+            }, indent=2, default=str))
+            return
+
+        mode = "APPLIED" if yes else "DRY-RUN"
+        print(
+            f"auto-demote-release-candidates ({mode})"
+        )
+        print(
+            f"  recovery_threshold="
+            f"{config['recovery_threshold']:.2f}  "
+            f"min_recent={config['min_recent_sample']}  "
+            f"recent={config['recent_window_days']}d"
+        )
+        print()
+        if not candidates:
+            print(
+                "No bridge-demoted capabilities have "
+                "recovered above the threshold."
+            )
+            return
+        print(f"Recovered candidates ({len(candidates)}):")
+        for c in candidates:
+            print(
+                f"  {c['recent_rate']*100:>5.1f}%  "
+                f"({c['recent_samples']:>3} sample(s))  "
+                f"{c['capability']}"
+            )
+        if yes:
+            print()
+            if not released:
+                print(
+                    "No demotes cleared (test environment "
+                    "or I/O error)."
+                )
+            else:
+                print(f"Released {len(released)} demote(s):")
+                for r in released:
+                    print(f"  - {r['capability']}")
+        else:
+            print()
+            print(
+                "Dry-run only. Re-run with --yes to clear "
+                "the recovered demotes."
             )
         return
 
