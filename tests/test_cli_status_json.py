@@ -409,6 +409,84 @@ class TestHealthSections:
         assert ch["schema_ok"] is False
         assert "json_decode" in (ch.get("error") or "")
 
+    def test_cleanup_history_dry_run(
+        self, cli, tmp_path, monkeypatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+        import argparse as _ap
+        ns = _ap.Namespace(
+            json=True,
+            cleanup_history=True,
+            older_than_days=180,
+            yes=False,
+            watch=False,
+            interval=30,
+            iterations=0,
+            audit_data=False,
+        )
+        with patch(
+            "core.autonomous.history_cleanup.prune_all",
+            return_value={
+                "older_than_days": 180,
+                "dry_run": True,
+                "total_pruned": 5,
+                "files": [
+                    {
+                        "label": "demote",
+                        "path": "x",
+                        "total": 10,
+                        "kept": 5,
+                        "pruned": 5,
+                        "pruned_size_bytes": 1024,
+                        "error": None,
+                    },
+                ],
+            },
+        ):
+            out = _capture(cli._cmd_status, ns)
+        data = json.loads(out)
+        assert data["total_pruned"] == 5
+        assert data["dry_run"] is True
+
+    def test_cleanup_history_text_render(
+        self, cli, tmp_path, monkeypatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+        import argparse as _ap
+        ns = _ap.Namespace(
+            json=False,
+            cleanup_history=True,
+            older_than_days=180,
+            yes=False,
+            watch=False,
+            interval=30,
+            iterations=0,
+            audit_data=False,
+        )
+        with patch(
+            "core.autonomous.history_cleanup.prune_all",
+            return_value={
+                "older_than_days": 180,
+                "dry_run": True,
+                "total_pruned": 3,
+                "files": [
+                    {
+                        "label": "demote",
+                        "path": "x",
+                        "total": 10,
+                        "kept": 7,
+                        "pruned": 3,
+                        "pruned_size_bytes": 512,
+                        "error": None,
+                    },
+                ],
+            },
+        ):
+            out = _capture(cli._cmd_status, ns)
+        assert "DRY-RUN" in out
+        assert "Total events to prune: 3" in out
+        assert "Re-run with --yes" in out
+
     def test_audit_data_text_render(
         self, cli, tmp_path, monkeypatch,
     ):

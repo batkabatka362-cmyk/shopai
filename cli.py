@@ -3841,6 +3841,32 @@ def build_parser() -> argparse.ArgumentParser:
             "cycle or render full status."
         ),
     )
+    status_p.add_argument(
+        "--cleanup-history", action="store_true",
+        dest="cleanup_history",
+        help=(
+            "Prune events older than --older-than-days "
+            "from every autonomous-loop history file. "
+            "Default --dry-run unless --yes is supplied."
+        ),
+    )
+    status_p.add_argument(
+        "--older-than-days", type=int, default=180,
+        dest="older_than_days",
+        help=(
+            "Age threshold in days for --cleanup-history "
+            "(default 180 -- 6 months). Events older "
+            "than this are eligible to prune."
+        ),
+    )
+    status_p.add_argument(
+        "--yes", action="store_true",
+        help=(
+            "With --cleanup-history, actually delete the "
+            "old events. Without --yes, the cleanup is "
+            "a dry-run preview."
+        ),
+    )
 
     loop_p = sub.add_parser(
         "loop",
@@ -21504,6 +21530,70 @@ def _audit_data_files() -> dict[str, Any]:
 
 
 def _cmd_status(args=None) -> None:
+    # --cleanup-history: prune old events from every
+    # history file. Operator housekeeping.
+    if args is not None and getattr(
+        args, "cleanup_history", False,
+    ):
+        from core.autonomous import (
+            history_cleanup as _hc,
+        )
+        days = max(
+            1, int(
+                getattr(args, "older_than_days", 180)
+                or 180,
+            ),
+        )
+        yes = bool(getattr(args, "yes", False))
+        as_json = bool(getattr(args, "json", False))
+        result = _hc.prune_all(
+            older_than_days=days,
+            dry_run=not yes,
+        )
+        if as_json:
+            print(json.dumps(
+                result, indent=2, default=str,
+            ))
+            return
+        mode = "APPLIED" if yes else "DRY-RUN"
+        print(
+            f"History cleanup ({mode}) -- prune events "
+            f"older than {days} days"
+        )
+        print()
+        for entry in result["files"]:
+            label = entry["label"]
+            if entry.get("error"):
+                print(
+                    f"  [ERR]  {label:<24s} "
+                    f"{entry['error']}"
+                )
+                continue
+            if entry["total"] == 0:
+                print(
+                    f"  [.]    {label:<24s} (empty)"
+                )
+                continue
+            kb = entry["pruned_size_bytes"] / 1024.0
+            print(
+                f"  [ok]   {label:<24s} "
+                f"keep {entry['kept']:>4d} / "
+                f"prune {entry['pruned']:>4d} "
+                f"({kb:.1f}KB)"
+            )
+        print()
+        print(
+            f"  Total events to prune: "
+            f"{result['total_pruned']}"
+        )
+        if not yes and result["total_pruned"] > 0:
+            print()
+            print(
+                "  Dry-run only. Re-run with --yes "
+                "to actually delete."
+            )
+        return
+
     # --audit-data: walk every persistent file and report
     # schema sanity. Read-only, no other status render.
     if args is not None and getattr(
