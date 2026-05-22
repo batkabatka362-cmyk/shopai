@@ -8590,6 +8590,23 @@ def _cmd_world_model_fleet(args) -> None:
                 f"  *** {len(regressions)} engine "
                 f"regression(s): {top_str}{more} ***"
             )
+        chronics = (
+            cycle_sec.get("engine_chronic_warnings") or []
+        )
+        if chronics:
+            top = chronics[:3]
+            top_str = ", ".join(
+                f"{w['engine']}(avg {w['avg_score']:.1f}/10)"
+                for w in top
+            )
+            more = (
+                f" +{len(chronics) - 3} more"
+                if len(chronics) > 3 else ""
+            )
+            print(
+                f"  *** {len(chronics)} chronic warning(s): "
+                f"{top_str}{more} ***"
+            )
         break
     print()
     # Add READY column when launch-readiness opted in.
