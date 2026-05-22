@@ -125,6 +125,14 @@ class Planner:
             seeds.append(cap)
             seed_names_seen.add(cap.name)
 
+        # 1b'. Revenue-impact reorder: float capabilities
+        # with positive revenue history to the front. Pure
+        # reorder -- doesn't add or remove. Composes with
+        # peer-success boost (it adds; this reorders).
+        seeds, revenue_meta = self._apply_revenue_boost(
+            seeds,
+        )
+
         # 1c. Apply operator overrides: drop demoted +
         # append promoted. Operator's explicit signal
         # overrides automatic learning. Runs BEFORE the
@@ -190,6 +198,12 @@ class Planner:
                 f"{boost_meta['success_count']}x across "
                 f"{boost_meta['n_stores']} store(s)): "
                 f"{', '.join(boost_meta['added'])}"
+            )
+        if revenue_meta and revenue_meta.get("boosted"):
+            plan.notes.append(
+                f"Revenue-impact reordered "
+                f"({len(revenue_meta['boosted'])} moved up): "
+                f"{', '.join(revenue_meta['boosted'])}"
             )
 
         # 2. Orchestrator shortcut
@@ -627,6 +641,92 @@ class Planner:
             "added": added,
         }
         return boost_caps, meta
+
+    def _apply_revenue_boost(
+        self, seeds: list[Capability],
+    ) -> tuple[list[Capability], dict[str, Any]]:
+        """Stable-reorder seeds by historical revenue
+        impact. Capabilities with positive revenue track
+        records float to the front; capabilities with no
+        revenue history keep their existing position.
+
+        This is COMPOSITIONAL with the peer-success boost:
+        peer-success picks the SURFACE of relevant
+        capabilities; this picks the ORDER within that
+        surface.
+
+        Conservative on purpose:
+          - Sample-size cutoff: need at least 2 correlated
+            samples to consider revenue history (1 sample
+            is noise).
+          - Stable sort: ties + un-known caps keep original
+            order so the substring match's signal is
+            preserved.
+          - Best-effort: import / lookup errors return the
+            input unchanged + empty meta.
+
+        Returns ``(reordered_seeds, meta)`` where ``meta``
+        is ``{boosted: [name1, name2, ...]}`` listing the
+        capabilities that moved upward as a result.
+        """
+        meta: dict[str, Any] = {}
+        if not seeds or len(seeds) < 2:
+            return seeds, meta
+        try:
+            from .plan_history import (
+                capability_revenue_impact,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "_apply_revenue_boost: import "
+                "raised: %s", exc,
+            )
+            return seeds, meta
+        try:
+            rows = capability_revenue_impact(
+                since_seconds=86400 * 30,
+                min_sample_size=2,
+                top_n=100,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "_apply_revenue_boost: lookup "
+                "raised: %s", exc,
+            )
+            return seeds, meta
+        if not rows:
+            return seeds, meta
+
+        # Build name -> delta lookup. Positive delta = boost
+        # signal. Negative or zero = no boost (don't punish
+        # in this layer -- demote system handles that).
+        delta_by_name: dict[str, float] = {}
+        for r in rows:
+            d = float(r.get("total_revenue_delta", 0) or 0)
+            if d > 0:
+                delta_by_name[r["capability"]] = d
+        if not delta_by_name:
+            return seeds, meta
+
+        original_order = [c.name for c in seeds]
+        # Sort: caps with positive revenue go first, sorted
+        # by delta desc. Caps without revenue history keep
+        # their relative original order (stable sort key 0).
+        def _sort_key(cap):
+            return -delta_by_name.get(cap.name, 0.0)
+        reordered = sorted(seeds, key=_sort_key)
+
+        # Compute which capabilities moved upward (boosted)
+        moved_up: list[str] = []
+        new_order = [c.name for c in reordered]
+        for name in new_order:
+            old_idx = original_order.index(name)
+            new_idx = new_order.index(name)
+            if new_idx < old_idx and name in delta_by_name:
+                moved_up.append(name)
+        if moved_up:
+            meta = {"boosted": moved_up}
+        return reordered, meta
 
     def _apply_operator_overrides(
         self, seeds: list[Capability],

@@ -882,3 +882,152 @@ class TestRegistryIsolation:
         names = {s.capability_name for s in plan.steps}
         assert "loop_a" in names
         assert "loop_b" in names
+
+
+class TestRevenueImpactBoost:
+    """Planner reorders seeds by historical revenue impact.
+    Pure reorder -- no capability added or removed.
+
+    Note: registry.find() returns capabilities alphabetically.
+    Tests use names where the alphabetical-first IS NOT the
+    revenue winner so the reorder is observable.
+    """
+
+    def _seed_three(self):
+        # Alphabetical order: aaa_plain < mmm_plain <
+        # zzz_winner. Revenue impact should float zzz_winner
+        # to the front.
+        for n in (
+            "aaa_plain", "mmm_plain", "zzz_winner",
+        ):
+            register_capability(Capability(
+                name=n,
+                kind=CapabilityKind.ENGINE,
+                description=f"{n} handles revenue",
+                when_to_use=f"use {n} for revenue",
+                module_path=f"m:{n}",
+                tags=["revenue"],
+            ))
+
+    def test_revenue_winners_float_to_front(self):
+        from unittest.mock import patch
+        self._seed_three()
+        revenue_rows = [
+            {
+                "capability": "zzz_winner",
+                "total_revenue_delta": 5000.0,
+                "avg_revenue_delta": 1000.0,
+                "sample_size": 5,
+                "positive_count": 5,
+                "negative_count": 0,
+            },
+        ]
+        with patch(
+            "core.capability_planner.plan_history."
+            "capability_revenue_impact",
+            return_value=revenue_rows,
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("revenue")
+        names = [s.capability_name for s in p.steps]
+        # zzz_winner should appear BEFORE the plain ones
+        idx_winner = names.index("zzz_winner")
+        idx_plain = min(
+            names.index("aaa_plain"),
+            names.index("mmm_plain"),
+        )
+        assert idx_winner < idx_plain
+
+    def test_no_revenue_history_preserves_order(self):
+        from unittest.mock import patch
+        self._seed_three()
+        with patch(
+            "core.capability_planner.plan_history."
+            "capability_revenue_impact",
+            return_value=[],
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("revenue")
+        # No reorder note in plan.notes
+        assert not any(
+            "Revenue-impact reordered" in n
+            for n in p.notes
+        )
+
+    def test_negative_revenue_does_not_boost(self):
+        """Only positive revenue capabilities float up.
+        Negative + zero = no boost (the demote system
+        handles negative; this is pure prefer-winners)."""
+        from unittest.mock import patch
+        self._seed_three()
+        revenue_rows = [
+            {
+                "capability": "zzz_winner",
+                "total_revenue_delta": -500.0,
+                "avg_revenue_delta": -100.0,
+                "sample_size": 5,
+                "positive_count": 0,
+                "negative_count": 5,
+            },
+        ]
+        with patch(
+            "core.capability_planner.plan_history."
+            "capability_revenue_impact",
+            return_value=revenue_rows,
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("revenue")
+        # No "Revenue-impact reordered" note -- no boost
+        assert not any(
+            "Revenue-impact reordered" in n
+            for n in p.notes
+        )
+
+    def test_reorder_note_surfaces(self):
+        from unittest.mock import patch
+        self._seed_three()
+        revenue_rows = [
+            {
+                "capability": "zzz_winner",
+                "total_revenue_delta": 1500.0,
+                "avg_revenue_delta": 500.0,
+                "sample_size": 3,
+                "positive_count": 3,
+                "negative_count": 0,
+            },
+        ]
+        with patch(
+            "core.capability_planner.plan_history."
+            "capability_revenue_impact",
+            return_value=revenue_rows,
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("revenue")
+        assert any(
+            "Revenue-impact reordered" in n
+            and "zzz_winner" in n
+            for n in p.notes
+        )
+
+    def test_revenue_lookup_failure_silent(self):
+        from unittest.mock import patch
+        self._seed_three()
+        with patch(
+            "core.capability_planner.plan_history."
+            "capability_revenue_impact",
+            side_effect=RuntimeError("disk"),
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("revenue")
+        # Plan still built; just no reorder note
+        names = {s.capability_name for s in p.steps}
+        assert "zzz_winner" in names
+        assert not any(
+            "Revenue-impact reordered" in n
+            for n in p.notes
+        )
