@@ -125,18 +125,42 @@ class Planner:
             seeds.append(cap)
             seed_names_seen.add(cap.name)
 
+        # 1c. Filter quarantined: drop capabilities whose
+        # engine name has an active alert pause. Operator
+        # has flagged these as unreliable; planner refuses
+        # to recommend them until the pause clears.
+        seeds, quarantined = (
+            self._filter_quarantined_seeds(seeds)
+        )
+
         plan.relevant_capabilities = [c.name for c in seeds]
         if not seeds:
-            plan.notes.append(
+            note = (
                 f"No registered capabilities match "
-                f"'{goal_text}'. Try a broader phrase or "
-                f"register more capabilities."
+                f"'{goal_text}'."
             )
+            if quarantined:
+                note += (
+                    f" {len(quarantined)} capability/-ies "
+                    f"matched but are alert-paused: "
+                    f"{', '.join(quarantined)}."
+                )
+            else:
+                note += (
+                    " Try a broader phrase or register "
+                    "more capabilities."
+                )
+            plan.notes.append(note)
             return plan
         plan.notes.append(
             f"Found {len(seeds)} capability/-ies matching "
             f"'{goal_text}'."
         )
+        if quarantined:
+            plan.notes.append(
+                f"Excluded {len(quarantined)} alert-paused "
+                f"capability/-ies: {', '.join(quarantined)}"
+            )
         if boost_meta and boost_meta.get("added"):
             plan.notes.append(
                 f"Boosted {len(boost_meta['added'])} "
@@ -582,6 +606,43 @@ class Planner:
             "added": added,
         }
         return boost_caps, meta
+
+    def _filter_quarantined_seeds(
+        self, seeds: list[Capability],
+    ) -> tuple[list[Capability], list[str]]:
+        """Drop capabilities whose name matches a currently
+        alert-paused / quarantined engine.
+
+        Returns ``(filtered_seeds, dropped_names)``. Empty
+        ``dropped_names`` means nothing was filtered.
+
+        Best-effort: any quarantine-module import / lookup
+        failure leaves the seed list untouched (planner
+        stays usable when the quarantine layer isn't
+        available).
+        """
+        try:
+            from core.approval.quarantine import (
+                load_state,
+            )
+            state = load_state()
+            paused = state.alert_paused_engines()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "_filter_quarantined_seeds: import / "
+                "load raised: %s", exc,
+            )
+            return seeds, []
+        if not paused:
+            return seeds, []
+        dropped: list[str] = []
+        filtered: list[Capability] = []
+        for cap in seeds:
+            if cap.name in paused:
+                dropped.append(cap.name)
+            else:
+                filtered.append(cap)
+        return filtered, dropped
 
     def _add_cross_store_advisory(self, plan: Plan) -> None:
         """Surface peer-store success signal for the plan's

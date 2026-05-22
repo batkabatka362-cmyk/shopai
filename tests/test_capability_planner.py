@@ -248,6 +248,102 @@ class TestCliSequenceDedup:
         )
 
 
+class TestQuarantineFilter:
+    """Planner refuses to seed plans with engines whose
+    ``alert_paused`` state is active. Operator's explicit
+    quarantine signal beats the planner's substring +
+    boost selection."""
+
+    def _seed_one(self):
+        register_capability(Capability(
+            name="paused_engine",
+            kind=CapabilityKind.ENGINE,
+            description="this engine has been flagged",
+            when_to_use="not used right now",
+            module_path="m:paused",
+            tags=["unreliable"],
+        ))
+        register_capability(Capability(
+            name="healthy_engine",
+            kind=CapabilityKind.ENGINE,
+            description="this engine is fine unreliable",
+            when_to_use="use for unreliable goals",
+            module_path="m:healthy",
+            tags=["unreliable"],
+        ))
+
+    def _fake_state(self, paused_engines):
+        """Build a stub quarantine state with the listed
+        engines fleet-wide-paused."""
+        from core.approval.quarantine import (
+            QuarantineState,
+        )
+        return QuarantineState(
+            exemptions=frozenset(),
+            released=frozenset(),
+            alert_paused=frozenset(
+                (e, None) for e in paused_engines
+            ),
+        )
+
+    def test_paused_engine_excluded_from_seeds(self):
+        from unittest.mock import patch
+        self._seed_one()
+        with patch(
+            "core.approval.quarantine.load_state",
+            return_value=self._fake_state(["paused_engine"]),
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("unreliable")
+        names = {s.capability_name for s in p.steps}
+        # Healthy engine still surfaces
+        assert "healthy_engine" in names
+        # Paused engine filtered out
+        assert "paused_engine" not in names
+        # Note explains the exclusion
+        assert any(
+            "Excluded" in n and "paused_engine" in n
+            for n in p.notes
+        )
+
+    def test_all_quarantined_returns_empty_with_note(self):
+        from unittest.mock import patch
+        self._seed_one()
+        # Both seeds quarantined -> no plan
+        with patch(
+            "core.approval.quarantine.load_state",
+            return_value=self._fake_state([
+                "paused_engine", "healthy_engine",
+            ]),
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("unreliable")
+        assert p.steps == []
+        # Note explains what happened
+        assert any(
+            "alert-paused" in n for n in p.notes
+        )
+
+    def test_quarantine_failure_is_silent(self):
+        from unittest.mock import patch
+        self._seed_one()
+        # load_state raises -> planner falls through to
+        # normal substring match (no exclusion, no crash)
+        with patch(
+            "core.approval.quarantine.load_state",
+            side_effect=RuntimeError("disk"),
+        ):
+            p = Planner(
+                skip_bootstrap=True,
+            ).plan_for_goal("unreliable")
+        # Both seeds surface (no filter applied)
+        names = {s.capability_name for s in p.steps}
+        assert "paused_engine" in names
+        assert "healthy_engine" in names
+
+
 class TestPeerSuccessBoost:
     """Planner auto-boosts seeds with capabilities from
     peer-store SUCCESSFUL past plans (via plan_history)
