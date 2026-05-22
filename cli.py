@@ -22055,6 +22055,36 @@ def _build_status_dict() -> dict:
     }
 
 
+def _oldest_event_age_days(path: str) -> float | None:
+    """Return age in days of the oldest ``recorded_at`` in
+    the file, or None when not applicable / no events."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, list) or not data:
+        return None
+    import time as _t
+    now = _t.time()
+    oldest_ts = None
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        ts = row.get("recorded_at")
+        if not ts:
+            continue
+        try:
+            ts_f = float(ts)
+        except (TypeError, ValueError):
+            continue
+        if oldest_ts is None or ts_f < oldest_ts:
+            oldest_ts = ts_f
+    if oldest_ts is None:
+        return None
+    return round((now - oldest_ts) / 86400.0, 1)
+
+
 def _audit_data_files() -> dict[str, Any]:
     """Walk every persistent state file used by ShopAI's
     autonomous loop. Report file size + JSON schema sanity
@@ -22094,6 +22124,7 @@ def _audit_data_files() -> dict[str, Any]:
             "size_bytes": 0,
             "schema_ok": None,
             "row_count": None,
+            "oldest_age_days": None,
             "error": None,
         }
         try:
@@ -22113,6 +22144,9 @@ def _audit_data_files() -> dict[str, Any]:
             ):
                 entry["schema_ok"] = True
                 entry["row_count"] = len(data)
+                entry["oldest_age_days"] = (
+                    _oldest_event_age_days(path)
+                )
             elif (
                 expected_shape == "dict"
                 and isinstance(data, dict)
@@ -22302,10 +22336,15 @@ def _cmd_status(args=None) -> None:
                 continue
             if entry["schema_ok"]:
                 size_kb = entry["size_bytes"] / 1024.0
+                age = entry.get("oldest_age_days")
+                age_str = (
+                    f"  oldest {age:.0f}d"
+                    if age is not None else ""
+                )
                 print(
                     f"  [ok]   {label:<24s} "
                     f"{entry['row_count']:>5d} rows  "
-                    f"{size_kb:.1f}KB"
+                    f"{size_kb:.1f}KB{age_str}"
                 )
             else:
                 print(
