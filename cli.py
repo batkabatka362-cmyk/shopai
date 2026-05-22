@@ -792,6 +792,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="Emit the fleet plan as JSON.",
     )
+    fleet_plan_p.add_argument(
+        "--execute", action="store_true",
+        help=(
+            "For each store, execute the recommended plan "
+            "via the in-process executor. Default DRY-RUN; "
+            "pass --yes to actually invoke. Combine with "
+            "--require-reliable to gate writes behind "
+            "historical reliability. Per-store outcomes "
+            "surface in cycle output + plan_history."
+        ),
+    )
+    fleet_plan_p.add_argument(
+        "--yes", action="store_true",
+        help=(
+            "With --execute, actually invoke each store's "
+            "plan. Without --yes, --execute renders the "
+            "resolved per-step modules without invoking."
+        ),
+    )
+    fleet_plan_p.add_argument(
+        "--require-reliable", action="store_true",
+        dest="require_reliable",
+        help=(
+            "With --execute --yes, refuse to write on any "
+            "store whose plan has ineligible steps "
+            "(history sample / success rate below "
+            "thresholds). Per-store gating: a store with "
+            "all-eligible steps proceeds; another with "
+            "any ineligible step is logged + skipped."
+        ),
+    )
 
     # ── Transfer (cross-store) commands ──────────────────────
     transfer_p = sub.add_parser(
@@ -11731,6 +11762,100 @@ def _cmd_plan(args) -> None:
             print(f"  - {n}")
 
 
+def _fleet_execute_one_store(
+    *,
+    sid: str,
+    plan: Any,
+    yes: bool,
+    require_reliable: bool,
+) -> dict[str, Any]:
+    """Execute a per-store plan within the fleet-plan
+    dispatcher. Returns a compact summary dict suitable for
+    inclusion in ``per_store[i]["execution"]``.
+
+    Failure-safe: any raise becomes ``{"error": "..."}``;
+    reliability-gate refusal becomes
+    ``{"refused": "reliability"}`` with the ineligible
+    capability list.
+    """
+    try:
+        from core.capability_executor import (
+            CapabilityExecutor,
+        )
+        from core.context import active_store
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"import_failed: {exc}"}
+
+    # Reliability gate (when configured)
+    if require_reliable and yes:
+        try:
+            from core.autonomous.controller import (
+                _compute_auto_execute_eligibility,
+            )
+            elig = _compute_auto_execute_eligibility(plan)
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"eligibility_failed: {exc}"}
+        ineligible = [
+            s for s in (elig.get("steps") or [])
+            if not s.get("eligible")
+        ]
+        if ineligible:
+            return {
+                "refused": "reliability",
+                "ineligible_count": len(ineligible),
+                "ineligible": [
+                    s.get("capability", "")
+                    for s in ineligible
+                ],
+            }
+
+    executor = CapabilityExecutor()
+    steps_out: list[dict[str, Any]] = []
+    overall_ok = True
+    prior_results: dict[str, Any] = {}
+
+    try:
+        with active_store(sid):
+            for step in plan.steps:
+                args_dict = dict(step.suggested_args or {})
+                if (
+                    yes
+                    and step.pipe_from
+                    and step.pipe_as
+                    and step.pipe_from in prior_results
+                ):
+                    args_dict[step.pipe_as] = (
+                        prior_results[step.pipe_from]
+                    )
+                if yes:
+                    result = executor.execute(
+                        step.capability_name, args_dict,
+                    )
+                else:
+                    result = executor.dry_run(
+                        step.capability_name, args_dict,
+                    )
+                steps_out.append(result.to_dict())
+                if result.ok and result.data is not None:
+                    prior_results[
+                        step.capability_name
+                    ] = result.data
+                if not result.ok and (
+                    result.invocation_kind
+                    != "cli_handler"
+                ):
+                    overall_ok = False
+                    break
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"execute_raised: {exc}"}
+
+    return {
+        "executed": yes,
+        "ok": overall_ok,
+        "steps_run": len(steps_out),
+    }
+
+
 def _cmd_fleet_plan(args) -> None:
     """Empire-scale planner. For each store in the fleet,
     runs the planner -- either with the supplied goal
@@ -11748,6 +11873,11 @@ def _cmd_fleet_plan(args) -> None:
     """
     as_json = bool(getattr(args, "json", False))
     goal = (getattr(args, "goal", "") or "").strip()
+    execute = bool(getattr(args, "execute", False))
+    yes = bool(getattr(args, "yes", False))
+    require_reliable = bool(
+        getattr(args, "require_reliable", False),
+    )
 
     try:
         from core.capability_planner import (
@@ -11804,12 +11934,26 @@ def _cmd_fleet_plan(args) -> None:
                 "plan": None,
             })
             continue
-        per_store.append({
+
+        entry: dict[str, Any] = {
             "store_id": sid,
             "shop_url": s.get("shop_url", ""),
             "niche": s.get("niche") or None,
             "plan": plan.to_dict() if plan else None,
-        })
+        }
+
+        # Optional per-store execution.
+        if execute and plan and (plan.steps or []):
+            entry["execution"] = (
+                _fleet_execute_one_store(
+                    sid=sid,
+                    plan=plan,
+                    yes=yes,
+                    require_reliable=require_reliable,
+                )
+            )
+
+        per_store.append(entry)
 
     # Fleet rollup
     needs_action = [
@@ -11827,6 +11971,25 @@ def _cmd_fleet_plan(args) -> None:
             p for p in per_store if p.get("error")
         ]),
     }
+    # Execution rollup when --execute was set
+    if execute:
+        executions = [
+            p["execution"] for p in per_store
+            if isinstance(p.get("execution"), dict)
+        ]
+        rollup["executions"] = {
+            "total": len(executions),
+            "ok": sum(
+                1 for e in executions if e.get("ok")
+            ),
+            "refused_reliability": sum(
+                1 for e in executions
+                if e.get("refused") == "reliability"
+            ),
+            "errored": sum(
+                1 for e in executions if e.get("error")
+            ),
+        }
 
     if as_json:
         print(json.dumps({
@@ -11846,6 +12009,14 @@ def _cmd_fleet_plan(args) -> None:
         f"errored={rollup['stores_errored']}"
     )
     print()
+    if execute and rollup.get("executions"):
+        e = rollup["executions"]
+        print(
+            f"  Executions: ok={e['ok']}  "
+            f"refused={e['refused_reliability']}  "
+            f"errored={e['errored']}"
+        )
+    print()
     for p in per_store:
         sid = p.get("store_id", "?")
         if p.get("error"):
@@ -11857,7 +12028,34 @@ def _cmd_fleet_plan(args) -> None:
         if not steps:
             print(f"  {sid}: clean")
             continue
-        print(f"  {sid}: {len(steps)} step(s)")
+        # Execution outcome surface inline
+        exec_summary = ""
+        if execute and isinstance(
+            p.get("execution"), dict,
+        ):
+            ex = p["execution"]
+            if ex.get("refused") == "reliability":
+                exec_summary = (
+                    f"  [REFUSED reliability: "
+                    f"{ex.get('ineligible_count', 0)} "
+                    "step(s)]"
+                )
+            elif ex.get("error"):
+                exec_summary = (
+                    f"  [ERR: "
+                    f"{str(ex['error'])[:40]}]"
+                )
+            elif ex.get("ok"):
+                exec_summary = (
+                    f"  [OK: ran {ex.get('steps_run', 0)} "
+                    "step(s)]"
+                )
+            else:
+                exec_summary = (
+                    f"  [FAIL after "
+                    f"{ex.get('steps_run', 0)} step(s)]"
+                )
+        print(f"  {sid}: {len(steps)} step(s){exec_summary}")
         for cmd in cli_seq[:2]:
             print(f"    $ {cmd}")
 

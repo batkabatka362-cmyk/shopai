@@ -59,7 +59,13 @@ def _capture(fn, *args, **kwargs):
 
 
 def _ns(**kw):
-    defaults = dict(goal="", json=False)
+    defaults = dict(
+        goal="",
+        json=False,
+        execute=False,
+        yes=False,
+        require_reliable=False,
+    )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
 
@@ -219,3 +225,103 @@ class TestRollup:
         # The goal "launch store" matches launch_store, so
         # the planner returns steps -> stores_with_plan = 1
         assert data["rollup"]["stores_with_plan"] == 1
+
+
+class TestExecuteOption:
+    """``shopai fleet-plan --execute`` runs the per-store
+    plan via the executor with optional reliability gate.
+    Per-store outcomes surface inline + in the rollup."""
+
+    def test_dry_run_no_writes(self, cli):
+        sm = _fake_sm([
+            {"store_id": "a", "shop_url": "x"},
+        ])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ):
+            out, code = _capture(
+                cli._cmd_fleet_plan,
+                _ns(
+                    goal="launch store",
+                    execute=True,
+                    yes=False,
+                    json=True,
+                ),
+            )
+        assert code == 0
+        data = json.loads(out)
+        # Execution block present in rollup
+        assert "executions" in data["rollup"]
+        # Each store entry has execution outcome
+        assert "execution" in data["stores"][0]
+        exe = data["stores"][0]["execution"]
+        # Dry-run: not actually executed
+        assert exe["executed"] is False
+
+    def test_require_reliable_per_store_refusal(self, cli):
+        """When a store's plan has any ineligible steps,
+        that specific store's execution is refused; other
+        stores can still proceed."""
+        sm = _fake_sm([
+            {"store_id": "a", "shop_url": "x"},
+        ])
+        elig = {
+            "steps": [
+                {"capability": "shaky",
+                 "eligible": False,
+                 "success_rate": 0.5,
+                 "executed_count": 5},
+            ],
+            "threshold": 0.9, "min_sample": 5,
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.autonomous.controller."
+            "_compute_auto_execute_eligibility",
+            return_value=elig,
+        ):
+            out, code = _capture(
+                cli._cmd_fleet_plan,
+                _ns(
+                    goal="launch store",
+                    execute=True,
+                    yes=True,
+                    require_reliable=True,
+                    json=True,
+                ),
+            )
+        assert code == 0
+        data = json.loads(out)
+        # Rollup tracks the per-store refusal
+        assert (
+            data["rollup"]["executions"]
+            ["refused_reliability"] == 1
+        )
+        # The store entry's execution dict reflects the
+        # refusal
+        exe = data["stores"][0]["execution"]
+        assert exe.get("refused") == "reliability"
+        assert exe.get("ineligible_count") == 1
+
+    def test_text_view_surfaces_execution_outcome(
+        self, cli,
+    ):
+        sm = _fake_sm([
+            {"store_id": "store-a", "shop_url": "x"},
+        ])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ):
+            out, code = _capture(
+                cli._cmd_fleet_plan,
+                _ns(
+                    goal="launch store",
+                    execute=True,
+                ),
+            )
+        # Dry-run text view includes the OK marker
+        assert code == 0
+        assert "store-a" in out
+        # The execution-summary suffix on the store line
+        assert "[OK:" in out or "[FAIL" in out
