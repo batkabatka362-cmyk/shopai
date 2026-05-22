@@ -2053,6 +2053,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     engine_pulse_p.add_argument(
+        "--regressing", action="store_true",
+        help=(
+            "When used with --fleet: only show engines in the "
+            "find_regressions() set (latest score dropped >=3pts "
+            "from baseline). No-op for single-engine mode."
+        ),
+    )
+    engine_pulse_p.add_argument(
+        "--chronic", action="store_true",
+        help=(
+            "When used with --fleet: only show engines in the "
+            "find_chronic_warnings() set (every sample in window "
+            "scored below healthy floor). No-op for single-engine "
+            "mode."
+        ),
+    )
+    engine_pulse_p.add_argument(
         "--history", action="store_true",
         help=(
             "Single-engine: also surface the recorded score "
@@ -10886,6 +10903,24 @@ def _engine_pulse_fleet(args, *, as_json: bool) -> None:
             "engine_pulse_fleet health probes raised: %s",
             exc,
         )
+
+    # Apply --regressing / --chronic filters (after the
+    # set is computed). Both can be combined (intersection
+    # of the verdict + state filters).
+    only_regressing = bool(
+        getattr(args, "regressing", False),
+    )
+    only_chronic = bool(getattr(args, "chronic", False))
+    if only_regressing:
+        results = [
+            r for r in results
+            if r.get("engine", "") in regressing_set
+        ]
+    if only_chronic:
+        results = [
+            r for r in results
+            if r.get("engine", "") in chronic_set
+        ]
 
     if as_json:
         for row in results:
