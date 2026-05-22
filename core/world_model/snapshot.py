@@ -879,15 +879,25 @@ class WorldModel:
         # bridge. Capped at 5 so the snapshot stays
         # inspectable. Even when the bridge env-gate is OFF,
         # operators see "these capabilities are regressing"
-        # in the same surface.
+        # in the same surface. Each row carries a
+        # ``bridge_status`` so operators can distinguish
+        # already-demoted / would-demote / watching tiers.
         try:
             from core.capability_planner import (
                 capability_degradations,
+                auto_demote as _ad,
             )
             degs = capability_degradations(
                 recent_window_seconds=86400 * 7,
                 baseline_window_seconds=86400 * 30,
             )
+            try:
+                degs = _ad.annotate_degradations(degs)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "world_model substrate annotate "
+                    "raised: %s", exc,
+                )
             out["recent_degradations"] = degs[:5]
         except ImportError as exc:
             logger.debug(

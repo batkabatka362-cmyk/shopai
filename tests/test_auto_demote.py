@@ -22,20 +22,33 @@ import pytest
 from core.capability_planner import auto_demote
 
 
+_BRIDGE_ENV_VARS = (
+    "SHOPAI_AUTO_DEMOTE_DEGRADED",
+    "SHOPAI_AUTO_DEMOTE_DROP_THRESHOLD",
+    "SHOPAI_AUTO_DEMOTE_MIN_RECENT_SAMPLE",
+    "SHOPAI_AUTO_DEMOTE_RECENT_WINDOW_DAYS",
+    "SHOPAI_AUTO_DEMOTE_BASELINE_WINDOW_DAYS",
+    "SHOPAI_AUTO_DEMOTE_RECOVERY_THRESHOLD",
+)
+
+
 @pytest.fixture(autouse=True)
 def _clean_env():
     """Strip every bridge env var around each test so default
-    paths exercise the documented defaults."""
+    paths exercise the documented defaults.
+
+    Pops at setup AND at teardown -- if a test sets one of
+    these vars (without saving via monkeypatch), the teardown
+    pop ensures it doesn't leak to later tests in other files.
+    """
     preserved: dict[str, str | None] = {}
-    for k in (
-        "SHOPAI_AUTO_DEMOTE_DEGRADED",
-        "SHOPAI_AUTO_DEMOTE_DROP_THRESHOLD",
-        "SHOPAI_AUTO_DEMOTE_MIN_RECENT_SAMPLE",
-        "SHOPAI_AUTO_DEMOTE_RECENT_WINDOW_DAYS",
-        "SHOPAI_AUTO_DEMOTE_BASELINE_WINDOW_DAYS",
-    ):
+    for k in _BRIDGE_ENV_VARS:
         preserved[k] = os.environ.pop(k, None)
     yield
+    # Always strip first -- the test may have set new values
+    for k in _BRIDGE_ENV_VARS:
+        os.environ.pop(k, None)
+    # Then restore anything that was set BEFORE the test
     for k, v in preserved.items():
         if v is not None:
             os.environ[k] = v
@@ -359,6 +372,146 @@ capability_overrides import (
         ):
             applied = auto_demote.maybe_auto_demote_degraded()
         assert applied == []
+
+
+class TestAnnotateDegradations:
+    """``annotate_degradations`` tags each row with its
+    bridge status: auto_demoted / would_demote / watching."""
+
+    def _fake_overrides(self, promoted=None, demoted=None):
+        from core.capability_planner.\
+capability_overrides import (
+            CapabilityOverride, CapabilityOverrides,
+        )
+        entries = []
+        for n in (promoted or []):
+            entries.append(CapabilityOverride(
+                name=n, kind="promote",
+            ))
+        for n in (demoted or []):
+            entries.append(CapabilityOverride(
+                name=n, kind="demote",
+            ))
+        return CapabilityOverrides(entries=entries)
+
+    def test_empty_input_returns_empty(self):
+        assert auto_demote.annotate_degradations([]) == []
+
+    def test_auto_demoted_tag_for_existing_demote(self):
+        degs = [{
+            "capability": "cap_x",
+            "baseline_rate": 0.9,
+            "recent_rate": 0.1,
+            "drop": 0.8,
+            "recent_samples": 5,
+            "baseline_samples": 20,
+        }]
+        with patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._fake_overrides(
+                demoted=["cap_x"],
+            ),
+        ):
+            out = auto_demote.annotate_degradations(degs)
+        assert out[0]["bridge_status"] == "auto_demoted"
+        # Original fields preserved
+        assert out[0]["drop"] == 0.8
+
+    def test_would_demote_tag_above_threshold(self):
+        degs = [{
+            "capability": "cap_severe",
+            "baseline_rate": 0.9,
+            "recent_rate": 0.3,
+            "drop": 0.6,
+            "recent_samples": 5,
+            "baseline_samples": 20,
+        }]
+        with patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._fake_overrides(),
+        ):
+            out = auto_demote.annotate_degradations(degs)
+        assert out[0]["bridge_status"] == "would_demote"
+
+    def test_watching_tag_below_severe_threshold(self):
+        degs = [{
+            "capability": "cap_mild",
+            "baseline_rate": 0.9,
+            "recent_rate": 0.6,
+            "drop": 0.3,
+            "recent_samples": 5,
+            "baseline_samples": 20,
+        }]
+        with patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._fake_overrides(),
+        ):
+            out = auto_demote.annotate_degradations(degs)
+        assert out[0]["bridge_status"] == "watching"
+
+    def test_promoted_skipped_from_would_demote(self):
+        """Promoted capability with severe drop stays
+        ``watching`` -- the bridge wouldn't auto-demote it
+        because the promote takes precedence."""
+        degs = [{
+            "capability": "cap_promoted",
+            "baseline_rate": 0.9,
+            "recent_rate": 0.1,
+            "drop": 0.8,
+            "recent_samples": 5,
+            "baseline_samples": 20,
+        }]
+        with patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._fake_overrides(
+                promoted=["cap_promoted"],
+            ),
+        ):
+            out = auto_demote.annotate_degradations(degs)
+        assert out[0]["bridge_status"] == "watching"
+
+    def test_mixed_tiers_preserved_in_order(self):
+        degs = [
+            {
+                "capability": "auto_already",
+                "baseline_rate": 0.9, "recent_rate": 0.1,
+                "drop": 0.8, "recent_samples": 5,
+                "baseline_samples": 20,
+            },
+            {
+                "capability": "severe_new",
+                "baseline_rate": 0.9, "recent_rate": 0.3,
+                "drop": 0.6, "recent_samples": 5,
+                "baseline_samples": 20,
+            },
+            {
+                "capability": "mild",
+                "baseline_rate": 0.9, "recent_rate": 0.65,
+                "drop": 0.25, "recent_samples": 5,
+                "baseline_samples": 20,
+            },
+        ]
+        with patch(
+            "core.capability_planner.auto_demote."
+            "capability_overrides.load_overrides",
+            return_value=self._fake_overrides(
+                demoted=["auto_already"],
+            ),
+        ):
+            out = auto_demote.annotate_degradations(degs)
+        assert [r["bridge_status"] for r in out] == [
+            "auto_demoted",
+            "would_demote",
+            "watching",
+        ]
+        # Input order preserved
+        assert [r["capability"] for r in out] == [
+            "auto_already", "severe_new", "mild",
+        ]
 
 
 class TestRecoveryThreshold:

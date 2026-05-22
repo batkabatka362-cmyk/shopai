@@ -1684,6 +1684,74 @@ class TestPlanHistorySection:
         # The drop pp marker
         assert "-50pp" in out
 
+    def test_degradation_bridge_status_tag_renders(
+        self, cli,
+    ):
+        """Each degradation row carries a bridge_status tag
+        in the daily-brief text view."""
+        import time as _time
+        sm = _fake_sm([])
+        events = [{
+            "event_id": "x",
+            "timestamp": _time.time() - 100,
+            "goal": "g", "store_id": "s",
+            "executed": True, "outcome": "fail",
+            "notes": "",
+        }]
+        breakdown = {
+            "total": 1, "executed_total": 1,
+            "by_outcome": {"fail": 1},
+            "success_rate": 0.0,
+        }
+        # Three tiers: above threshold, below threshold,
+        # already-demoted. annotate_degradations is exercised
+        # for real (no mock on auto_demote) -- only
+        # load_overrides is faked.
+        degrades = [
+            {
+                "capability": "severe",
+                "baseline_rate": 0.9, "recent_rate": 0.3,
+                "drop": 0.6, "recent_samples": 5,
+                "baseline_samples": 20,
+            },
+            {
+                "capability": "mild",
+                "baseline_rate": 0.9, "recent_rate": 0.65,
+                "drop": 0.25, "recent_samples": 5,
+                "baseline_samples": 20,
+            },
+        ]
+        from core.capability_planner.\
+capability_overrides import CapabilityOverrides
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=events,
+        ), patch(
+            "core.capability_planner.outcome_breakdown",
+            return_value=breakdown,
+        ), patch(
+            "core.capability_planner.goal_breakdown",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=degrades,
+        ), patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            return_value=CapabilityOverrides(entries=[]),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "severe" in out
+        assert "[WOULD-DEMOTE]" in out
+        assert "mild" in out
+        assert "[WATCH]" in out
+
     def test_history_json_envelope_carries_summary(
         self, cli,
     ):

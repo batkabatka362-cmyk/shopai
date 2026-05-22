@@ -345,6 +345,52 @@ def config_summary() -> dict[str, Any]:
     }
 
 
+def annotate_degradations(
+    degradations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Annotate ``capability_degradations`` rows with their
+    bridge status so operator surfaces can render severity.
+
+    For each input row, adds a ``bridge_status`` field:
+
+      - ``"auto_demoted"`` -- already in the override list
+        (the bridge has already acted; subsequent plans
+        already skip this capability).
+      - ``"would_demote"`` -- drop crosses the bridge
+        threshold and is unblocked. Next cycle the bridge
+        WILL demote it (when env-gated on).
+      - ``"watching"`` -- drop crosses the degradation
+        threshold but not the severe threshold. The bridge
+        won't act yet; operator sees this as an early-
+        warning signal.
+
+    Input rows are not mutated; new rows with the extra
+    field are returned in input order.
+
+    Lookups are cached across rows so the function is
+    O(degradations) not O(degradations * overrides).
+    """
+    if not degradations:
+        return []
+    overrides = capability_overrides.load_overrides()
+    demoted = overrides.demoted_names()
+    promoted = overrides.promoted_names()
+    threshold = drop_threshold()
+
+    out: list[dict[str, Any]] = []
+    for r in degradations:
+        cap = r.get("capability", "")
+        drop = float(r.get("drop", 0.0) or 0.0)
+        if cap in demoted:
+            status = "auto_demoted"
+        elif drop >= threshold and cap not in promoted:
+            status = "would_demote"
+        else:
+            status = "watching"
+        out.append({**r, "bridge_status": status})
+    return out
+
+
 def find_release_candidates(
     *,
     recovery: float | None = None,

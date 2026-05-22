@@ -5071,6 +5071,19 @@ def _cmd_daily_brief(args) -> None:
                     "raised: %s", exc,
                 )
                 degrades = []
+            # Annotate each row with its bridge_status so
+            # the operator can distinguish severity tiers
+            # in the rendered output.
+            try:
+                from core.capability_planner import (
+                    auto_demote as _ad,
+                )
+                degrades = _ad.annotate_degradations(degrades)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "daily-brief annotate_degradations "
+                    "raised: %s", exc,
+                )
             plan_history_summary = {
                 "events_in_window": len(events),
                 "outcome_breakdown": outcome_breakdown(
@@ -5387,11 +5400,21 @@ def _cmd_daily_brief(args) -> None:
                 base_pct = d["baseline_rate"] * 100
                 recent_pct = d["recent_rate"] * 100
                 drop_pp = d["drop"] * 100
+                # Tag each row with its bridge status so
+                # severity tier is visible at a glance.
+                status = d.get("bridge_status") or ""
+                tag = ""
+                if status == "auto_demoted":
+                    tag = "  [DEMOTED]"
+                elif status == "would_demote":
+                    tag = "  [WOULD-DEMOTE]"
+                elif status == "watching":
+                    tag = "  [WATCH]"
                 print(
                     f"    {d['capability']}: "
                     f"{base_pct:.0f}% baseline -> "
                     f"{recent_pct:.0f}% recent "
-                    f"(-{drop_pp:.0f}pp)"
+                    f"(-{drop_pp:.0f}pp){tag}"
                 )
             if len(degrades) > 5:
                 print(
@@ -7072,11 +7095,19 @@ def _cmd_world_model_show(args) -> None:
                     base_pct = d["baseline_rate"] * 100
                     recent_pct = d["recent_rate"] * 100
                     drop_pp = d["drop"] * 100
+                    status = d.get("bridge_status") or ""
+                    tag = ""
+                    if status == "auto_demoted":
+                        tag = "  [DEMOTED]"
+                    elif status == "would_demote":
+                        tag = "  [WOULD-DEMOTE]"
+                    elif status == "watching":
+                        tag = "  [WATCH]"
                     print(
                         f"    {d['capability']}: "
                         f"{base_pct:.0f}% -> "
                         f"{recent_pct:.0f}% "
-                        f"(-{drop_pp:.0f}pp)"
+                        f"(-{drop_pp:.0f}pp){tag}"
                     )
 
 
