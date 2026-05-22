@@ -1376,6 +1376,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     autonomous_p.add_argument(
+        "--clear-pause-history", action="store_true",
+        dest="clear_pause_history",
+        help=(
+            "Reset the pause-history audit log. Requires "
+            "--yes. Use after an incident postmortem when "
+            "the historic frequency rollup is misleading."
+        ),
+    )
+    autonomous_p.add_argument(
         "--history", action="store_true",
         help=(
             "Read-only: render the cycle history (recent "
@@ -14334,6 +14343,25 @@ def _cmd_autonomous_cycle(args) -> None:
                 f"{freq['total_downtime_hours']:.1f}h "
                 f"downtime"
             )
+        return
+
+    if bool(getattr(args, "clear_pause_history", False)):
+        from core.autonomous import cycle_pause as _cp
+        if not yes:
+            print(
+                "Refusing to clear pause history without "
+                "--yes. This is destructive."
+            )
+            sys.exit(1)
+            return
+        _cp.clear_history()
+        if as_json:
+            print(json.dumps({
+                "ok": True,
+                "action": "clear_pause_history",
+            }, indent=2))
+        else:
+            print("Pause history cleared.")
         return
 
     if bool(getattr(args, "pause_history", False)):
