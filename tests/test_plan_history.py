@@ -417,6 +417,99 @@ class TestCapabilityLeaderboard:
         assert cap_a["executed_count"] == 2
 
 
+class TestCorrelateOutcomeByStats:
+    """Revenue-delta outcome correlation. Compares current
+    store stats vs a plan event's pre_stats snapshot."""
+
+    def test_revenue_up_when_grew_above_threshold(
+        self, temp_history,
+    ):
+        eid = ph.record_plan_invocation(
+            goal="g", plan={}, store_id="s",
+            executed=True,
+            pre_stats={
+                "total_revenue": 1000.0,
+                "orders": 10, "products": 5,
+            },
+        )
+        result = ph.correlate_outcome_by_stats(
+            eid,
+            {
+                "total_revenue": 1500.0,
+                "orders": 14, "products": 6,
+            },
+        )
+        assert result["ok"] is True
+        assert result["outcome"] == "revenue_up"
+        assert result["revenue_delta"] == 500.0
+        assert result["revenue_delta_pct"] == 50.0
+        assert result["orders_delta"] == 4
+        assert result["products_delta"] == 1
+
+    def test_revenue_flat_within_1pct(self, temp_history):
+        eid = ph.record_plan_invocation(
+            goal="g", plan={}, store_id="s",
+            executed=True,
+            pre_stats={"total_revenue": 1000.0},
+        )
+        # 0.5% change -> flat
+        result = ph.correlate_outcome_by_stats(
+            eid, {"total_revenue": 1005.0},
+        )
+        assert result["outcome"] == "revenue_flat"
+
+    def test_revenue_down(self, temp_history):
+        eid = ph.record_plan_invocation(
+            goal="g", plan={}, store_id="s",
+            executed=True,
+            pre_stats={"total_revenue": 1000.0},
+        )
+        result = ph.correlate_outcome_by_stats(
+            eid, {"total_revenue": 800.0},
+        )
+        assert result["outcome"] == "revenue_down"
+        assert result["revenue_delta_pct"] == -20.0
+
+    def test_no_pre_stats_returns_error(self, temp_history):
+        eid = ph.record_plan_invocation(
+            goal="g", plan={}, store_id="s",
+            executed=True,
+            # No pre_stats passed -> empty dict default
+        )
+        result = ph.correlate_outcome_by_stats(
+            eid, {"total_revenue": 1000.0},
+        )
+        assert result.get("error") == "no_pre_stats_baseline"
+
+    def test_unknown_event_id_returns_error(
+        self, temp_history,
+    ):
+        result = ph.correlate_outcome_by_stats(
+            "ghost_id",
+            {"total_revenue": 100.0},
+        )
+        assert result.get("error") == "event_not_found"
+
+    def test_persists_outcome_to_history(
+        self, temp_history,
+    ):
+        eid = ph.record_plan_invocation(
+            goal="g", plan={}, store_id="s",
+            executed=True,
+            pre_stats={"total_revenue": 500.0},
+        )
+        ph.correlate_outcome_by_stats(
+            eid, {"total_revenue": 1000.0},
+        )
+        recent = ph.recent_history(since_seconds=3600)
+        target = next(
+            e for e in recent if e["event_id"] == eid
+        )
+        assert target["outcome"] == "revenue_up"
+        # Notes carry the delta summary
+        assert "revenue" in target["notes"]
+
+
 class TestSuccessfulPlans:
     """Cross-store recommendation surface. Lists successful
     past plans ranked by frequency + recency."""

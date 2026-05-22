@@ -77,9 +77,9 @@ _HISTORY_PATH = Path(
 
 @dataclass
 class PlanEvent:
-    """One plan invocation. Append-only -- the only update
-    operation is ``record_outcome`` which sets the outcome
-    field on an existing event."""
+    """One plan invocation. Append-only except for the
+    ``record_outcome`` update which sets the outcome /
+    notes fields on an existing event."""
 
     event_id: str  # generated uuid4 prefix
     timestamp: float  # unix seconds
@@ -95,9 +95,21 @@ class PlanEvent:
     #   "partial" -- some steps succeeded, gaps remain
     #   "fail" -- execution failed or audit got worse
     #   "skipped" -- dry-run only / operator never executed
+    #   "executed_ok" -- ran OK; outcome not yet verified
+    #   "no_change" -- ran but no measurable change
+    #   "revenue_up" / "revenue_flat" / "revenue_down" --
+    #     set by ``shopai plan outcome`` after revenue
+    #     correlation
     outcome: str = ""
-    # Free-form notes (e.g. "audit completion_pct: 60 -> 100")
+    # Free-form notes (e.g. "audit completion_pct: 60 -> 100"
+    # or "revenue: $1,234 -> $1,891 (+53.2%)")
     notes: str = ""
+    # Pre-execution store stats snapshot (revenue / orders /
+    # products / customers). Captured at execute time so
+    # post-execution correlation can compute deltas without
+    # external state. Empty when not captured (dry-run /
+    # plan_history clients that don't supply it).
+    pre_stats: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -172,6 +184,7 @@ def record_plan_invocation(
     executed: bool = False,
     outcome: str = "",
     notes: str = "",
+    pre_stats: dict[str, Any] | None = None,
 ) -> str:
     """Append a plan invocation to the history.
 
@@ -182,6 +195,13 @@ def record_plan_invocation(
 
     Accepts either a ``Plan`` instance or a pre-converted
     dict; calls ``.to_dict()`` if available.
+
+    ``pre_stats`` is a pre-execution snapshot of the
+    store's headline metrics (revenue / orders / products /
+    customers). Used by ``shopai plan outcome <event_id>``
+    to compute revenue deltas without needing external
+    state. Pass ``sm.get_stats(store_id)`` from the caller
+    if available; defaults to empty dict.
     """
     if _is_test_environment():
         return ""
@@ -210,6 +230,7 @@ def record_plan_invocation(
         executed=bool(executed),
         outcome=str(outcome or ""),
         notes=str(notes or ""),
+        pre_stats=dict(pre_stats or {}),
     )
 
     events = _load_history()
@@ -598,6 +619,105 @@ def clear() -> None:
             logger.debug(
                 "plan_history: unlink failed (%s)", exc,
             )
+
+
+def correlate_outcome_by_stats(
+    event_id: str,
+    current_stats: dict[str, Any],
+) -> dict[str, Any]:
+    """Compute a revenue / order / product delta for a
+    past plan invocation by comparing the supplied
+    ``current_stats`` against the event's pre_stats
+    snapshot. Updates the event's outcome + notes.
+
+    Outcome strings set:
+      - ``revenue_up``   -- revenue grew vs pre_stats
+      - ``revenue_flat`` -- within +/- 1% of pre_stats
+      - ``revenue_down`` -- revenue dropped vs pre_stats
+
+    When the event's pre_stats is empty (not captured at
+    execute time) -- returns
+    ``{"error": "no_pre_stats_baseline"}`` without updating.
+
+    Returns a dict with the delta + outcome string, or
+    error key.
+
+    Pattern J test guard short-circuits writes; reads still
+    work so tests can call this to verify the computation
+    logic without polluting production history.
+    """
+    if not event_id:
+        return {"error": "missing_event_id"}
+
+    events = _load_history()
+    target = None
+    for e in events:
+        if e.get("event_id") == event_id:
+            target = e
+            break
+    if target is None:
+        return {"error": "event_not_found"}
+
+    pre = target.get("pre_stats") or {}
+    if not pre:
+        return {"error": "no_pre_stats_baseline"}
+
+    def _f(d: dict[str, Any], k: str) -> float:
+        try:
+            return float(d.get(k, 0) or 0)
+        except (ValueError, TypeError):
+            return 0.0
+
+    pre_rev = _f(pre, "total_revenue") or _f(pre, "revenue")
+    cur_rev = (
+        _f(current_stats, "total_revenue")
+        or _f(current_stats, "revenue")
+    )
+    pre_orders = _f(pre, "orders")
+    cur_orders = _f(current_stats, "orders")
+    pre_products = _f(pre, "products")
+    cur_products = _f(current_stats, "products")
+
+    rev_delta = cur_rev - pre_rev
+    if pre_rev > 0:
+        rev_delta_pct = (rev_delta / pre_rev) * 100
+    elif cur_rev > 0:
+        rev_delta_pct = 100.0  # 0 -> N is +100%
+    else:
+        rev_delta_pct = 0.0
+
+    # Bucket the outcome by revenue trajectory. 1%
+    # threshold separates "real movement" from noise.
+    if rev_delta_pct >= 1.0:
+        outcome = "revenue_up"
+    elif rev_delta_pct <= -1.0:
+        outcome = "revenue_down"
+    else:
+        outcome = "revenue_flat"
+
+    notes = (
+        f"revenue: ${pre_rev:,.2f} -> ${cur_rev:,.2f} "
+        f"({rev_delta_pct:+.1f}%); "
+        f"orders: {pre_orders:.0f} -> {cur_orders:.0f}; "
+        f"products: {pre_products:.0f} -> "
+        f"{cur_products:.0f}"
+    )
+
+    # Persist the new outcome + notes. Idempotent overwrite.
+    target["outcome"] = outcome
+    target["notes"] = notes
+    if not _is_test_environment():
+        _atomic_write(events)
+
+    return {
+        "ok": True,
+        "outcome": outcome,
+        "revenue_delta": rev_delta,
+        "revenue_delta_pct": round(rev_delta_pct, 2),
+        "orders_delta": cur_orders - pre_orders,
+        "products_delta": cur_products - pre_products,
+        "notes": notes,
+    }
 
 
 def _reset_for_tests(path: Path | None = None) -> None:

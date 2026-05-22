@@ -611,6 +611,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     plan_p.add_argument(
+        "--correlate", default=None,
+        metavar="EVENT_ID",
+        help=(
+            "Outcome correlation v2. Pass a plan event_id "
+            "(from ``shopai plan --history --json``) to "
+            "compare the store's CURRENT stats against the "
+            "pre-execution snapshot captured when the plan "
+            "ran. Updates the event's outcome to "
+            "revenue_up / revenue_flat / revenue_down + "
+            "notes with the delta."
+        ),
+    )
+    plan_p.add_argument(
         "--recommend", action="store_true",
         help=(
             "Empire-AGI recommendation surface. Shows past "
@@ -11047,6 +11060,109 @@ def _cmd_shopify_scopes_audit(args) -> None:
     sys.exit(1)
 
 
+def _cmd_plan_correlate(args, event_id: str) -> None:
+    """Outcome correlation v2. Look up a past plan event,
+    fetch the store's current stats, compute the delta vs
+    the pre-execution snapshot, and persist the result
+    back to plan_history.
+    """
+    as_json = bool(getattr(args, "json", False))
+    try:
+        from core.capability_planner import (
+            correlate_outcome_by_stats,
+            recent_history,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "plan --correlate: import failed: %s", exc,
+        )
+        if as_json:
+            print(json.dumps({
+                "ok": False,
+                "error": "correlate_unavailable",
+                "message": str(exc),
+            }, indent=2))
+        else:
+            print(f"correlate unavailable: {exc}")
+        return
+
+    # Find the event so we can resolve its store_id +
+    # fetch current stats. Look back generously (90 days)
+    # so older events aren't excluded.
+    events = recent_history(since_seconds=86400 * 90)
+    event = None
+    for e in events:
+        if e.get("event_id") == event_id:
+            event = e
+            break
+    if event is None:
+        if as_json:
+            print(json.dumps({
+                "ok": False,
+                "error": "event_not_found",
+                "event_id": event_id,
+            }, indent=2))
+        else:
+            print(f"Plan event not found: {event_id}")
+        sys.exit(1)
+
+    target_store = event.get("store_id", "")
+    sm = _get_store_manager()
+    if not target_store:
+        target_store = sm.active_store_id or ""
+
+    try:
+        current_stats = sm.get_stats(target_store) or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "plan --correlate: get_stats raised: %s", exc,
+        )
+        current_stats = {}
+
+    result = correlate_outcome_by_stats(
+        event_id, current_stats,
+    )
+
+    if as_json:
+        print(json.dumps({
+            "event_id": event_id,
+            "store_id": target_store,
+            "current_stats": current_stats,
+            "result": result,
+        }, indent=2, default=str))
+        if not result.get("ok"):
+            sys.exit(1)
+        return
+
+    if not result.get("ok"):
+        err = result.get("error", "unknown")
+        if err == "no_pre_stats_baseline":
+            print(
+                f"Cannot correlate {event_id}: no pre-"
+                f"execution stats snapshot was captured. "
+                f"Pre-stats are recorded automatically by "
+                f"``shopai plan --execute --yes`` runs "
+                f"made after this feature was added."
+            )
+        else:
+            print(f"Correlation failed: {err}")
+        sys.exit(1)
+
+    print(
+        f"Plan {event_id} ({target_store}): "
+        f"{result['outcome']}"
+    )
+    print(f"  {result['notes']}")
+    print(
+        f"  revenue Δ: ${result['revenue_delta']:,.2f} "
+        f"({result['revenue_delta_pct']:+.1f}%)"
+    )
+    print(f"  orders Δ:  {result['orders_delta']:+.0f}")
+    print(
+        f"  products Δ: {result['products_delta']:+.0f}"
+    )
+
+
 def _cmd_plan_recommend(args) -> None:
     """Cross-store recommendation surface. Lists plans that
     SUCCEEDED elsewhere in the fleet, ranked by frequency +
@@ -11264,6 +11380,12 @@ def _cmd_plan(args) -> None:
     # ── --recommend mode: cross-store learning surface ──
     if bool(getattr(args, "recommend", False)):
         _cmd_plan_recommend(args)
+        return
+
+    # ── --correlate <event_id>: outcome v2 ──────────────
+    correlate_id = getattr(args, "correlate", None)
+    if correlate_id:
+        _cmd_plan_correlate(args, correlate_id)
         return
 
     try:
@@ -11611,6 +11733,19 @@ def _run_plan_multi_step(
     # composition piping.
     prior_results: dict = {}
 
+    # Pre-execution stats snapshot for outcome correlation.
+    # Captured here (not in record_plan_invocation) so the
+    # invocation call stays decoupled from StoreManager.
+    pre_stats: dict[str, Any] = {}
+    if yes and store_id:
+        try:
+            sm = _get_store_manager()
+            pre_stats = sm.get_stats(store_id) or {}
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "plan: pre_stats capture raised: %s", exc,
+            )
+
     # Record this plan invocation BEFORE executing -- gives
     # us an event_id we can update post-execution with the
     # actual outcome (success / partial / fail / skipped).
@@ -11625,6 +11760,7 @@ def _run_plan_multi_step(
             plan=plan,
             store_id=str(store_id or ""),
             executed=yes,
+            pre_stats=pre_stats,
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug(

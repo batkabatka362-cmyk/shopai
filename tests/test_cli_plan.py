@@ -70,6 +70,7 @@ def _ns(**kw):
         recommend=False,
         recommend_window=86400 * 30,
         recommend_top=10,
+        correlate=None,
         json=False,
     )
     defaults.update(kw)
@@ -136,6 +137,163 @@ class TestGoalPath:
         assert "apply_design" in names
         assert isinstance(data["cli_sequence"], list)
         assert isinstance(data["audit_coverage"], list)
+
+
+class TestCorrelate:
+    """``shopai plan --correlate <event_id>`` fetches
+    current store stats, computes the delta vs the plan
+    event's pre_stats snapshot, and persists the
+    revenue_up/down/flat outcome back to plan_history."""
+
+    def test_event_not_found_exits_1(self, cli):
+        with patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ), patch.object(
+            cli, "_get_store_manager",
+            return_value=_fake_sm(),
+        ):
+            out, code = _capture(
+                cli._cmd_plan,
+                _ns(correlate="missing_id"),
+            )
+        assert code == 1
+        assert "not found" in out.lower()
+
+    def test_revenue_up_renders_summary(self, cli):
+        events = [{
+            "event_id": "plan_x",
+            "timestamp": 0.0,
+            "goal": "g",
+            "store_id": "store-a",
+            "executed": True,
+            "outcome": "executed_ok",
+            "pre_stats": {
+                "total_revenue": 1000.0,
+                "orders": 10,
+                "products": 5,
+            },
+        }]
+        sm = _fake_sm()
+        sm.active_store_id = "store-a"
+        sm.get_stats = lambda sid: {
+            "total_revenue": 1500.0,
+            "orders": 14,
+            "products": 6,
+        }
+        # We don't mock correlate_outcome_by_stats so the
+        # real correlation runs against the patched
+        # recent_history.
+        with patch(
+            "core.capability_planner.recent_history",
+            return_value=events,
+        ), patch(
+            "core.capability_planner."
+            "correlate_outcome_by_stats",
+            return_value={
+                "ok": True,
+                "outcome": "revenue_up",
+                "revenue_delta": 500.0,
+                "revenue_delta_pct": 50.0,
+                "orders_delta": 4,
+                "products_delta": 1,
+                "notes": "revenue: $1,000.00 -> "
+                         "$1,500.00 (+50.0%); orders: ...",
+            },
+        ), patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ):
+            out, code = _capture(
+                cli._cmd_plan,
+                _ns(correlate="plan_x"),
+            )
+        assert code == 0
+        assert "revenue_up" in out
+        assert "+50.0%" in out
+        # Per-metric deltas rendered
+        assert "+4" in out  # orders
+        assert "+1" in out  # products
+
+    def test_no_pre_stats_friendly_message(self, cli):
+        events = [{
+            "event_id": "plan_y",
+            "timestamp": 0.0,
+            "goal": "g", "store_id": "s",
+            "executed": True,
+            "outcome": "executed_ok",
+            "pre_stats": {},  # not captured
+        }]
+        sm = _fake_sm()
+        sm.active_store_id = "s"
+        sm.get_stats = lambda sid: {
+            "total_revenue": 100.0,
+        }
+        with patch(
+            "core.capability_planner.recent_history",
+            return_value=events,
+        ), patch(
+            "core.capability_planner."
+            "correlate_outcome_by_stats",
+            return_value={
+                "ok": False,
+                "error": "no_pre_stats_baseline",
+            },
+        ), patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ):
+            out, code = _capture(
+                cli._cmd_plan,
+                _ns(correlate="plan_y"),
+            )
+        assert code == 1
+        assert "no pre-execution stats snapshot" in out
+
+    def test_correlate_json_envelope(self, cli):
+        events = [{
+            "event_id": "plan_z",
+            "timestamp": 0.0,
+            "goal": "g", "store_id": "store-z",
+            "executed": True,
+            "outcome": "executed_ok",
+            "pre_stats": {
+                "total_revenue": 500.0,
+                "orders": 5,
+            },
+        }]
+        sm = _fake_sm()
+        sm.active_store_id = "store-z"
+        sm.get_stats = lambda sid: {
+            "total_revenue": 600.0,
+            "orders": 6,
+        }
+        correlate_result = {
+            "ok": True,
+            "outcome": "revenue_up",
+            "revenue_delta": 100.0,
+            "revenue_delta_pct": 20.0,
+            "orders_delta": 1,
+            "products_delta": 0,
+            "notes": "revenue: ...",
+        }
+        with patch(
+            "core.capability_planner.recent_history",
+            return_value=events,
+        ), patch(
+            "core.capability_planner."
+            "correlate_outcome_by_stats",
+            return_value=correlate_result,
+        ), patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ):
+            out, code = _capture(
+                cli._cmd_plan,
+                _ns(correlate="plan_z", json=True),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data["event_id"] == "plan_z"
+        assert data["store_id"] == "store-z"
+        assert data["result"] == correlate_result
 
 
 class TestRecommend:

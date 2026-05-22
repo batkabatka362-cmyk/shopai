@@ -52,6 +52,7 @@ from .plan_history import (
     PlanEvent,
     capability_leaderboard,
     clear as clear_plan_history,
+    correlate_outcome_by_stats,
     goal_breakdown,
     outcome_breakdown,
     record_outcome,
@@ -76,5 +77,6 @@ __all__ = [
     "goal_breakdown",
     "successful_plans",
     "capability_leaderboard",
+    "correlate_outcome_by_stats",
     "clear_plan_history",
 ]
