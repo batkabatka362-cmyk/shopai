@@ -481,6 +481,107 @@ class TestPromoteDemoteThrashingAlert:
         assert "promote_demote_thrashing" not in kinds
 
 
+class TestPauseFrequentAlert:
+    """When loop is paused too often in the window, alert."""
+
+    def test_no_pauses_no_alert(self):
+        import time as _t
+        now = _t.time()
+        with patch(
+            "core.autonomous.cycle_history.cycle_stats",
+            return_value=_stats(total_runs=1),
+        ), patch(
+            "core.autonomous.cycle_pause."
+            "pause_frequency",
+            return_value={
+                "pause_count": 0,
+                "total_downtime_hours": 0.0,
+            },
+        ):
+            alerts = ca.compute_cycle_alerts(now=now)
+        kinds = [a.kind for a in alerts]
+        assert "pause_frequent" not in kinds
+
+    def test_under_limit_no_alert(self):
+        import time as _t
+        now = _t.time()
+        with patch(
+            "core.autonomous.cycle_history.cycle_stats",
+            return_value=_stats(total_runs=1),
+        ), patch(
+            "core.autonomous.cycle_pause."
+            "pause_frequency",
+            return_value={
+                "pause_count": 2,
+                "total_downtime_hours": 1.5,
+            },
+        ):
+            alerts = ca.compute_cycle_alerts(now=now)
+        kinds = [a.kind for a in alerts]
+        assert "pause_frequent" not in kinds
+
+    def test_at_or_over_limit_fires(self):
+        import time as _t
+        now = _t.time()
+        with patch(
+            "core.autonomous.cycle_history.cycle_stats",
+            return_value=_stats(total_runs=1),
+        ), patch(
+            "core.autonomous.cycle_pause."
+            "pause_frequency",
+            return_value={
+                "pause_count": 7,
+                "total_downtime_hours": 4.5,
+            },
+        ):
+            alerts = ca.compute_cycle_alerts(now=now)
+        kinds = [a.kind for a in alerts]
+        assert "pause_frequent" in kinds
+        pause_alert = next(
+            a for a in alerts
+            if a.kind == "pause_frequent"
+        )
+        assert pause_alert.metrics["pause_count"] == 7
+        assert pause_alert.metrics["downtime_hours"] == 4.5
+        assert "7" in pause_alert.detail
+
+    def test_env_var_overrides_threshold(self, monkeypatch):
+        import time as _t
+        monkeypatch.setenv(
+            "SHOPAI_CYCLE_PAUSE_COUNT_7D_LIMIT", "2",
+        )
+        now = _t.time()
+        with patch(
+            "core.autonomous.cycle_history.cycle_stats",
+            return_value=_stats(total_runs=1),
+        ), patch(
+            "core.autonomous.cycle_pause."
+            "pause_frequency",
+            return_value={
+                "pause_count": 2,
+                "total_downtime_hours": 1.0,
+            },
+        ):
+            alerts = ca.compute_cycle_alerts(now=now)
+        kinds = [a.kind for a in alerts]
+        assert "pause_frequent" in kinds
+
+    def test_pause_lookup_failure_skipped(self):
+        import time as _t
+        now = _t.time()
+        with patch(
+            "core.autonomous.cycle_history.cycle_stats",
+            return_value=_stats(total_runs=1),
+        ), patch(
+            "core.autonomous.cycle_pause."
+            "pause_frequency",
+            side_effect=RuntimeError("disk"),
+        ):
+            alerts = ca.compute_cycle_alerts(now=now)
+        kinds = [a.kind for a in alerts]
+        assert "pause_frequent" not in kinds
+
+
 class TestMultipleAlerts:
 
     def test_multiple_can_fire_simultaneously(self):

@@ -2,7 +2,7 @@
 
 The cycle_history layer persists every invocation. This
 module reads that log and detects HEALTH problems the
-operator should know about. Four alert kinds:
+operator should know about. Six alert kinds:
 
   - ``stale_cycle`` -- no cycle ran in the staleness
     window (default 24h). The cron is broken or the
@@ -16,6 +16,11 @@ operator should know about. Four alert kinds:
   - ``substrate_shrinking`` -- DEFEND phase has demoted
     far more capabilities than it has released. The bridge
     is too aggressive OR something is structurally wrong.
+  - ``promote_demote_thrashing`` -- capabilities cycling
+    between promote and demote. Manual review needed.
+  - ``pause_frequent`` -- loop paused N+ times in the
+    window (default 5 in 7d). Operator keeps tripping the
+    panic button, or auto-pauses keep firing.
 
 Pure read layer. Sister to ``core.approval.outcome_trends.
 compute_engine_alerts`` -- same shape, same surface, but for
@@ -36,10 +41,12 @@ logger = logging.getLogger(__name__)
 _ENV_STALE_HOURS = "SHOPAI_CYCLE_STALE_HOURS"
 _ENV_MIN_ADVANCE_RATE = "SHOPAI_CYCLE_MIN_ADVANCE_RATE"
 _ENV_DEMOTE_RATIO = "SHOPAI_CYCLE_DEMOTE_RATIO_LIMIT"
+_ENV_PAUSE_COUNT_LIMIT = "SHOPAI_CYCLE_PAUSE_COUNT_7D_LIMIT"
 
 _DEFAULT_STALE_HOURS = 24
 _DEFAULT_MIN_ADVANCE_RATE = 0.5
 _DEFAULT_DEMOTE_RATIO_LIMIT = 5.0
+_DEFAULT_PAUSE_COUNT_LIMIT = 5
 
 
 @dataclass
@@ -84,6 +91,27 @@ def min_advance_rate_threshold() -> float:
             _DEFAULT_MIN_ADVANCE_RATE, exc,
         )
         return _DEFAULT_MIN_ADVANCE_RATE
+
+
+def pause_count_limit() -> int:
+    """Pause-count-per-7d threshold for the pause_frequent
+    alert. Default 5 (loop paused 5+ times in a week is a
+    signal that something keeps tripping the operator)."""
+    raw = os.environ.get(_ENV_PAUSE_COUNT_LIMIT)
+    if not raw:
+        return _DEFAULT_PAUSE_COUNT_LIMIT
+    try:
+        v = int(raw)
+        if v < 1:
+            return _DEFAULT_PAUSE_COUNT_LIMIT
+        return v
+    except (TypeError, ValueError) as exc:
+        logger.debug(
+            "invalid %s=%r; using default %s (%s)",
+            _ENV_PAUSE_COUNT_LIMIT, raw,
+            _DEFAULT_PAUSE_COUNT_LIMIT, exc,
+        )
+        return _DEFAULT_PAUSE_COUNT_LIMIT
 
 
 def demote_ratio_limit() -> float:
@@ -264,6 +292,42 @@ def compute_cycle_alerts(
             "raised: %s", exc,
         )
 
+    # Alert: pause_frequent -- loop has been paused too
+    # many times in the window. Either operator keeps
+    # tripping the panic button OR pauses are being applied
+    # automatically and the underlying cause needs review.
+    try:
+        from core.autonomous import cycle_pause as _cp
+        freq = _cp.pause_frequency(
+            since_seconds=window_seconds, now=now,
+        )
+        count = int(freq.get("pause_count", 0) or 0)
+        limit = pause_count_limit()
+        if count >= limit:
+            alerts.append(CycleAlert(
+                kind="pause_frequent",
+                detail=(
+                    f"Loop paused {count} time(s) in the "
+                    f"last {window_seconds // 86400} day(s) "
+                    f"(limit {limit}). Total downtime "
+                    f"{freq.get('total_downtime_hours', 0):.1f}h. "
+                    "Investigate why pauses keep happening."
+                ),
+                metrics={
+                    "pause_count": count,
+                    "limit": limit,
+                    "downtime_hours": freq.get(
+                        "total_downtime_hours", 0,
+                    ),
+                    "window_days": window_seconds // 86400,
+                },
+            ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "compute_cycle_alerts: pause_frequency "
+            "raised: %s", exc,
+        )
+
     return alerts
 
 
@@ -274,6 +338,7 @@ def config_summary() -> dict[str, Any]:
             min_advance_rate_threshold()
         ),
         "demote_ratio_limit": demote_ratio_limit(),
+        "pause_count_limit": pause_count_limit(),
     }
 
 
