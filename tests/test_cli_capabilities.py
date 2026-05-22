@@ -1720,6 +1720,82 @@ class TestAutoDemoteReleaseCandidates:
         }
 
 
+class TestPromoteDemoteCyclesCLI:
+    """``shopai capabilities promote-demote-cycles`` --
+    surface cross-history thrashing."""
+
+    def test_empty_friendly(self, cli):
+        with patch(
+            "core.capability_planner.auto_promote."
+            "find_promote_demote_cycles",
+            return_value=[],
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action=(
+                        "promote-demote-cycles"
+                    ),
+                ),
+            )
+        assert code == 0
+        assert "No capabilities cycling" in out
+
+    def test_rows_render(self, cli):
+        rows = [{
+            "capability": "shaky",
+            "promote_count": 2,
+            "demote_count": 2,
+            "total_events": 4,
+            "first_event_at": 1700000000.0,
+            "last_event_at": 1700100000.0,
+        }]
+        with patch(
+            "core.capability_planner.auto_promote."
+            "find_promote_demote_cycles",
+            return_value=rows,
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action=(
+                        "promote-demote-cycles"
+                    ),
+                ),
+            )
+        assert code == 0
+        assert "shaky" in out
+        assert "2p / 2d" in out
+
+    def test_json_envelope(self, cli):
+        rows = [{
+            "capability": "shaky",
+            "promote_count": 2,
+            "demote_count": 2,
+            "total_events": 4,
+            "first_event_at": 1700000000.0,
+            "last_event_at": 1700100000.0,
+        }]
+        with patch(
+            "core.capability_planner.auto_promote."
+            "find_promote_demote_cycles",
+            return_value=rows,
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action=(
+                        "promote-demote-cycles"
+                    ),
+                    json=True,
+                ),
+            )
+        data = json.loads(out)
+        assert data["window_days"] == 30
+        assert data["min_cycles"] == 2
+        assert len(data["rows"]) == 1
+
+
 class TestLifecycle:
     """``shopai capabilities lifecycle <name>`` -- full
     capability timeline (promote/demote/release events +

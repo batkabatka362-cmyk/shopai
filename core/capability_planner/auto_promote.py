@@ -272,3 +272,132 @@ def config_summary() -> dict[str, Any]:
         "min_sample": min_sample(),
         "window_days": window_days(),
     }
+
+
+def find_promote_demote_cycles(
+    *,
+    window_seconds: int = 86400 * 14,
+    min_cycles: int = 2,
+    now: float | None = None,
+) -> list[dict[str, Any]]:
+    """Detect capabilities that cycled between promote and
+    demote within the window.
+
+    This is a stronger thrashing signal than either history
+    alone: a cap auto-promoted (proven winner), then
+    auto-demoted (regression), then auto-promoted again is
+    flapping around the success-rate threshold. Operator
+    should investigate -- the metric is unstable, or the
+    underlying behavior is non-deterministic.
+
+    A "cycle" is one promote event AND one demote event for
+    the same capability within the window, regardless of
+    ordering. ``min_cycles=2`` means we need at least 2
+    promote events OR 2 demote events for the cap to count
+    (single round-trip is just normal operation).
+
+    Returns rows: ``{capability, promote_count,
+    demote_count, first_event_at, last_event_at,
+    total_events}`` sorted by total_events desc.
+    """
+    try:
+        from core.capability_planner import (
+            auto_demote_history as _adh,
+            auto_promote_history as _aph,
+        )
+    except ImportError as exc:
+        logger.debug(
+            "find_promote_demote_cycles: "
+            "import raised: %s", exc,
+        )
+        return []
+
+    promote_events = []
+    demote_events = []
+    try:
+        promote_events = _aph.recent_history(
+            since_seconds=window_seconds, now=now,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "find_promote_demote_cycles: "
+            "promote raised: %s", exc,
+        )
+    try:
+        for e in _adh.recent_history(
+            since_seconds=window_seconds, now=now,
+        ):
+            if e.kind == "demote":
+                demote_events.append(e)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "find_promote_demote_cycles: "
+            "demote raised: %s", exc,
+        )
+
+    by_cap: dict[str, dict[str, Any]] = {}
+    for e in promote_events:
+        cap = e.capability
+        entry = by_cap.setdefault(cap, {
+            "capability": cap,
+            "promote_count": 0,
+            "demote_count": 0,
+            "first_event_at": None,
+            "last_event_at": None,
+        })
+        entry["promote_count"] += 1
+        ts = e.recorded_at
+        if (
+            entry["first_event_at"] is None
+            or ts < entry["first_event_at"]
+        ):
+            entry["first_event_at"] = ts
+        if (
+            entry["last_event_at"] is None
+            or ts > entry["last_event_at"]
+        ):
+            entry["last_event_at"] = ts
+    for e in demote_events:
+        cap = e.capability
+        entry = by_cap.setdefault(cap, {
+            "capability": cap,
+            "promote_count": 0,
+            "demote_count": 0,
+            "first_event_at": None,
+            "last_event_at": None,
+        })
+        entry["demote_count"] += 1
+        ts = e.recorded_at
+        if (
+            entry["first_event_at"] is None
+            or ts < entry["first_event_at"]
+        ):
+            entry["first_event_at"] = ts
+        if (
+            entry["last_event_at"] is None
+            or ts > entry["last_event_at"]
+        ):
+            entry["last_event_at"] = ts
+
+    rows: list[dict[str, Any]] = []
+    for entry in by_cap.values():
+        total = (
+            entry["promote_count"]
+            + entry["demote_count"]
+        )
+        if entry["promote_count"] == 0 or (
+            entry["demote_count"] == 0
+        ):
+            # Need BOTH directions to count as thrashing
+            continue
+        if total < max(2, int(min_cycles)):
+            continue
+        entry["total_events"] = total
+        rows.append(entry)
+    rows.sort(
+        key=lambda r: (
+            -r["total_events"],
+            r["capability"],
+        ),
+    )
+    return rows

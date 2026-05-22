@@ -192,6 +192,126 @@ class TestFindPromoteCandidates:
         assert called["since_seconds"] == 14 * 86400
 
 
+class TestPromoteDemoteCycles:
+
+    def _promote(self, cap, ts=1700000000.0):
+        from core.capability_planner.\
+auto_promote_history import AutoPromoteEvent
+        return AutoPromoteEvent(
+            capability=cap,
+            reason="r",
+            recorded_at=ts,
+        )
+
+    def _demote(self, cap, ts=1700000000.0):
+        from core.capability_planner.\
+auto_demote_history import AutoDemoteEvent
+        return AutoDemoteEvent(
+            kind="demote",
+            capability=cap,
+            reason="r",
+            recorded_at=ts,
+        )
+
+    def test_no_history_empty(self):
+        with patch(
+            "core.capability_planner."
+            "auto_promote_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            return_value=[],
+        ):
+            out = ap.find_promote_demote_cycles()
+        assert out == []
+
+    def test_promote_only_excluded(self):
+        """Need BOTH directions to count as thrashing."""
+        with patch(
+            "core.capability_planner."
+            "auto_promote_history.recent_history",
+            return_value=[
+                self._promote("cap_a", 100.0),
+                self._promote("cap_a", 200.0),
+            ],
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            return_value=[],
+        ):
+            out = ap.find_promote_demote_cycles()
+        assert out == []
+
+    def test_promote_demote_cap_caught(self):
+        with patch(
+            "core.capability_planner."
+            "auto_promote_history.recent_history",
+            return_value=[
+                self._promote("cap_a", 100.0),
+                self._promote("cap_a", 300.0),
+            ],
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            return_value=[
+                self._demote("cap_a", 200.0),
+            ],
+        ):
+            out = ap.find_promote_demote_cycles()
+        assert len(out) == 1
+        assert out[0]["capability"] == "cap_a"
+        assert out[0]["promote_count"] == 2
+        assert out[0]["demote_count"] == 1
+        assert out[0]["total_events"] == 3
+        assert out[0]["first_event_at"] == 100.0
+        assert out[0]["last_event_at"] == 300.0
+
+    def test_min_cycles_filter(self):
+        with patch(
+            "core.capability_planner."
+            "auto_promote_history.recent_history",
+            return_value=[
+                self._promote("cap_a", 100.0),
+            ],
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            return_value=[
+                self._demote("cap_a", 200.0),
+            ],
+        ):
+            # Single promote + single demote = 2 events
+            # min_cycles=3 -> filtered out
+            out = ap.find_promote_demote_cycles(
+                min_cycles=3,
+            )
+        assert out == []
+
+    def test_multiple_caps_sorted_by_events(self):
+        with patch(
+            "core.capability_planner."
+            "auto_promote_history.recent_history",
+            return_value=[
+                self._promote("cap_a", 100.0),
+                self._promote("cap_b", 100.0),
+                self._promote("cap_b", 200.0),
+                self._promote("cap_b", 300.0),
+            ],
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            return_value=[
+                self._demote("cap_a", 200.0),
+                self._demote("cap_b", 400.0),
+            ],
+        ):
+            out = ap.find_promote_demote_cycles()
+        # cap_b has 4 events, cap_a has 2 -- cap_b first
+        assert out[0]["capability"] == "cap_b"
+        assert out[1]["capability"] == "cap_a"
+
+
 class TestMaybeAutoPromote:
 
     def test_pattern_j_short_circuits(self):

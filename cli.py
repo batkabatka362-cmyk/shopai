@@ -435,6 +435,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view.",
     )
 
+    cap_pd_cycles_p = capabilities_sub.add_parser(
+        "promote-demote-cycles",
+        help=(
+            "Detect capabilities that cycled between "
+            "promote and demote within a window. Strong "
+            "thrashing signal -- the cap's success rate is "
+            "unstable. Investigate manually."
+        ),
+    )
+    cap_pd_cycles_p.add_argument(
+        "--window-days", type=int, default=14,
+        dest="window_days",
+        help="Detection window in days (default 14).",
+    )
+    cap_pd_cycles_p.add_argument(
+        "--min-cycles", type=int, default=2,
+        dest="min_cycles",
+        help=(
+            "Min total events (promote + demote) for a cap "
+            "to count. Default 2."
+        ),
+    )
+    cap_pd_cycles_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view.",
+    )
+
     cap_lifecycle_p = capabilities_sub.add_parser(
         "lifecycle",
         help=(
@@ -15709,6 +15736,66 @@ capability_overrides import load_overrides
             print(
                 f"  {stamp}  {tag} {e.capability}"
                 f"{reason_short}"
+            )
+        return
+
+    if action == "promote-demote-cycles":
+        window_days = max(
+            1, int(
+                getattr(args, "window_days", 14) or 14,
+            ),
+        )
+        min_cycles = max(
+            2, int(
+                getattr(args, "min_cycles", 2) or 2,
+            ),
+        )
+        try:
+            from core.capability_planner import (
+                auto_promote as _ap,
+            )
+            rows = _ap.find_promote_demote_cycles(
+                window_seconds=window_days * 86400,
+                min_cycles=min_cycles,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "promote-demote-cycles raised: %s", exc,
+            )
+            rows = []
+        if as_json:
+            print(json.dumps({
+                "window_days": window_days,
+                "min_cycles": min_cycles,
+                "rows": rows,
+            }, indent=2, default=str))
+            return
+        print(
+            f"Promote/demote cycles "
+            f"(last {window_days}d, min "
+            f"{min_cycles} events):"
+        )
+        print()
+        if not rows:
+            print(
+                "  No capabilities cycling between "
+                "promote and demote."
+            )
+            return
+        import datetime as _dt
+        for r in rows:
+            first = _dt.datetime.fromtimestamp(
+                r["first_event_at"],
+            ).strftime("%Y-%m-%d %H:%M")
+            last = _dt.datetime.fromtimestamp(
+                r["last_event_at"],
+            ).strftime("%Y-%m-%d %H:%M")
+            print(
+                f"  {r['capability']}: "
+                f"{r['promote_count']}p / "
+                f"{r['demote_count']}d  "
+                f"({r['total_events']} total)  "
+                f"first {first} -> last {last}"
             )
         return
 
