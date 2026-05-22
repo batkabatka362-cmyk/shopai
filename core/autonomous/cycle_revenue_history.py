@@ -48,11 +48,19 @@ _MAX_EVENTS = 1000
 
 @dataclass
 class RevenueSnapshot:
-    """One fleet-revenue snapshot at cycle start."""
+    """One fleet-revenue snapshot at cycle start.
+    ``per_store`` carries each store's revenue contribution
+    (defaults empty for backward compat with snapshots
+    captured before per-store tracking landed)."""
 
     fleet_revenue: float
     store_count: int
     recorded_at: float
+    per_store: dict[str, float] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.per_store is None:
+            self.per_store = {}
 
 
 def _is_test_environment() -> bool:
@@ -122,9 +130,11 @@ def record_snapshot(
     *,
     fleet_revenue: float,
     store_count: int,
+    per_store: dict[str, float] | None = None,
 ) -> bool:
-    """Append a revenue snapshot. Returns True on write,
-    False on test-env / invalid args."""
+    """Append a revenue snapshot. ``per_store`` is optional;
+    callers without per-store data omit it. Returns True on
+    write, False on test-env / invalid args."""
     if store_count < 0:
         return False
     if _is_test_environment():
@@ -133,6 +143,7 @@ def record_snapshot(
         fleet_revenue=float(fleet_revenue),
         store_count=int(store_count),
         recorded_at=time.time(),
+        per_store=dict(per_store or {}),
     )
     entries = _load_raw()
     entries.append(asdict(event))
@@ -165,10 +176,68 @@ def recent_history(
                 r.get("store_count", 0) or 0,
             ),
             recorded_at=ts,
+            per_store={
+                k: float(v or 0)
+                for k, v in (
+                    r.get("per_store") or {}
+                ).items()
+            },
         ))
     events.reverse()
     events.sort(key=lambda e: -e.recorded_at)
     return events
+
+
+def per_store_trend(
+    *,
+    store_id: str,
+    since_seconds: int = 86400 * 7,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Compute a single store's revenue trend across cycle
+    snapshots.
+
+    Same shape as ``revenue_trend`` but filtered to one
+    store. Returns empty stats when no snapshots have
+    per-store data for ``store_id`` (backward compat with
+    fleet-only snapshots).
+    """
+    out: dict[str, Any] = {
+        "store_id": store_id,
+        "snapshots": 0,
+        "first_revenue": None,
+        "last_revenue": None,
+        "delta": 0.0,
+        "delta_pct": 0.0,
+    }
+    events = recent_history(
+        since_seconds=since_seconds, now=now,
+    )
+    relevant = [
+        e for e in events
+        if store_id in (e.per_store or {})
+    ]
+    if not relevant:
+        return out
+    last = relevant[0]
+    first = relevant[-1]
+    out["snapshots"] = len(relevant)
+    out["first_revenue"] = first.per_store[store_id]
+    out["last_revenue"] = last.per_store[store_id]
+    delta = (
+        last.per_store[store_id]
+        - first.per_store[store_id]
+    )
+    out["delta"] = round(delta, 2)
+    if first.per_store[store_id] > 0:
+        out["delta_pct"] = round(
+            (delta / first.per_store[store_id]) * 100, 2,
+        )
+    elif last.per_store[store_id] > 0:
+        out["delta_pct"] = 100.0
+    else:
+        out["delta_pct"] = 0.0
+    return out
 
 
 def revenue_trend(

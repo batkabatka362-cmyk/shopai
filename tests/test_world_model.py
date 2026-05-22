@@ -1456,6 +1456,44 @@ class TestSectionCycle:
         assert "cycle" in snap
         assert snap["cycle"]["checked"] is True
 
+    def test_per_store_revenue_trend_populates(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_revenue_history."
+            "per_store_trend",
+            return_value={
+                "store_id": "store-a",
+                "snapshots": 3,
+                "first_revenue": 1000.0,
+                "last_revenue": 1500.0,
+                "delta": 500.0,
+                "delta_pct": 50.0,
+            },
+        ):
+            sec = wm._section_cycle(store_id="store-a")
+        assert sec["revenue_trend_7d"]["delta"] == 500.0
+
+    def test_per_store_revenue_trend_none_at_fleet_scope(
+        self,
+    ):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ):
+            sec = wm._section_cycle(store_id=None)
+        # Fleet scope -- no per-store trend
+        assert sec["revenue_trend_7d"] is None
+
     def test_per_store_alerts_filtered_to_store(self):
         """When store_id is given, ``cycle.alerts`` carries
         ONLY alerts for that store."""

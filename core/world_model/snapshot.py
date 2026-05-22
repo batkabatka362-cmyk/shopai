@@ -1021,6 +1021,26 @@ class WorldModel:
                     "raised: %s", exc,
                 )
 
+        # Per-store revenue trend (7d) -- only when
+        # store_id is provided.
+        out["revenue_trend_7d"] = None
+        if store_id is not None:
+            try:
+                from core.autonomous import (
+                    cycle_revenue_history as _crh,
+                )
+                out["revenue_trend_7d"] = (
+                    _crh.per_store_trend(
+                        store_id=store_id,
+                        since_seconds=86400 * 7,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "world_model revenue_trend raised: %s",
+                    exc,
+                )
+
         # Cross-store transfers received by this store in
         # the last 7 days. Surfaces "store_a learned from
         # peers" at the per-store snapshot. Always included

@@ -14327,15 +14327,18 @@ def _cmd_autonomous_cycle(args) -> None:
         sm_rev = _get_store_manager()
         stores_rev = sm_rev.list_stores() or []
         fleet_rev = 0.0
+        per_store_rev: dict[str, float] = {}
         for s in stores_rev:
             sid = s.get("store_id") or ""
             if not sid:
                 continue
             try:
                 stats = sm_rev.get_stats(sid) or {}
-                fleet_rev += float(
+                rev = float(
                     stats.get("total_revenue", 0) or 0,
                 )
+                fleet_rev += rev
+                per_store_rev[sid] = rev
             except Exception as exc:  # noqa: BLE001
                 logger.debug(
                     "autonomous-cycle: revenue lookup "
@@ -14347,6 +14350,7 @@ def _cmd_autonomous_cycle(args) -> None:
         _crh.record_snapshot(
             fleet_revenue=fleet_rev,
             store_count=len(stores_rev),
+            per_store=per_store_rev,
         )
         summary["fleet_revenue"] = fleet_rev
     except Exception as exc:  # noqa: BLE001

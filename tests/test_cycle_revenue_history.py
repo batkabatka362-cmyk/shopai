@@ -157,6 +157,68 @@ class TestRevenueTrend:
         assert trend["delta_pct"] == -20.0
 
 
+class TestPerStoreTrend:
+
+    def test_no_per_store_data_empty(self, tmp_history):
+        # Seed snapshots without per_store (legacy shape)
+        import time as _t
+        now = _t.time()
+        tmp_history.write_text(json.dumps([
+            {
+                "fleet_revenue": 1000.0,
+                "store_count": 1,
+                "recorded_at": now - 100,
+            },
+        ]))
+        trend = crh.per_store_trend(store_id="a")
+        assert trend["snapshots"] == 0
+
+    def test_per_store_growth(self, tmp_history):
+        import time as _t
+        now = _t.time()
+        tmp_history.write_text(json.dumps([
+            {
+                "fleet_revenue": 1000.0,
+                "store_count": 2,
+                "recorded_at": now - 86400 * 5,
+                "per_store": {"a": 600.0, "b": 400.0},
+            },
+            {
+                "fleet_revenue": 1400.0,
+                "store_count": 2,
+                "recorded_at": now - 60,
+                "per_store": {"a": 800.0, "b": 600.0},
+            },
+        ]))
+        trend = crh.per_store_trend(store_id="a")
+        assert trend["snapshots"] == 2
+        assert trend["first_revenue"] == 600.0
+        assert trend["last_revenue"] == 800.0
+        assert trend["delta"] == 200.0
+        assert (
+            abs(trend["delta_pct"] - 33.33) < 0.01
+        )
+
+    def test_per_store_missing_filters_out(
+        self, tmp_history,
+    ):
+        """Snapshot includes store_a but not store_b.
+        per_store_trend(store_b) should treat the
+        snapshot as missing for that store."""
+        import time as _t
+        now = _t.time()
+        tmp_history.write_text(json.dumps([
+            {
+                "fleet_revenue": 600.0,
+                "store_count": 1,
+                "recorded_at": now - 60,
+                "per_store": {"a": 600.0},
+            },
+        ]))
+        trend = crh.per_store_trend(store_id="b")
+        assert trend["snapshots"] == 0
+
+
 class TestClear:
 
     def test_under_pytest_no_op(self, tmp_history):
