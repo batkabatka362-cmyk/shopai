@@ -308,6 +308,30 @@ class TestHealthSections:
         assert "override_set" in thr
         assert "auto_relax_enabled" in thr
 
+    def test_watch_mode_runs_iterations(self, cli):
+        """--watch with --iterations limits the loop."""
+        import argparse as _ap
+        ns = _ap.Namespace(
+            json=False,
+            watch=True,
+            interval=5,
+            iterations=2,
+        )
+        # No sleep -- patch it so the test doesn't actually
+        # wait
+        with patch(
+            "time.sleep",
+        ) as mock_sleep:
+            out = _capture(cli._cmd_status, ns)
+        # The watch header should appear at least once
+        assert "watching" in out
+        # The inner _cmd_status is called per iteration, so
+        # we should see Engines: rendered (multiple times)
+        assert out.count("Engines:") >= 2
+        # Sleep called between iterations (1 between 2
+        # iterations)
+        assert mock_sleep.call_count >= 1
+
     def test_threshold_with_override_renders_marker(
         self, cli,
     ):

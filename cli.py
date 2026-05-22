@@ -3686,6 +3686,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="Emit raw status JSON instead of the table view",
     )
+    status_p.add_argument(
+        "--watch", action="store_true",
+        help=(
+            "Long-poll mode: re-render status every "
+            "--interval seconds. Operator can leave this "
+            "running on a monitor for live ops view. "
+            "Ctrl+C to exit."
+        ),
+    )
+    status_p.add_argument(
+        "--interval", type=int, default=30,
+        help=(
+            "Refresh interval in seconds for --watch "
+            "(default 30, min 5)."
+        ),
+    )
+    status_p.add_argument(
+        "--iterations", type=int, default=0,
+        help=(
+            "Max iterations for --watch (0 = forever, "
+            "default). Useful for testing / bounded runs."
+        ),
+    )
 
     loop_p = sub.add_parser(
         "loop",
@@ -20791,6 +20814,51 @@ def _build_status_dict() -> dict:
 
 
 def _cmd_status(args=None) -> None:
+    # --watch: long-poll mode. Re-render every interval
+    # seconds. Single source-of-truth ops dashboard.
+    if args is not None and getattr(args, "watch", False):
+        import time as _time
+        interval = max(
+            5, int(getattr(args, "interval", 30) or 30),
+        )
+        max_iters = int(
+            getattr(args, "iterations", 0) or 0,
+        )
+        iteration = 0
+        while True:
+            iteration += 1
+            # Clear screen (ANSI escape; works on most
+            # modern terminals including Windows Terminal).
+            print("\x1b[2J\x1b[H", end="")
+            stamp = _time.strftime(
+                "%Y-%m-%d %H:%M:%S",
+            )
+            print(
+                f"ShopAI status -- watching "
+                f"({interval}s refresh, iter "
+                f"{iteration}, {stamp})"
+            )
+            print()
+            # Render the regular status output
+            inner_args = type(args)(**{
+                **vars(args),
+                "watch": False,
+                "json": False,
+            }) if hasattr(args, "__dict__") else None
+            try:
+                _cmd_status(inner_args)
+            except Exception as exc:  # noqa: BLE001
+                print(f"status render raised: {exc}")
+            if max_iters > 0 and iteration >= max_iters:
+                return
+            try:
+                _time.sleep(interval)
+            except KeyboardInterrupt:
+                print()
+                print("Watch stopped.")
+                return
+        return
+
     if args is not None and getattr(args, "json", False):
         payload = _build_status_dict()
         # Augment JSON envelope with the new health sections
