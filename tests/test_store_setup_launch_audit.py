@@ -115,6 +115,16 @@ _ALL_GOOD = {
              "alt": "Acme favicon"},
         ],
     }),
+    "shopify_get_shop": _ok({
+        "shop": {
+            "name": "Acme Camping",
+            "email": "ops@acme.example",
+            "contact_email": "ops@acme.example",
+            "currency_code": "USD",
+            "primary_host": "acme.myshopify.com",
+        },
+        "found": True,
+    }),
 }
 
 
@@ -153,8 +163,8 @@ class TestAllPass:
             "engines.store_setup.launch_audit.record_writeback",
         ):
             result = audit_store()
-        # 8 of 9 pass -> round(100 * 8/9) = 89
-        assert result["completion_pct"] == 89
+        # 9 of 10 pass -> round(100 * 9/10) = 90
+        assert result["completion_pct"] == 90
         assert result["ready_to_launch"] is False
 
 
@@ -1152,7 +1162,11 @@ class TestFixHint:
         """Shopify-admin-only checks point operators at
         admin.shopify.com."""
         checks = {c["key"]: c for c in self._all_checks()}
-        for key in ("shipping_zones", "fulfillable_locations"):
+        for key in (
+            "shipping_zones",
+            "fulfillable_locations",
+            "shop_identity",
+        ):
             hint = checks[key]["fix_hint"]
             assert "admin.shopify.com" in hint, (
                 f"{key} hint should reference admin URL: "
@@ -1163,3 +1177,121 @@ class TestFixHint:
         checks = {c["key"]: c for c in self._all_checks()}
         hint = checks["active_products"]["fix_hint"]
         assert "product" in hint.lower()
+
+
+class TestShopIdentityCheck:
+    """Cover the 10th check: shop has the identity fields
+    required to take orders."""
+
+    def _run(self, responses):
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            return audit_store()
+
+    def _shop_check(self, result):
+        return next(
+            c for c in result["checks"]
+            if c["key"] == "shop_identity"
+        )
+
+    def test_all_fields_present_passes(self):
+        result = self._run(_ALL_GOOD)
+        check = self._shop_check(result)
+        assert check["ok"] is True
+        assert check["applied"] == 4
+        assert check["expected"] == 4
+        assert check["missing"] == []
+
+    def test_missing_name_flagged(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "",
+                "email": "ops@x.example",
+                "contact_email": "ops@x.example",
+                "currency_code": "USD",
+                "primary_host": "x.myshopify.com",
+            },
+        })
+        check = self._shop_check(self._run(responses))
+        assert check["ok"] is False
+        assert "name" in check["missing"]
+        assert check["applied"] == 3
+
+    def test_missing_contact_flagged(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "",
+                "contact_email": "",
+                "currency_code": "USD",
+                "primary_host": "x.myshopify.com",
+            },
+        })
+        check = self._shop_check(self._run(responses))
+        assert check["ok"] is False
+        assert "contact_email" in check["missing"]
+
+    def test_either_email_or_contact_email_passes(self):
+        """One of the two suffices -- transactional sends
+        only need a single from-address."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "",
+                "contact_email": "ops@x.example",
+                "currency_code": "USD",
+                "primary_host": "x.myshopify.com",
+            },
+        })
+        check = self._shop_check(self._run(responses))
+        assert check["ok"] is True
+        assert check["missing"] == []
+
+    def test_missing_currency_flagged(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "ops@x.example",
+                "contact_email": "",
+                "currency_code": "",
+                "primary_host": "x.myshopify.com",
+            },
+        })
+        check = self._shop_check(self._run(responses))
+        assert check["ok"] is False
+        assert "currency_code" in check["missing"]
+
+    def test_missing_primary_host_flagged(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "ops@x.example",
+                "contact_email": "",
+                "currency_code": "USD",
+                "primary_host": "",
+            },
+        })
+        check = self._shop_check(self._run(responses))
+        assert check["ok"] is False
+        assert "primary_host" in check["missing"]
+
+    def test_router_failure_returns_all_missing(self):
+        """If SHOPIFY_GET_SHOP fails, every required field is
+        flagged so the operator sees the gap."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _fail()
+        check = self._shop_check(self._run(responses))
+        assert check["ok"] is False
+        assert check["applied"] == 0
+        assert len(check["missing"]) == 4

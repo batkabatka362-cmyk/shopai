@@ -132,7 +132,28 @@ _FIX_HINTS: dict[str, str] = {
         "Manual: activate a location with online-order "
         "fulfillment at admin.shopify.com/settings/locations"
     ),
+    "shop_identity": (
+        "Manual: set the missing shop fields at "
+        "admin.shopify.com/settings/general (name, contact "
+        "email, currency must all be configured before "
+        "checkout works correctly)"
+    ),
 }
+
+
+# Required shop-identity fields on the SHOPIFY_GET_SHOP
+# response. Without ``name`` or ``currency_code`` the
+# storefront shows blank brand + can't price; without an
+# email contact the customer-receipt flow has no sender.
+# Primary domain (``primary_host``) is also required --
+# without it the store has no public URL and isn't
+# accessible.
+_REQUIRED_SHOP_FIELDS: tuple[str, ...] = (
+    "name",
+    "email_or_contact_email",  # either-or; checked below
+    "currency_code",
+    "primary_host",
+)
 
 
 def _fix_hint(check_key: str) -> str:
@@ -281,6 +302,7 @@ def audit_store(
             expected=expected_fulfillable_locations,
         ),
     )
+    checks.append(_check_shop_identity())
 
     # Decorate every check with its operator-actionable hint
     # in one place so individual probes stay focused on the
@@ -681,6 +703,55 @@ def _check_fulfillable_locations(
         "ok": fulfillable >= threshold,
         "applied": fulfillable,
         "expected": threshold,
+        "missing": missing,
+    }
+
+
+def _check_shop_identity() -> dict[str, Any]:
+    """Verify the store has the identity fields it needs to
+    take orders.
+
+    The autonomous merchant CAN'T earn revenue if Shopify
+    doesn't have a name (storefront branding), a contact
+    email (receipts can't send), a primary currency
+    (checkout can't price), or a primary host (storefront
+    isn't reachable). Fresh dev stores can be missing one or
+    more of these depending on the setup path the operator
+    took.
+
+    Pulls SHOPIFY_GET_SHOP and checks each required field.
+    ``email`` and ``contact_email`` are treated as
+    either-or: either suffices for transactional sends.
+    """
+    data = _router_read(
+        capability_attr="SHOPIFY_GET_SHOP",
+        params={},
+        empty_default={},
+    )
+    shop = data.get("shop") if isinstance(data, dict) else {}
+    if not isinstance(shop, dict):
+        shop = {}
+
+    missing: list[str] = []
+    if not str(shop.get("name") or "").strip():
+        missing.append("name")
+    # email OR contact_email is required
+    if not (
+        str(shop.get("email") or "").strip()
+        or str(shop.get("contact_email") or "").strip()
+    ):
+        missing.append("contact_email")
+    if not str(shop.get("currency_code") or "").strip():
+        missing.append("currency_code")
+    if not str(shop.get("primary_host") or "").strip():
+        missing.append("primary_host")
+
+    applied = len(_REQUIRED_SHOP_FIELDS) - len(missing)
+    return {
+        "key": "shop_identity",
+        "ok": not missing,
+        "applied": applied,
+        "expected": len(_REQUIRED_SHOP_FIELDS),
         "missing": missing,
     }
 
