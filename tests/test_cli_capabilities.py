@@ -1718,3 +1718,260 @@ class TestAutoDemoteReleaseCandidates:
             "min_recent": 4,
             "recent_days": 5,
         }
+
+
+class TestLifecycle:
+    """``shopai capabilities lifecycle <name>`` -- full
+    capability timeline (promote/demote/release events +
+    current state + metrics)."""
+
+    def _override(
+        self, name, kind="promote", reason="", at=0.0,
+    ):
+        from core.capability_planner.\
+capability_overrides import CapabilityOverride
+        return CapabilityOverride(
+            name=name, kind=kind, reason=reason,
+            recorded_at=at,
+        )
+
+    def _overrides_for(self, *entries):
+        from core.capability_planner.\
+capability_overrides import CapabilityOverrides
+        return CapabilityOverrides(entries=list(entries))
+
+    def test_unknown_cap_still_renders(self, cli):
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=self._overrides_for(),
+        ), patch(
+            "core.capability_planner."
+            "capability_leaderboard",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "auto_promote_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            return_value=[],
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="lifecycle",
+                    name="ghost_cap",
+                ),
+            )
+        assert code == 0
+        assert "Registered: NO" in out
+
+    def test_promote_event_renders(self, cli):
+        from core.capability_planner.\
+auto_promote_history import AutoPromoteEvent
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=self._overrides_for(),
+        ), patch(
+            "core.capability_planner."
+            "capability_leaderboard",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "auto_promote_history.recent_history",
+            return_value=[
+                AutoPromoteEvent(
+                    capability="launch_store",
+                    reason="auto_promote_reliable: rate=1.0",
+                    recorded_at=1700000000.0,
+                ),
+            ],
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            return_value=[],
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="lifecycle",
+                    name="launch_store",
+                ),
+            )
+        assert code == 0
+        assert "Promote events (1)" in out
+        assert "auto_promote_reliable" in out
+
+    def test_demote_release_filtered_by_name(self, cli):
+        from core.capability_planner.\
+auto_demote_history import AutoDemoteEvent
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=self._overrides_for(),
+        ), patch(
+            "core.capability_planner."
+            "capability_leaderboard",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "auto_promote_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            return_value=[
+                AutoDemoteEvent(
+                    kind="demote",
+                    capability="launch_store",
+                    reason="auto_demote_degraded: x",
+                    recorded_at=1700000000.0,
+                ),
+                AutoDemoteEvent(
+                    kind="release",
+                    capability="launch_store",
+                    reason="auto_demote_release: y",
+                    recorded_at=1700001000.0,
+                ),
+                AutoDemoteEvent(
+                    kind="demote",
+                    capability="other_cap",
+                    reason="-",
+                    recorded_at=1700002000.0,
+                ),
+            ],
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="lifecycle",
+                    name="launch_store",
+                ),
+            )
+        assert code == 0
+        assert "Demote events (1)" in out
+        assert "Release events (1)" in out
+        # other_cap demote NOT included
+        assert "other_cap" not in out
+
+    def test_json_envelope_shape(self, cli):
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=self._overrides_for(),
+        ), patch(
+            "core.capability_planner."
+            "capability_leaderboard",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "auto_promote_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            return_value=[],
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="lifecycle",
+                    name="launch_store",
+                    json=True,
+                ),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data["capability"] == "launch_store"
+        assert "promote_events" in data
+        assert "demote_events" in data
+        assert "release_events" in data
+        assert "current_state" in data
+        assert "bridge_status" in data
+
+    def test_empty_name_exits_1(self, cli):
+        out, code = _capture(
+            cli._cmd_capabilities,
+            _ns(
+                capability_action="lifecycle",
+                name="",
+            ),
+        )
+        assert code == 1
+
+    def test_current_state_promoted(self, cli):
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=self._overrides_for(
+                self._override(
+                    "winner",
+                    kind="promote",
+                    reason="auto_promote_reliable: ...",
+                ),
+            ),
+        ), patch(
+            "core.capability_planner."
+            "capability_leaderboard",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "auto_promote_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "auto_demote_history.recent_history",
+            return_value=[],
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="lifecycle",
+                    name="winner",
+                ),
+            )
+        assert code == 0
+        assert "[PROMOTE/AUTO]" in out

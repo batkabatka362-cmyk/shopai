@@ -435,6 +435,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view.",
     )
 
+    cap_lifecycle_p = capabilities_sub.add_parser(
+        "lifecycle",
+        help=(
+            "Full lifecycle timeline of a capability -- "
+            "every promote/demote event from the auto-"
+            "bridge histories + current state + sample "
+            "metrics. The operator's 'what happened to "
+            "this cap?' inspector."
+        ),
+    )
+    cap_lifecycle_p.add_argument(
+        "name",
+        help="Capability name.",
+    )
+    cap_lifecycle_p.add_argument(
+        "--window-days", type=int, default=30,
+        dest="window_days",
+        help=(
+            "Look-back window in days (default 30)."
+        ),
+    )
+    cap_lifecycle_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view.",
+    )
+
     cap_promote_p = capabilities_sub.add_parser(
         "promote",
         help=(
@@ -15684,6 +15710,267 @@ capability_overrides import load_overrides
                 f"  {stamp}  {tag} {e.capability}"
                 f"{reason_short}"
             )
+        return
+
+    if action == "lifecycle":
+        name = getattr(args, "name", "") or ""
+        if not name:
+            print("Capability name required.")
+            sys.exit(1)
+            return
+        window_days = max(
+            1, int(
+                getattr(args, "window_days", 30) or 30,
+            ),
+        )
+        envelope: dict[str, Any] = {
+            "capability": name,
+            "window_days": window_days,
+            "registered": False,
+            "current_state": {
+                "promoted": False,
+                "demoted": False,
+                "override_reason": "",
+            },
+            "reliability": None,
+            "revenue_impact": None,
+            "promote_events": [],
+            "demote_events": [],
+            "release_events": [],
+            "bridge_status": None,
+        }
+
+        # Registry lookup
+        try:
+            cap_info = registry.get(name)
+            if cap_info is not None:
+                envelope["registered"] = True
+                envelope["registry"] = cap_info.to_dict()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "lifecycle: registry raised: %s", exc,
+            )
+
+        # Override state
+        try:
+            from core.capability_planner.\
+capability_overrides import load_overrides
+            overrides = load_overrides()
+            entry = overrides.get(name)
+            if entry is not None:
+                envelope["current_state"] = {
+                    "promoted": entry.kind == "promote",
+                    "demoted": entry.kind == "demote",
+                    "override_reason": entry.reason or "",
+                    "recorded_at": entry.recorded_at,
+                }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "lifecycle: overrides raised: %s", exc,
+            )
+
+        # Reliability + revenue
+        try:
+            from core.capability_planner import (
+                capability_leaderboard,
+                capability_revenue_impact,
+            )
+            for r in capability_leaderboard(
+                since_seconds=window_days * 86400,
+                min_sample_size=1,
+                top_n=1000,
+            ):
+                if r["capability"] == name:
+                    envelope["reliability"] = r
+                    break
+            for r in capability_revenue_impact(
+                since_seconds=window_days * 86400,
+                min_sample_size=1,
+                top_n=1000,
+            ):
+                if r["capability"] == name:
+                    envelope["revenue_impact"] = r
+                    break
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "lifecycle: leaderboard raised: %s", exc,
+            )
+
+        # Promote history
+        try:
+            from core.capability_planner import (
+                auto_promote_history,
+            )
+            evs = auto_promote_history.recent_history(
+                since_seconds=window_days * 86400,
+                capability=name,
+            )
+            envelope["promote_events"] = [
+                {
+                    "recorded_at": e.recorded_at,
+                    "reason": e.reason,
+                    "metrics": e.metrics,
+                }
+                for e in evs
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "lifecycle: promote_history raised: %s",
+                exc,
+            )
+
+        # Demote / release history (auto_demote_history
+        # carries both kinds, filter by capability)
+        try:
+            from core.capability_planner import (
+                auto_demote_history,
+            )
+            for e in auto_demote_history.recent_history(
+                since_seconds=window_days * 86400,
+            ):
+                if e.capability != name:
+                    continue
+                row = {
+                    "recorded_at": e.recorded_at,
+                    "reason": e.reason,
+                }
+                if e.kind == "demote":
+                    envelope["demote_events"].append(row)
+                elif e.kind == "release":
+                    envelope["release_events"].append(row)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "lifecycle: demote_history raised: %s",
+                exc,
+            )
+
+        # Bridge status from degradation annotation
+        try:
+            from core.capability_planner import (
+                auto_demote as _ad,
+                capability_degradations,
+            )
+            degs = capability_degradations(
+                recent_window_seconds=86400 * 7,
+                baseline_window_seconds=86400 * 30,
+            )
+            degs = _ad.annotate_degradations(degs)
+            for d in degs:
+                if d["capability"] == name:
+                    envelope["bridge_status"] = {
+                        "tier": d.get("bridge_status"),
+                        "baseline_rate": d["baseline_rate"],
+                        "recent_rate": d["recent_rate"],
+                        "drop": d["drop"],
+                    }
+                    break
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "lifecycle: degradations raised: %s",
+                exc,
+            )
+
+        if as_json:
+            print(json.dumps(
+                envelope, indent=2, default=str,
+            ))
+            return
+
+        # Text view
+        print(f"Lifecycle: {name}")
+        print(f"  Window: last {window_days} day(s)")
+        if not envelope["registered"]:
+            print("  Registered: NO (not in registry)")
+        else:
+            print("  Registered: yes")
+
+        cs = envelope["current_state"]
+        if cs["promoted"]:
+            tag = "[PROMOTE]"
+            if cs.get("override_reason", "").startswith(
+                "auto_promote_reliable",
+            ):
+                tag = "[PROMOTE/AUTO]"
+            print(
+                f"  Current:    {tag} "
+                f"{cs.get('override_reason', '')[:80]}"
+            )
+        elif cs["demoted"]:
+            tag = "[DEMOTE]"
+            if cs.get("override_reason", "").startswith(
+                "auto_demote_degraded",
+            ):
+                tag = "[DEMOTE/AUTO]"
+            print(
+                f"  Current:    {tag} "
+                f"{cs.get('override_reason', '')[:80]}"
+            )
+        else:
+            print("  Current:    (no override)")
+
+        rel = envelope["reliability"]
+        if rel:
+            print(
+                f"  Reliability: {rel['success_rate']*100:.1f}% "
+                f"({rel['success_count']}/"
+                f"{rel['executed_count']})"
+            )
+        rev = envelope["revenue_impact"]
+        if rev:
+            sign = (
+                "+" if rev["total_revenue_delta"] >= 0
+                else ""
+            )
+            print(
+                f"  Revenue:     "
+                f"{sign}${rev['total_revenue_delta']:,.2f} "
+                f"(n={rev['sample_size']})"
+            )
+        bs = envelope["bridge_status"]
+        if bs:
+            tier = (bs["tier"] or "").upper()
+            print(
+                f"  Bridge:      [{tier}] "
+                f"recent {bs['recent_rate']*100:.0f}% "
+                f"vs baseline {bs['baseline_rate']*100:.0f}%"
+            )
+
+        # Timeline -- promote events
+        prom = envelope["promote_events"]
+        if prom:
+            print()
+            print(f"  Promote events ({len(prom)}):")
+            import datetime as _dt
+            for e in prom:
+                stamp = _dt.datetime.fromtimestamp(
+                    e["recorded_at"],
+                ).strftime("%Y-%m-%d %H:%M")
+                print(f"    {stamp}  {e['reason'][:70]}")
+
+        # Demote events
+        dem = envelope["demote_events"]
+        if dem:
+            print()
+            print(f"  Demote events ({len(dem)}):")
+            import datetime as _dt
+            for e in dem:
+                stamp = _dt.datetime.fromtimestamp(
+                    e["recorded_at"],
+                ).strftime("%Y-%m-%d %H:%M")
+                print(f"    {stamp}  {e['reason'][:70]}")
+
+        # Release events
+        rel_evs = envelope["release_events"]
+        if rel_evs:
+            print()
+            print(f"  Release events ({len(rel_evs)}):")
+            import datetime as _dt
+            for e in rel_evs:
+                stamp = _dt.datetime.fromtimestamp(
+                    e["recorded_at"],
+                ).strftime("%Y-%m-%d %H:%M")
+                print(f"    {stamp}  {e['reason'][:70]}")
+
         return
 
     if action == "watchlist":
