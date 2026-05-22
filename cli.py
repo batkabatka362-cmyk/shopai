@@ -4905,6 +4905,27 @@ capability_overrides import load_overrides
                 (time.time() - float(stats["last_run_at"]))
                 / 3600.0, 1,
             )
+        # Threshold state -- effective value + whether a
+        # persistent override is set + whether auto-relax
+        # bridge is enabled.
+        try:
+            from core.autonomous import (
+                auto_relax as _ar,
+                cycle_overrides as _co,
+            )
+            ovr = _co.load_overrides()
+            cycle_threshold = {
+                "effective": _co.resolve_threshold(),
+                "override_set": (
+                    "auto_execute_threshold" in ovr
+                ),
+                "auto_relax_enabled": _ar.is_enabled(),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "status: threshold info raised: %s", exc,
+            )
+            cycle_threshold = None
         envelope["cycle"] = {
             "checked": True,
             "runs_24h": stats["total_runs"],
@@ -4912,6 +4933,7 @@ capability_overrides import load_overrides
             "last_run_age_hours": last_age_h,
             "alert_count": len(alerts_list),
             "alert_kinds": [a.kind for a in alerts_list],
+            "threshold": cycle_threshold,
         }
     except Exception as exc:  # noqa: BLE001
         logger.debug("status: cycle raised: %s", exc)
@@ -5035,9 +5057,22 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
                 f"  [{cyc['alert_count']} alert(s): "
                 f"{', '.join(cyc['alert_kinds'])}]"
             )
+        thr = cyc.get("threshold") or {}
+        thr_str = ""
+        if thr:
+            tag = ""
+            if thr.get("override_set"):
+                tag = "*"
+            relax = ""
+            if thr.get("auto_relax_enabled"):
+                relax = " (auto-relax ON)"
+            thr_str = (
+                f"  threshold {thr['effective']:.2f}"
+                f"{tag}{relax}"
+            )
         print(
             f"  Cycle:     {cyc['runs_24h']} run(s)/24h  "
-            f"last: {last}{alerts_str}"
+            f"last: {last}{alerts_str}{thr_str}"
         )
     else:
         print(
@@ -13767,6 +13802,24 @@ def _cmd_autonomous_cycle(args) -> None:
             exc,
         )
 
+    # Auto-relax / auto-restore bridge: env-gated
+    # self-correcting layer. When low_advance_rate has been
+    # firing for 3+ days, lower the persistent threshold.
+    # When alerts have been quiet, raise it back. Fail-open.
+    try:
+        from core.autonomous import auto_relax as _ar
+        relax_result = _ar.maybe_relax_and_restore()
+        summary["auto_relax"] = relax_result
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "autonomous-cycle: auto_relax raised: %s",
+            exc,
+        )
+        summary["auto_relax"] = {
+            "checked": False,
+            "error": f"raised: {exc}",
+        }
+
     # Add next-action recommendation to JSON envelope.
     try:
         from core.autonomous import cycle_next_action as _na
@@ -13861,6 +13914,20 @@ def _cmd_autonomous_cycle(args) -> None:
                 f"{cor['candidates']} correlated  "
                 f"{outcomes_str}"
             )
+    ar = summary.get("auto_relax")
+    if ar and ar.get("checked") and ar.get(
+        "direction",
+    ) != "none":
+        applied_tag = (
+            "APPLIED" if ar.get("applied") else "DRY-RUN"
+        )
+        print(
+            f"  Auto-relax [{applied_tag}]: "
+            f"{ar['current_value']:.2f} -> "
+            f"{ar['proposed_value']:.2f}  "
+            f"({ar['direction']})"
+        )
+        print(f"           reason: {ar['reason']}")
     if not yes:
         print()
         print(

@@ -299,3 +299,33 @@ class TestHealthSections:
             out = _capture(cli._cmd_status, None)
         # Existing status output still rendered
         assert "Engines:" in out
+
+    def test_cycle_threshold_block_appears(self, cli):
+        sections = cli._build_health_sections()
+        assert "threshold" in sections["cycle"]
+        thr = sections["cycle"]["threshold"]
+        assert "effective" in thr
+        assert "override_set" in thr
+        assert "auto_relax_enabled" in thr
+
+    def test_threshold_with_override_renders_marker(
+        self, cli,
+    ):
+        with patch(
+            "core.autonomous.cycle_overrides."
+            "resolve_threshold",
+            return_value=0.7,
+        ), patch(
+            "core.autonomous.cycle_overrides."
+            "load_overrides",
+            return_value={"auto_execute_threshold": 0.7},
+        ), patch(
+            "core.autonomous.auto_relax.is_enabled",
+            return_value=True,
+        ):
+            out = _capture(cli._cmd_status, None)
+        # The * marks an active override, "(auto-relax ON)"
+        # marks the bridge gate
+        assert "threshold 0.70" in out
+        assert "*" in out  # override marker
+        assert "(auto-relax ON)" in out

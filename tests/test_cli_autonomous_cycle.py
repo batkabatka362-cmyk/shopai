@@ -1058,6 +1058,98 @@ class TestThresholdOverrides:
         mock_sm.assert_not_called()
 
 
+class TestAutoRelaxInCycle:
+    """The cycle handler runs the auto-relax/restore bridge
+    after recording alerts. Surfaces result in summary."""
+
+    def test_auto_relax_appears_in_summary(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.auto_relax."
+            "maybe_relax_and_restore",
+            return_value={
+                "checked": True,
+                "enabled": True,
+                "direction": "relax",
+                "current_value": 0.9,
+                "proposed_value": 0.85,
+                "applied": True,
+                "reason": "low_advance_rate firing 3d",
+                "metrics": {"streak_days": 3},
+            },
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(yes=True, json=True),
+            )
+        data = json.loads(out)
+        assert "auto_relax" in data
+        assert data["auto_relax"]["direction"] == "relax"
+        assert data["auto_relax"]["applied"] is True
+
+    def test_auto_relax_text_view_applied(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.auto_relax."
+            "maybe_relax_and_restore",
+            return_value={
+                "checked": True,
+                "enabled": True,
+                "direction": "relax",
+                "current_value": 0.90,
+                "proposed_value": 0.85,
+                "applied": True,
+                "reason": "low_advance_rate firing 3d",
+                "metrics": {},
+            },
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(yes=True),
+            )
+        assert "Auto-relax [APPLIED]" in out
+        assert "0.90" in out
+        assert "0.85" in out
+
+    def test_no_action_no_text_line(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.auto_relax."
+            "maybe_relax_and_restore",
+            return_value={
+                "checked": True,
+                "enabled": False,
+                "direction": "none",
+                "current_value": 0.9,
+                "proposed_value": 0.9,
+                "applied": False,
+                "reason": "streak 0d below 3d",
+                "metrics": {},
+            },
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(yes=True),
+            )
+        # Direction none doesn't render the auto-relax line
+        assert "Auto-relax" not in out
+
+
 class TestIntervalParser:
     """``_interval_to_cron`` -- parser for the
     --cron-interval CLI argument."""
