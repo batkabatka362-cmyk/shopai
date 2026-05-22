@@ -4,8 +4,8 @@ autonomous-loop history files.
 Operators investigating "what has the autonomous loop done
 recently?" had to read each history file separately:
 cycle_history, auto_demote_history, auto_promote_history,
-auto_relax_history, transfer_history, cycle_alert_history.
-Six commands, scattered output.
+auto_relax_history, transfer_history, cycle_pause_history,
+cycle_alert_history. Seven commands, scattered output.
 
 This module is the unified view. Walks every relevant
 history module, normalizes events into a common shape, and
@@ -35,7 +35,8 @@ class DiaryEvent:
 
     recorded_at: float
     source: str  # "cycle" | "demote" | "promote" |
-    #               "relax" | "transfer" | "alert"
+    #               "relax" | "transfer" | "pause" |
+    #               "alert"
     kind: str   # source-specific event kind
     detail: str
     metrics: dict[str, Any] = field(default_factory=dict)
@@ -198,6 +199,43 @@ def compile_diary(
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "compile_diary: transfer_history "
+            "raised: %s", exc,
+        )
+
+    # Pause / resume / extend events
+    try:
+        from core.autonomous import (
+            cycle_pause as _cp,
+        )
+        for r in _cp.pause_history(
+            since_seconds=since_seconds,
+        ):
+            kind = str(r.get("kind", "") or "")
+            reason = str(r.get("reason", "") or "")
+            until_at = r.get("paused_until_at")
+            verb = {
+                "pause": "PAUSE",
+                "resume": "RESUME",
+                "extend": "EXTEND",
+            }.get(kind, kind.upper() or "PAUSE")
+            detail = f"[{verb}]"
+            if reason:
+                detail += f" {reason[:60]}"
+            events.append(DiaryEvent(
+                recorded_at=float(
+                    r.get("recorded_at", 0) or 0,
+                ),
+                source="pause",
+                kind=kind or "pause",
+                detail=detail,
+                metrics={
+                    "paused_until_at": until_at,
+                    "reason": reason,
+                },
+            ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "compile_diary: cycle_pause "
             "raised: %s", exc,
         )
 

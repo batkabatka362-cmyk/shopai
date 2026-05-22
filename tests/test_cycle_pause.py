@@ -14,9 +14,15 @@ from core.autonomous import cycle_pause as cp
 @pytest.fixture
 def tmp_pause(tmp_path):
     path = tmp_path / "cycle_pause.json"
-    cp._reset_for_tests(path)
+    hist_path = tmp_path / "cycle_pause_history.json"
+    cp._reset_for_tests(path, history_path=hist_path)
     yield path
-    cp._reset_for_tests(Path("data/cycle_pause.json"))
+    cp._reset_for_tests(
+        Path("data/cycle_pause.json"),
+        history_path=Path(
+            "data/cycle_pause_history.json",
+        ),
+    )
 
 
 class TestPatternJ:

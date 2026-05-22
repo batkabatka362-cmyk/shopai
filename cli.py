@@ -1358,6 +1358,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     autonomous_p.add_argument(
+        "--pause-history", action="store_true",
+        dest="pause_history",
+        help=(
+            "Read-only: audit log of every pause / resume / "
+            "extend event (newest first). Answers 'how often "
+            "is the loop paused, and for what?'. Does NOT "
+            "run a cycle."
+        ),
+    )
+    autonomous_p.add_argument(
+        "--pause-history-days", type=int, default=30,
+        dest="pause_history_days",
+        help=(
+            "Window in days for --pause-history "
+            "(default 30)."
+        ),
+    )
+    autonomous_p.add_argument(
         "--history", action="store_true",
         help=(
             "Read-only: render the cycle history (recent "
@@ -14260,6 +14278,63 @@ def _cmd_autonomous_cycle(args) -> None:
         print(f"Cycle PAUSED until {until_str}")
         if state.get("reason"):
             print(f"  Reason: {state['reason']}")
+        return
+
+    if bool(getattr(args, "pause_history", False)):
+        from core.autonomous import cycle_pause as _cp
+        import time as _time
+        window_days = max(
+            1, int(
+                getattr(
+                    args, "pause_history_days", 30,
+                ) or 30,
+            ),
+        )
+        events = _cp.pause_history(
+            since_seconds=window_days * 86400,
+        )
+        if as_json:
+            print(json.dumps({
+                "window_days": window_days,
+                "events": events,
+            }, indent=2, default=str))
+            return
+        print(
+            f"Cycle pause history "
+            f"(last {window_days} day(s)):"
+        )
+        if not events:
+            print("  No pause events recorded.")
+            return
+        for e in events[:50]:
+            ts = float(e.get("recorded_at", 0) or 0)
+            when = _time.strftime(
+                "%Y-%m-%d %H:%M",
+                _time.localtime(ts),
+            ) if ts else "?"
+            kind = str(e.get("kind", "") or "").upper()
+            reason = str(e.get("reason", "") or "")
+            line = f"  [{when}] {kind}"
+            if reason:
+                line += f"  {reason[:60]}"
+            until_at = e.get("paused_until_at")
+            if (
+                until_at
+                and kind in ("PAUSE", "EXTEND")
+            ):
+                try:
+                    line += (
+                        "  -> "
+                        + _time.strftime(
+                            "%Y-%m-%d %H:%M",
+                            _time.localtime(
+                                float(until_at),
+                            ),
+                        )
+                    )
+                except (TypeError, ValueError):
+                    pass
+            print(line)
         return
 
     # --revenue-trend is read-only: fleet revenue

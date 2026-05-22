@@ -96,6 +96,17 @@ def _alert_event(ts=1700000500.0, **kw):
     return CycleAlertEvent(**defaults)
 
 
+def _pause_event(ts=1700000450.0, **kw):
+    defaults = dict(
+        kind="pause",
+        reason="maintenance",
+        paused_until_at=ts + 3600.0,
+        recorded_at=ts,
+    )
+    defaults.update(kw)
+    return defaults
+
+
 class TestCompileDiary:
 
     def test_empty_sources_returns_empty(self):
@@ -122,6 +133,10 @@ class TestCompileDiary:
         ), patch(
             "core.autonomous.cycle_alert_history."
             "recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_pause."
+            "pause_history",
             return_value=[],
         ):
             out = cd.compile_diary()
@@ -152,13 +167,17 @@ class TestCompileDiary:
             "core.autonomous.cycle_alert_history."
             "recent_history",
             return_value=[_alert_event()],
+        ), patch(
+            "core.autonomous.cycle_pause."
+            "pause_history",
+            return_value=[_pause_event()],
         ):
             out = cd.compile_diary()
-        # All six sources represented
+        # All seven sources represented
         sources = {e.source for e in out}
         assert sources == {
             "cycle", "demote", "promote", "relax",
-            "transfer", "alert",
+            "transfer", "pause", "alert",
         }
         # Newest first (alert at 500.0 is latest)
         assert out[0].source == "alert"
@@ -194,6 +213,10 @@ class TestCompileDiary:
         ), patch(
             "core.autonomous.cycle_alert_history."
             "recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_pause."
+            "pause_history",
             return_value=[],
         ):
             out = cd.compile_diary()
@@ -231,6 +254,10 @@ class TestCompileDiary:
             "core.autonomous.cycle_alert_history."
             "recent_history",
             return_value=[],
+        ), patch(
+            "core.autonomous.cycle_pause."
+            "pause_history",
+            return_value=[],
         ):
             out = cd.compile_diary(limit=10)
         assert len(out) == 10
@@ -261,6 +288,10 @@ class TestCompileDiary:
         ), patch(
             "core.autonomous.cycle_alert_history."
             "recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_pause."
+            "pause_history",
             return_value=[],
         ):
             out = cd.compile_diary()
