@@ -15092,9 +15092,17 @@ def _cmd_autonomous_cycle(args) -> None:
                 e for e in events
                 if e.source.lower() in allowed
             ][:limit]
+        # Per-source breakdown -- one-glance answer to "what
+        # subsystems have been active this window?".
+        source_counts: dict[str, int] = {}
+        for e in events:
+            source_counts[e.source] = (
+                source_counts.get(e.source, 0) + 1
+            )
         if as_json:
             print(json.dumps({
                 "window_days": window_days,
+                "source_counts": source_counts,
                 "events": [
                     {
                         "recorded_at": e.recorded_at,
@@ -15117,6 +15125,18 @@ def _cmd_autonomous_cycle(args) -> None:
                 "  No events recorded in the window."
             )
             return
+        if source_counts:
+            # Order by count desc so dominant sources are
+            # immediately obvious.
+            breakdown = ", ".join(
+                f"{src}={n}"
+                for src, n in sorted(
+                    source_counts.items(),
+                    key=lambda kv: (-kv[1], kv[0]),
+                )
+            )
+            print(f"  By source: {breakdown}")
+            print()
         import datetime as _dt
         for e in events:
             stamp = _dt.datetime.fromtimestamp(
