@@ -14939,6 +14939,29 @@ def _cmd_autonomous_cycle(args) -> None:
                 for s in filter_str.split(",")
                 if s.strip()
             }
+            # Catch typos: surface unknown filter tokens
+            # so a silent empty result doesn't masquerade
+            # as "no events" when the operator typo'd.
+            known = {
+                "cycle", "demote", "promote", "relax",
+                "transfer", "pause", "alert",
+            }
+            unknown = allowed - known
+            if unknown:
+                msg = (
+                    f"Unknown --diary-filter source(s): "
+                    f"{', '.join(sorted(unknown))}. "
+                    f"Valid: {', '.join(sorted(known))}"
+                )
+                if as_json:
+                    print(json.dumps({
+                        "status": "error",
+                        "error": msg,
+                    }, indent=2, default=str))
+                else:
+                    print(msg)
+                sys.exit(1)
+                return
             events = [
                 e for e in events
                 if e.source.lower() in allowed
