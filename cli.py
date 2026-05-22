@@ -23026,6 +23026,24 @@ def _audit_data_files() -> dict[str, Any]:
             entry["error"] = f"os_error: {exc}"
             out["overall"] = "error"
         out["files"].append(entry)
+    # Roll-up totals across every file -- gives operators a
+    # quick disk-usage glance + flags growing histories
+    # before they need pruning.
+    out["totals"] = {
+        "file_count": len(out["files"]),
+        "files_present": sum(
+            1 for f in out["files"] if f.get("exists")
+        ),
+        "total_bytes": sum(
+            int(f.get("size_bytes", 0) or 0)
+            for f in out["files"]
+        ),
+        "total_rows": sum(
+            int(f.get("row_count", 0) or 0)
+            for f in out["files"]
+            if f.get("row_count")
+        ),
+    }
     return out
 
 
@@ -23275,6 +23293,17 @@ def _cmd_status(args=None) -> None:
                     f"  [ERR]  {label:<24s} "
                     f"{entry.get('error', 'unknown')}"
                 )
+        totals = audit.get("totals") or {}
+        if totals:
+            print()
+            total_kb = totals.get("total_bytes", 0) / 1024.0
+            present = totals.get("files_present", 0)
+            count = totals.get("file_count", 0)
+            rows = totals.get("total_rows", 0)
+            print(
+                f"  Total: {present}/{count} files "
+                f"present  {rows} rows  {total_kb:.1f}KB"
+            )
         return
 
     # --watch: long-poll mode. Re-render every interval
