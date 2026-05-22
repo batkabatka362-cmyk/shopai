@@ -8678,6 +8678,16 @@ def _cmd_world_model_fleet(args) -> None:
         + ("; live probes on" if not skip_live else "; live probes skipped")
         + ")"
     )
+    # Empty-after-filter message. When --not-ready-only
+    # filters away every row, render a positive
+    # confirmation instead of an empty table.
+    if not rows and not_ready_only:
+        print()
+        print(
+            "  All stores in the fleet are READY to "
+            "launch.  Drop --not-ready-only to see them."
+        )
+        return
     # Fleet-wide pause + regressions banners -- both are
     # fleet-scoped signals, so surface once at the top
     # rather than per-row noise. Pick from the first non-
