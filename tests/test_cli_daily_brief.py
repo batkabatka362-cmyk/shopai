@@ -1938,6 +1938,90 @@ class TestRevenueImpactSection:
         )
 
 
+class TestAutoRelaxActivityInBrief:
+    """daily-brief surfaces auto-relax / restore activity
+    from the persistent history."""
+
+    def test_no_activity_silent(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.auto_relax_history."
+            "relax_stats",
+            return_value={
+                "total": 0,
+                "relax_count": 0,
+                "restore_count": 0,
+                "last_action_at": None,
+                "last_direction": None,
+                "net_change": 0.0,
+            },
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Threshold adjustments" not in out
+
+    def test_activity_renders_in_text(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.auto_relax_history."
+            "relax_stats",
+            return_value={
+                "total": 3,
+                "relax_count": 2,
+                "restore_count": 1,
+                "last_action_at": time.time() - 100,
+                "last_direction": "restore",
+                "net_change": -0.05,
+            },
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Threshold adjustments" in out
+        assert "2 relax" in out
+        assert "1 restore" in out
+        assert "-0.050" in out
+        assert "restore" in out
+
+    def test_envelope_carries_section(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.auto_relax_history."
+            "relax_stats",
+            return_value={
+                "total": 1,
+                "relax_count": 1,
+                "restore_count": 0,
+                "last_action_at": 1700000000.0,
+                "last_direction": "relax",
+                "net_change": -0.05,
+            },
+        ):
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        data = json.loads(out)
+        assert "auto_relax_activity" in data
+        assert (
+            data["auto_relax_activity"]["checked"] is True
+        )
+        assert (
+            data["auto_relax_activity"]["relax_count"] == 1
+        )
+
+
 class TestCycleAlertStreakInBrief:
     """daily-brief surfaces consecutive-day streak counts
     for cycle alerts from the persistent log."""

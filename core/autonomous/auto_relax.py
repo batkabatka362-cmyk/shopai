@@ -374,6 +374,26 @@ def maybe_apply(
         )
         if ok:
             action.applied = True
+            # Audit trail: log the applied action so future
+            # operators can answer "why is my threshold at
+            # 0.65?". Best-effort: history failures don't
+            # invalidate the override write.
+            try:
+                from core.autonomous import (
+                    auto_relax_history as _arh,
+                )
+                _arh.record_action(
+                    direction=action.direction,
+                    current_value=action.current_value,
+                    proposed_value=action.proposed_value,
+                    reason=action.reason,
+                    metrics=action.metrics,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "auto_relax: history record "
+                    "raised: %s", exc,
+                )
         else:
             logger.debug(
                 "auto_relax: set_override returned "

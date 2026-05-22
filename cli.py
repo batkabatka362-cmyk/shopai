@@ -5810,6 +5810,36 @@ def _cmd_daily_brief(args) -> None:
             exc,
         )
 
+    # ── Auto-relax activity (window) -- threshold
+    # adjustments the bridge made. Surfaces alongside
+    # bridge_activity so the cycle's "what did automation
+    # do?" view is complete.
+    auto_relax_activity: dict[str, Any] = {
+        "checked": False,
+        "total": 0,
+        "relax_count": 0,
+        "restore_count": 0,
+        "last_action_at": None,
+        "last_direction": None,
+        "net_change": 0.0,
+    }
+    try:
+        from core.autonomous import (
+            auto_relax_history as _arh,
+        )
+        stats_relax = _arh.relax_stats(
+            since_seconds=window_hours * 3600,
+        )
+        auto_relax_activity = {
+            "checked": True,
+            **stats_relax,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief auto_relax_activity raised: %s",
+            exc,
+        )
+
     # ── Capability overrides (operator demote / promote
     #     declarations, including bridge-driven auto-
     #     demotes). Always rendered when any entry exists;
@@ -5897,6 +5927,7 @@ def _cmd_daily_brief(args) -> None:
             "capability_overrides": overrides_summary,
             "revenue_impact": revenue_impact_summary,
             "bridge_activity": bridge_activity,
+            "auto_relax_activity": auto_relax_activity,
             "cycle_activity": cycle_activity,
             "totals": totals,
             "alerts": alerts,
@@ -6186,6 +6217,28 @@ def _cmd_daily_brief(args) -> None:
             print(
                 f"  Thrashing ({thrash_count}): {names} "
                 "-- needs operator intervention"
+            )
+        print()
+
+    # Auto-relax / auto-restore bridge activity. Renders
+    # only when at least one threshold adjustment fired in
+    # the window.
+    if auto_relax_activity.get("checked") and (
+        auto_relax_activity["total"] > 0
+    ):
+        net = auto_relax_activity["net_change"]
+        sign = "+" if net >= 0 else ""
+        print(
+            f"Threshold adjustments "
+            f"(last {window_hours}h): "
+            f"{auto_relax_activity['relax_count']} relax, "
+            f"{auto_relax_activity['restore_count']} "
+            f"restore  net {sign}{net:.3f}"
+        )
+        if auto_relax_activity.get("last_direction"):
+            print(
+                f"  Last: "
+                f"{auto_relax_activity['last_direction']}"
             )
         print()
 
