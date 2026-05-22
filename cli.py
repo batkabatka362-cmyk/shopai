@@ -9116,10 +9116,15 @@ def _cmd_world_model_show(args) -> None:
                     )
 
     # Cycle health section (pause + 3 engine-degradation
-    # signal classes). Renders only when something is
-    # non-quiet -- keeps a healthy snapshot short.
+    # signal classes + 7d pause activity rollup). Renders
+    # only when something is non-quiet -- keeps a healthy
+    # snapshot short.
     cycle_sec = snap.get("cycle") or {}
     pause = cycle_sec.get("pause") or {}
+    pause_freq = cycle_sec.get("pause_frequency_7d") or {}
+    pause_count_7d = int(
+        pause_freq.get("pause_count", 0) or 0
+    )
     regressions = (
         cycle_sec.get("engine_regressions") or []
     )
@@ -9136,6 +9141,7 @@ def _cmd_world_model_show(args) -> None:
         or chronics
         or outcome_alerts
         or cycle_alerts
+        or pause_count_7d > 0
     )
     if has_signal:
         print()
@@ -9153,6 +9159,20 @@ def _cmd_world_model_show(args) -> None:
             print(
                 f"  PAUSED until {until_str}"
                 + (f"  ({reason})" if reason else "")
+            )
+        if (
+            pause_count_7d > 0
+            and not pause.get("active")
+        ):
+            # Surface recent pause activity even when not
+            # currently paused -- a 'paused 5x in 7d' fleet
+            # is a different operational risk profile than
+            # a 'paused 0x' one.
+            print(
+                f"  Pause activity (7d): "
+                f"{pause_count_7d} pause(s), "
+                f"{pause_freq.get('total_downtime_hours', 0):.1f}h "
+                f"downtime"
             )
         if cycle_alerts:
             print(
