@@ -1083,7 +1083,19 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Read-only: surface cycle-health alerts "
             "(stale / silent / low-advance-rate / "
-            "substrate-shrinking). Does NOT run a cycle."
+            "substrate-shrinking). Includes consecutive-"
+            "day streak counts from the persistent log. "
+            "Does NOT run a cycle."
+        ),
+    )
+    autonomous_p.add_argument(
+        "--clear-alerts", action="store_true",
+        dest="clear_alerts",
+        help=(
+            "Operator escape hatch: wipe the persistent "
+            "cycle alert history. Use after addressing an "
+            "underlying issue so the consecutive-day "
+            "streak counter resets."
         ),
     )
     autonomous_p.add_argument(
@@ -5599,14 +5611,34 @@ def _cmd_daily_brief(args) -> None:
         logger.debug(
             "daily-brief cycle_alerts raised: %s", exc,
         )
+    # Consecutive-day streak per cycle-alert kind from the
+    # persistent log. Surfaces in the merged alert detail
+    # so operators see "low_advance_rate (firing 3d streak)".
+    streaks: dict[str, int] = {}
+    try:
+        from core.autonomous import (
+            cycle_alert_history as _cah,
+        )
+        streaks = _cah.consecutive_days_per_kind(
+            window_seconds=86400 * 7,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief cycle streaks raised: %s", exc,
+        )
+
     # Merge cycle alerts into the main alerts list so they
     # render in the same section. Cycle alerts have no
     # store_id (fleet-wide signal).
     for ca_row in cycle_alerts_list:
+        days = streaks.get(ca_row["kind"], 0)
+        detail = ca_row["detail"]
+        if days >= 2:
+            detail += f"  (firing {days}d streak)"
         alerts.append({
             "kind": ca_row["kind"],
             "engine": "autonomous_cycle",
-            "detail": ca_row["detail"],
+            "detail": detail,
         })
     # Per-store cycle alerts also merge in -- carry store_id
     # so the alerts section shows which store the issue
@@ -13064,6 +13096,26 @@ def _cmd_autonomous_cycle(args) -> None:
         getattr(args, "skip_defend", False),
     )
 
+    # --clear-alerts wipes the persistent log and returns.
+    # Operator escape hatch after addressing an underlying
+    # issue, so the consecutive-day streak resets.
+    if bool(getattr(args, "clear_alerts", False)):
+        try:
+            from core.autonomous import (
+                cycle_alert_history as _cah,
+            )
+            _cah.clear()
+            if as_json:
+                print(json.dumps(
+                    {"status": "cleared"},
+                    indent=2,
+                ))
+            else:
+                print("Cycle alert history cleared.")
+        except Exception as exc:  # noqa: BLE001
+            print(f"clear failed: {exc}")
+        return
+
     # --alerts is a read-only shortcut: compute health
     # alerts from cycle_history and return.
     if bool(getattr(args, "alerts", False)):
@@ -13090,6 +13142,21 @@ def _cmd_autonomous_cycle(args) -> None:
             window_seconds=window_days * 86400,
         )
         config = _ca.config_summary()
+        # Consecutive-day counts from the persistent log.
+        # Lets operators distinguish flares from patterns.
+        try:
+            from core.autonomous import (
+                cycle_alert_history as _cah,
+            )
+            consecutive = _cah.consecutive_days_per_kind(
+                window_seconds=window_days * 86400.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "alerts: consecutive_days raised: %s",
+                exc,
+            )
+            consecutive = {}
         if as_json:
             print(json.dumps({
                 "window_days": window_days,
@@ -13111,6 +13178,7 @@ def _cmd_autonomous_cycle(args) -> None:
                     }
                     for a in per_store_alerts
                 ],
+                "consecutive_days": consecutive,
             }, indent=2, default=str))
             return
         print(
@@ -13120,9 +13188,22 @@ def _cmd_autonomous_cycle(args) -> None:
         if not alerts_list and not per_store_alerts:
             print()
             print("  No alerts -- cycle looks healthy.")
+            if consecutive:
+                # Past firings, but currently quiet
+                print()
+                print("  Historical firings in window:")
+                for kind, days in sorted(
+                    consecutive.items(),
+                ):
+                    print(f"    [{kind}]  {days} day(s)")
             return
         for a in alerts_list:
-            print(f"  [{a.kind}]  {a.detail}")
+            days = consecutive.get(a.kind, 0)
+            streak = (
+                f"  (firing {days}d streak)"
+                if days >= 2 else ""
+            )
+            print(f"  [{a.kind}]  {a.detail}{streak}")
         if per_store_alerts:
             print()
             print(
@@ -13511,6 +13592,46 @@ def _cmd_autonomous_cycle(args) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "autonomous-cycle: record_cycle raised: %s",
+            exc,
+        )
+
+    # Compute + persist any cycle-health alerts that fired
+    # as a RESULT of this run. Captures the longitudinal
+    # signal (alerts firing on consecutive days = real
+    # pattern; one-off = flare). Fail-open.
+    try:
+        from core.autonomous import (
+            cycle_alerts as _cycle_alerts,
+            cycle_alert_history as _cycle_alert_history,
+        )
+        fired = _cycle_alerts.compute_cycle_alerts(
+            window_seconds=86400 * 7,
+        )
+        per_store_fired = (
+            _cycle_alerts.compute_per_store_alerts(
+                window_seconds=86400 * 7,
+            )
+        )
+        # Persist both fleet + per-store alerts to the same
+        # history file. Distinguishing data lives in
+        # ``metrics`` (per-store rows tag store_id).
+        rows_to_record: list[Any] = list(fired)
+        for psa in per_store_fired:
+            rows_to_record.append(_cycle_alerts.CycleAlert(
+                kind=psa.kind,
+                detail=psa.detail,
+                metrics={
+                    "store_id": psa.store_id,
+                    **(psa.metrics or {}),
+                },
+            ))
+        if rows_to_record:
+            _cycle_alert_history.record_alerts(
+                rows_to_record,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "autonomous-cycle: record alerts raised: %s",
             exc,
         )
 

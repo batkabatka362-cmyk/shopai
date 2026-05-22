@@ -1938,6 +1938,69 @@ class TestRevenueImpactSection:
         )
 
 
+class TestCycleAlertStreakInBrief:
+    """daily-brief surfaces consecutive-day streak counts
+    for cycle alerts from the persistent log."""
+
+    def _alert(self, kind="low_advance_rate", detail="d"):
+        from core.autonomous.cycle_alerts import CycleAlert
+        return CycleAlert(kind=kind, detail=detail)
+
+    def test_streak_appears_in_alert_detail(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[
+                self._alert(
+                    kind="low_advance_rate",
+                    detail="20%",
+                ),
+            ],
+        ), patch(
+            "core.autonomous.cycle_alerts."
+            "compute_per_store_alerts",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_alert_history."
+            "consecutive_days_per_kind",
+            return_value={"low_advance_rate": 4},
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "firing 4d streak" in out
+
+    def test_single_day_doesnt_show_streak(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[
+                self._alert(),
+            ],
+        ), patch(
+            "core.autonomous.cycle_alerts."
+            "compute_per_store_alerts",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_alert_history."
+            "consecutive_days_per_kind",
+            return_value={"low_advance_rate": 1},
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        # 1 day = flare, no streak tag
+        assert "streak" not in out
+
+
 class TestCycleAlertsInBrief:
     """Cycle-health alerts surface alongside engine alerts
     in daily-brief's alerts list."""

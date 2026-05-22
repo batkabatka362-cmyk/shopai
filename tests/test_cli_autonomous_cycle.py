@@ -65,6 +65,7 @@ def _ns(**kw):
         history_window_days=7,
         history_limit=10,
         alerts=False,
+        clear_alerts=False,
         emit_cron=False,
         cron_format="crontab",
         cron_interval="30m",
@@ -803,6 +804,141 @@ class TestCycleAlertsFlag:
         assert "alerts" in data
         assert len(data["alerts"]) == 1
         assert data["alerts"][0]["kind"] == "stale_cycle"
+
+
+class TestAlertHistoryWiring:
+    """Cycle invocations persist computed alerts to the
+    persistent log + the --alerts CLI surfaces consecutive
+    days from that log."""
+
+    def test_record_alerts_called_during_cycle(self, cli):
+        sm = _fake_sm([])
+        from core.autonomous.cycle_alerts import CycleAlert
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[
+                CycleAlert(
+                    kind="stale_cycle",
+                    detail="48h ago",
+                ),
+            ],
+        ), patch(
+            "core.autonomous.cycle_alerts."
+            "compute_per_store_alerts",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_alert_history."
+            "record_alerts",
+        ) as mock_record:
+            _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(yes=True, json=True),
+            )
+        # Persist call fired with the computed alerts
+        assert mock_record.call_count == 1
+        recorded = mock_record.call_args.args[0]
+        assert len(recorded) == 1
+        assert recorded[0].kind == "stale_cycle"
+
+    def test_alerts_flag_surfaces_consecutive_days(
+        self, cli,
+    ):
+        """When the persistent log has firings, --alerts
+        --json carries consecutive_days."""
+        from core.autonomous.cycle_alerts import CycleAlert
+        with patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_alerts."
+            "compute_per_store_alerts",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_alert_history."
+            "consecutive_days_per_kind",
+            return_value={"stale_cycle": 3},
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(alerts=True, json=True),
+            )
+        data = json.loads(out)
+        assert "consecutive_days" in data
+        assert data["consecutive_days"][
+            "stale_cycle"
+        ] == 3
+
+    def test_alerts_text_shows_streak(self, cli):
+        from core.autonomous.cycle_alerts import CycleAlert
+        with patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[
+                CycleAlert(
+                    kind="low_advance_rate",
+                    detail="20%",
+                ),
+            ],
+        ), patch(
+            "core.autonomous.cycle_alerts."
+            "compute_per_store_alerts",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_alert_history."
+            "consecutive_days_per_kind",
+            return_value={"low_advance_rate": 3},
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(alerts=True),
+            )
+        assert "firing 3d streak" in out
+
+
+class TestClearAlerts:
+    """``--clear-alerts`` wipes the persistent log."""
+
+    def test_clear_invokes_history_clear(self, cli):
+        with patch(
+            "core.autonomous.cycle_alert_history.clear",
+        ) as mock_clear:
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(clear_alerts=True),
+            )
+        assert mock_clear.call_count == 1
+        assert "Cycle alert history cleared" in out
+
+    def test_clear_skips_cycle_run(self, cli):
+        sm = _fake_sm([{"store_id": "a"}])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ) as mock_sm, patch(
+            "core.autonomous.cycle_alert_history.clear",
+        ):
+            _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(clear_alerts=True),
+            )
+        mock_sm.assert_not_called()
+
+    def test_clear_json_envelope(self, cli):
+        with patch(
+            "core.autonomous.cycle_alert_history.clear",
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(clear_alerts=True, json=True),
+            )
+        data = json.loads(out)
+        assert data == {"status": "cleared"}
 
 
 class TestIntervalParser:
