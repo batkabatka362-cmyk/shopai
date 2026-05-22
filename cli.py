@@ -1241,9 +1241,9 @@ def build_parser() -> argparse.ArgumentParser:
         dest="include_launch_readiness",
         help=(
             "Include per-store launch-readiness audit "
-            "(completion_pct + next_action). Adds ~9 GraphQL "
-            "calls per store -- opt-in so the default "
-            "cron-able morning scan stays cheap."
+            "(completion_pct + next_action). Adds ~10 "
+            "GraphQL calls per store -- opt-in so the "
+            "default cron-able morning scan stays cheap."
         ),
     )
     daily_p.add_argument(
