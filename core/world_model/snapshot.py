@@ -1021,6 +1021,39 @@ class WorldModel:
                     "raised: %s", exc,
                 )
 
+        # Cross-store transfers received by this store in
+        # the last 7 days. Surfaces "store_a learned from
+        # peers" at the per-store snapshot. Always included
+        # (empty when nothing happened).
+        out["recent_transfers"] = []
+        if store_id is not None:
+            try:
+                from core.autonomous import (
+                    transfer_history as _th,
+                )
+                txs = _th.recent_history(
+                    since_seconds=86400 * 7,
+                    target_store_id=store_id,
+                )
+                out["recent_transfers"] = [
+                    {
+                        "source_store_id": (
+                            t.source_store_id
+                        ),
+                        "engine": t.engine,
+                        "action_type": t.action_type,
+                        "capability": t.capability,
+                        "recorded_at": t.recorded_at,
+                        "action_id": t.action_id,
+                    }
+                    for t in txs[:5]
+                ]
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "world_model recent_transfers "
+                    "raised: %s", exc,
+                )
+
         # Per-store cycle alerts -- the substrate's signal
         # that THIS store is consistently refused/errored.
         # When store_id is None (fleet snapshot), surface

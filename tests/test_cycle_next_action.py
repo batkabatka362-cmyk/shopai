@@ -303,6 +303,48 @@ class TestRule7MeasureOutcomes:
         assert "--auto-correlate" in rec.cmd
 
 
+class TestRule7bTransfer:
+    """Transfer candidates surfaced -- specific
+    recommendations."""
+
+    def test_candidates_without_apply_suggests_review(self):
+        s = _summary(
+            advance={
+                "stores_processed": 1,
+                "executed_ok": 0,
+                "refused_reliability": 0,
+                "errored": 0,
+            },
+            transfer={
+                "checked": True,
+                "total_candidates": 3,
+                "total_applied": 0,
+            },
+        )
+        rec = cna.recommend(s)
+        assert rec.priority == "review_transfers"
+        assert "3 cross-store candidate(s)" in rec.detail
+
+    def test_applied_transfers_suggests_approvals(self):
+        s = _summary(
+            advance={
+                "stores_processed": 1,
+                "executed_ok": 0,
+                "refused_reliability": 0,
+                "errored": 0,
+            },
+            transfer={
+                "checked": True,
+                "total_candidates": 2,
+                "total_applied": 2,
+            },
+        )
+        rec = cna.recommend(s)
+        assert rec.priority == "approve_transfers"
+        assert "2 cross-store suggestion(s)" in rec.detail
+        assert "approvals show" in rec.cmd
+
+
 class TestRule8AllClear:
 
     def test_quiet_summary_returns_all_clear(self):

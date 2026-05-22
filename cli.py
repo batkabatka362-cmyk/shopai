@@ -1070,6 +1070,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     autonomous_p.add_argument(
+        "--skip-transfer", action="store_true",
+        dest="skip_transfer",
+        help=(
+            "Skip the transfer phase (cross-store auto-"
+            "transfer of winning capabilities to idle "
+            "stores). Transfer only ENQUEUES when "
+            "SHOPAI_AUTO_TRANSFER=1; otherwise it's a "
+            "preview-only no-op."
+        ),
+    )
+    autonomous_p.add_argument(
         "--history", action="store_true",
         help=(
             "Read-only: render the cycle history (recent "
@@ -4926,6 +4937,19 @@ capability_overrides import load_overrides
                 "status: threshold info raised: %s", exc,
             )
             cycle_threshold = None
+        # Cross-store transfer activity (24h rollup) --
+        # cron operator wants to see "the cycle proposed N
+        # transfers since yesterday".
+        try:
+            from core.autonomous import (
+                transfer_history as _th,
+            )
+            tr_stats = _th.transfer_stats(
+                since_seconds=86400,
+            )
+            transfers_24h = tr_stats.get("total", 0)
+        except Exception:
+            transfers_24h = 0
         envelope["cycle"] = {
             "checked": True,
             "runs_24h": stats["total_runs"],
@@ -4934,6 +4958,7 @@ capability_overrides import load_overrides
             "alert_count": len(alerts_list),
             "alert_kinds": [a.kind for a in alerts_list],
             "threshold": cycle_threshold,
+            "transfers_24h": transfers_24h,
         }
     except Exception as exc:  # noqa: BLE001
         logger.debug("status: cycle raised: %s", exc)
@@ -5070,9 +5095,14 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
                 f"  threshold {thr['effective']:.2f}"
                 f"{tag}{relax}"
             )
+        tx_str = ""
+        if cyc.get("transfers_24h", 0) > 0:
+            tx_str = (
+                f"  {cyc['transfers_24h']} transfer(s)"
+            )
         print(
             f"  Cycle:     {cyc['runs_24h']} run(s)/24h  "
-            f"last: {last}{alerts_str}{thr_str}"
+            f"last: {last}{alerts_str}{thr_str}{tx_str}"
         )
     else:
         print(
@@ -5810,6 +5840,34 @@ def _cmd_daily_brief(args) -> None:
             exc,
         )
 
+    # ── Auto-transfer activity (window) -- cycle-driven
+    # cross-store transfers that enqueued. Renders when at
+    # least one transfer fired.
+    cycle_transfer_activity: dict[str, Any] = {
+        "checked": False,
+        "total": 0,
+        "by_target": {},
+        "by_source": {},
+        "by_engine": {},
+        "last_transfer_at": None,
+    }
+    try:
+        from core.autonomous import (
+            transfer_history as _th,
+        )
+        stats_tr = _th.transfer_stats(
+            since_seconds=window_hours * 3600,
+        )
+        cycle_transfer_activity = {
+            "checked": True,
+            **stats_tr,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief transfer_activity raised: %s",
+            exc,
+        )
+
     # ── Auto-relax activity (window) -- threshold
     # adjustments the bridge made. Surfaces alongside
     # bridge_activity so the cycle's "what did automation
@@ -5928,6 +5986,7 @@ def _cmd_daily_brief(args) -> None:
             "revenue_impact": revenue_impact_summary,
             "bridge_activity": bridge_activity,
             "auto_relax_activity": auto_relax_activity,
+            "cycle_transfer_activity": cycle_transfer_activity,
             "cycle_activity": cycle_activity,
             "totals": totals,
             "alerts": alerts,
@@ -6218,6 +6277,36 @@ def _cmd_daily_brief(args) -> None:
                 f"  Thrashing ({thrash_count}): {names} "
                 "-- needs operator intervention"
             )
+        print()
+
+    # Cycle-transfer activity -- cross-store transfers
+    # enqueued by the cycle. Silent on quiet weeks.
+    if cycle_transfer_activity.get("checked") and (
+        cycle_transfer_activity["total"] > 0
+    ):
+        n = cycle_transfer_activity["total"]
+        targets = cycle_transfer_activity["by_target"]
+        sources = cycle_transfer_activity["by_source"]
+        print(
+            f"Cross-store transfers (last "
+            f"{window_hours}h): {n} enqueued"
+        )
+        if sources:
+            top_src = sorted(
+                sources.items(), key=lambda kv: -kv[1],
+            )[:3]
+            names = ", ".join(
+                f"{sid}({n})" for sid, n in top_src
+            )
+            print(f"  Top source(s): {names}")
+        if targets:
+            top_tgt = sorted(
+                targets.items(), key=lambda kv: -kv[1],
+            )[:3]
+            names = ", ".join(
+                f"{sid}({n})" for sid, n in top_tgt
+            )
+            print(f"  Top target(s): {names}")
         print()
 
     # Auto-relax / auto-restore bridge activity. Renders
@@ -13211,6 +13300,9 @@ def _cmd_autonomous_cycle(args) -> None:
     skip_defend = bool(
         getattr(args, "skip_defend", False),
     )
+    skip_transfer = bool(
+        getattr(args, "skip_transfer", False),
+    )
 
     # --show-thresholds is a read-only inspector.
     if bool(getattr(args, "show_thresholds", False)):
@@ -13556,6 +13648,7 @@ def _cmd_autonomous_cycle(args) -> None:
     summary: dict[str, Any] = {
         "executed": yes,
         "advance": None,
+        "transfer": None,
         "defend": None,
         "correlate": None,
     }
@@ -13668,6 +13761,84 @@ def _cmd_autonomous_cycle(args) -> None:
                 "errored": errored,
                 "per_store": per_store,
             }
+
+    # ── Transfer phase ─────────────────────────────────
+    # For each store that had no advance plan (no audit
+    # gaps OR refused), look for transferable winning
+    # actions from peer stores. Enqueues -- never directly
+    # writes Shopify. Env-gated; preview-only by default.
+    if not skip_transfer:
+        transfer_summary: dict[str, Any] = {
+            "checked": True,
+            "config": None,
+            "per_store": [],
+            "total_candidates": 0,
+            "total_applied": 0,
+        }
+        try:
+            from core.autonomous import (
+                cycle_transfer as _ct,
+            )
+            transfer_summary["config"] = (
+                _ct.config_summary()
+            )
+            # Build the list of stores to consider:
+            # whichever stores ADVANCE skipped (no_plan
+            # outcome or refused_reliability).
+            adv = summary.get("advance") or {}
+            per = adv.get("per_store") or []
+            idle_store_ids = [
+                row.get("store_id")
+                for row in per
+                if isinstance(row, dict)
+                and row.get("store_id")
+                and row.get("outcome") in (
+                    "no_plan", "refused_reliability",
+                )
+            ]
+            # Also need the full fleet list to pass as
+            # peers.
+            try:
+                sm = _get_store_manager()
+                fleet = sm.list_stores() or []
+                fleet_ids = [
+                    s.get("store_id")
+                    for s in fleet
+                    if s.get("store_id")
+                ]
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "autonomous-cycle: transfer fleet "
+                    "lookup raised: %s", exc,
+                )
+                fleet_ids = []
+
+            for sid in idle_store_ids:
+                store_result = _ct.maybe_apply_transfers(
+                    target_store_id=sid,
+                    fleet_store_ids=fleet_ids,
+                )
+                transfer_summary["per_store"].append(
+                    store_result,
+                )
+                transfer_summary["total_candidates"] += (
+                    store_result.get(
+                        "candidates_found", 0,
+                    )
+                )
+                transfer_summary["total_applied"] += (
+                    store_result.get("applied", 0)
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "autonomous-cycle: transfer phase "
+                "raised: %s", exc,
+            )
+            transfer_summary["error"] = (
+                f"raised: {exc}"
+            )
+            transfer_summary["checked"] = False
+        summary["transfer"] = transfer_summary
 
     # ── Defend phase ───────────────────────────────────
     # Bridges capability_degradations -> operator demote so
@@ -13906,6 +14077,28 @@ def _cmd_autonomous_cycle(args) -> None:
                 f"{adv['refused_reliability']} refused / "
                 f"{adv['errored']} errored "
                 f"({adv['stores_processed']} store(s))"
+            )
+    trf = summary.get("transfer")
+    if trf and trf.get("checked"):
+        gate = (
+            "ON" if trf.get("config", {}).get("enabled")
+            else "OFF"
+        )
+        per_store_count = len(
+            trf.get("per_store") or [],
+        )
+        if (
+            trf.get("total_candidates", 0) > 0
+            or trf.get("total_applied", 0) > 0
+            or per_store_count > 0
+        ):
+            print(
+                f"  Transfer:"
+                f" {trf.get('total_applied', 0)} applied /"
+                f" {trf.get('total_candidates', 0)} "
+                f"candidate(s) across "
+                f"{per_store_count} idle store(s)  "
+                f"(gate {gate})"
             )
     dfn = summary.get("defend")
     if dfn:

@@ -285,6 +285,43 @@ def recommend(summary: dict[str, Any]) -> NextAction:
             cmd="shopai plan --auto-correlate",
         )
 
+    # Rule 7b: transfer candidates exist but weren't
+    # applied -- env gate is OFF or operator-driven mode.
+    transfer = summary.get("transfer") or {}
+    if isinstance(transfer, dict):
+        tx_candidates = int(
+            transfer.get("total_candidates", 0) or 0,
+        )
+        tx_applied = int(
+            transfer.get("total_applied", 0) or 0,
+        )
+        if tx_candidates > 0 and tx_applied == 0:
+            # Candidates exist -- operator can either review
+            # them OR opt the bridge in.
+            return NextAction(
+                priority="review_transfers",
+                detail=(
+                    f"TRANSFER phase found "
+                    f"{tx_candidates} cross-store "
+                    "candidate(s) but didn't enqueue. "
+                    "Review them or set "
+                    "SHOPAI_AUTO_TRANSFER=1 to enqueue "
+                    "automatically."
+                ),
+                cmd="shopai transfer sources --to <store>",
+            )
+        if tx_applied > 0:
+            return NextAction(
+                priority="approve_transfers",
+                detail=(
+                    f"TRANSFER phase enqueued "
+                    f"{tx_applied} cross-store "
+                    "suggestion(s). Operator approval "
+                    "needed before they execute."
+                ),
+                cmd="shopai approvals show",
+            )
+
     # Rule 8: healthy + nothing to do
     return NextAction(
         priority="all_clear",

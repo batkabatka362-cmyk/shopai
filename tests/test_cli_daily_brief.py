@@ -1938,6 +1938,85 @@ class TestRevenueImpactSection:
         )
 
 
+class TestCycleTransferActivityInBrief:
+    """daily-brief surfaces cycle-driven cross-store
+    transfer activity."""
+
+    def test_no_activity_silent(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.transfer_history."
+            "transfer_stats",
+            return_value={
+                "total": 0,
+                "by_target": {},
+                "by_source": {},
+                "by_engine": {},
+                "last_transfer_at": None,
+            },
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Cross-store transfers" not in out
+
+    def test_activity_renders(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.transfer_history."
+            "transfer_stats",
+            return_value={
+                "total": 4,
+                "by_target": {
+                    "store_b": 2, "store_c": 2,
+                },
+                "by_source": {"store_a": 4},
+                "by_engine": {"loyalty": 4},
+                "last_transfer_at": time.time() - 100,
+            },
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Cross-store transfers" in out
+        assert "4 enqueued" in out
+        assert "store_a(4)" in out
+        assert "store_b(2)" in out
+
+    def test_envelope_has_section(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.transfer_history."
+            "transfer_stats",
+            return_value={
+                "total": 1,
+                "by_target": {"a": 1},
+                "by_source": {"b": 1},
+                "by_engine": {"loyalty": 1},
+                "last_transfer_at": 1700000000.0,
+            },
+        ):
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        data = json.loads(out)
+        assert "cycle_transfer_activity" in data
+        assert (
+            data["cycle_transfer_activity"]["total"] == 1
+        )
+
+
 class TestAutoRelaxActivityInBrief:
     """daily-brief surfaces auto-relax / restore activity
     from the persistent history."""
