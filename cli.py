@@ -8957,6 +8957,25 @@ def _cmd_world_model_show(args) -> None:
                         f"(-{drop_pp:.0f}pp){tag}"
                     )
 
+    # Launch-readiness section (opt-in; only renders when
+    # --launch-readiness was passed so default snapshots
+    # stay short).
+    launch_readiness = snap.get("launch_readiness") or {}
+    if launch_readiness.get("checked"):
+        print()
+        ready = launch_readiness.get("ready_to_launch")
+        pct = launch_readiness.get("completion_pct")
+        header = "READY" if ready else "NOT READY"
+        print(f"Launch readiness: {header} ({pct}%)")
+        next_action = launch_readiness.get("next_action")
+        if next_action and not ready:
+            print(f"  Next: {next_action}")
+        missing = launch_readiness.get(
+            "missing_summary", "",
+        )
+        if missing and not ready:
+            print(f"  Missing: {missing}")
+
 
 def _cmd_model_router(args) -> None:
     """Dispatcher for ``shopai model-router <verb>``."""
