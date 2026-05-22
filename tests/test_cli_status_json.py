@@ -308,6 +308,51 @@ class TestHealthSections:
         assert "override_set" in thr
         assert "auto_relax_enabled" in thr
 
+    def test_revenue_trend_in_health_envelope(self, cli):
+        sections = cli._build_health_sections()
+        # cycle section should carry revenue_trend_7d
+        assert "revenue_trend_7d" in sections["cycle"]
+
+    def test_revenue_trend_renders_in_text(self, cli):
+        with patch(
+            "core.autonomous.cycle_revenue_history."
+            "revenue_trend",
+            return_value={
+                "snapshots": 5,
+                "first_revenue": 1000.0,
+                "last_revenue": 1500.0,
+                "delta": 500.0,
+                "delta_pct": 50.0,
+                "first_at": 0,
+                "last_at": 0,
+            },
+        ):
+            out = _capture(cli._cmd_status, None)
+        assert "rev 7d: +$500" in out
+        assert "+50.0%" in out
+
+    def test_revenue_trend_silent_with_single_snapshot(
+        self, cli,
+    ):
+        """When there's only 1 snapshot the delta is
+        meaningless -- the line is suppressed."""
+        with patch(
+            "core.autonomous.cycle_revenue_history."
+            "revenue_trend",
+            return_value={
+                "snapshots": 1,
+                "first_revenue": 1000.0,
+                "last_revenue": 1000.0,
+                "delta": 0.0,
+                "delta_pct": 0.0,
+                "first_at": 0,
+                "last_at": 0,
+            },
+        ):
+            out = _capture(cli._cmd_status, None)
+        # No "rev 7d:" line
+        assert "rev 7d:" not in out
+
     def test_audit_data_returns_envelope(
         self, cli, tmp_path, monkeypatch,
     ):

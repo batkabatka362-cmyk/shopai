@@ -5148,6 +5148,17 @@ capability_overrides import load_overrides
             transfers_24h = tr_stats.get("total", 0)
         except Exception:
             transfers_24h = 0
+        # Fleet revenue trend over the last 7 days
+        # (the autonomous loop's ROI signal).
+        try:
+            from core.autonomous import (
+                cycle_revenue_history as _crh,
+            )
+            rev_trend = _crh.revenue_trend(
+                since_seconds=86400 * 7,
+            )
+        except Exception:
+            rev_trend = None
         envelope["cycle"] = {
             "checked": True,
             "runs_24h": stats["total_runs"],
@@ -5157,6 +5168,7 @@ capability_overrides import load_overrides
             "alert_kinds": [a.kind for a in alerts_list],
             "threshold": cycle_threshold,
             "transfers_24h": transfers_24h,
+            "revenue_trend_7d": rev_trend,
         }
     except Exception as exc:  # noqa: BLE001
         logger.debug("status: cycle raised: %s", exc)
@@ -5298,9 +5310,18 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
             tx_str = (
                 f"  {cyc['transfers_24h']} transfer(s)"
             )
+        rev_str = ""
+        rt = cyc.get("revenue_trend_7d") or {}
+        if rt and rt.get("snapshots", 0) >= 2:
+            sign = "+" if rt["delta"] >= 0 else ""
+            rev_str = (
+                f"  rev 7d: {sign}${rt['delta']:,.0f} "
+                f"({sign}{rt['delta_pct']:.1f}%)"
+            )
         print(
             f"  Cycle:     {cyc['runs_24h']} run(s)/24h  "
             f"last: {last}{alerts_str}{thr_str}{tx_str}"
+            f"{rev_str}"
         )
     else:
         print(
