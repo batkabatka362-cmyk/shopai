@@ -69,6 +69,7 @@ def _ns(**kw):
         yes=False,
         window_days=30,
         min_sample_size=2,
+        min_sample=2,
         top=20,
         reason="",
         drop=None,
@@ -78,6 +79,7 @@ def _ns(**kw):
         recovery=None,
         limit=50,
         thrashing=False,
+        min_cycles=2,
         json=False,
     )
     defaults.update(kw)
@@ -1419,6 +1421,102 @@ auto_demote_history import AutoDemoteEvent
             )
         assert code == 0
         assert "No capability" in out
+
+
+class TestWinners:
+    """``shopai capabilities winners`` -- top revenue
+    producers."""
+
+    def _rows(self):
+        return [
+            {
+                "capability": "big_winner",
+                "total_revenue_delta": 5000.0,
+                "avg_revenue_delta": 2500.0,
+                "sample_size": 2,
+                "positive_count": 2,
+                "negative_count": 0,
+            },
+            {
+                "capability": "small_winner",
+                "total_revenue_delta": 500.0,
+                "avg_revenue_delta": 250.0,
+                "sample_size": 2,
+                "positive_count": 2,
+                "negative_count": 0,
+            },
+            {
+                "capability": "loser",
+                "total_revenue_delta": -200.0,
+                "avg_revenue_delta": -100.0,
+                "sample_size": 2,
+                "positive_count": 0,
+                "negative_count": 2,
+            },
+        ]
+
+    def test_no_revenue_friendly(self, cli):
+        with patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=[],
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(capability_action="winners"),
+            )
+        assert code == 0
+        assert "No revenue-positive" in out
+
+    def test_winners_only_filtered(self, cli):
+        """Losers should NOT appear in winners list."""
+        with patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=self._rows(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(capability_action="winners"),
+            )
+        assert code == 0
+        assert "big_winner" in out
+        assert "small_winner" in out
+        assert "loser" not in out
+
+    def test_sorted_by_revenue_desc(self, cli):
+        with patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=self._rows(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(capability_action="winners"),
+            )
+        # big_winner ($5000) before small_winner ($500)
+        big_idx = out.find("big_winner")
+        small_idx = out.find("small_winner")
+        assert big_idx > 0
+        assert big_idx < small_idx
+
+    def test_json_envelope(self, cli):
+        with patch(
+            "core.capability_planner."
+            "capability_revenue_impact",
+            return_value=self._rows(),
+        ):
+            out, code = _capture(
+                cli._cmd_capabilities,
+                _ns(
+                    capability_action="winners",
+                    json=True,
+                ),
+            )
+        data = json.loads(out)
+        # Only positive entries
+        assert len(data["rows"]) == 2
+        assert data["rows"][0]["capability"] == "big_winner"
 
 
 class TestWatchlist:

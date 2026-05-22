@@ -664,6 +664,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view.",
     )
 
+    cap_winners_p = capabilities_sub.add_parser(
+        "winners",
+        help=(
+            "Top revenue-producing capabilities. The "
+            "dual of ``watchlist`` -- shows what's "
+            "working, sorted by positive revenue impact. "
+            "Useful for 'which caps should I promote / "
+            "replicate across the fleet?'."
+        ),
+    )
+    cap_winners_p.add_argument(
+        "--window-days", type=int, default=30,
+        dest="window_days",
+        help="Look-back window in days (default 30).",
+    )
+    cap_winners_p.add_argument(
+        "--top", type=int, default=10,
+        help="Max rows to return (default 10).",
+    )
+    cap_winners_p.add_argument(
+        "--min-sample", type=int, default=2,
+        dest="min_sample",
+        help=(
+            "Min sample size; single-event flukes "
+            "filtered out (default 2)."
+        ),
+    )
+    cap_winners_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view.",
+    )
+
     cap_watchlist_p = capabilities_sub.add_parser(
         "watchlist",
         help=(
@@ -17188,6 +17220,71 @@ capability_overrides import load_overrides
                 ).strftime("%Y-%m-%d %H:%M")
                 print(f"    {stamp}  {e['reason'][:70]}")
 
+        return
+
+    if action == "winners":
+        try:
+            from core.capability_planner import (
+                capability_revenue_impact,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"winners unavailable: {exc}")
+            return
+        window_days = max(
+            1, int(
+                getattr(args, "window_days", 30) or 30,
+            ),
+        )
+        top = max(1, int(getattr(args, "top", 10) or 10))
+        min_sample = max(
+            1, int(
+                getattr(args, "min_sample", 2) or 2,
+            ),
+        )
+        rows = capability_revenue_impact(
+            since_seconds=window_days * 86400,
+            min_sample_size=min_sample,
+            top_n=top * 3,
+        )
+        # Filter to positive-revenue only
+        winners = [
+            r for r in rows
+            if r["total_revenue_delta"] > 0
+        ][:top]
+        if as_json:
+            print(json.dumps({
+                "window_days": window_days,
+                "min_sample": min_sample,
+                "rows": winners,
+            }, indent=2, default=str))
+            return
+        if not winners:
+            print(
+                f"No revenue-positive capabilities in "
+                f"the last {window_days} day(s)."
+            )
+            return
+        print(
+            f"Top revenue winners (last "
+            f"{window_days} day(s), min sample "
+            f"{min_sample}):"
+        )
+        print()
+        for i, r in enumerate(winners, 1):
+            print(
+                f"  {i:>3}. +${r['total_revenue_delta']:,.2f}"
+                f"  avg +${r['avg_revenue_delta']:,.2f}  "
+                f"n={r['sample_size']}  "
+                f"({r['positive_count']}/"
+                f"{r['sample_size']} positive)  "
+                f"{r['capability']}"
+            )
+        print()
+        print(
+            "  Consider promoting these caps "
+            "(``shopai capabilities promote <name>``) "
+            "or transferring to peer stores."
+        )
         return
 
     if action == "watchlist":
