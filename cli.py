@@ -5248,6 +5248,42 @@ def _cmd_daily_brief(args) -> None:
             "daily-brief revenue_impact raised: %s", exc,
         )
 
+    # ── Autonomous-cycle activity (window) -- recent
+    #     ``shopai autonomous-cycle`` invocations from the
+    #     cycle_history audit log. Cron-friendly answer to
+    #     "is the cycle healthy + running?".
+    cycle_activity: dict[str, Any] = {
+        "checked": False,
+        "total_runs": 0,
+        "executed_runs": 0,
+        "dry_run_count": 0,
+        "last_run_at": None,
+        "stores_advanced_total": 0,
+        "demoted_total": 0,
+        "released_total": 0,
+    }
+    try:
+        from core.autonomous import cycle_history as _ch
+        stats = _ch.cycle_stats(
+            since_seconds=window_hours * 3600,
+        )
+        cycle_activity = {
+            "checked": True,
+            "total_runs": stats["total_runs"],
+            "executed_runs": stats["executed_runs"],
+            "dry_run_count": stats["dry_run_count"],
+            "last_run_at": stats["last_run_at"],
+            "stores_advanced_total": stats[
+                "stores_advanced_total"
+            ],
+            "demoted_total": stats["demoted_total"],
+            "released_total": stats["released_total"],
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief cycle_activity raised: %s", exc,
+        )
+
     # ── Bridge activity (last window) -- recent demote +
     #     release events from auto_demote_history. Lets
     #     operators see "the bridge did X things since
@@ -5387,6 +5423,7 @@ def _cmd_daily_brief(args) -> None:
             "capability_overrides": overrides_summary,
             "revenue_impact": revenue_impact_summary,
             "bridge_activity": bridge_activity,
+            "cycle_activity": cycle_activity,
             "totals": totals,
             "alerts": alerts,
         }, indent=2, default=str))
@@ -5675,6 +5712,34 @@ def _cmd_daily_brief(args) -> None:
             print(
                 f"  Thrashing ({thrash_count}): {names} "
                 "-- needs operator intervention"
+            )
+        print()
+
+    # Autonomous-cycle activity -- recent ``shopai
+    # autonomous-cycle`` invocations. Renders when at least
+    # one cycle ran in the window. Silent when no cycle has
+    # fired (e.g., cron not yet wired).
+    if cycle_activity.get("checked") and (
+        cycle_activity["total_runs"] > 0
+    ):
+        runs = cycle_activity["total_runs"]
+        exec_runs = cycle_activity["executed_runs"]
+        dry = cycle_activity["dry_run_count"]
+        print(
+            f"Autonomous cycle (last {window_hours}h): "
+            f"{runs} run(s) ({exec_runs} executed, "
+            f"{dry} dry-run)"
+        )
+        last = cycle_activity.get("last_run_at")
+        if last:
+            age_hours = (
+                time.time() - float(last)
+            ) / 3600.0
+            print(
+                f"  Last run: {age_hours:.1f}h ago  "
+                f"adv={cycle_activity['stores_advanced_total']} "
+                f"def={cycle_activity['demoted_total']}d/"
+                f"{cycle_activity['released_total']}r"
             )
         print()
 

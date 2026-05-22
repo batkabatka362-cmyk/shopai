@@ -1926,6 +1926,106 @@ class TestRevenueImpactSection:
         )
 
 
+class TestCycleActivitySection:
+    """daily-brief surfaces autonomous-cycle activity from
+    the cycle_history audit log."""
+
+    def _stats(self, **kw):
+        defaults = dict(
+            total_runs=0,
+            executed_runs=0,
+            dry_run_count=0,
+            last_run_at=None,
+            stores_advanced_total=0,
+            stores_refused_total=0,
+            demoted_total=0,
+            released_total=0,
+            correlated_total=0,
+        )
+        defaults.update(kw)
+        return defaults
+
+    def test_no_runs_silent(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_history.cycle_stats",
+            return_value=self._stats(),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Autonomous cycle" not in out
+
+    def test_renders_when_runs_exist(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_history.cycle_stats",
+            return_value=self._stats(
+                total_runs=3,
+                executed_runs=2,
+                dry_run_count=1,
+                last_run_at=time.time() - 3600,
+                stores_advanced_total=5,
+                demoted_total=1,
+                released_total=0,
+            ),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Autonomous cycle" in out
+        assert "3 run(s)" in out
+        assert "2 executed" in out
+        assert "1 dry-run" in out
+        assert "Last run:" in out
+        assert "adv=5" in out
+        assert "def=1d/0r" in out
+
+    def test_envelope_carries_section(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_history.cycle_stats",
+            return_value=self._stats(total_runs=5),
+        ):
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        data = json.loads(out)
+        assert "cycle_activity" in data
+        assert data["cycle_activity"]["checked"] is True
+        assert data["cycle_activity"]["total_runs"] == 5
+
+    def test_stats_failure_silent(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_history.cycle_stats",
+            side_effect=RuntimeError("disk"),
+        ):
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        data = json.loads(out)
+        assert (
+            data["cycle_activity"]["checked"] is False
+        )
+
+
 class TestBridgeActivitySection:
     """daily-brief surfaces recent auto_demote bridge events
     (demote / release / thrashing) so operators see the
