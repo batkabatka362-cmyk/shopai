@@ -112,10 +112,10 @@ def register_all() -> None:
         name="audit_store",
         kind=CapabilityKind.AUDIT,
         description=(
-            "Read-only launch-readiness audit. Runs 9 cheap "
-            "checks against the store and reports per-check "
-            "pass/fail + fix_hint + a smart next_action "
-            "recommendation."
+            "Read-only launch-readiness audit. Runs 10 cheap "
+            "checks against the store (incl. shop_identity) "
+            "and reports per-check pass/fail + fix_hint + a "
+            "smart next_action recommendation."
         ),
         when_to_use=(
             "Use to verify 'is this store launchable / "
