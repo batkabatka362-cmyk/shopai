@@ -5044,6 +5044,53 @@ def _cmd_daily_brief(args) -> None:
             exc,
         )
 
+    # ── Capability overrides (operator demote / promote
+    #     declarations, including bridge-driven auto-
+    #     demotes). Always rendered when any entry exists;
+    #     the AGI's operator-trail surface. ───────────────
+    overrides_summary: dict[str, Any] = {
+        "total": 0,
+        "promoted": [],
+        "demoted": [],
+        "auto_demoted": [],
+    }
+    try:
+        from core.capability_planner import (
+            capability_overrides as _cap_overrides,
+        )
+        loaded = _cap_overrides.load_overrides()
+        promoted_rows: list[dict[str, Any]] = []
+        demoted_rows: list[dict[str, Any]] = []
+        auto_rows: list[dict[str, Any]] = []
+        for entry in loaded.entries:
+            row = {
+                "name": entry.name,
+                "reason": entry.reason or "",
+                "recorded_at": entry.recorded_at,
+            }
+            if entry.kind == "promote":
+                promoted_rows.append(row)
+            else:
+                demoted_rows.append(row)
+                # Bridge-driven demotes carry the auto_demote
+                # prefix; separating them lets daily-brief
+                # show "the bridge has been doing things".
+                if entry.reason.startswith(
+                    "auto_demote_degraded",
+                ):
+                    auto_rows.append(row)
+        overrides_summary = {
+            "total": len(loaded.entries),
+            "promoted": promoted_rows,
+            "demoted": demoted_rows,
+            "auto_demoted": auto_rows,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief overrides section raised: %s",
+            exc,
+        )
+
     # ── Totals ─────────────────────────────────────────────
     totals = {
         "stores": len(store_rows),
@@ -5081,6 +5128,7 @@ def _cmd_daily_brief(args) -> None:
             "fleet_health": fleet_health,
             "launch_readiness": launch_readiness,
             "plan_history": plan_history_summary,
+            "capability_overrides": overrides_summary,
             "totals": totals,
             "alerts": alerts,
         }, indent=2, default=str))
@@ -5306,6 +5354,52 @@ def _cmd_daily_brief(args) -> None:
                 print(
                     f"    ... +{len(degrades) - 5} more"
                 )
+        print()
+
+    # Capability overrides -- operator demote/promote
+    # declarations (including bridge-driven auto-demotes).
+    # Rendered when any override exists.
+    if overrides_summary["total"] > 0:
+        n_total = overrides_summary["total"]
+        n_promote = len(overrides_summary["promoted"])
+        n_demote = len(overrides_summary["demoted"])
+        n_auto = len(overrides_summary["auto_demoted"])
+        print(
+            f"Capability overrides ({n_total}): "
+            f"{n_promote} promote, {n_demote} demote "
+            f"({n_auto} auto)"
+        )
+        for r in overrides_summary["promoted"][:3]:
+            reason = (
+                f"  -- {r['reason']}" if r['reason'] else ""
+            )
+            print(f"  [PROMOTE] {r['name']}{reason}")
+        if len(overrides_summary["promoted"]) > 3:
+            print(
+                f"  ... +"
+                f"{len(overrides_summary['promoted']) - 3} "
+                f"more promote(s)"
+            )
+        for r in overrides_summary["demoted"][:3]:
+            tag = (
+                "[DEMOTE/AUTO]"
+                if r['reason'].startswith(
+                    "auto_demote_degraded"
+                )
+                else "[DEMOTE]"
+            )
+            # Truncate long reasons in the text view
+            reason_short = (
+                f"  -- {r['reason'][:60]}"
+                if r['reason'] else ""
+            )
+            print(f"  {tag} {r['name']}{reason_short}")
+        if len(overrides_summary["demoted"]) > 3:
+            print(
+                f"  ... +"
+                f"{len(overrides_summary['demoted']) - 3} "
+                f"more demote(s)"
+            )
         print()
 
     # Alerts

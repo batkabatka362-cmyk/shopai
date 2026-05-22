@@ -1733,3 +1733,202 @@ class TestPlanHistorySection:
                 "success_rate"
             ] == 1.0
         )
+
+
+class TestCapabilityOverridesSection:
+    """daily-brief surfaces active operator + bridge-driven
+    capability overrides so the AGI's trail is visible."""
+
+    def _fake_overrides(
+        self, *, promoted=None, demoted=None,
+    ):
+        from core.capability_planner.\
+capability_overrides import (
+            CapabilityOverride, CapabilityOverrides,
+        )
+        entries = []
+        for r in (promoted or []):
+            entries.append(CapabilityOverride(
+                name=r["name"],
+                kind="promote",
+                reason=r.get("reason", ""),
+                recorded_at=r.get("recorded_at", 0),
+            ))
+        for r in (demoted or []):
+            entries.append(CapabilityOverride(
+                name=r["name"],
+                kind="demote",
+                reason=r.get("reason", ""),
+                recorded_at=r.get("recorded_at", 0),
+            ))
+        return CapabilityOverrides(entries=entries)
+
+    def test_empty_overrides_no_section_text(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            return_value=self._fake_overrides(),
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Capability overrides" not in out
+
+    def test_empty_overrides_envelope_shape(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            return_value=self._fake_overrides(),
+        ):
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        data = json.loads(out)
+        assert "capability_overrides" in data
+        assert data["capability_overrides"]["total"] == 0
+        assert (
+            data["capability_overrides"]["promoted"] == []
+        )
+        assert (
+            data["capability_overrides"]["demoted"] == []
+        )
+        assert (
+            data["capability_overrides"]["auto_demoted"]
+            == []
+        )
+
+    def test_overrides_render_in_text(self, cli):
+        sm = _fake_sm([])
+        overrides = self._fake_overrides(
+            promoted=[
+                {"name": "winner", "reason": "beauty"},
+            ],
+            demoted=[
+                {
+                    "name": "broken",
+                    "reason": "known broken",
+                },
+            ],
+        )
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            return_value=overrides,
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Capability overrides (2)" in out
+        assert "1 promote, 1 demote (0 auto)" in out
+        assert "[PROMOTE] winner" in out
+        assert "[DEMOTE] broken" in out
+        assert "[DEMOTE/AUTO]" not in out
+        assert "beauty" in out
+        assert "known broken" in out
+
+    def test_auto_demoted_distinguished(self, cli):
+        sm = _fake_sm([])
+        overrides = self._fake_overrides(
+            demoted=[
+                {
+                    "name": "regressed_cap",
+                    "reason": (
+                        "auto_demote_degraded: drop=0.7 "
+                        "recent=0.2/5 baseline=0.9/20"
+                    ),
+                },
+                {
+                    "name": "manual_broken",
+                    "reason": "needs patch",
+                },
+            ],
+        )
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            return_value=overrides,
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        assert "Capability overrides (2)" in out
+        assert "0 promote, 2 demote (1 auto)" in out
+        assert "[DEMOTE/AUTO] regressed_cap" in out
+        assert "[DEMOTE] manual_broken" in out
+
+    def test_overrides_truncation(self, cli):
+        """When >3 promotes / >3 demotes exist, only first
+        3 of each render with a '... +N more' marker."""
+        sm = _fake_sm([])
+        overrides = self._fake_overrides(
+            promoted=[
+                {"name": f"prom_{i}", "reason": ""}
+                for i in range(5)
+            ],
+            demoted=[
+                {"name": f"dem_{i}", "reason": ""}
+                for i in range(4)
+            ],
+        )
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            return_value=overrides,
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        # 5 promotes -> first 3 + "+2 more"
+        assert "prom_0" in out
+        assert "prom_1" in out
+        assert "prom_2" in out
+        assert "prom_3" not in out
+        assert "+2 more promote(s)" in out
+        # 4 demotes -> first 3 + "+1 more"
+        assert "dem_0" in out
+        assert "dem_2" in out
+        assert "dem_3" not in out
+        assert "+1 more demote(s)" in out
+
+    def test_load_failure_section_silent(self, cli):
+        """Override-loader raises -> daily-brief stays
+        functional with empty section."""
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner."
+            "capability_overrides.load_overrides",
+            side_effect=RuntimeError("disk error"),
+        ):
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        data = json.loads(out)
+        # Loader raised -> section stays at default zero
+        assert data["capability_overrides"]["total"] == 0
+        assert (
+            data["capability_overrides"]["demoted"] == []
+        )
