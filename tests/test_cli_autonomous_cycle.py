@@ -65,6 +65,9 @@ def _ns(**kw):
         history_window_days=7,
         history_limit=10,
         alerts=False,
+        emit_cron=False,
+        cron_format="crontab",
+        cron_interval="30m",
         json=False,
     )
     defaults.update(kw)
@@ -800,3 +803,93 @@ class TestCycleAlertsFlag:
         assert "alerts" in data
         assert len(data["alerts"]) == 1
         assert data["alerts"][0]["kind"] == "stale_cycle"
+
+
+class TestIntervalParser:
+    """``_interval_to_cron`` -- parser for the
+    --cron-interval CLI argument."""
+
+    def test_minutes_form(self, cli):
+        assert cli._interval_to_cron("30m") == "*/30 * * * *"
+        assert cli._interval_to_cron("5m") == "*/5 * * * *"
+        assert cli._interval_to_cron("1m") == "*/1 * * * *"
+
+    def test_hours_form(self, cli):
+        assert cli._interval_to_cron("1h") == "0 */1 * * *"
+        assert cli._interval_to_cron("6h") == "0 */6 * * *"
+        assert cli._interval_to_cron("12h") == "0 */12 * * *"
+
+    def test_invalid_returns_none(self, cli):
+        assert cli._interval_to_cron("") is None
+        assert cli._interval_to_cron("abc") is None
+        assert cli._interval_to_cron("0m") is None
+        assert cli._interval_to_cron("60m") is None
+        assert cli._interval_to_cron("0h") is None
+        assert cli._interval_to_cron("24h") is None
+        assert cli._interval_to_cron("30") is None
+
+
+class TestEmitCron:
+    """``shopai autonomous-cycle --emit-cron`` outputs
+    operator-installable config."""
+
+    def test_crontab_default_30m(self, cli):
+        out, code = _capture(
+            cli._cmd_autonomous_cycle,
+            _ns(emit_cron=True),
+        )
+        assert code == 0
+        # Comment header present
+        assert "ShopAI autonomous-cycle cron block" in out
+        # Default 30m schedule
+        assert "*/30 * * * *" in out
+        # Includes daily-brief + status cron lines
+        assert "daily-brief" in out
+        assert "0 8 * * *" in out
+        assert "shopai status" in out
+
+    def test_crontab_custom_interval(self, cli):
+        out, code = _capture(
+            cli._cmd_autonomous_cycle,
+            _ns(emit_cron=True, cron_interval="6h"),
+        )
+        assert code == 0
+        assert "0 */6 * * *" in out
+
+    def test_systemd_format(self, cli):
+        out, code = _capture(
+            cli._cmd_autonomous_cycle,
+            _ns(
+                emit_cron=True,
+                cron_format="systemd",
+                cron_interval="1h",
+            ),
+        )
+        assert code == 0
+        # Both unit blocks present
+        assert "shopai-cycle.service" in out
+        assert "shopai-cycle.timer" in out
+        # Interval forwarded to OnUnitActiveSec
+        assert "OnUnitActiveSec=1h" in out
+        assert "WantedBy=timers.target" in out
+
+    def test_invalid_interval_exits_1(self, cli):
+        out, code = _capture(
+            cli._cmd_autonomous_cycle,
+            _ns(emit_cron=True, cron_interval="abc"),
+        )
+        assert code == 1
+        assert "Invalid --cron-interval" in out
+
+    def test_emit_cron_skips_cycle_run(self, cli):
+        """--emit-cron is read-only: store-manager should
+        not be consulted."""
+        sm = _fake_sm([{"store_id": "a"}])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ) as mock_sm:
+            _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(emit_cron=True),
+            )
+        mock_sm.assert_not_called()

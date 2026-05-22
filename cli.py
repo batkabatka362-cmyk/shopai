@@ -1087,6 +1087,34 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     autonomous_p.add_argument(
+        "--emit-cron", action="store_true",
+        dest="emit_cron",
+        help=(
+            "Emit a ready-to-install crontab block for the "
+            "autonomous-cycle + companion morning brief. "
+            "Operator pipes to ``crontab -`` or saves to "
+            "/etc/cron.d/shopai. Does NOT run a cycle."
+        ),
+    )
+    autonomous_p.add_argument(
+        "--cron-format", default="crontab",
+        choices=("crontab", "systemd"),
+        dest="cron_format",
+        help=(
+            "Output format for --emit-cron. Default: "
+            "crontab (plain cron syntax). 'systemd' emits "
+            "a .timer + .service pair."
+        ),
+    )
+    autonomous_p.add_argument(
+        "--cron-interval", default="30m",
+        dest="cron_interval",
+        help=(
+            "Cycle interval for --emit-cron. Accepts "
+            "5m / 30m / 1h / 6h forms. Default: 30m."
+        ),
+    )
+    autonomous_p.add_argument(
         "--history-window-days", type=int, default=7,
         dest="history_window_days",
         help=(
@@ -12914,6 +12942,90 @@ def _cmd_plan(args) -> None:
             print(f"  - {n}")
 
 
+def _interval_to_cron(interval: str) -> str | None:
+    """Parse a human interval like ``30m`` / ``1h`` /
+    ``6h`` into a crontab field expression.
+
+    Returns the crontab spec (e.g. ``*/30 * * * *`` for 30m,
+    ``0 */6 * * *`` for 6h) or None on parse failure.
+    """
+    s = interval.strip().lower()
+    if not s:
+        return None
+    try:
+        if s.endswith("m"):
+            n = int(s[:-1])
+            if n < 1 or n > 59:
+                return None
+            return f"*/{n} * * * *"
+        if s.endswith("h"):
+            n = int(s[:-1])
+            if n < 1 or n > 23:
+                return None
+            return f"0 */{n} * * *"
+    except (ValueError, TypeError):
+        return None
+    return None
+
+
+def _emit_crontab(cron_expr: str) -> str:
+    """Build a complete crontab block: cycle on the
+    requested interval + daily-brief once a day + a
+    weekly health check."""
+    return (
+        "# ShopAI autonomous-cycle cron block. Install via\n"
+        "# `crontab -e` or drop into `/etc/cron.d/shopai`.\n"
+        "# Adjust PATH + working directory as needed.\n"
+        f"{cron_expr}  cd /path/to/shopai && "
+        "shopai autonomous-cycle --yes --json "
+        ">> /var/log/shopai/cycle.log 2>&1\n"
+        "0 8 * * *  cd /path/to/shopai && "
+        "shopai daily-brief "
+        ">> /var/log/shopai/brief.log 2>&1\n"
+        "0 12 * * 0  cd /path/to/shopai && "
+        "shopai status "
+        ">> /var/log/shopai/status.log 2>&1\n"
+    )
+
+
+def _emit_systemd_units(interval: str) -> str:
+    """Build matching .service + .timer unit blocks.
+    Returns a single string with both blocks separated by a
+    --- delimiter so the operator can split them out."""
+    return (
+        "# shopai-cycle.service\n"
+        "# Save to /etc/systemd/system/shopai-cycle.service\n"
+        "[Unit]\n"
+        "Description=ShopAI autonomous cycle\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "WorkingDirectory=/path/to/shopai\n"
+        "ExecStart=/usr/local/bin/shopai "
+        "autonomous-cycle --yes --json\n"
+        "User=shopai\n"
+        "\n"
+        "# ---\n"
+        "# shopai-cycle.timer\n"
+        "# Save to /etc/systemd/system/shopai-cycle.timer\n"
+        "[Unit]\n"
+        "Description=Trigger ShopAI autonomous cycle "
+        f"every {interval}\n"
+        "\n"
+        "[Timer]\n"
+        f"OnUnitActiveSec={interval}\n"
+        "OnBootSec=2min\n"
+        "Persistent=true\n"
+        "Unit=shopai-cycle.service\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
+        "\n"
+        "# Enable with:\n"
+        "#   systemctl enable --now shopai-cycle.timer\n"
+    )
+
+
 def _cmd_autonomous_cycle(args) -> None:
     """Bundled autonomous loop. Runs three phases in
     sequence:
@@ -13021,6 +13133,31 @@ def _cmd_autonomous_cycle(args) -> None:
                     f"  [{psa.kind}]  "
                     f"{psa.store_id}: {psa.detail}"
                 )
+        return
+
+    # --emit-cron emits a ready-to-install cron config and
+    # returns. Doesn't run a cycle.
+    if bool(getattr(args, "emit_cron", False)):
+        fmt = str(
+            getattr(args, "cron_format", "crontab")
+            or "crontab",
+        )
+        interval = str(
+            getattr(args, "cron_interval", "30m")
+            or "30m",
+        )
+        cron_expr = _interval_to_cron(interval)
+        if cron_expr is None:
+            print(
+                f"Invalid --cron-interval '{interval}'. "
+                "Use forms like 5m / 30m / 1h / 6h."
+            )
+            sys.exit(1)
+            return
+        if fmt == "systemd":
+            print(_emit_systemd_units(interval))
+        else:
+            print(_emit_crontab(cron_expr))
         return
 
     # --history is a read-only shortcut: print cycle log
