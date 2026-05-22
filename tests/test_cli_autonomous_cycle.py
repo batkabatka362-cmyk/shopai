@@ -64,6 +64,7 @@ def _ns(**kw):
         history=False,
         history_window_days=7,
         history_limit=10,
+        alerts=False,
         json=False,
     )
     defaults.update(kw)
@@ -696,3 +697,70 @@ class TestCycleHistory:
         assert data["stats"]["total_runs"] == 1
         assert len(data["events"]) == 1
         assert data["events"][0]["executed"] is True
+
+
+class TestCycleAlertsFlag:
+    """``shopai autonomous-cycle --alerts`` -- read-only
+    cycle-health inspector."""
+
+    def _alert(self, kind="stale_cycle", detail="d", **kw):
+        from core.autonomous.cycle_alerts import CycleAlert
+        return CycleAlert(kind=kind, detail=detail, metrics=kw)
+
+    def test_alerts_flag_skips_cycle_run(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ) as mock_sm, patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[],
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(alerts=True),
+            )
+        mock_sm.assert_not_called()
+        assert "No alerts" in out
+
+    def test_alerts_render_when_present(self, cli):
+        alerts = [
+            self._alert(
+                kind="stale_cycle",
+                detail="Last cycle ran 48.0h ago",
+            ),
+            self._alert(
+                kind="low_advance_rate",
+                detail="ADVANCE phase succeeded on 20%",
+            ),
+        ]
+        with patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=alerts,
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(alerts=True),
+            )
+        assert "[stale_cycle]" in out
+        assert "Last cycle ran" in out
+        assert "[low_advance_rate]" in out
+        assert "20%" in out
+
+    def test_alerts_json_envelope(self, cli):
+        alerts = [self._alert()]
+        with patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=alerts,
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(alerts=True, json=True),
+            )
+        data = json.loads(out)
+        assert "config" in data
+        assert "alerts" in data
+        assert len(data["alerts"]) == 1
+        assert data["alerts"][0]["kind"] == "stale_cycle"

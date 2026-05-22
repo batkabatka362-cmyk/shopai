@@ -1079,6 +1079,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     autonomous_p.add_argument(
+        "--alerts", action="store_true",
+        help=(
+            "Read-only: surface cycle-health alerts "
+            "(stale / silent / low-advance-rate / "
+            "substrate-shrinking). Does NOT run a cycle."
+        ),
+    )
+    autonomous_p.add_argument(
         "--history-window-days", type=int, default=7,
         dest="history_window_days",
         help=(
@@ -4705,6 +4713,301 @@ def _cmd_transfer_credit(args) -> None:
         )
 
 
+def _build_health_sections() -> dict[str, Any]:
+    """Helper used by ``_cmd_status`` to build the new
+    health sections (substrate / cycle / bridge). Each
+    subsection probes its source independently; any subsystem
+    failure marks its section as checked=False without
+    breaking the rest.
+
+    Returns a dict with shape:
+      {fleet, substrate, cycle, bridge, overall}
+    where ``overall`` is one of ``ok`` / ``warn`` / ``error``.
+    """
+    envelope: dict[str, Any] = {
+        "fleet": {"checked": False},
+        "substrate": {"checked": False},
+        "cycle": {"checked": False},
+        "bridge": {"checked": False},
+        "overall": "unknown",
+    }
+
+    # ── Fleet section ───────────────────────────────────────
+    try:
+        sm = _get_store_manager()
+        stores = sm.list_stores() or []
+        try:
+            from data_pipeline.store.sync_service import (
+                SyncService,
+            )
+            sync = SyncService().get_status() or {}
+            sync_stores = sync.get("stores") or []
+        except Exception:
+            sync_stores = []
+        last_sync_map = {
+            s.get("store_id"): s.get("last_sync")
+            for s in sync_stores
+        }
+        ages = []
+        for s in stores:
+            sid = s.get("store_id", "")
+            ls = last_sync_map.get(sid)
+            if ls is not None:
+                ages.append(time.time() - float(ls))
+        envelope["fleet"] = {
+            "checked": True,
+            "store_count": len(stores),
+            "max_sync_age_hours": (
+                round(max(ages) / 3600.0, 1)
+                if ages else None
+            ),
+            "stores_never_synced": sum(
+                1 for s in stores
+                if last_sync_map.get(s.get("store_id"))
+                is None
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("status: fleet raised: %s", exc)
+        envelope["fleet"] = {
+            "checked": False, "error": str(exc),
+        }
+
+    # ── Substrate section ──────────────────────────────────
+    try:
+        from core.capability_planner import (
+            auto_demote as _ad,
+            capability_degradations,
+        )
+        from core.capability_planner.\
+capability_overrides import load_overrides
+        overrides = load_overrides()
+        n_override = len(overrides.entries)
+        n_demoted = len(overrides.demoted_names())
+        n_promoted = len(overrides.promoted_names())
+        try:
+            degs = capability_degradations(
+                recent_window_seconds=86400 * 7,
+                baseline_window_seconds=86400 * 30,
+            )
+            n_degs = len(degs)
+        except Exception:
+            n_degs = 0
+        try:
+            n_dem_cand = sum(
+                1 for c in _ad.find_demote_candidates()
+                if c.get("blocked_by") is None
+            )
+        except Exception:
+            n_dem_cand = 0
+        try:
+            n_rel_cand = len(
+                _ad.find_release_candidates(),
+            )
+        except Exception:
+            n_rel_cand = 0
+        envelope["substrate"] = {
+            "checked": True,
+            "override_total": n_override,
+            "demoted": n_demoted,
+            "promoted": n_promoted,
+            "recent_degradations": n_degs,
+            "demote_candidates": n_dem_cand,
+            "release_candidates": n_rel_cand,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("status: substrate raised: %s", exc)
+        envelope["substrate"] = {
+            "checked": False, "error": str(exc),
+        }
+
+    # ── Cycle section ──────────────────────────────────────
+    try:
+        from core.autonomous import (
+            cycle_alerts as _ca,
+            cycle_history as _ch,
+        )
+        stats = _ch.cycle_stats(since_seconds=86400)
+        alerts_list = _ca.compute_cycle_alerts(
+            window_seconds=86400 * 7,
+        )
+        last_age_h = None
+        if stats.get("last_run_at"):
+            last_age_h = round(
+                (time.time() - float(stats["last_run_at"]))
+                / 3600.0, 1,
+            )
+        envelope["cycle"] = {
+            "checked": True,
+            "runs_24h": stats["total_runs"],
+            "executed_runs_24h": stats["executed_runs"],
+            "last_run_age_hours": last_age_h,
+            "alert_count": len(alerts_list),
+            "alert_kinds": [a.kind for a in alerts_list],
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("status: cycle raised: %s", exc)
+        envelope["cycle"] = {
+            "checked": False, "error": str(exc),
+        }
+
+    # ── Bridge section ─────────────────────────────────────
+    try:
+        from core.capability_planner import (
+            auto_demote as _ad,
+            auto_demote_history as _adh,
+        )
+        config = _ad.config_summary()
+        # Activity in the last 24h
+        events_24h = _adh.recent_history(
+            since_seconds=86400,
+        )
+        thrashing = _adh.find_thrashing(
+            window_seconds=86400 * 14,
+        )
+        envelope["bridge"] = {
+            "checked": True,
+            "gate_enabled": config["enabled"],
+            "drop_threshold": config["drop_threshold"],
+            "recovery_threshold": config[
+                "recovery_threshold"
+            ],
+            "demoted_24h": sum(
+                1 for e in events_24h
+                if e.kind == "demote"
+            ),
+            "released_24h": sum(
+                1 for e in events_24h
+                if e.kind == "release"
+            ),
+            "thrashing_count": len(thrashing),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("status: bridge raised: %s", exc)
+        envelope["bridge"] = {
+            "checked": False, "error": str(exc),
+        }
+
+    # ── Overall verdict ────────────────────────────────────
+    # OK if every section is checked and no cycle alerts +
+    # no thrashing. WARN if cycle alerts OR thrashing exists.
+    # ERROR if any section failed to load.
+    sections = [
+        envelope["fleet"],
+        envelope["substrate"],
+        envelope["cycle"],
+        envelope["bridge"],
+    ]
+    if any(not s.get("checked") for s in sections):
+        envelope["overall"] = "error"
+    elif (
+        envelope["cycle"].get("alert_count", 0) > 0
+        or envelope["bridge"].get("thrashing_count", 0) > 0
+    ):
+        envelope["overall"] = "warn"
+    else:
+        envelope["overall"] = "ok"
+    return envelope
+
+
+def _render_health_sections(envelope: dict[str, Any]) -> None:
+    """Text-mode renderer for the substrate/cycle/bridge
+    health sections produced by ``_build_health_sections``.
+    Designed to render BELOW the existing ``shopai status``
+    output -- adds a Health header + per-section lines."""
+    tag = {
+        "ok": "[OK]",
+        "warn": "[WARN]",
+        "error": "[ERR]",
+        "unknown": "[?]",
+    }.get(envelope["overall"], "[?]")
+    print(f"Health {tag}")
+
+    fleet = envelope["fleet"]
+    if fleet.get("checked"):
+        age_str = (
+            f"max sync age {fleet['max_sync_age_hours']}h"
+            if fleet.get("max_sync_age_hours") is not None
+            else "no sync data"
+        )
+        print(
+            f"  Fleet:     {fleet['store_count']} store(s)  "
+            f"{age_str}  "
+            f"{fleet['stores_never_synced']} never-synced"
+        )
+    else:
+        print(
+            f"  Fleet:     ERROR ({fleet.get('error')})"
+        )
+
+    sub = envelope["substrate"]
+    if sub.get("checked"):
+        print(
+            f"  Substrate: {sub['override_total']} override(s) "
+            f"({sub['demoted']}d/{sub['promoted']}p)  "
+            f"{sub['recent_degradations']} degradation(s)  "
+            f"{sub['demote_candidates']} dem-cand  "
+            f"{sub['release_candidates']} rel-cand"
+        )
+    else:
+        print(
+            f"  Substrate: ERROR ({sub.get('error')})"
+        )
+
+    cyc = envelope["cycle"]
+    if cyc.get("checked"):
+        last = (
+            f"{cyc['last_run_age_hours']}h ago"
+            if cyc.get("last_run_age_hours") is not None
+            else "never"
+        )
+        alerts_str = ""
+        if cyc["alert_count"] > 0:
+            alerts_str = (
+                f"  [{cyc['alert_count']} alert(s): "
+                f"{', '.join(cyc['alert_kinds'])}]"
+            )
+        print(
+            f"  Cycle:     {cyc['runs_24h']} run(s)/24h  "
+            f"last: {last}{alerts_str}"
+        )
+    else:
+        print(
+            f"  Cycle:     ERROR ({cyc.get('error')})"
+        )
+
+    br = envelope["bridge"]
+    if br.get("checked"):
+        gate = "ON" if br["gate_enabled"] else "OFF"
+        thrash = ""
+        if br["thrashing_count"] > 0:
+            thrash = (
+                f"  [{br['thrashing_count']} thrashing]"
+            )
+        print(
+            f"  Bridge:    gate {gate}  "
+            f"24h: {br['demoted_24h']}d/"
+            f"{br['released_24h']}r{thrash}"
+        )
+    else:
+        print(
+            f"  Bridge:    ERROR ({br.get('error')})"
+        )
+
+    if envelope["overall"] == "warn":
+        print()
+        print(
+            "  Next: investigate alerts above + run "
+            "``shopai daily-brief`` for activity detail."
+        )
+    elif envelope["overall"] == "error":
+        print()
+        print(
+            "  Next: subsystem failed to load -- check "
+            "logs / `data/` permissions."
+        )
+
+
 def _cmd_daily_brief(args) -> None:
     """Empire-scale operator summary: per-store + per-engine
     rollup over a recent window.
@@ -5247,6 +5550,36 @@ def _cmd_daily_brief(args) -> None:
         logger.debug(
             "daily-brief revenue_impact raised: %s", exc,
         )
+
+    # ── Cycle-health alerts -- ``stale_cycle`` /
+    #     ``cycle_silent`` / ``low_advance_rate`` /
+    #     ``substrate_shrinking``. Surfaces ALONGSIDE engine
+    #     alerts so operators see "the substrate is broken"
+    #     AND "the loop running on top of it is broken".
+    cycle_alerts_list: list[dict[str, Any]] = []
+    try:
+        from core.autonomous import cycle_alerts as _ca
+        for a in _ca.compute_cycle_alerts(
+            window_seconds=86400 * 7,
+        ):
+            cycle_alerts_list.append({
+                "kind": a.kind,
+                "detail": a.detail,
+                "metrics": a.metrics,
+            })
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief cycle_alerts raised: %s", exc,
+        )
+    # Merge cycle alerts into the main alerts list so they
+    # render in the same section. Cycle alerts have no
+    # store_id (fleet-wide signal).
+    for ca_row in cycle_alerts_list:
+        alerts.append({
+            "kind": ca_row["kind"],
+            "engine": "autonomous_cycle",
+            "detail": ca_row["detail"],
+        })
 
     # ── Autonomous-cycle activity (window) -- recent
     #     ``shopai autonomous-cycle`` invocations from the
@@ -12601,6 +12934,55 @@ def _cmd_autonomous_cycle(args) -> None:
         getattr(args, "skip_defend", False),
     )
 
+    # --alerts is a read-only shortcut: compute health
+    # alerts from cycle_history and return.
+    if bool(getattr(args, "alerts", False)):
+        try:
+            from core.autonomous import (
+                cycle_alerts as _ca,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"cycle alerts unavailable: {exc}"
+            )
+            return
+        window_days = max(
+            1, int(
+                getattr(
+                    args, "history_window_days", 7,
+                ) or 7,
+            ),
+        )
+        alerts_list = _ca.compute_cycle_alerts(
+            window_seconds=window_days * 86400,
+        )
+        config = _ca.config_summary()
+        if as_json:
+            print(json.dumps({
+                "window_days": window_days,
+                "config": config,
+                "alerts": [
+                    {
+                        "kind": a.kind,
+                        "detail": a.detail,
+                        "metrics": a.metrics,
+                    }
+                    for a in alerts_list
+                ],
+            }, indent=2, default=str))
+            return
+        print(
+            f"Autonomous cycle alerts "
+            f"(last {window_days} day(s)):"
+        )
+        if not alerts_list:
+            print()
+            print("  No alerts -- cycle looks healthy.")
+            return
+        for a in alerts_list:
+            print(f"  [{a.kind}]  {a.detail}")
+        return
+
     # --history is a read-only shortcut: print cycle log
     # and return. Doesn't run a cycle.
     if bool(getattr(args, "history", False)):
@@ -19104,6 +19486,15 @@ def _build_status_dict() -> dict:
 def _cmd_status(args=None) -> None:
     if args is not None and getattr(args, "json", False):
         payload = _build_status_dict()
+        # Augment JSON envelope with the new health sections
+        # (substrate / cycle / bridge). Operators using `--json`
+        # for automation get the consolidated health view.
+        try:
+            payload["health"] = _build_health_sections()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "status: health sections raised: %s", exc,
+            )
         print(json.dumps(payload, indent=2, default=str))
         return
 
@@ -19162,6 +19553,20 @@ def _cmd_status(args=None) -> None:
 
     _print_approval_status()
     _print_goal_status()
+
+    # Health sections (substrate / cycle / bridge) -- appended
+    # below the existing engine/store/sync status. Operators
+    # get the consolidated "is everything OK?" view in one
+    # command. Best-effort: any subsystem failure shows
+    # ERROR per section without breaking the rest.
+    try:
+        health = _build_health_sections()
+        print()
+        _render_health_sections(health)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "status: health render raised: %s", exc,
+        )
 
 
 def _build_loop_dict(top_n: int = 5) -> dict:

@@ -110,6 +110,10 @@ class TestEmptyFleet:
         ), patch(
             "core.approval.queue.get_approval_queue",
             return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[],
         ):
             out = _capture(cli._cmd_daily_brief, _ns())
         assert "0 store(s)" in out
@@ -122,6 +126,10 @@ class TestEmptyFleet:
         ), patch(
             "core.approval.queue.get_approval_queue",
             return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[],
         ):
             out = _capture(cli._cmd_daily_brief, _ns(json=True))
         data = json.loads(out)
@@ -322,6 +330,10 @@ class TestAlerts:
         ) as sync_cls, patch(
             "core.approval.queue.get_approval_queue",
             return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[],
         ):
             sync_cls.return_value.get_status.return_value = (
                 _fake_sync({"ok": 3600.0})  # 1h ago - fresh
@@ -1924,6 +1936,75 @@ class TestRevenueImpactSection:
         assert (
             data["revenue_impact"]["checked"] is False
         )
+
+
+class TestCycleAlertsInBrief:
+    """Cycle-health alerts surface alongside engine alerts
+    in daily-brief's alerts list."""
+
+    def _alert(self, kind="stale_cycle", detail="d"):
+        from core.autonomous.cycle_alerts import CycleAlert
+        return CycleAlert(kind=kind, detail=detail)
+
+    def test_cycle_alerts_merge_into_alerts_list(self, cli):
+        sm = _fake_sm([{"store_id": "a"}], stats_by_id={
+            "a": {"products": 10, "orders": 5,
+                  "customers": 0, "total_revenue": 100.0},
+        })
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "data_pipeline.store.sync_service.SyncService",
+        ) as sync_cls, patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[
+                self._alert(
+                    kind="stale_cycle",
+                    detail="48h ago",
+                ),
+            ],
+        ):
+            sync_cls.return_value.get_status.return_value = (
+                _fake_sync({"a": 100})
+            )
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        data = json.loads(out)
+        # cycle_alert appears in the main alerts list with
+        # engine=autonomous_cycle as the store_id stand-in
+        cycle_alerts = [
+            a for a in data["alerts"]
+            if a.get("engine") == "autonomous_cycle"
+        ]
+        assert len(cycle_alerts) == 1
+        assert cycle_alerts[0]["kind"] == "stale_cycle"
+
+    def test_no_cycle_alerts_no_clutter(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[],
+        ):
+            out = _capture(
+                cli._cmd_daily_brief, _ns(json=True),
+            )
+        data = json.loads(out)
+        cycle_alerts = [
+            a for a in data["alerts"]
+            if a.get("engine") == "autonomous_cycle"
+        ]
+        assert cycle_alerts == []
 
 
 class TestCycleActivitySection:

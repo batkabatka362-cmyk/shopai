@@ -220,3 +220,82 @@ class TestWiringSnapshot:
         assert "wired:" not in out.lower()
         # Dispatcher line still rendered (independent collector)
         assert "Dispatchers:" in out
+
+
+class TestHealthSections:
+    """``shopai status`` augments the original status output
+    with substrate/cycle/bridge health sections."""
+
+    def test_build_health_sections_shape(self, cli):
+        sections = cli._build_health_sections()
+        assert "fleet" in sections
+        assert "substrate" in sections
+        assert "cycle" in sections
+        assert "bridge" in sections
+        assert sections["overall"] in (
+            "ok", "warn", "error", "unknown",
+        )
+
+    def test_health_in_json_envelope(self, cli):
+        ns = argparse.Namespace(json=True)
+        out = _capture(cli._cmd_status, ns)
+        data = json.loads(out)
+        assert "health" in data
+        assert "fleet" in data["health"]
+        assert "substrate" in data["health"]
+        assert "cycle" in data["health"]
+        assert "bridge" in data["health"]
+        assert "overall" in data["health"]
+
+    def test_text_view_renders_health_block(self, cli):
+        out = _capture(cli._cmd_status, None)
+        # Health header + per-section labels
+        assert "Health" in out
+        assert "Fleet:" in out
+        assert "Substrate:" in out
+        assert "Cycle:" in out
+        assert "Bridge:" in out
+
+    def test_overall_warn_when_cycle_alerts_fire(self, cli):
+        from core.autonomous.cycle_alerts import CycleAlert
+        with patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[
+                CycleAlert(
+                    kind="stale_cycle",
+                    detail="48h ago",
+                ),
+            ],
+        ):
+            sections = cli._build_health_sections()
+        assert sections["overall"] == "warn"
+        assert sections["cycle"]["alert_count"] == 1
+
+    def test_overall_ok_when_quiet(self, cli):
+        # All subsystems checked, no alerts, no thrashing
+        with patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote_history."
+            "find_thrashing",
+            return_value=[],
+        ):
+            sections = cli._build_health_sections()
+        assert sections["overall"] == "ok"
+
+    def test_health_render_failure_doesnt_break_status(
+        self, cli,
+    ):
+        """If the health builder explodes, status still
+        prints (we don't want a new feature breaking the
+        main command)."""
+        with patch.object(
+            cli, "_build_health_sections",
+            side_effect=RuntimeError("simulated"),
+        ):
+            out = _capture(cli._cmd_status, None)
+        # Existing status output still rendered
+        assert "Engines:" in out
