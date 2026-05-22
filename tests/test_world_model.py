@@ -1624,6 +1624,55 @@ class TestSectionCycle:
         assert sec["engine_regressions"] == []
 
 
+class TestChronicWarningsInCycle:
+
+    def test_chronic_warnings_surfaced(self):
+        from core.approval.engine_health_history import (
+            ChronicWarning,
+        )
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_chronic_warnings",
+            return_value=[
+                ChronicWarning(
+                    engine="loyalty",
+                    latest_score=5,
+                    latest_verdict="warning",
+                    samples=4,
+                    avg_score=5.5,
+                ),
+            ],
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        chronics = sec["engine_chronic_warnings"]
+        assert len(chronics) == 1
+        assert chronics[0]["engine"] == "loyalty"
+        assert chronics[0]["avg_score"] == 5.5
+
+    def test_chronic_warnings_default_when_unavailable(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_chronic_warnings",
+            side_effect=RuntimeError("disk"),
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        assert sec["engine_chronic_warnings"] == []
+
+
 class TestLaunchReadinessSection:
     """``cycle.launch_readiness`` -- opt-in section that
     pipes the launch-audit result through world-model.show."""

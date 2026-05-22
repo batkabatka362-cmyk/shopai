@@ -941,6 +941,7 @@ class WorldModel:
             pause: dict,
             pause_frequency_7d: dict | None,
             engine_regressions: list,
+            engine_chronic_warnings: list,
           }
         Fleet scope (no store_id) returns an aggregate roll-
         up instead of per-store stats. ``pause`` /
@@ -1151,6 +1152,34 @@ class WorldModel:
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "world_model engine_regressions "
+                "raised: %s", exc,
+            )
+
+        # Chronic-warning engines (stuck-state signal,
+        # complement of regressions). Same fleet scope.
+        out["engine_chronic_warnings"] = []
+        try:
+            from core.approval.engine_health_history import (
+                find_chronic_warnings,
+            )
+            chronics = find_chronic_warnings(
+                sample_window_seconds=86400.0 * 7.0,
+                min_samples=3,
+                healthy_score_floor=7,
+            )
+            out["engine_chronic_warnings"] = [
+                {
+                    "engine": w.engine,
+                    "latest_score": w.latest_score,
+                    "latest_verdict": w.latest_verdict,
+                    "samples": w.samples,
+                    "avg_score": w.avg_score,
+                }
+                for w in chronics
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model engine_chronic_warnings "
                 "raised: %s", exc,
             )
 
