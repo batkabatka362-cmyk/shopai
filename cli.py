@@ -13303,6 +13303,21 @@ def _cmd_autonomous_cycle(args) -> None:
             exc,
         )
 
+    # Add next-action recommendation to JSON envelope.
+    try:
+        from core.autonomous import cycle_next_action as _na
+        rec = _na.recommend(summary)
+        summary["next_action"] = {
+            "priority": rec.priority,
+            "detail": rec.detail,
+            "cmd": rec.cmd,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "autonomous-cycle: next_action JSON raised: %s",
+            exc,
+        )
+
     if as_json:
         print(json.dumps(summary, indent=2, default=str))
         return
@@ -13387,6 +13402,22 @@ def _cmd_autonomous_cycle(args) -> None:
         print(
             "Dry-run only. Pass --yes to actually advance "
             "the fleet + persist correlation outcomes."
+        )
+
+    # Surface a next-action recommendation based on this
+    # cycle's outcomes + ambient state. Best-effort: any
+    # error skips the line.
+    try:
+        from core.autonomous import cycle_next_action as _na
+        rec = _na.recommend(summary)
+        print()
+        print(f"Next: [{rec.priority}] {rec.detail}")
+        if rec.cmd:
+            print(f"  $ {rec.cmd}")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "autonomous-cycle: next_action raised: %s",
+            exc,
         )
 
 

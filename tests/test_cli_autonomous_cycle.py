@@ -699,6 +699,42 @@ class TestCycleHistory:
         assert data["events"][0]["executed"] is True
 
 
+class TestNextActionInOutput:
+    """The cycle handler renders a next-action recommendation
+    after each run. JSON envelope carries the structured form."""
+
+    def test_next_action_appears_in_text(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(yes=False),
+            )
+        assert "Next:" in out
+
+    def test_next_action_in_json_envelope(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(yes=True, json=True),
+            )
+        data = json.loads(out)
+        assert "next_action" in data
+        assert "priority" in data["next_action"]
+        assert "detail" in data["next_action"]
+
+
 class TestCycleAlertsFlag:
     """``shopai autonomous-cycle --alerts`` -- read-only
     cycle-health inspector."""
