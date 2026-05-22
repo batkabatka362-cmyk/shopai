@@ -1629,6 +1629,61 @@ class TestPlanHistorySection:
         assert "Success rate: 100.0%" in out
         assert "launch store" in out
 
+    def test_degradations_section_renders(self, cli):
+        """When capability_degradations returns rows, the
+        daily-brief surfaces them as a 'flagged' section
+        under plan history."""
+        import time as _time
+        sm = _fake_sm([])
+        events = [{
+            "event_id": "x",
+            "timestamp": _time.time() - 100,
+            "goal": "g", "store_id": "s",
+            "executed": True, "outcome": "fail",
+            "notes": "",
+        }]
+        breakdown = {
+            "total": 1, "executed_total": 1,
+            "by_outcome": {"fail": 1},
+            "success_rate": 0.0,
+        }
+        degrades = [{
+            "capability": "shaky_cap",
+            "baseline_rate": 0.9,
+            "recent_rate": 0.4,
+            "drop": 0.5,
+            "recent_samples": 5,
+            "baseline_samples": 20,
+        }]
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=events,
+        ), patch(
+            "core.capability_planner.outcome_breakdown",
+            return_value=breakdown,
+        ), patch(
+            "core.capability_planner.goal_breakdown",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=degrades,
+        ):
+            out = _capture(cli._cmd_daily_brief, _ns())
+        # Degradation flag section in text view
+        assert "Capability degradations" in out
+        assert "shaky_cap" in out
+        # The baseline -> recent percentages render
+        assert "90% baseline" in out
+        assert "40% recent" in out
+        # The drop pp marker
+        assert "-50pp" in out
+
     def test_history_json_envelope_carries_summary(
         self, cli,
     ):

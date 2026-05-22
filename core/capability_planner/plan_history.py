@@ -421,6 +421,116 @@ def goal_breakdown(
     return rows[:max(1, int(top_n))]
 
 
+def capability_degradations(
+    *,
+    recent_window_seconds: int = 86400 * 7,
+    baseline_window_seconds: int = 86400 * 30,
+    min_recent_sample: int = 2,
+    min_baseline_sample: int = 5,
+    drop_threshold: float = 0.2,
+) -> list[dict[str, Any]]:
+    """Detect capabilities whose RECENT reliability dropped
+    versus the BASELINE window.
+
+    For each capability that appears in both windows with
+    enough samples:
+      - baseline_rate -- success rate over baseline_window
+      - recent_rate   -- success rate over recent_window
+      - drop          -- baseline_rate - recent_rate
+
+    Filters:
+      - ``min_recent_sample`` -- skip caps with fewer than N
+        recent executed plans (noise)
+      - ``min_baseline_sample`` -- skip caps without
+        established baseline
+      - ``drop_threshold`` -- only return caps where drop
+        exceeds this (default 0.2 = 20pp regression)
+
+    Returns a list of ``{capability, baseline_rate,
+    recent_rate, drop, recent_samples, baseline_samples}``
+    sorted by drop desc (worst regression first).
+
+    Operational signal: "this capability used to work; it
+    isn't working anymore. Investigate."
+
+    The recent window must be SHORTER than the baseline
+    (the recent ratio is computed within the baseline as
+    well, just over a tighter sub-window). Caller is
+    responsible for sane window selection.
+    """
+    # Aggregate per-capability counts for both windows
+    baseline_per_cap: dict[str, dict[str, int]] = (
+        _aggregate_per_capability(baseline_window_seconds)
+    )
+    recent_per_cap: dict[str, dict[str, int]] = (
+        _aggregate_per_capability(recent_window_seconds)
+    )
+
+    rows: list[dict[str, Any]] = []
+    for cap_name, base_stats in baseline_per_cap.items():
+        base_exec = base_stats["executed"]
+        if base_exec < max(1, int(min_baseline_sample)):
+            continue
+        recent_stats = recent_per_cap.get(cap_name, {})
+        recent_exec = recent_stats.get("executed", 0)
+        if recent_exec < max(1, int(min_recent_sample)):
+            continue
+        base_rate = (
+            base_stats["success"] / base_exec
+            if base_exec > 0 else 0.0
+        )
+        recent_rate = (
+            recent_stats.get("success", 0) / recent_exec
+            if recent_exec > 0 else 0.0
+        )
+        drop = base_rate - recent_rate
+        if drop < float(drop_threshold):
+            continue
+        rows.append({
+            "capability": cap_name,
+            "baseline_rate": round(base_rate, 3),
+            "recent_rate": round(recent_rate, 3),
+            "drop": round(drop, 3),
+            "recent_samples": recent_exec,
+            "baseline_samples": base_exec,
+        })
+    rows.sort(key=lambda r: -r["drop"])
+    return rows
+
+
+def _aggregate_per_capability(
+    since_seconds: int,
+) -> dict[str, dict[str, int]]:
+    """Helper for capability degradation + leaderboard.
+    Walks events in window, counts executed + success per
+    capability with within-event dedup so a plan that
+    mentions a cap twice still counts as 1 contribution.
+    """
+    events = recent_history(since_seconds=since_seconds)
+    per_cap: dict[str, dict[str, int]] = {}
+    for e in events:
+        if not e.get("executed"):
+            continue
+        plan = e.get("plan") or {}
+        steps = plan.get("steps") or []
+        success = e.get("outcome") == "success"
+        seen: set[str] = set()
+        for s in steps:
+            if not isinstance(s, dict):
+                continue
+            name = s.get("capability_name", "")
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            entry = per_cap.setdefault(name, {
+                "executed": 0, "success": 0,
+            })
+            entry["executed"] += 1
+            if success:
+                entry["success"] += 1
+    return per_cap
+
+
 def capability_leaderboard(
     *,
     since_seconds: int = 86400 * 30,
@@ -454,32 +564,7 @@ def capability_leaderboard(
     tied at the same chain position, prefer the
     higher-reliability one.
     """
-    events = recent_history(since_seconds=since_seconds)
-    # Aggregate per-capability counts
-    per_cap: dict[str, dict[str, int]] = {}
-    for e in events:
-        if not e.get("executed"):
-            continue
-        plan = e.get("plan") or {}
-        steps = plan.get("steps") or []
-        success = e.get("outcome") == "success"
-        # Use a set per event so a single plan that
-        # mentions a capability twice doesn't double-count
-        # its outcome contribution.
-        seen_this_event: set[str] = set()
-        for s in steps:
-            if not isinstance(s, dict):
-                continue
-            name = s.get("capability_name", "")
-            if not name or name in seen_this_event:
-                continue
-            seen_this_event.add(name)
-            entry = per_cap.setdefault(name, {
-                "executed": 0, "success": 0,
-            })
-            entry["executed"] += 1
-            if success:
-                entry["success"] += 1
+    per_cap = _aggregate_per_capability(since_seconds)
 
     rows: list[dict[str, Any]] = []
     for name, stats in per_cap.items():

@@ -4831,9 +4831,11 @@ def _cmd_daily_brief(args) -> None:
         "events_in_window": 0,
         "outcome_breakdown": None,
         "top_goals": [],
+        "degradations": [],
     }
     try:
         from core.capability_planner import (
+            capability_degradations,
             goal_breakdown,
             outcome_breakdown,
             recent_history,
@@ -4841,6 +4843,22 @@ def _cmd_daily_brief(args) -> None:
         ph_window = window_hours * 3600
         events = recent_history(since_seconds=ph_window)
         if events:
+            # Degradations: capabilities whose RECENT
+            # success rate dropped vs a wider baseline.
+            # Always compares recent window vs the last 30
+            # days regardless of --window-hours so the
+            # baseline stays stable.
+            try:
+                degrades = capability_degradations(
+                    recent_window_seconds=ph_window,
+                    baseline_window_seconds=86400 * 30,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "daily-brief capability_degradations "
+                    "raised: %s", exc,
+                )
+                degrades = []
             plan_history_summary = {
                 "events_in_window": len(events),
                 "outcome_breakdown": outcome_breakdown(
@@ -4849,6 +4867,7 @@ def _cmd_daily_brief(args) -> None:
                 "top_goals": goal_breakdown(
                     since_seconds=ph_window, top_n=3,
                 ),
+                "degradations": degrades,
             }
     except Exception as exc:  # noqa: BLE001
         logger.debug(
@@ -5092,6 +5111,31 @@ def _cmd_daily_brief(args) -> None:
                     f"    {r['count']:>2}x  "
                     f"({rate_pct:>5.1f}% success)  "
                     f"{r['goal']}"
+                )
+        # Degradation flags -- capabilities whose recent
+        # success rate dropped vs baseline. Shown only when
+        # at least one is detected (silent otherwise).
+        degrades = (
+            plan_history_summary.get("degradations") or []
+        )
+        if degrades:
+            print(
+                f"  Capability degradations "
+                f"({len(degrades)} flagged):"
+            )
+            for d in degrades[:5]:
+                base_pct = d["baseline_rate"] * 100
+                recent_pct = d["recent_rate"] * 100
+                drop_pp = d["drop"] * 100
+                print(
+                    f"    {d['capability']}: "
+                    f"{base_pct:.0f}% baseline -> "
+                    f"{recent_pct:.0f}% recent "
+                    f"(-{drop_pp:.0f}pp)"
+                )
+            if len(degrades) > 5:
+                print(
+                    f"    ... +{len(degrades) - 5} more"
                 )
         print()
 

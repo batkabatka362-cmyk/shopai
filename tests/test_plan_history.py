@@ -417,6 +417,131 @@ class TestCapabilityLeaderboard:
         assert cap_a["executed_count"] == 2
 
 
+class TestCapabilityDegradations:
+    """Detect capabilities whose recent success rate has
+    regressed vs the baseline window. Surface as daily-brief
+    'investigate these' flag."""
+
+    def _seed(self, cap, outcome, timestamp_offset_s=0):
+        """Helper: record an event for ``cap`` at a
+        specific point in time."""
+        eid = ph.record_plan_invocation(
+            goal="g",
+            plan={
+                "steps": [{"capability_name": cap}],
+            },
+            store_id="s",
+            executed=True,
+        )
+        ph.record_outcome(eid, outcome)
+        # Backdate the event so it falls in the desired
+        # window
+        if timestamp_offset_s > 0:
+            import json
+            history = ph._load_history()
+            for e in history:
+                if e["event_id"] == eid:
+                    e["timestamp"] = (
+                        time.time() - timestamp_offset_s
+                    )
+                    break
+            ph._atomic_write(history)
+
+    def test_detects_drop_above_threshold(
+        self, temp_history,
+    ):
+        # Baseline: 5 successes in the older window (15d
+        # ago). Recent: 3 failures in the last 24h.
+        for _ in range(5):
+            self._seed(
+                "cap_drop", "success",
+                timestamp_offset_s=86400 * 15,
+            )
+        for _ in range(3):
+            self._seed("cap_drop", "fail")
+        rows = ph.capability_degradations(
+            recent_window_seconds=86400 * 2,
+            baseline_window_seconds=86400 * 30,
+            drop_threshold=0.2,
+        )
+        assert any(
+            r["capability"] == "cap_drop" for r in rows
+        )
+
+    def test_skips_when_recent_sample_too_small(
+        self, temp_history,
+    ):
+        # Baseline: 10 successes; recent: 1 fail. Below
+        # min_recent_sample=2 -> not flagged.
+        for _ in range(10):
+            self._seed(
+                "cap_sparse", "success",
+                timestamp_offset_s=86400 * 10,
+            )
+        self._seed("cap_sparse", "fail")
+        rows = ph.capability_degradations(
+            recent_window_seconds=86400 * 2,
+            baseline_window_seconds=86400 * 30,
+            min_recent_sample=2,
+        )
+        names = {r["capability"] for r in rows}
+        assert "cap_sparse" not in names
+
+    def test_skips_when_drop_below_threshold(
+        self, temp_history,
+    ):
+        # Baseline: 80% success (8 of 10). Recent: 70%
+        # (7 of 10). Drop = 10pp, below default 20pp.
+        for _ in range(8):
+            self._seed(
+                "cap_minor", "success",
+                timestamp_offset_s=86400 * 15,
+            )
+        for _ in range(2):
+            self._seed(
+                "cap_minor", "fail",
+                timestamp_offset_s=86400 * 15,
+            )
+        for _ in range(7):
+            self._seed("cap_minor", "success")
+        for _ in range(3):
+            self._seed("cap_minor", "fail")
+        rows = ph.capability_degradations(
+            recent_window_seconds=86400 * 2,
+            baseline_window_seconds=86400 * 30,
+            drop_threshold=0.2,
+        )
+        names = {r["capability"] for r in rows}
+        assert "cap_minor" not in names
+
+    def test_returns_drop_metadata(self, temp_history):
+        # Baseline 100% success -> recent 0% fail
+        for _ in range(5):
+            self._seed(
+                "cap_total", "success",
+                timestamp_offset_s=86400 * 15,
+            )
+        for _ in range(3):
+            self._seed("cap_total", "fail")
+        rows = ph.capability_degradations(
+            recent_window_seconds=86400 * 2,
+            baseline_window_seconds=86400 * 30,
+        )
+        # Find the row + check metadata
+        row = next(
+            r for r in rows
+            if r["capability"] == "cap_total"
+        )
+        # Baseline aggregates across full window (includes
+        # both old + recent events), so baseline_rate is
+        # 5/8 = 0.625. Recent = 0/3 = 0.
+        # drop = 0.625
+        assert row["baseline_rate"] >= 0.6
+        assert row["recent_rate"] == 0.0
+        assert row["drop"] >= 0.6
+        assert row["recent_samples"] == 3
+
+
 class TestCorrelateOutcomeByStats:
     """Revenue-delta outcome correlation. Compares current
     store stats vs a plan event's pre_stats snapshot."""
