@@ -13874,6 +13874,34 @@ def _cmd_autonomous_cycle(args) -> None:
                 else:
                     demoted = []
                     released = []
+                # Auto-promote (symmetric to auto-demote)
+                # — when capability has high success rate
+                # + enough samples, auto-promote. Env-gated.
+                promoted: list[dict] = []
+                promote_config: dict = {"enabled": False}
+                try:
+                    from core.capability_planner import (
+                        auto_promote as _ap,
+                    )
+                    promote_config = _ap.config_summary()
+                    promote_candidates = (
+                        _ap.find_promote_candidates()
+                    )
+                    actionable_promotes = sum(
+                        1 for c in promote_candidates
+                        if c.get("blocked_by") is None
+                    )
+                    if yes:
+                        promoted = (
+                            _ap.maybe_auto_promote_reliable()
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "autonomous-cycle defend "
+                        "auto_promote raised: %s", exc,
+                    )
+                    promote_candidates = []
+                    actionable_promotes = 0
                 summary["defend"] = {
                     "gate_enabled": config["enabled"],
                     "candidates": len(candidates),
@@ -13891,6 +13919,21 @@ def _cmd_autonomous_cycle(args) -> None:
                     "released": len(released),
                     "released_capabilities": [
                         r["capability"] for r in released
+                    ],
+                    "promote_gate_enabled": (
+                        promote_config.get(
+                            "enabled", False,
+                        )
+                    ),
+                    "promote_candidates": len(
+                        promote_candidates,
+                    ),
+                    "promote_actionable": (
+                        actionable_promotes
+                    ),
+                    "promoted": len(promoted),
+                    "promoted_capabilities": [
+                        p["capability"] for p in promoted
                     ],
                 }
             except Exception as exc:  # noqa: BLE001
@@ -14140,6 +14183,38 @@ def _cmd_autonomous_cycle(args) -> None:
                         names += (
                             f", +"
                             f"{len(dfn['released_capabilities']) - 5} "
+                            f"more"
+                        )
+                    print(f"           -> {names}")
+            # Auto-promote: render when any candidate or
+            # actual promote exists. Mirrors demote/release
+            # rendering above.
+            n_prom = dfn.get("promoted", 0)
+            n_prom_cand = dfn.get("promote_candidates", 0)
+            if n_prom or n_prom_cand:
+                p_gate = (
+                    "ON" if dfn.get(
+                        "promote_gate_enabled", False,
+                    ) else "OFF"
+                )
+                print(
+                    f"  Promote: "
+                    f"{n_prom} promoted / "
+                    f"{dfn.get('promote_actionable', 0)} "
+                    f"actionable / "
+                    f"{n_prom_cand} candidates  "
+                    f"(gate {p_gate})"
+                )
+                if dfn.get("promoted_capabilities"):
+                    names = ", ".join(
+                        dfn["promoted_capabilities"][:5],
+                    )
+                    if len(
+                        dfn["promoted_capabilities"]
+                    ) > 5:
+                        names += (
+                            f", +"
+                            f"{len(dfn['promoted_capabilities']) - 5} "
                             f"more"
                         )
                     print(f"           -> {names}")

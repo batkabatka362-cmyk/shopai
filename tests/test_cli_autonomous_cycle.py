@@ -215,6 +215,11 @@ class TestDefendPhase:
             "recovered_candidates": 0,
             "released": 0,
             "released_capabilities": [],
+            "promote_gate_enabled": False,
+            "promote_candidates": 0,
+            "promote_actionable": 0,
+            "promoted": 0,
+            "promoted_capabilities": [],
         }
 
     def test_defend_yes_calls_apply(self, cli):
@@ -1149,6 +1154,72 @@ class TestAutoRelaxInCycle:
             )
         # Direction none doesn't render the auto-relax line
         assert "Auto-relax" not in out
+
+
+class TestAutoPromoteInDefendPhase:
+    """Auto-promote bridge fires in the DEFEND phase
+    alongside auto-demote. Surfaces in summary."""
+
+    def test_promote_block_in_summary(self, cli):
+        sm = _fake_sm([])
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(yes=True, json=True),
+            )
+        data = json.loads(out)
+        d = data["defend"]
+        assert "promote_gate_enabled" in d
+        assert "promote_candidates" in d
+        assert "promoted" in d
+        assert "promoted_capabilities" in d
+
+    def test_promoted_caps_render_in_text(self, cli):
+        sm = _fake_sm([])
+        from core.capability_planner.\
+capability_overrides import CapabilityOverrides
+        with patch.object(
+            cli, "_get_store_manager", return_value=sm,
+        ), patch(
+            "core.capability_planner.recent_history",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_promote."
+            "find_promote_candidates",
+            return_value=[
+                {
+                    "capability": "winner_a",
+                    "success_rate": 1.0,
+                    "executed_count": 10,
+                    "success_count": 10,
+                    "blocked_by": None,
+                },
+            ],
+        ), patch(
+            "core.capability_planner.auto_promote."
+            "maybe_auto_promote_reliable",
+            return_value=[
+                {
+                    "capability": "winner_a",
+                    "success_rate": 1.0,
+                    "executed_count": 10,
+                    "success_count": 10,
+                    "reason": "auto_promote_reliable: ...",
+                },
+            ],
+        ):
+            out, _ = _capture(
+                cli._cmd_autonomous_cycle,
+                _ns(yes=True),
+            )
+        assert "Promote:" in out
+        assert "winner_a" in out
+        assert "1 promoted" in out
 
 
 class TestTransferPhaseInCycle:

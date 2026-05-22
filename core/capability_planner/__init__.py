@@ -63,6 +63,7 @@ from .plan_history import (
     successful_plans,
 )
 from . import auto_demote
+from . import auto_promote
 
 __all__ = [
     "Plan",
@@ -85,4 +86,5 @@ __all__ = [
     "correlate_outcome_by_stats",
     "clear_plan_history",
     "auto_demote",
+    "auto_promote",
 ]
