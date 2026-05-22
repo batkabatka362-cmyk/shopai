@@ -409,6 +409,15 @@ def build_parser() -> argparse.ArgumentParser:
             "--launch-readiness)."
         ),
     )
+    world_fleet_p.add_argument(
+        "--not-ready-only", action="store_true",
+        help=(
+            "Filter to only stores whose launch_readiness "
+            "audit returned NOT READY. Requires "
+            "--launch-readiness. Useful for the empire-scale "
+            "'which stores still need work?' question."
+        ),
+    )
 
     # ── Capability registry commands ─────────────────────────
     capabilities_p = sub.add_parser(
@@ -8597,12 +8606,29 @@ def _cmd_world_model_fleet(args) -> None:
             }
         rows.append(snap)
 
+    # --not-ready-only filter: only applies when launch-
+    # readiness was opted in. Filter BEFORE rendering so
+    # both JSON + text views are consistent.
+    not_ready_only = bool(
+        getattr(args, "not_ready_only", False)
+        and include_launch_readiness,
+    )
+    if not_ready_only:
+        rows = [
+            r for r in rows
+            if "error" in r or not (
+                (r.get("launch_readiness") or {})
+                .get("ready_to_launch")
+            )
+        ]
+
     if as_json:
         print(json.dumps({
             "skip_live": skip_live,
             "include_launch_readiness": (
                 include_launch_readiness
             ),
+            "not_ready_only": not_ready_only,
             "stores": rows,
         }, indent=2, default=str))
         return
