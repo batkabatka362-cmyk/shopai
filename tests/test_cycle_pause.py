@@ -57,6 +57,46 @@ class TestPatternJ:
         assert tmp_pause.exists()
 
 
+class TestPauseSanityCeiling:
+
+    def test_far_future_pause_rejected(self, tmp_pause):
+        """Pauses >30d in the future are bugs -- refuse."""
+        with patch(
+            "core.autonomous.cycle_pause."
+            "_is_test_environment",
+            return_value=False,
+        ):
+            ok = cp.pause(
+                # 60 days out
+                until_at=time.time() + 86400 * 60,
+                reason="typo",
+            )
+        assert ok is False
+        assert not tmp_pause.exists()
+
+    def test_30d_boundary_accepted(self, tmp_pause):
+        with patch(
+            "core.autonomous.cycle_pause."
+            "_is_test_environment",
+            return_value=False,
+        ):
+            ok = cp.pause(
+                until_at=time.time() + 86400 * 29,
+            )
+        assert ok is True
+
+    def test_far_future_extend_rejected(self, tmp_pause):
+        with patch(
+            "core.autonomous.cycle_pause."
+            "_is_test_environment",
+            return_value=False,
+        ):
+            cp.pause(until_at=time.time() + 3600)
+            # Try to extend 60 days into the future
+            ok = cp.extend(additional_hours=24 * 60)
+        assert ok is False
+
+
 class TestPauseState:
 
     def test_not_paused_default(self, tmp_pause):

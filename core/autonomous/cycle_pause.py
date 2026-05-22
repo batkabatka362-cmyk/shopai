@@ -58,6 +58,14 @@ _PAUSE_HISTORY_PATH = Path(
 
 _MAX_HISTORY = 1000
 
+# Hard ceiling: refuse pauses more than 30 days in the
+# future. Programmatic callers + CLI both rely on this --
+# beyond a month is almost certainly a bug (typo in a
+# unix-timestamp computation, wrong unit, etc.) rather than
+# a legitimate operator intent. CLI also caps the friendly
+# --pause-hours flag at 720h (30d) for the same reason.
+_MAX_PAUSE_FUTURE_SECONDS = 86400 * 30
+
 
 def _is_test_environment() -> bool:
     return bool(os.environ.get("PYTEST_CURRENT_TEST"))
@@ -348,15 +356,30 @@ def pause(
     reason: str = "",
 ) -> bool:
     """Pause the cycle until ``until_at`` (unix timestamp).
-    Returns True on write, False on test-env / I/O error."""
+    Returns True on write, False on test-env / invalid
+    input / I/O error.
+
+    Refuses pauses more than 30 days in the future (almost
+    always a bug -- e.g., milliseconds-as-seconds typo).
+    The CLI's friendly --pause-hours flag already caps at
+    720h; this guard catches programmatic callers."""
     if _is_test_environment():
         return False
     if not until_at or until_at <= 0:
         return False
+    now = time.time()
+    if until_at - now > _MAX_PAUSE_FUTURE_SECONDS:
+        logger.debug(
+            "cycle_pause: rejecting pause until=%s "
+            "(>%dd in the future)",
+            until_at,
+            _MAX_PAUSE_FUTURE_SECONDS // 86400,
+        )
+        return False
     _atomic_write({
         "paused_until_at": float(until_at),
         "reason": reason or "",
-        "paused_at": time.time(),
+        "paused_at": now,
     })
     _append_history_event(
         kind="pause",
@@ -380,6 +403,14 @@ def extend(*, additional_hours: float) -> bool:
         float(state["paused_until_at"])
         + additional_hours * 3600.0
     )
+    now = time.time()
+    if new_until - now > _MAX_PAUSE_FUTURE_SECONDS:
+        logger.debug(
+            "cycle_pause: rejecting extend (>%dd "
+            "in the future)",
+            _MAX_PAUSE_FUTURE_SECONDS // 86400,
+        )
+        return False
     _atomic_write({
         "paused_until_at": new_until,
         "reason": state.get("reason", ""),
