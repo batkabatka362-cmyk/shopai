@@ -409,6 +409,110 @@ class TestHealthSections:
         assert ch["schema_ok"] is False
         assert "json_decode" in (ch.get("error") or "")
 
+    def test_line_format_ok(self, cli):
+        import argparse as _ap
+        with patch.object(
+            cli, "_build_health_sections",
+            return_value={
+                "overall": "ok",
+                "fleet": {
+                    "checked": True,
+                    "store_count": 3,
+                },
+                "substrate": {
+                    "checked": True,
+                    "demote_candidates": 0,
+                },
+                "cycle": {
+                    "checked": True,
+                    "runs_24h": 10,
+                    "alert_count": 0,
+                    "pause": {"active": False},
+                    "revenue_trend_7d": {
+                        "snapshots": 5,
+                        "delta_pct": 5.0,
+                    },
+                },
+                "bridge": {
+                    "checked": True,
+                    "thrashing_count": 0,
+                },
+            },
+        ):
+            buf = StringIO()
+            code = 0
+            try:
+                with patch("sys.stdout", buf):
+                    cli._cmd_status(_ap.Namespace(
+                        json=False,
+                        quiet=False,
+                        line=True,
+                        watch=False,
+                        interval=30,
+                        iterations=0,
+                        audit_data=False,
+                        cleanup_history=False,
+                        older_than_days=180,
+                        yes=False,
+                    ))
+            except SystemExit as e:
+                code = int(e.code) if e.code is not None else 0
+        line = buf.getvalue().strip()
+        assert line.startswith("[OK]")
+        assert "stores=3" in line
+        assert "cycle_runs_24h=10" in line
+        assert "paused=no" in line
+        assert "revenue_7d=+5.0%" in line
+        assert code == 0
+
+    def test_line_format_warn_exits_1(self, cli):
+        import argparse as _ap
+        with patch.object(
+            cli, "_build_health_sections",
+            return_value={
+                "overall": "warn",
+                "fleet": {"checked": True, "store_count": 1},
+                "substrate": {
+                    "checked": True,
+                    "demote_candidates": 0,
+                },
+                "cycle": {
+                    "checked": True,
+                    "runs_24h": 5,
+                    "alert_count": 2,
+                    "pause": {"active": True},
+                    "revenue_trend_7d": None,
+                },
+                "bridge": {
+                    "checked": True,
+                    "thrashing_count": 0,
+                },
+            },
+        ):
+            buf = StringIO()
+            code = 0
+            try:
+                with patch("sys.stdout", buf):
+                    cli._cmd_status(_ap.Namespace(
+                        json=False,
+                        quiet=False,
+                        line=True,
+                        watch=False,
+                        interval=30,
+                        iterations=0,
+                        audit_data=False,
+                        cleanup_history=False,
+                        older_than_days=180,
+                        yes=False,
+                    ))
+            except SystemExit as e:
+                code = int(e.code) if e.code is not None else 0
+        line = buf.getvalue().strip()
+        assert line.startswith("[WARN]")
+        assert "paused=yes" in line
+        assert "alerts=2" in line
+        assert code == 1
+
     def test_quiet_silent_when_ok(self, cli):
         """--quiet exits silently with code 0 when verdict
         is OK. Cron-friendly: no email noise on healthy

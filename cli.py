@@ -3929,6 +3929,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     status_p.add_argument(
+        "--line", action="store_true",
+        help=(
+            "Single-line summary suitable for log "
+            "streams or terse monitoring. Includes the "
+            "verdict + key metrics."
+        ),
+    )
+    status_p.add_argument(
         "--interval", type=int, default=30,
         help=(
             "Refresh interval in seconds for --watch "
@@ -22100,6 +22108,51 @@ def _audit_data_files() -> dict[str, Any]:
 
 
 def _cmd_status(args=None) -> None:
+    # --line: single-line summary suitable for cron logs
+    # or monitoring exporters.
+    if args is not None and getattr(args, "line", False):
+        try:
+            health = _build_health_sections()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ERR] status build failed: {exc}")
+            sys.exit(1)
+            return
+        verdict = health.get("overall", "unknown")
+        tag = {
+            "ok": "[OK]",
+            "warn": "[WARN]",
+            "error": "[ERR]",
+        }.get(verdict, "[?]")
+        fleet = health.get("fleet") or {}
+        sub = health.get("substrate") or {}
+        cyc = health.get("cycle") or {}
+        br = health.get("bridge") or {}
+        pause = (cyc.get("pause") or {})
+        paused = (
+            "yes" if pause.get("active") else "no"
+        )
+        rt = cyc.get("revenue_trend_7d") or {}
+        rev_pct = (
+            f"{rt.get('delta_pct', 0):+.1f}%"
+            if rt and rt.get("snapshots", 0) >= 2
+            else "n/a"
+        )
+        print(
+            f"{tag} stores={fleet.get('store_count', 0)} "
+            f"cycle_runs_24h="
+            f"{cyc.get('runs_24h', 0)} "
+            f"paused={paused} "
+            f"alerts={cyc.get('alert_count', 0)} "
+            f"demote_cand="
+            f"{sub.get('demote_candidates', 0)} "
+            f"thrashing="
+            f"{br.get('thrashing_count', 0)} "
+            f"revenue_7d={rev_pct}"
+        )
+        if verdict in ("warn", "error"):
+            sys.exit(1)
+        return
+
     # --quiet: exit silently when verdict is OK; otherwise
     # render full status + exit 1. Mailbox-friendly cron
     # mode -- operators only get noise when there's
