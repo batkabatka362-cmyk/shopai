@@ -1044,6 +1044,88 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view.",
     )
 
+    # ── Plan template command (named workflows) ─────────
+    pt_p = sub.add_parser(
+        "plan-template",
+        help=(
+            "Manage named plan templates. Operators save "
+            "frequently-used goals by name (e.g. "
+            "'daily-routine'), then ``shopai plan-template "
+            "run daily-routine`` invokes the saved goal."
+        ),
+    )
+    pt_sub = pt_p.add_subparsers(
+        dest="plan_template_action",
+    )
+    pt_save_p = pt_sub.add_parser(
+        "save",
+        help="Save a template by name.",
+    )
+    pt_save_p.add_argument(
+        "name", help="Template name.",
+    )
+    pt_save_p.add_argument(
+        "goal", help="Goal text to save.",
+    )
+    pt_save_p.add_argument(
+        "--description", default="",
+        help="Optional one-line description.",
+    )
+    pt_save_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON.",
+    )
+    pt_run_p = pt_sub.add_parser(
+        "run",
+        help="Run a saved template (equivalent to "
+        "``shopai plan <goal>``).",
+    )
+    pt_run_p.add_argument(
+        "name", help="Template name.",
+    )
+    pt_run_p.add_argument(
+        "--execute", action="store_true",
+        help="Pass through to the inner plan invocation.",
+    )
+    pt_run_p.add_argument(
+        "--yes", action="store_true",
+        help="Pass through to the inner plan invocation.",
+    )
+    pt_run_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON.",
+    )
+    pt_list_p = pt_sub.add_parser(
+        "list",
+        help="List all saved templates.",
+    )
+    pt_list_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON.",
+    )
+    pt_show_p = pt_sub.add_parser(
+        "show",
+        help="Show one template.",
+    )
+    pt_show_p.add_argument(
+        "name", help="Template name.",
+    )
+    pt_show_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON.",
+    )
+    pt_del_p = pt_sub.add_parser(
+        "delete",
+        help="Delete a template.",
+    )
+    pt_del_p.add_argument(
+        "name", help="Template name.",
+    )
+    pt_del_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON.",
+    )
+
     # ── Daily-brief command ──────────────────────────────────
     daily_p = sub.add_parser(
         "daily-brief",
@@ -13116,6 +13198,170 @@ def _cmd_plan_history(args) -> None:
             )
 
 
+def _cmd_plan_template(args) -> None:
+    """Manage named plan templates -- save/run/list/show/delete.
+
+    Plan templates are operator shortcuts for repeated
+    goal strings. Saved goals can be invoked by name
+    (``run <name>``); the inner action goes through the
+    same ``_cmd_plan`` path so all of the planner's
+    composition, history, and learning loop behavior
+    applies."""
+    action = getattr(args, "plan_template_action", "") or ""
+    as_json = bool(getattr(args, "json", False))
+
+    try:
+        from core.capability_planner import (
+            plan_templates as _pt,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"plan-template unavailable: {exc}")
+        return
+
+    if not action or action == "list":
+        rows = _pt.list_templates()
+        if as_json:
+            print(json.dumps([
+                {
+                    "name": t.name,
+                    "goal": t.goal,
+                    "description": t.description,
+                    "created_at": t.created_at,
+                }
+                for t in rows
+            ], indent=2, default=str))
+            return
+        if not rows:
+            print(
+                "No plan templates saved. Use "
+                "``shopai plan-template save <name> "
+                "\"<goal>\"`` to add one."
+            )
+            return
+        print(f"Plan templates ({len(rows)}):")
+        for t in rows:
+            print(f"  {t.name}")
+            print(f"    goal: {t.goal}")
+            if t.description:
+                print(
+                    f"    desc: {t.description}"
+                )
+        return
+
+    if action == "save":
+        name = getattr(args, "name", "") or ""
+        goal = getattr(args, "goal", "") or ""
+        desc = getattr(args, "description", "") or ""
+        if not name or not goal:
+            print("name and goal are required.")
+            sys.exit(1)
+            return
+        ok = _pt.save_template(
+            name, goal, description=desc,
+        )
+        if as_json:
+            print(json.dumps({
+                "ok": ok,
+                "name": name,
+                "goal": goal,
+            }, indent=2))
+            return
+        if ok:
+            print(f"Saved template '{name}'.")
+        else:
+            print(
+                f"Failed to save '{name}' "
+                "(test env, cap, or I/O)."
+            )
+        return
+
+    if action == "delete":
+        name = getattr(args, "name", "") or ""
+        if not name:
+            print("name is required.")
+            sys.exit(1)
+            return
+        ok = _pt.delete_template(name)
+        if as_json:
+            print(json.dumps({
+                "ok": ok, "name": name,
+            }, indent=2))
+            return
+        if ok:
+            print(f"Deleted template '{name}'.")
+        else:
+            print(
+                f"No template '{name}' to delete "
+                "(or test env)."
+            )
+        return
+
+    if action == "show":
+        name = getattr(args, "name", "") or ""
+        t = _pt.load_template(name)
+        if t is None:
+            if as_json:
+                print(json.dumps({
+                    "ok": False,
+                    "error": "not_found",
+                    "name": name,
+                }, indent=2))
+            else:
+                print(f"No template named '{name}'.")
+            sys.exit(1)
+            return
+        if as_json:
+            print(json.dumps({
+                "name": t.name,
+                "goal": t.goal,
+                "description": t.description,
+                "created_at": t.created_at,
+            }, indent=2, default=str))
+            return
+        print(f"Template: {t.name}")
+        print(f"  goal:        {t.goal}")
+        if t.description:
+            print(f"  description: {t.description}")
+        if t.created_at:
+            import datetime as _dt
+            stamp = _dt.datetime.fromtimestamp(
+                t.created_at,
+            ).strftime("%Y-%m-%d %H:%M")
+            print(f"  created:     {stamp}")
+        return
+
+    if action == "run":
+        name = getattr(args, "name", "") or ""
+        t = _pt.load_template(name)
+        if t is None:
+            print(f"No template named '{name}'.")
+            sys.exit(1)
+            return
+        # Inflate to a plan call by constructing the inner
+        # Namespace that ``_cmd_plan`` expects.
+        import argparse as _ap
+        inner = _ap.Namespace(
+            goal=t.goal,
+            execute=bool(getattr(args, "execute", False)),
+            yes=bool(getattr(args, "yes", False)),
+            json=as_json,
+            close_audit_gaps=False,
+            history=False,
+            history_window=86400 * 7,
+            correlate=None,
+            auto_correlate=False,
+            auto_correlate_min_age=86400,
+            require_reliable=False,
+            llm=False,
+        )
+        return _cmd_plan(inner)
+
+    print(
+        f"Unknown plan-template action: {action}. "
+        "Try save/run/list/show/delete."
+    )
+
+
 def _cmd_plan(args) -> None:
     """Build a capability plan for a goal phrase or for the
     audit's failing checks.
@@ -24983,6 +25229,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "plan":
         _cmd_plan(args)
+        return
+
+    if args.command == "plan-template":
+        _cmd_plan_template(args)
         return
 
     if args.command == "fleet-plan":
