@@ -6315,9 +6315,19 @@ def _cmd_daily_brief(args) -> None:
     pause_state_brief: dict[str, Any] = {
         "active": False, "reason": "", "paused_until_at": None,
     }
+    pause_frequency_brief: dict[str, Any] | None = None
     try:
         from core.autonomous import cycle_pause as _cp_br
         pause_state_brief = _cp_br.get_pause_state()
+        try:
+            pause_frequency_brief = _cp_br.pause_frequency(
+                since_seconds=86400 * 7,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "daily-brief pause_frequency raised: %s",
+                exc,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "daily-brief pause_state raised: %s", exc,
@@ -6588,6 +6598,7 @@ def _cmd_daily_brief(args) -> None:
             "cycle_activity": cycle_activity,
             "diary": diary_events,
             "pause_state": pause_state_brief,
+            "pause_frequency_7d": pause_frequency_brief,
             "fleet_revenue_trend": rev_trend_summary,
             "totals": totals,
             "alerts": alerts,
@@ -6620,6 +6631,20 @@ def _cmd_daily_brief(args) -> None:
                 f"      Reason: "
                 f"{pause_state_brief['reason']}"
             )
+    if (
+        pause_frequency_brief
+        and pause_frequency_brief.get("pause_count", 0) > 0
+        and not pause_state_brief.get("active")
+    ):
+        # Operator may have paused + resumed; still worth
+        # surfacing the activity in case it's frequent.
+        print(
+            f"  Pause activity (7d): "
+            f"{pause_frequency_brief['pause_count']} "
+            f"pause(s), "
+            f"{pause_frequency_brief.get('total_downtime_hours', 0):.1f}h "
+            f"downtime"
+        )
     print()
     print(
         f"  Totals: {totals['orders']} orders, "
