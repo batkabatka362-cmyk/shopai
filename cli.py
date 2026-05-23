@@ -27969,6 +27969,16 @@ def _cmd_approvals_revenue_by_engine(args) -> None:
             f"{r['positive_outcomes']:>4}  "
             f"{per_pos_display}"
         )
+    # Drill-down hint: top engine by chosen sort -> per-engine
+    # summary. Lets the operator immediately see WHAT actions
+    # drove the headline revenue number.
+    if rows:
+        top_engine = rows[0]["engine"]
+        print()
+        print(
+            f"  Drill down: `shopai engine summary "
+            f"{top_engine}`"
+        )
 
 
 def _cmd_approvals_history(args) -> None:
