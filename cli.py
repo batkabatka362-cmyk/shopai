@@ -27876,12 +27876,18 @@ def _cmd_approvals_rejection_rates(args) -> None:
 
     alerts = [r for r in rows if r["rejection_rate"] >= 0.5]
     if alerts:
+        # Pre-fill with the worst offender (rows is already
+        # sorted by rejection_rate desc, so alerts[0] is the
+        # highest-impact case).
+        top = alerts[0]["engine"]
         print()
         print(
             f"ALERT: {len(alerts)} engine(s) have majority-"
-            "rejected proposals. Inspect via "
-            "`shopai approvals recent rejected --engine <name>` "
-            "and consider disabling at the engine level."
+            "rejected proposals."
+        )
+        print(
+            f"  Next: `shopai approvals recent rejected "
+            f"--engine {top}`"
         )
 
 
