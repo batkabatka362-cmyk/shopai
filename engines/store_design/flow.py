@@ -197,6 +197,38 @@ class StoreDesignEngine:
                 "store_design: design_recorder raised: %s", exc,
             )
 
+        # ---- Stage 10: Optional design apply (Phase 6/7
+        #     opt-in). The launch_orchestrator + the
+        #     `shopai store design-apply` CLI call
+        #     design_applier.apply_design directly; this
+        #     opt-in lets autonomous callers (cycle, fleet-
+        #     plan) integrate the apply with the engine run.
+        #     Requires both data.get("apply_design") AND
+        #     data.get("theme_id") -- safety guard.
+        envelope["apply_result"] = None
+        if data.get("apply_design") and data.get("theme_id"):
+            try:
+                from engines.store_design.design_applier import (
+                    apply_design,
+                )
+                envelope["apply_result"] = apply_design(
+                    envelope,
+                    theme_id=str(data["theme_id"]),
+                    store_id=data.get("store_id"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "store_design: apply_design raised: %s",
+                    exc,
+                )
+                envelope["apply_result"] = {
+                    "applied": False,
+                    "theme_id": data.get("theme_id"),
+                    "files_written": [],
+                    "error": str(exc),
+                }
+
         return envelope
 
     # -------------------------------------------------------------------

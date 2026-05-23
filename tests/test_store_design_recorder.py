@@ -208,3 +208,117 @@ class TestEngineFlowWiring:
         # Engine still produced a healthy envelope
         assert result["status"] == "success"
         assert "layout_recommendations" in result["data"]
+
+
+class TestApplyDesignOptIn:
+    """Stage 10: when caller sets data.apply_design=True AND
+    data.theme_id, the engine's flow invokes apply_design and
+    surfaces the result. Without both flags, apply_result stays
+    None (the existing launch_orchestrator path is unchanged --
+    it calls apply_design directly, not through the engine)."""
+
+    def test_no_opt_in_no_apply(self):
+        """Default case: no apply_design flag = no apply call."""
+        from engines.store_design.flow import StoreDesignEngine
+
+        with patch(
+            "engines.store_design.design_applier.apply_design",
+        ) as apply_mock:
+            result = StoreDesignEngine().run({
+                "status": "success",
+                "data": {
+                    "brand": {"name": "Test"},
+                    "products": [],
+                    "analytics": {},
+                },
+                "meta": {},
+                "error": None,
+            })
+        apply_mock.assert_not_called()
+        assert result["apply_result"] is None
+
+    def test_opt_in_without_theme_id_skips_apply(self):
+        """Safety guard: apply_design=True alone is insufficient
+        -- theme_id is required."""
+        from engines.store_design.flow import StoreDesignEngine
+
+        with patch(
+            "engines.store_design.design_applier.apply_design",
+        ) as apply_mock:
+            result = StoreDesignEngine().run({
+                "status": "success",
+                "data": {
+                    "brand": {"name": "Test"},
+                    "products": [],
+                    "analytics": {},
+                    "apply_design": True,
+                    # No theme_id -- guard triggers
+                },
+                "meta": {},
+                "error": None,
+            })
+        apply_mock.assert_not_called()
+        assert result["apply_result"] is None
+
+    def test_opt_in_with_theme_id_invokes_applier(self):
+        """Full opt-in: both flags = apply runs + result is in
+        envelope."""
+        from engines.store_design.flow import StoreDesignEngine
+
+        with patch(
+            "engines.store_design.design_applier.apply_design",
+            return_value={
+                "applied": True,
+                "theme_id": "gid://shopify/OnlineStoreTheme/1",
+                "files_written": [
+                    "assets/shopai-design-tokens.json",
+                    "snippets/shopai-design-recommendations.liquid",
+                ],
+                "error": None,
+            },
+        ) as apply_mock:
+            result = StoreDesignEngine().run({
+                "status": "success",
+                "data": {
+                    "brand": {"name": "Test"},
+                    "products": [],
+                    "analytics": {},
+                    "apply_design": True,
+                    "theme_id": "gid://shopify/OnlineStoreTheme/1",
+                    "store_id": "store-a",
+                },
+                "meta": {},
+                "error": None,
+            })
+        apply_mock.assert_called_once()
+        kwargs = apply_mock.call_args.kwargs
+        assert kwargs["theme_id"] == "gid://shopify/OnlineStoreTheme/1"
+        assert kwargs["store_id"] == "store-a"
+        assert result["apply_result"]["applied"] is True
+
+    def test_applier_raise_recorded_as_failure(self):
+        """Raising applier produces an error envelope, not a
+        bubbled exception."""
+        from engines.store_design.flow import StoreDesignEngine
+
+        with patch(
+            "engines.store_design.design_applier.apply_design",
+            side_effect=RuntimeError("router unavailable"),
+        ):
+            result = StoreDesignEngine().run({
+                "status": "success",
+                "data": {
+                    "brand": {"name": "Test"},
+                    "products": [],
+                    "analytics": {},
+                    "apply_design": True,
+                    "theme_id": "gid://shopify/OnlineStoreTheme/1",
+                },
+                "meta": {},
+                "error": None,
+            })
+        assert result["status"] == "success"
+        assert result["apply_result"]["applied"] is False
+        assert "router unavailable" in (
+            result["apply_result"]["error"] or ""
+        )
