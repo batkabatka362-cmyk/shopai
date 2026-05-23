@@ -11931,11 +11931,13 @@ def _cmd_engine_summary(args) -> None:
             exc,
         )
 
-    # Health-state flags (regressing / chronic) -- matches
-    # the engine pulse JSON shape (e76ab5f2) so summary +
-    # pulse stay uniform for JSON consumers.
+    # Health-state flags (regressing / chronic / outcome
+    # alert) -- matches the engine pulse JSON shape
+    # (e76ab5f2 + 1670e1c2) so summary + pulse stay
+    # uniform for JSON consumers.
     regressing = False
     chronic = False
+    outcome_alert = False
     try:
         from core.approval.engine_health_history import (
             find_regressions, find_chronic_warnings,
@@ -11962,6 +11964,27 @@ def _cmd_engine_summary(args) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "engine summary health-state probe raised: %s",
+            exc,
+        )
+    try:
+        from core.approval.outcome_trends import (
+            compute_engine_alerts,
+        )
+        from core.approval.queue import get_approval_queue
+        if any(
+            a.engine == engine_name
+            for a in compute_engine_alerts(
+                get_approval_queue(),
+                recent_hours=24.0,
+                baseline_hours=168.0,
+                threshold=0.2,
+                min_recent=3,
+            )
+        ):
+            outcome_alert = True
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine summary outcome_alert probe raised: %s",
             exc,
         )
 
@@ -12056,6 +12079,7 @@ def _cmd_engine_summary(args) -> None:
             "writeback": writeback_info,
             "regressing": regressing,
             "chronic": chronic,
+            "outcome_alert": outcome_alert,
             "recent": recent,
         }, indent=2, default=str))
         return
