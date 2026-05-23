@@ -8974,9 +8974,30 @@ def _cmd_world_model_fleet(args) -> None:
         r.get("approvals", {}).get("pending_total", 0)
         for r in rows if "error" not in r
     )
+    # Aggregate configurator drift (planned_writes) across
+    # the fleet -- only meaningful when live probes ran.
+    if not skip_live:
+        total_drift = sum(
+            (
+                r.get("config") or {}
+            ).get("planned_writes", 0)
+            for r in rows
+            if (
+                "error" not in r
+                and (r.get("config") or {}).get("checked")
+            )
+        )
+    else:
+        total_drift = None
+    drift_part = (
+        f", {total_drift} planned write(s) (drift)"
+        if total_drift is not None and total_drift > 0
+        else ""
+    )
     print(
         f"  Total: ${total_revenue:,.2f} revenue, "
-        f"{total_pending} pending approval(s) across fleet"
+        f"{total_pending} pending approval(s)"
+        f"{drift_part} across fleet"
     )
     # Launch-readiness rollup -- only when --launch-readiness
     # was opted in (otherwise per-row launch_readiness is
