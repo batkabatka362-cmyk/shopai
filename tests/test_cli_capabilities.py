@@ -582,6 +582,13 @@ class TestShow:
         assert "when to use" in out
         # Audit checks listed
         assert "legal_policies" in out
+        # Drill-down hint: invocation form rendered after the
+        # capability detail so operator's next move is one
+        # paste away.
+        assert (
+            "Next: `shopai capabilities run launch_store`"
+            in out
+        )
 
     def test_show_unknown_exits_1(self, cli):
         out, code = _capture(

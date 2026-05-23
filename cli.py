@@ -18831,6 +18831,14 @@ capability_overrides import load_overrides
                     f"vs baseline {bs['baseline_rate']*100:.0f}% "
                     f"(-{drop_pp:.0f}pp)"
                 )
+        # Drill-down hint: operator just inspected the
+        # registration -- natural next move is `capabilities
+        # run <name>` to actually invoke it (default dry-run).
+        print()
+        print(
+            f"  Next: `shopai capabilities run {cap.name}` "
+            "(dry-run; add --yes to invoke)."
+        )
         return
 
     if action in ("promote", "demote"):
