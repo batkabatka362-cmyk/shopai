@@ -2391,6 +2391,49 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the alerts as JSON.",
     )
 
+    engine_try_wireup_p = engine_sub.add_parser(
+        "try-wireup",
+        help=(
+            "Smoke-test a wired engine's Phase 7 writeback by "
+            "invoking it with its apply_* opt-in flag set. "
+            "Default DRY-RUN preview shows what WOULD fire "
+            "without making writes. Pass --yes to actually "
+            "invoke."
+        ),
+    )
+    engine_try_wireup_p.add_argument(
+        "engine_name",
+        help="Engine to test (must be in the 'wired' set)",
+    )
+    engine_try_wireup_p.add_argument(
+        "--yes", action="store_true",
+        help=(
+            "Actually invoke (default is dry-run). Without "
+            "this flag, the command resolves the opt-in flag "
+            "name + writer file but doesn't run the engine."
+        ),
+    )
+    engine_try_wireup_p.add_argument(
+        "--store", default=None,
+        help=(
+            "Store ID for Pattern Z scope. Falls back to the "
+            "active store. Required for engines whose router "
+            "writes record per-store."
+        ),
+    )
+    engine_try_wireup_p.add_argument(
+        "--params", default="{}",
+        help=(
+            "Extra JSON params merged into the engine input "
+            "(beyond the auto-set apply_* flag). Useful for "
+            "engines whose input needs niche-specific config."
+        ),
+    )
+    engine_try_wireup_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     engines_writebacks_p = sub.add_parser(
         "engines-writebacks",
         help=(
@@ -12444,6 +12487,229 @@ def _verdict_rollup(results: list[dict]) -> dict[str, int]:
         if v in rollup:
             rollup[v] += 1
     return rollup
+
+
+def _cmd_engine_try_wireup(args) -> None:
+    """Smoke-test a wired engine's Phase 7 writeback.
+
+    The Phase 7 wireups are DORMANT by default -- engines only
+    fire their writeback when callers set the apply_* opt-in
+    flag. The autonomous-cycle's ADVANCE phase doesn't set
+    these flags (default OFF is the bible-mandated safety
+    posture). So operators wanting to VERIFY a wireup works
+    end-to-end need a manual recipe.
+
+    This command resolves the opt-in flag name from
+    writeback_audit, builds a minimal engine input with the
+    flag set, and (with --yes) invokes the engine. Without
+    --yes, it's a DRY-RUN: shows what WOULD fire without
+    making writes.
+
+    Refuses non-wired engines -- advisory engines have no
+    apply_* flag to set.
+    """
+    as_json = bool(getattr(args, "json", False))
+    engine_name = (
+        getattr(args, "engine_name", "") or ""
+    ).strip()
+    yes = bool(getattr(args, "yes", False))
+    store_id = (
+        getattr(args, "store", None)
+        or _get_store_manager().active_store_id
+    )
+
+    def _emit_error(msg: str, exit_code: int = 1) -> None:
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(exit_code)
+
+    if not engine_name:
+        _emit_error("engine_name is required")
+        return
+
+    # Look up wireup state -- refuse non-wired engines.
+    try:
+        from engines._writeback_audit import (
+            audit_writeback_coverage,
+        )
+        report = audit_writeback_coverage("engines")
+        wb = next(
+            (s for s in report.engines if s.name == engine_name),
+            None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"writeback audit failed: {exc}")
+        return
+
+    if wb is None:
+        _emit_error(
+            f"unknown engine: {engine_name} "
+            "(see `shopai engines`)"
+        )
+        return
+    if wb.status != "wired":
+        _emit_error(
+            f"engine '{engine_name}' is {wb.status}; "
+            "try-wireup only supports wired engines"
+        )
+        return
+
+    # Pick the apply_* flag. Most wired engines have ONE
+    # apply_* flag plus optionally require_approval. We set
+    # the apply_* flag only; require_approval is left off so
+    # this is a direct-mint test path.
+    apply_flag = next(
+        (f for f in wb.opt_in_flags if f.startswith("apply_")),
+        None,
+    )
+    if apply_flag is None:
+        _emit_error(
+            f"engine '{engine_name}' is wired but has no "
+            "apply_* opt-in flag (unexpected)"
+        )
+        return
+
+    # Parse extra params.
+    extra_params: dict[str, Any] = {}
+    raw_params = getattr(args, "params", "") or ""
+    if raw_params:
+        try:
+            parsed = json.loads(raw_params)
+            if not isinstance(parsed, dict):
+                _emit_error("--params must be a JSON object")
+                return
+            extra_params = parsed
+        except json.JSONDecodeError as exc:
+            _emit_error(f"--params is not valid JSON: {exc}")
+            return
+
+    # Build engine input. Pull store data via DataProvider
+    # (same path shopai run uses) so the engine sees the
+    # right shape.
+    try:
+        from data_pipeline.store.data_provider import (
+            DataProvider,
+        )
+        sm = _get_store_manager()
+        data = (
+            DataProvider(sm).get_data_for_engine(
+                engine_name, store_id,
+            )
+            if store_id else {}
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "try-wireup data provider raised: %s", exc,
+        )
+        data = {}
+
+    if not isinstance(data, dict):
+        data = {}
+    data.update(extra_params)
+    data[apply_flag] = True
+
+    plan = {
+        "engine": engine_name,
+        "store_id": store_id,
+        "apply_flag": apply_flag,
+        "writers": wb.writer_files,
+        "opt_in_flags": wb.opt_in_flags,
+        "data_keys": sorted(data.keys()),
+    }
+
+    if not yes:
+        if as_json:
+            print(json.dumps(
+                {"status": "dry_run", "plan": plan},
+                indent=2, default=str,
+            ))
+            return
+        print(f"Engine try-wireup: {engine_name}  (DRY-RUN)")
+        print()
+        print(f"  Status:      wired")
+        print(f"  Apply flag:  data.{apply_flag}=True")
+        print(
+            f"  Writers:     {', '.join(wb.writer_files)}"
+        )
+        print(f"  Store_id:    {store_id or '(none)'}")
+        print(f"  Data keys:   {sorted(data.keys())}")
+        print()
+        print(
+            "  Pass --yes to actually invoke (will call "
+            "Shopify if the engine's writer reaches a "
+            "real router)."
+        )
+        return
+
+    # Actually invoke.
+    try:
+        from engines.registry import get_engine
+        engine = get_engine(engine_name)
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"engine load failed: {exc}")
+        return
+    if engine is None:
+        _emit_error(f"engine '{engine_name}' not registered")
+        return
+
+    try:
+        result = engine.run(data)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("try-wireup engine raised: %s", exc)
+        if as_json:
+            print(json.dumps({
+                "status": "error",
+                "error": f"engine_raised: {exc}",
+                "plan": plan,
+            }, indent=2, default=str))
+        else:
+            print(f"Engine raised: {exc}")
+        sys.exit(1)
+        return
+
+    if as_json:
+        print(json.dumps({
+            "status": "ok",
+            "plan": plan,
+            "result": result,
+        }, indent=2, default=str))
+        return
+
+    print(f"Engine try-wireup: {engine_name}  (EXECUTED)")
+    print()
+    rstatus = (
+        result.get("status", "?")
+        if isinstance(result, dict) else "?"
+    )
+    print(f"  Engine status: {rstatus}")
+    if isinstance(result, dict):
+        result_data = result.get("data") or {}
+        # Surface the writer's results array if present
+        # (each Phase 7 minter / applier returns one).
+        for key in (
+            "minted_codes", "apply_results", "payout_results",
+            "tagged_winners", "minted_count", "applied",
+        ):
+            if key in result_data:
+                val = result_data[key]
+                if isinstance(val, list):
+                    print(
+                        f"  {key}: {len(val)} item(s)"
+                    )
+                else:
+                    print(f"  {key}: {val}")
+        if result.get("error"):
+            print(f"  Engine error: {result['error']}")
+    print()
+    print(
+        f"  Drill down: `shopai engine summary "
+        f"{engine_name}`"
+    )
 
 
 def _cmd_engine_summary(args) -> None:
@@ -29933,9 +30199,13 @@ def main(argv: list[str] | None = None) -> None:
         if action == "pulse":
             _cmd_engine_pulse(args)
             return
+        if action == "try-wireup":
+            _cmd_engine_try_wireup(args)
+            return
         print(
             "Usage: shopai engine "
-            "{summary|guardrail|fleet|compare|ranking|alerts|pulse}"
+            "{summary|guardrail|fleet|compare|ranking|alerts"
+            "|pulse|try-wireup}"
         )
         return
 
