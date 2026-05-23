@@ -7220,15 +7220,6 @@ def _cmd_daily_brief(args) -> None:
                 s.get("store_id", ""),
             )
 
-        # When ALL stores are READY, suggest post-launch
-        # enrichment as the next move (matches the
-        # launch-audit READY hint from 72ee4645).
-        if stores_lr and len(ready) == len(stores_lr):
-            print(
-                "  Next: `shopai post-launch --apply` "
-                "to enrich SEO + descriptions on the "
-                "live catalog."
-            )
         for lr in sorted(stores_lr, key=_lr_sort_key):
             sid = lr.get("store_id", "?")
             if lr.get("error"):
@@ -7251,6 +7242,17 @@ def _cmd_daily_brief(args) -> None:
                 if cli_seq:
                     for cmd in cli_seq[:2]:
                         print(f"    $ {cmd}")
+        # When ALL stores are READY, suggest post-launch
+        # enrichment as the next move (matches the
+        # launch-audit READY hint from 72ee4645). Rendered
+        # AFTER the per-store rows so the operator reads
+        # status first, hint second.
+        if stores_lr and len(ready) == len(stores_lr):
+            print(
+                "  Next: `shopai post-launch --apply` "
+                "to enrich SEO + descriptions on the "
+                "live catalog."
+            )
         print()
 
     # Plan-history aggregate -- compounding learning loop
