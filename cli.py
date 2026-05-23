@@ -8935,6 +8935,22 @@ def _cmd_world_model_fleet(args) -> None:
                 f"  *** {len(outcome_alerts)} engine "
                 f"outcome alert(s): {top_str}{more} ***"
             )
+        # Drill-down hint after the fleet-wide banners,
+        # mirroring daily-brief (a1deb294) + show
+        # (fdf44c6f). Suggest the top engine's pulse
+        # --history. Pick from whichever signal class
+        # fired first (regressions > chronics >
+        # outcome_alerts).
+        if regressions or chronics or outcome_alerts:
+            top_engine = (
+                regressions[0]["engine"] if regressions
+                else chronics[0]["engine"] if chronics
+                else outcome_alerts[0]["engine"]
+            )
+            print(
+                f"      Drill down: `shopai engine pulse "
+                f"{top_engine} --history`"
+            )
         break
     print()
     # Add READY column when launch-readiness opted in.
