@@ -11208,6 +11208,22 @@ def _cmd_engine_pulse(args) -> None:
         _engine_pulse_fleet(args, as_json=as_json)
         return
 
+    # Fleet-only flags silently no-op in single-engine
+    # mode. Warn so operators who passed them notice.
+    ignored: list[str] = []
+    if getattr(args, "verdict", None):
+        ignored.append("--verdict")
+    if getattr(args, "regressing", False):
+        ignored.append("--regressing")
+    if getattr(args, "chronic", False):
+        ignored.append("--chronic")
+    if ignored and not as_json:
+        print(
+            f"Warning: {', '.join(ignored)} requires "
+            "--fleet. Flag(s) ignored in single-engine "
+            "mode."
+        )
+
     engine_name = getattr(args, "engine_name", None)
     if not engine_name:
         print(
