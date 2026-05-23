@@ -5759,10 +5759,17 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
         )
         if chronic_count > 0:
             chronic_str = f"  [{chronic_count} chronic]"
+        oa_str = ""
+        oa_count = int(
+            envelope.get("outcome_alert_count", 0) or 0
+        )
+        if oa_count > 0:
+            oa_str = f"  [{oa_count} outcome alert(s)]"
         print(
             f"  Cycle:     {cyc['runs_24h']} run(s)/24h  "
             f"last: {last}{alerts_str}{thr_str}{tx_str}"
             f"{rev_str}{pause_str}{regr_str}{chronic_str}"
+            f"{oa_str}"
         )
     else:
         print(
