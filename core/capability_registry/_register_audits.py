@@ -152,25 +152,11 @@ def register_all() -> None:
         cli_commands=["shopai pattern-q-audit"],
     ))
 
-    register_capability(Capability(
-        name="pattern_s_audit",
-        kind=CapabilityKind.AUDIT,
-        description=(
-            "AST audit: silent ``except: pass`` blocks "
-            "(no logging, no marker comment)."
-        ),
-        when_to_use=(
-            "Use when the goal involves finding silent-"
-            "failure sites in the codebase -- catches "
-            "exceptions that vanish without trace."
-        ),
-        module_path=(
-            "engines._pattern_s_audit:audit_pattern_s"
-        ),
-        tags=["audit", "ci-gate", "pattern-s",
-              "silent-fails"],
-        cli_commands=["shopai pattern-s-audit"],
-    ))
+    # Pattern S audit (silent except: pass) was removed from
+    # this branch -- the module engines/_pattern_s_audit.py
+    # no longer exists, so the registry entry is dead. If the
+    # audit gets re-introduced on a future branch, restore
+    # the registration here.
 
     register_capability(Capability(
         name="oauth_audit",
@@ -232,7 +218,7 @@ def register_all() -> None:
             "pattern_k_audit", "pattern_y_audit",
             "pattern_i_audit", "pattern_j_audit",
             "pattern_z_audit", "pattern_q_audit",
-            "pattern_s_audit", "oauth_audit",
+            "oauth_audit",
             "scope_health_check",
         ],
         tags=["audit", "ci-gate", "consolidated"],

@@ -318,7 +318,7 @@ class TestBootstrap:
             "pattern_k_audit", "pattern_y_audit",
             "pattern_i_audit", "pattern_j_audit",
             "pattern_z_audit", "pattern_q_audit",
-            "pattern_s_audit", "oauth_audit",
+            "oauth_audit",
             "scope_health_check", "audit_all",
         }
         missing = expected - names
@@ -338,7 +338,7 @@ class TestBootstrap:
             "pattern_k_audit", "pattern_y_audit",
             "pattern_i_audit", "pattern_j_audit",
             "pattern_z_audit", "pattern_q_audit",
-            "pattern_s_audit", "oauth_audit",
+            "oauth_audit",
             "scope_health_check",
         }
         composed = set(cap.composes_with)
