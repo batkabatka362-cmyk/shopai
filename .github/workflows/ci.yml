@@ -169,6 +169,21 @@ jobs:
         run: |
           python cli.py pattern-z-audit
 
+      - name: Phase 7 wireup resolution audit
+        # Runtime smoke-test that every wired engine's
+        # apply_* opt-in flag resolves cleanly (writeback
+        # audit catches AST-level bugs; this catches the
+        # subtler class where a writer file is present +
+        # named correctly but flow.py raises on import, or
+        # the opt-in flag is missing despite the writer
+        # existing). Dry-run only -- no Shopify mutations,
+        # no engine invocation; just resolves apply_* per
+        # wired engine.
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python cli.py engine try-wireup --all
+
       - name: Pattern J test-pollution audit
         # Every write to MemoryIntelligence / DataArchitecture /
         # LearningLoop must come from the canonical Phase 8
