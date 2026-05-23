@@ -12981,6 +12981,10 @@ def _cmd_engine_summary(args) -> None:
                     for f in writeback_info["opt_ins"]
                 )
                 print(f"    Enable via: {flags}")
+                print(
+                    f"    Smoke-test: `shopai engine "
+                    f"try-wireup {engine_name}` (dry-run)"
+                )
         if quarantine_info:
             flags = [
                 f for f in (
