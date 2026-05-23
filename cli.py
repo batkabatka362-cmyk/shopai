@@ -5561,6 +5561,30 @@ capability_overrides import load_overrides
     envelope["regression_count"] = regression_count
     envelope["chronic_count"] = chronic_count
 
+    # Engine outcome-trend alerts (compute_engine_alerts)
+    # are a DIFFERENT signal than regressions/chronic --
+    # they come from approval-queue outcome scores, not
+    # engine_health scores. Separate count for cron
+    # monitors.
+    outcome_alert_count = 0
+    try:
+        from core.approval.outcome_trends import (
+            compute_engine_alerts,
+        )
+        from core.approval.queue import get_approval_queue
+        outcome_alert_count = len(compute_engine_alerts(
+            get_approval_queue(),
+            recent_hours=24.0,
+            baseline_hours=168.0,
+            threshold=0.2,
+            min_recent=3,
+        ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "status: outcome alert count raised: %s", exc,
+        )
+    envelope["outcome_alert_count"] = outcome_alert_count
+
     # ── Overall verdict ────────────────────────────────────
     # OK if every section is checked and no cycle alerts +
     # no thrashing + not paused + no regressions + no
@@ -24177,6 +24201,9 @@ def _cmd_status(args=None) -> None:
         chronic_count = int(
             health.get("chronic_count", 0) or 0
         )
+        outcome_alert_count = int(
+            health.get("outcome_alert_count", 0) or 0
+        )
         print(
             f"{tag} score={score}/100 "
             f"stores={fleet.get('store_count', 0)} "
@@ -24190,6 +24217,7 @@ def _cmd_status(args=None) -> None:
             f"{br.get('thrashing_count', 0)} "
             f"regressions={regression_count} "
             f"chronic={chronic_count} "
+            f"outcome_alerts={outcome_alert_count} "
             f"revenue_7d={rev_pct}"
         )
         if verdict in ("warn", "error"):
