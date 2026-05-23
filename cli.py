@@ -2398,12 +2398,25 @@ def build_parser() -> argparse.ArgumentParser:
             "invoking it with its apply_* opt-in flag set. "
             "Default DRY-RUN preview shows what WOULD fire "
             "without making writes. Pass --yes to actually "
-            "invoke."
+            "invoke. Use --all to iterate over every wired "
+            "engine (fleet smoke-test for CI)."
         ),
     )
     engine_try_wireup_p.add_argument(
-        "engine_name",
-        help="Engine to test (must be in the 'wired' set)",
+        "engine_name", nargs="?", default=None,
+        help=(
+            "Engine to test (must be in the 'wired' set). "
+            "Omit with --all to iterate over every wired "
+            "engine."
+        ),
+    )
+    engine_try_wireup_p.add_argument(
+        "--all", action="store_true", dest="run_all",
+        help=(
+            "Smoke-test every wired engine. Each engine's "
+            "plan resolves independently; failures are "
+            "reported per-engine and don't abort the loop."
+        ),
     )
     engine_try_wireup_p.add_argument(
         "--yes", action="store_true",
@@ -12489,6 +12502,186 @@ def _verdict_rollup(results: list[dict]) -> dict[str, int]:
     return rollup
 
 
+def _try_wireup_all(
+    *, yes: bool, store_id: str | None, as_json: bool,
+) -> None:
+    """Iterate every wired engine and report per-engine status.
+
+    Fleet smoke-test surface for the Phase 7 wireup pattern.
+    Each engine's plan resolves independently; failures
+    (unknown apply_flag, raise on yes-mode, etc.) are
+    reported per-engine and don't abort the loop -- a CI
+    gate using this command should look at the overall
+    summary line + exit code.
+
+    Exit 0 when every wired engine resolved cleanly;
+    exit 1 when any engine raised during resolution OR
+    raised during a --yes invocation.
+    """
+    try:
+        from engines._writeback_audit import (
+            audit_writeback_coverage,
+        )
+        report = audit_writeback_coverage("engines")
+    except Exception as exc:  # noqa: BLE001
+        if as_json:
+            print(json.dumps({
+                "status": "error",
+                "error": f"writeback_audit_failed: {exc}",
+            }, indent=2))
+        else:
+            print(f"Error: writeback audit failed: {exc}")
+        sys.exit(1)
+        return
+
+    wired = sorted(
+        (s for s in report.engines if s.status == "wired"),
+        key=lambda s: s.name,
+    )
+
+    results: list[dict[str, Any]] = []
+    any_error = False
+    for wb in wired:
+        entry: dict[str, Any] = {
+            "engine": wb.name,
+            "writers": list(wb.writer_files),
+            "opt_in_flags": list(wb.opt_in_flags),
+        }
+        apply_flag = next(
+            (
+                f for f in wb.opt_in_flags
+                if f.startswith("apply_")
+            ),
+            None,
+        )
+        if apply_flag is None:
+            entry["status"] = "error"
+            entry["error"] = "no_apply_flag"
+            any_error = True
+            results.append(entry)
+            continue
+        entry["apply_flag"] = apply_flag
+
+        if not yes:
+            entry["status"] = "dry_run_ok"
+            results.append(entry)
+            continue
+
+        # --yes path: actually invoke each engine.
+        try:
+            from engines.registry import get_engine
+            engine = get_engine(wb.name)
+        except Exception as exc:  # noqa: BLE001
+            entry["status"] = "error"
+            entry["error"] = f"engine_load: {exc}"
+            any_error = True
+            results.append(entry)
+            continue
+        if engine is None:
+            entry["status"] = "error"
+            entry["error"] = "engine_not_registered"
+            any_error = True
+            results.append(entry)
+            continue
+
+        try:
+            from data_pipeline.store.data_provider import (
+                DataProvider,
+            )
+            sm = _get_store_manager()
+            data = (
+                DataProvider(sm).get_data_for_engine(
+                    wb.name, store_id,
+                ) if store_id else {}
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "try-wireup --all data raised for %s: %s",
+                wb.name, exc,
+            )
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data[apply_flag] = True
+
+        try:
+            engine_result = engine.run(data)
+            entry["status"] = "ok"
+            entry["engine_status"] = (
+                engine_result.get("status", "?")
+                if isinstance(engine_result, dict) else "?"
+            )
+        except Exception as exc:  # noqa: BLE001
+            entry["status"] = "error"
+            entry["error"] = f"engine_raised: {exc}"
+            any_error = True
+        results.append(entry)
+
+    summary = {
+        "total_wired": len(wired),
+        "ok": sum(1 for r in results if r["status"] == "ok"),
+        "dry_run_ok": sum(
+            1 for r in results if r["status"] == "dry_run_ok"
+        ),
+        "errors": sum(
+            1 for r in results if r["status"] == "error"
+        ),
+        "mode": "executed" if yes else "dry_run",
+    }
+
+    if as_json:
+        print(json.dumps({
+            "status": "ok" if not any_error else "error",
+            "summary": summary,
+            "engines": results,
+        }, indent=2, default=str))
+        if any_error:
+            sys.exit(1)
+        return
+
+    mode_label = "EXECUTED" if yes else "DRY-RUN"
+    print(
+        f"Try-wireup all ({mode_label}): "
+        f"{summary['total_wired']} wired engine(s)"
+    )
+    print()
+    for r in results:
+        status = r["status"]
+        marker = (
+            "[ok  ]" if status in ("ok", "dry_run_ok")
+            else "[FAIL]"
+        )
+        engine_label = r["engine"][:30]
+        line = f"  {marker} {engine_label:<30}  "
+        if status == "ok":
+            line += f"engine_status={r.get('engine_status', '?')}"
+        elif status == "dry_run_ok":
+            line += f"apply={r.get('apply_flag', '?')}"
+        else:
+            line += f"error={r.get('error', '?')}"
+        print(line)
+    print()
+    if any_error:
+        print(
+            f"  Summary: {summary['errors']} engine(s) "
+            "failed try-wireup."
+        )
+        sys.exit(1)
+    if yes:
+        print(
+            f"  Summary: {summary['ok']} engine(s) "
+            "invoked cleanly."
+        )
+    else:
+        print(
+            f"  Summary: {summary['dry_run_ok']} engine(s) "
+            "have valid wireups (dry-run only)."
+        )
+        print(
+            "  Re-run with --yes to actually invoke each."
+        )
+
+
 def _cmd_engine_try_wireup(args) -> None:
     """Smoke-test a wired engine's Phase 7 writeback.
 
@@ -12505,14 +12698,19 @@ def _cmd_engine_try_wireup(args) -> None:
     --yes, it's a DRY-RUN: shows what WOULD fire without
     making writes.
 
+    With --all, iterates every wired engine -- fleet smoke-
+    test useful for CI. Per-engine failures don't abort the
+    loop.
+
     Refuses non-wired engines -- advisory engines have no
     apply_* flag to set.
     """
     as_json = bool(getattr(args, "json", False))
     engine_name = (
-        getattr(args, "engine_name", "") or ""
+        getattr(args, "engine_name", None) or ""
     ).strip()
     yes = bool(getattr(args, "yes", False))
+    run_all = bool(getattr(args, "run_all", False))
     store_id = (
         getattr(args, "store", None)
         or _get_store_manager().active_store_id
@@ -12528,8 +12726,17 @@ def _cmd_engine_try_wireup(args) -> None:
             print(f"Error: {msg}")
         sys.exit(exit_code)
 
+    if run_all:
+        _try_wireup_all(
+            yes=yes, store_id=store_id, as_json=as_json,
+        )
+        return
+
     if not engine_name:
-        _emit_error("engine_name is required")
+        _emit_error(
+            "engine_name is required (or pass --all to "
+            "iterate every wired engine)"
+        )
         return
 
     # Look up wireup state -- refuse non-wired engines.
