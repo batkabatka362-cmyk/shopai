@@ -12346,6 +12346,16 @@ def _cmd_engine_summary(args) -> None:
             if r.get("error"):
                 line += f"  err={r['error']}"
             print(line)
+        # Drill-down hint: summary shows WHAT this engine is
+        # doing; fleet shows WHERE it's doing it. Operator's
+        # natural next question. Suppressed when health-state
+        # already shows a drill-down (pulse --history covers
+        # the regressing/chronic angle).
+        if not state_bits:
+            print(
+                f"  Drill down: `shopai engine fleet "
+                f"{engine_name}`"
+            )
 
 
 def _cmd_engine_guardrail(args) -> None:

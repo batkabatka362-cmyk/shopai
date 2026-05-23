@@ -251,6 +251,38 @@ class TestRecentActivity:
             out, _ = _capture(cli._cmd_engine_summary, _ns())
         assert "scope_missing" in out
 
+    def test_drill_down_to_engine_fleet_when_active(self, cli):
+        """Recent activity section ends with a drill-down hint
+        to `engine fleet <engine>` (the WHERE question)."""
+        q = _fake_queue(
+            stats_by_engine={"loyalty": {"executed": 2}},
+            actions_by_status={
+                "executed": [
+                    _fake_action(id_="a1", decided_at=time.time() - 30),
+                ],
+            },
+        )
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=q,
+        ):
+            out, _ = _capture(cli._cmd_engine_summary, _ns())
+        assert "Drill down: `shopai engine fleet loyalty`" in out
+
+    def test_drill_down_absent_when_no_activity(self, cli):
+        """Quiet engine: no Recent activity section, so no
+        drill-down line either."""
+        q = _fake_queue(
+            stats_by_engine={},
+            actions_by_status={},
+        )
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=q,
+        ):
+            out, _ = _capture(cli._cmd_engine_summary, _ns())
+        assert "Drill down: `shopai engine fleet" not in out
+
 
 # ─── --json envelope ────────────────────────────────────────
 
