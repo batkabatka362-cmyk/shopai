@@ -9125,6 +9125,28 @@ def _cmd_world_model_show(args) -> None:
     print(f"  URL:    {store.get('shop_url', '-')}")
     print(f"  Niche:  {store.get('niche') or '-'}")
     print(f"  Type:   {store.get('store_type') or '-'}")
+    # Prominent fleet-wide pause banner near the top so
+    # operators using show on a paused fleet see it
+    # immediately, not buried in Cycle health below.
+    cycle_top = snap.get("cycle") or {}
+    top_pause = cycle_top.get("pause") or {}
+    if top_pause.get("active"):
+        import datetime as _dt
+        until = top_pause.get("paused_until_at")
+        until_str = (
+            _dt.datetime.fromtimestamp(
+                until,
+            ).strftime("%Y-%m-%d %H:%M")
+            if until else "unknown"
+        )
+        print()
+        print(
+            f"  *** FLEET PAUSED until {until_str} ***"
+        )
+        if top_pause.get("reason"):
+            print(
+                f"      Reason: {top_pause['reason']}"
+            )
     print()
     print("Stats:")
     print(f"  Products:  {stats['products']}")
