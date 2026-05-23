@@ -23071,6 +23071,51 @@ def _collect_doctor_sections(args) -> tuple[bool, dict[str, Any]]:
             "error": str(exc),
         }
 
+    # ── Wireup resolve (Phase 7 dormancy gate) ──────────────
+    # Mirrors the 8th institutional audit added in 621f9f26.
+    # Every wired engine must have an apply_* opt-in flag
+    # resolvable from writeback_audit + opt_in_flags. Catches
+    # the bug class where a writer file exists but flow.py's
+    # opt-in flag is typo'd or missing.
+    try:
+        from engines._writeback_audit import (
+            audit_writeback_coverage,
+        )
+        wb_report = audit_writeback_coverage("engines")
+        wired_engines = [
+            s for s in wb_report.engines
+            if s.status == "wired"
+        ]
+        unresolved: list[str] = []
+        for s in wired_engines:
+            apply_flag = next(
+                (
+                    f for f in s.opt_in_flags
+                    if f.startswith("apply_")
+                ),
+                None,
+            )
+            if apply_flag is None:
+                unresolved.append(
+                    f"{s.name} (no apply_* flag)"
+                )
+        sections["wireup_resolve"] = {
+            "status": "pass" if not unresolved else "fail",
+            "total_wired": len(wired_engines),
+            "resolved_count": (
+                len(wired_engines) - len(unresolved)
+            ),
+            "unresolved": unresolved,
+        }
+        if unresolved:
+            overall_ok = False
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("wireup_resolve probe raised: %s", exc)
+        sections["wireup_resolve"] = {
+            "status": "unavailable",
+            "error": str(exc),
+        }
+
     # ── Live scope drift ─────────────────────────────────────
     if getattr(args, "skip_live", False):
         sections["live_scope_drift"] = {
@@ -23221,6 +23266,9 @@ def _cmd_shopify_doctor(args) -> None:
     _doctor_render_pattern_z(
         sections.get("pattern_z_writer_recorder", {})
     )
+    _doctor_render_wireup_resolve(
+        sections.get("wireup_resolve", {})
+    )
     _doctor_render_live(sections.get("live_scope_drift", {}))
     _doctor_render_webhook_live(sections.get("live_webhook_drift", {}))
     _doctor_render_writebacks(sections.get("engines_writebacks", {}))
@@ -23292,6 +23340,9 @@ def _cmd_unified_doctor(args) -> None:
     )
     _doctor_render_pattern_z(
         shopify_sections.get("pattern_z_writer_recorder", {}),
+    )
+    _doctor_render_wireup_resolve(
+        shopify_sections.get("wireup_resolve", {}),
     )
     _doctor_render_live(
         shopify_sections.get("live_scope_drift", {}),
@@ -23533,6 +23584,42 @@ def _doctor_render_pattern_z(section: dict) -> None:
     else:
         print(
             f"[??] Pattern Z writer-recorder -- "
+            f"{section.get('error', 'unavailable')}"
+        )
+
+
+def _doctor_render_wireup_resolve(section: dict) -> None:
+    """Render the Phase 7 wireup resolution check.
+
+    Mirrors the 8th institutional audit gate; surfaces wired
+    engines whose apply_* opt-in flag isn't resolvable from
+    flow.py.
+    """
+    status = section.get("status", "unavailable")
+    if status == "pass":
+        total = section.get("total_wired", 0)
+        print(
+            f"[pass] Wireup resolve -- "
+            f"{total}/{total} wired engine(s) have a "
+            "resolvable apply_* flag"
+        )
+    elif status == "fail":
+        unresolved = section.get("unresolved", [])
+        print(
+            f"[FAIL] Wireup resolve -- "
+            f"{len(unresolved)} wired engine(s) have no "
+            "apply_* opt-in flag in flow.py"
+        )
+        for site in unresolved[:3]:
+            print(f"       {site}")
+        print(
+            "       fix: add `data.get(\"apply_X\")` "
+            "opt-in to the engine's flow.py "
+            "(see `shopai engine try-wireup <engine>`)"
+        )
+    else:
+        print(
+            f"[??] Wireup resolve -- "
             f"{section.get('error', 'unavailable')}"
         )
 
@@ -23934,6 +24021,9 @@ def _cmd_shopify_prepare_deploy(args) -> None:
     _doctor_render_pattern_z(
         sections.get("pattern_z_writer_recorder", {})
     )
+    _doctor_render_wireup_resolve(
+        sections.get("wireup_resolve", {})
+    )
     _doctor_render_live(sections.get("live_scope_drift", {}))
     _doctor_render_webhook_live(sections.get("live_webhook_drift", {}))
     _doctor_render_writebacks(sections.get("engines_writebacks", {}))
@@ -24013,6 +24103,9 @@ def _cmd_release_bundle(args) -> None:
     )
     _doctor_render_pattern_z(
         sections.get("pattern_z_writer_recorder", {})
+    )
+    _doctor_render_wireup_resolve(
+        sections.get("wireup_resolve", {})
     )
     _doctor_render_live(sections.get("live_scope_drift", {}))
     _doctor_render_webhook_live(sections.get("live_webhook_drift", {}))
