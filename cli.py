@@ -8770,9 +8770,28 @@ def _cmd_world_model_fleet(args) -> None:
             )
             for r in rows if "error" not in r
         )
+        # Drift aggregate -- only meaningful when live
+        # probes ran. None signals 'config section wasn't
+        # checked'.
+        if not skip_live:
+            agg_drift = sum(
+                (r.get("config") or {}).get(
+                    "planned_writes", 0,
+                )
+                for r in rows
+                if (
+                    "error" not in r
+                    and (
+                        r.get("config") or {}
+                    ).get("checked")
+                )
+            )
+        else:
+            agg_drift = None
         agg: dict[str, Any] = {
             "total_revenue": agg_revenue,
             "total_pending_approvals": agg_pending,
+            "total_drift_writes": agg_drift,
         }
         if include_launch_readiness:
             ready_n = 0
