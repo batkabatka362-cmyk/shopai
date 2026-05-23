@@ -23230,6 +23230,38 @@ def _oldest_event_age_days(path: str) -> float | None:
     return round((now - oldest_ts) / 86400.0, 1)
 
 
+def _newest_event_age_days(path: str) -> float | None:
+    """Return age in days of the NEWEST ``recorded_at`` in
+    the file. Mirror of _oldest_event_age_days. A file with
+    a large newest age (e.g. >30d) signals the recorder
+    that writes to it has stopped -- maybe a regression."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, list) or not data:
+        return None
+    import time as _t
+    now = _t.time()
+    newest_ts = None
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        ts = row.get("recorded_at")
+        if not ts:
+            continue
+        try:
+            ts_f = float(ts)
+        except (TypeError, ValueError):
+            continue
+        if newest_ts is None or ts_f > newest_ts:
+            newest_ts = ts_f
+    if newest_ts is None:
+        return None
+    return round((now - newest_ts) / 86400.0, 1)
+
+
 def _audit_data_files() -> dict[str, Any]:
     """Walk every persistent state file used by ShopAI's
     autonomous loop. Report file size + JSON schema sanity
@@ -23308,6 +23340,9 @@ def _audit_data_files() -> dict[str, Any]:
                 entry["row_count"] = len(data)
                 entry["oldest_age_days"] = (
                     _oldest_event_age_days(path)
+                )
+                entry["newest_age_days"] = (
+                    _newest_event_age_days(path)
                 )
             elif (
                 expected_shape == "dict"
@@ -23626,6 +23661,28 @@ def _cmd_status(args=None) -> None:
                     f"--cleanup-history --older-than-days "
                     f"90 --yes` if data is no longer "
                     f"needed."
+                )
+        # Stale-recorder warning: a file whose newest event
+        # is >30d old but the file still exists suggests
+        # the recorder writing to it has stopped (subsystem
+        # disabled, env var typo'd, write path broken).
+        stale_files = [
+            f for f in audit["files"]
+            if (
+                f.get("schema_ok")
+                and (f.get("row_count") or 0) > 0
+                and (f.get("newest_age_days") or 0) > 30
+            )
+        ]
+        if stale_files:
+            print()
+            for f in stale_files:
+                age = f["newest_age_days"]
+                print(
+                    f"  [warn] {f['label']} hasn't "
+                    f"received an event in {age:.0f} days "
+                    f"-- the recorder writing to this "
+                    f"file may be broken."
                 )
         return
 
