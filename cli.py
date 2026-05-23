@@ -5608,6 +5608,7 @@ capability_overrides import load_overrides
         or cycle_pause.get("active", False)
         or regression_count > 0
         or chronic_count > 0
+        or outcome_alert_count > 0
     ):
         envelope["overall"] = "warn"
     else:
@@ -5637,6 +5638,11 @@ capability_overrides import load_overrides
     # capped at -15. A chronic warning is still a real
     # problem but the merchant isn't actively dying.
     score -= min(15, chronic_count * 3)
+    # Engine outcome alerts (queue-level outcome score
+    # degradations) are operationally similar to chronic
+    # warnings but at the outcome layer, not the
+    # engine_health layer. Same penalty band.
+    score -= min(15, outcome_alert_count * 3)
     rt = (
         envelope["cycle"].get("revenue_trend_7d") or {}
     )
