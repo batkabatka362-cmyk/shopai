@@ -11589,17 +11589,33 @@ def _cmd_engine_pulse(args) -> None:
             print()
             if history_rows:
                 hd = int(getattr(args, "history_days", 30) or 30)
+                # Cap text rendering at 30 events so a busy
+                # daily-brief cadence (>1 event/day) doesn't
+                # produce a wall of identical rows. JSON
+                # output remains full.
+                cap = 30
+                shown = history_rows[:cap]
+                more = max(
+                    0, len(history_rows) - len(shown),
+                )
                 print(
                     f"History (last {hd}d, "
-                    f"{len(history_rows)} event(s)):"
+                    f"{len(history_rows)} event(s)"
+                    + (
+                        f", showing newest {len(shown)}"
+                        if more else ""
+                    )
+                    + "):"
                 )
-                for r in history_rows:
+                for r in shown:
                     ts_str = r["recorded_at_iso"]
                     print(
                         f"  {ts_str:<19s}  "
                         f"{r['score']:>2d}/10  "
                         f"{r['verdict']}"
                     )
+                if more:
+                    print(f"  ... +{more} older event(s)")
             else:
                 print(
                     "History: (no recorded events in window)"
