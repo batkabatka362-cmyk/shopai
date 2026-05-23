@@ -13545,8 +13545,8 @@ def _cmd_engines_writebacks(args) -> None:
         both. Indicates incomplete rollout; the next thing to
         fix.
 
-    Today's catalog (per scan): 22 wired / 113 advisory / 0
-    partial. The wired set covers ~16% of engines; subsequent
+    Today's catalog (per scan): ~24 wired / 111 advisory / 0
+    partial. The wired set covers ~18% of engines; subsequent
     Phase 7 candidates (e.g. dropshipping, gift_card,
     subscription) will push that higher.
     """
@@ -13648,6 +13648,19 @@ def _cmd_engines_writebacks(args) -> None:
             f"NOTE: {report.partial_count} engine(s) are "
             "partially wired -- pass --filter partial to "
             "investigate."
+        )
+
+    # Drill-down hint: when filtered to wired engines, point at
+    # `engine summary <first>` so operators can drill into the
+    # actual writeback activity of any wired engine.
+    if (
+        filter_mode == "wired"
+        and sorted_engines
+    ):
+        first = sorted_engines[0].name
+        print()
+        print(
+            f"  Drill down: `shopai engine summary {first}`"
         )
 
 
