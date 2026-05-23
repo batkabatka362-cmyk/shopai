@@ -8782,6 +8782,20 @@ def _cmd_world_model_fleet(args) -> None:
     # end so they don't obscure the operationally-
     # interesting ones.
     sort_mode = getattr(args, "sort", "id") or "id"
+    # --sort readiness requires --launch-readiness data
+    # to be meaningful; warn + fall back to alphabetical
+    # when the operator forgot the prereq flag.
+    if (
+        sort_mode == "readiness"
+        and not include_launch_readiness
+    ):
+        if not as_json:
+            print(
+                "Warning: --sort readiness requires "
+                "--launch-readiness. Falling back to "
+                "alphabetical sort."
+            )
+        sort_mode = "id"
 
     def _sort_key(snap_row: dict) -> tuple:
         is_err = "error" in snap_row
