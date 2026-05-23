@@ -16819,6 +16819,36 @@ def _cmd_autonomous_cycle(args) -> None:
                 print(
                     f"  Reason: {pause_state['reason']}"
                 )
+            # Surface engine-health signals even on a
+            # paused cycle -- the pause skips work but
+            # the degradation signals still matter to
+            # the operator.
+            eh = summary.get("engine_health") or {}
+            n_reg = int(
+                eh.get("regression_count", 0) or 0,
+            )
+            n_chr = int(
+                eh.get("chronic_warning_count", 0) or 0,
+            )
+            n_oa = int(
+                eh.get("outcome_alert_count", 0) or 0,
+            )
+            if n_reg or n_chr or n_oa:
+                parts: list[str] = []
+                if n_reg:
+                    parts.append(
+                        f"{n_reg} regression(s)"
+                    )
+                if n_chr:
+                    parts.append(f"{n_chr} chronic")
+                if n_oa:
+                    parts.append(
+                        f"{n_oa} outcome alert(s)"
+                    )
+                print(
+                    "  Engine health: "
+                    + ", ".join(parts)
+                )
             print(
                 "  Run ``shopai autonomous-cycle "
                 "--resume`` to clear."
