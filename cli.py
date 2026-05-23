@@ -15254,6 +15254,13 @@ def _cmd_engine_info(engine_name: str, as_json: bool = False) -> None:
             print(f"    scopes:      {scopes}")
 
     _print_engine_brain_stack(engine_name)
+    # Drill-down hint: engine-info shows config + brain-stack;
+    # engine summary shows the operational view (queue counts,
+    # recent activity, outcomes). Complementary surfaces.
+    print()
+    print(
+        f"  Drill down: `shopai engine summary {engine_name}`"
+    )
 
 
 def _cmd_shopify_scopes(args) -> None:
