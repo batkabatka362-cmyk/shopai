@@ -11737,6 +11737,15 @@ def _cmd_engines(*, by_goal: bool = False, unmapped: bool = False) -> None:
     print(f"Registered engines: {engine_count()}\n")
     for i, name in enumerate(engines, 1):
         print(f"  {i:3d}. {name}")
+    # Drill-down hint: bare list is alphabetical and doesn't
+    # reveal which engines are actually doing work. Point at
+    # `engines-stats` for the activity-ranked view, which
+    # also surfaces wiring status.
+    print()
+    print(
+        "  Drill down: `shopai engines-stats` for activity-"
+        "ranked view + writeback wiring."
+    )
 
 
 def _engine_pulse_history_rows(
