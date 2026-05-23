@@ -355,7 +355,25 @@ def recommend(summary: dict[str, Any]) -> NextAction:
         )
         if tx_candidates > 0 and tx_applied == 0:
             # Candidates exist -- operator can either review
-            # them OR opt the bridge in.
+            # them OR opt the bridge in. Pick the first
+            # per-store target with candidates so the hint
+            # is concrete instead of <placeholder>.
+            top_target = ""
+            for row in transfer.get("per_store") or []:
+                if (
+                    isinstance(row, dict)
+                    and int(row.get("candidates_found", 0)
+                            or 0) > 0
+                ):
+                    top_target = row.get(
+                        "target_store_id", "",
+                    ) or ""
+                    break
+            cmd = (
+                f"shopai transfer sources --to {top_target}"
+                if top_target
+                else "shopai transfer sources --to <store>"
+            )
             return NextAction(
                 priority="review_transfers",
                 detail=(
@@ -366,7 +384,7 @@ def recommend(summary: dict[str, Any]) -> NextAction:
                     "SHOPAI_AUTO_TRANSFER=1 to enqueue "
                     "automatically."
                 ),
-                cmd="shopai transfer sources --to <store>",
+                cmd=cmd,
             )
         if tx_applied > 0:
             return NextAction(

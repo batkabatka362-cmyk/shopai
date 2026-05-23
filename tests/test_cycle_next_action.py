@@ -446,6 +446,62 @@ class TestRule7bTransfer:
         assert rec.priority == "review_transfers"
         assert "3 cross-store candidate(s)" in rec.detail
 
+    def test_review_hint_uses_concrete_target_when_available(
+        self,
+    ):
+        """When per_store rows exist, the hint substitutes the
+        first target with candidates instead of <store>
+        placeholder."""
+        s = _summary(
+            advance={
+                "stores_processed": 2,
+                "executed_ok": 0,
+                "refused_reliability": 0,
+                "errored": 0,
+            },
+            transfer={
+                "checked": True,
+                "total_candidates": 3,
+                "total_applied": 0,
+                "per_store": [
+                    {
+                        "target_store_id": "no-candidates",
+                        "candidates_found": 0,
+                    },
+                    {
+                        "target_store_id": "best-target",
+                        "candidates_found": 3,
+                    },
+                ],
+            },
+        )
+        rec = cna.recommend(s)
+        assert (
+            "shopai transfer sources --to best-target"
+            in rec.cmd
+        )
+        assert "<store>" not in rec.cmd
+
+    def test_review_hint_falls_back_to_placeholder(self):
+        """Empty per_store list -> hint keeps the <store>
+        placeholder so the operator knows to fill it in."""
+        s = _summary(
+            advance={
+                "stores_processed": 1,
+                "executed_ok": 0,
+                "refused_reliability": 0,
+                "errored": 0,
+            },
+            transfer={
+                "checked": True,
+                "total_candidates": 3,
+                "total_applied": 0,
+                "per_store": [],
+            },
+        )
+        rec = cna.recommend(s)
+        assert "<store>" in rec.cmd
+
     def test_applied_transfers_suggests_approvals(self):
         s = _summary(
             advance={
