@@ -4939,9 +4939,8 @@ def _cmd_transfer_sources(args) -> None:
             print(f"      sample: {sample}")
     print()
     print(
-        "  Next step:  "
-        f"shopai transfer suggest --from {top[0]['store_id']} "
-        f"--to {to_store}"
+        f"  Next: `shopai transfer suggest --from "
+        f"{top[0]['store_id']} --to {to_store}`"
     )
 
 
