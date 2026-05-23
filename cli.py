@@ -11395,12 +11395,15 @@ def _cmd_engine_pulse(args) -> None:
         )
         payload["history"] = history_rows
 
-    # Health-state flags (regressing / chronic) -- JSON
-    # consumers care about these too; they're already
-    # rendered in the text path (c0d7c163) but were
-    # missing from the JSON envelope.
+    # Health-state flags (regressing / chronic / outcome
+    # alert) -- JSON consumers care about these too;
+    # they're already rendered in the text path
+    # (c0d7c163) but were missing from the JSON envelope.
+    # The three classes are distinct signals -- see
+    # project_engine_health_observability.md for details.
     payload["regressing"] = False
     payload["chronic"] = False
+    payload["outcome_alert"] = False
     try:
         from core.approval.engine_health_history import (
             find_regressions, find_chronic_warnings,
@@ -11427,6 +11430,27 @@ def _cmd_engine_pulse(args) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "engine_pulse health-state probe (json) "
+            "raised: %s", exc,
+        )
+    try:
+        from core.approval.outcome_trends import (
+            compute_engine_alerts,
+        )
+        from core.approval.queue import get_approval_queue
+        if any(
+            a.engine == engine_name
+            for a in compute_engine_alerts(
+                get_approval_queue(),
+                recent_hours=24.0,
+                baseline_hours=168.0,
+                threshold=0.2,
+                min_recent=3,
+            )
+        ):
+            payload["outcome_alert"] = True
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine_pulse outcome_alert probe (json) "
             "raised: %s", exc,
         )
 
