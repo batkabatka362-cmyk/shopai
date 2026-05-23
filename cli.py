@@ -5759,10 +5759,31 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
 
     if envelope["overall"] == "warn":
         print()
-        print(
-            "  Next: investigate alerts above + run "
-            "``shopai daily-brief`` for activity detail."
+        # Tailor the hint to the dominant warn signal so
+        # operators get the most actionable next command,
+        # not a generic 'run daily-brief'.
+        regr_count = int(
+            envelope.get("regression_count", 0) or 0
         )
+        chronic_count = int(
+            envelope.get("chronic_count", 0) or 0
+        )
+        if regr_count > 0 or chronic_count > 0:
+            cmd = (
+                "shopai approvals health-regressions"
+                if regr_count > 0
+                else "shopai approvals chronic-warnings"
+            )
+            print(
+                f"  Next: engine health degraded -- "
+                f"run `{cmd}` for the affected engines."
+            )
+        else:
+            print(
+                "  Next: investigate alerts above + run "
+                "``shopai daily-brief`` for activity "
+                "detail."
+            )
     elif envelope["overall"] == "error":
         print()
         print(
