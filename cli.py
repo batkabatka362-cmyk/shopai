@@ -17052,6 +17052,36 @@ def _cmd_autonomous_cycle(args) -> None:
             exc,
         )
 
+    # Engine-degradation counts in JSON shape -- mirror of
+    # daily-brief totals (30876af5) + world-model fleet
+    # aggregates (3f4e14cc). Lets cron monitoring
+    # pipelines that parse cycle JSON detect engine
+    # degradation without a separate command.
+    try:
+        from core.approval.engine_health_history import (
+            find_regressions, find_chronic_warnings,
+        )
+        summary["engine_health"] = {
+            "regression_count": len(find_regressions(
+                min_drop=3.0,
+                baseline_window_seconds=86400.0 * 7.0,
+                latest_window_seconds=86400.0 * 1.0,
+                min_baseline_samples=3,
+            )),
+            "chronic_warning_count": len(
+                find_chronic_warnings(
+                    sample_window_seconds=86400.0 * 7.0,
+                    min_samples=3,
+                    healthy_score_floor=7,
+                ),
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "autonomous-cycle: engine_health JSON "
+            "raised: %s", exc,
+        )
+
     if as_json:
         print(json.dumps(summary, indent=2, default=str))
         return
