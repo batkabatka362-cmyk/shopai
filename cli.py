@@ -24181,6 +24181,17 @@ def _cmd_suggest(args) -> None:
                 f"{r.effectiveness:<14.2f}"
             )
 
+    # Drill-down hint: top pick is the recommender's primary
+    # suggestion. Point operator at the per-engine summary so
+    # they can see WHAT it does + writeback state before
+    # deciding whether to run it.
+    if result.primary:
+        top = result.primary[0].engine
+        print()
+        print(
+            f"  Drill down: `shopai engine summary {top}`"
+        )
+
 
 def _cmd_knowledge(args) -> None:
     """Knowledge-vault subcommand router.
