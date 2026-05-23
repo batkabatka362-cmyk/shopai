@@ -433,7 +433,14 @@ class TestRunAll:
         assert code == 1
         assert "no_apply_flag" in out
 
-    def test_all_yes_invokes_each_engine(self, cli):
+    def test_all_yes_invokes_each_engine(
+        self, cli, monkeypatch,
+    ):
+        # Safety guard added later requires the env var to
+        # acknowledge --all --yes blast radius.
+        monkeypatch.setenv(
+            "SHOPAI_TRY_WIREUP_ALL_CONFIRM", "1",
+        )
         report = self._build_report([
             {
                 "name": "loyalty",
@@ -465,9 +472,37 @@ class TestRunAll:
         assert engine_input.get("apply_rewards") is True
         assert "EXECUTED" in out
 
-    def test_all_yes_per_engine_failure_doesnt_abort(self, cli):
+    def test_all_yes_blocked_without_env_var(
+        self, cli, monkeypatch,
+    ):
+        """Safety guard: --all --yes without
+        SHOPAI_TRY_WIREUP_ALL_CONFIRM=1 should be refused
+        BEFORE any writeback_audit call -- protects against
+        accidental fleet-wide writes."""
+        monkeypatch.delenv(
+            "SHOPAI_TRY_WIREUP_ALL_CONFIRM", raising=False,
+        )
+        with patch(
+            "engines._writeback_audit.audit_writeback_coverage",
+        ) as audit_mock:
+            out, code = _capture(
+                cli._cmd_engine_try_wireup,
+                _ns(run_all=True, yes=True),
+            )
+        assert code == 1
+        assert "blast radius" in out
+        # The writeback audit (and any engine invocation)
+        # shouldn't have been touched.
+        audit_mock.assert_not_called()
+
+    def test_all_yes_per_engine_failure_doesnt_abort(
+        self, cli, monkeypatch,
+    ):
         """If engine A raises during run, engine B should
         still be tried. Both reported in results."""
+        monkeypatch.setenv(
+            "SHOPAI_TRY_WIREUP_ALL_CONFIRM", "1",
+        )
         report = self._build_report([
             {
                 "name": "engine_a",

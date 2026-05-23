@@ -12727,6 +12727,23 @@ def _cmd_engine_try_wireup(args) -> None:
         sys.exit(exit_code)
 
     if run_all:
+        # Safety guard: --all --yes can fire 26+ live
+        # Shopify mutations across every wired engine.
+        # Require explicit confirmation via env var so an
+        # accidental ``--yes`` doesn't carpet-bomb a live
+        # store. Dry-run is unaffected (no writes).
+        if yes and not os.environ.get(
+            "SHOPAI_TRY_WIREUP_ALL_CONFIRM",
+        ):
+            _emit_error(
+                "--all --yes can fire writes across every "
+                "wired engine. Set "
+                "SHOPAI_TRY_WIREUP_ALL_CONFIRM=1 to "
+                "acknowledge the blast radius, or drop "
+                "--yes for the safe dry-run.",
+                exit_code=1,
+            )
+            return
         _try_wireup_all(
             yes=yes, store_id=store_id, as_json=as_json,
         )
