@@ -11689,7 +11689,27 @@ def _cmd_sync(args) -> None:
             status = f"{count} records" if not errors else f"{count} records (errors: {errors})"
             print(f"  {dtype}: {status}")
     else:
-        print(f"✗ Sync failed: {result.get('error', 'unknown')}")
+        err = result.get("error", "unknown")
+        print(f"✗ Sync failed: {err}")
+        # Drill-down hint: connection-class errors point at
+        # store connect; OAuth/scope-class errors point at
+        # the live scope drift check. Both are read-only and
+        # produce actionable diagnostics.
+        err_lower = str(err).lower()
+        print()
+        if (
+            "scope" in err_lower
+            or "access_denied" in err_lower
+        ):
+            print(
+                "  Next: `shopai shopify-scopes-live-check` "
+                "(scope drift between manifest + live install)"
+            )
+        else:
+            print(
+                f"  Next: `shopai store connect {store_id}` "
+                "(verify auth + endpoint reachability)"
+            )
 
 
 # ── Engine Commands ──────────────────────────────────────────
