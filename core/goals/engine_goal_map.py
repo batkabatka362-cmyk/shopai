@@ -123,6 +123,7 @@ ENGINE_GOAL_MAP: dict[str, str] = {
     "competitor_analysis": "capture_opportunity",
     "competition_analyzer": "capture_opportunity",
     "competitor_monitor": "capture_opportunity",
+    "competitor_ad_intelligence": "capture_opportunity",
     "marketplace": "capture_opportunity",
     "stock_prediction": "capture_opportunity",
 
