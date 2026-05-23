@@ -23695,6 +23695,15 @@ def _cmd_engine_calibration(args) -> None:
             "self-assessment is unreliable; treat its "
             "confidence floor (e.g. auto-approve) with caution."
         )
+        # Drill-down hint: inverted calibration + on the
+        # auto-approve allowlist is the highest-risk pattern.
+        # Suggest disabling auto-approve for this engine.
+        print()
+        print(
+            f"  Next: `shopai approvals auto-config "
+            f"--disable {args.engine_name}` (if on auto-"
+            "approve allowlist)"
+        )
     else:
         print(
             "Calibration: insufficient data "
