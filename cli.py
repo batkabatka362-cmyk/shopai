@@ -11735,6 +11735,29 @@ def _engine_pulse_fleet(args, *, as_json: bool) -> None:
             exc,
         )
 
+    # Pre-compute outcome_alert set -- single
+    # compute_engine_alerts call covers the whole fleet.
+    outcome_alert_set: set[str] = set()
+    try:
+        from core.approval.outcome_trends import (
+            compute_engine_alerts,
+        )
+        from core.approval.queue import get_approval_queue
+        outcome_alert_set = {
+            a.engine for a in compute_engine_alerts(
+                get_approval_queue(),
+                recent_hours=24.0,
+                baseline_hours=168.0,
+                threshold=0.2,
+                min_recent=3,
+            )
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine_pulse_fleet outcome_alert probe "
+            "raised: %s", exc,
+        )
+
     # Apply --regressing / --chronic filters (after the
     # set is computed). Both can be combined (intersection
     # of the verdict + state filters).
@@ -11758,6 +11781,9 @@ def _engine_pulse_fleet(args, *, as_json: bool) -> None:
             engine = row.get("engine", "")
             row["regressing"] = engine in regressing_set
             row["chronic"] = engine in chronic_set
+            row["outcome_alert"] = (
+                engine in outcome_alert_set
+            )
             # Writeback status string (matches the
             # uniform shape from engine pulse single
             # mode -- 'wired' / 'advisory' / 'partial' /
