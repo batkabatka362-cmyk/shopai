@@ -12095,6 +12095,22 @@ def _cmd_engine_summary(args) -> None:
             f"opt_ins={len(writeback_info['opt_ins'])})"
         )
         print()
+    # Health state -- regressing/chronic mirror of the
+    # no-activity path's surfacing (8717ffb7).
+    state_bits: list[str] = []
+    if regressing:
+        state_bits.append("REGRESSING")
+    if chronic:
+        state_bits.append("CHRONIC")
+    if state_bits:
+        print(
+            f"Health state: {' + '.join(state_bits)}"
+        )
+        print(
+            f"  Drill down: `shopai engine pulse "
+            f"{engine_name} --history`"
+        )
+        print()
     if quarantine_info:
         # Compose a one-line status -- skip the section entirely
         # when there's nothing to say (healthy + no recent alerts).
