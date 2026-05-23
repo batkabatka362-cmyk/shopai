@@ -27697,6 +27697,16 @@ def _cmd_approvals_pending_latency(args) -> None:
             f"{_format_age(r['median_age_seconds']):>8}  "
             f"{_format_age(r['mean_age_seconds']):>6}"
         )
+    # Drill-down hint: top engine (worst-stale) -> review its
+    # pending queue. Operator can then decide approve/reject
+    # /sweep per row.
+    if rows:
+        top_engine = rows[0]["engine"]
+        print()
+        print(
+            f"  Next: `shopai approvals pending "
+            f"--engine {top_engine}`"
+        )
 
 
 def _cmd_approvals_decision_latency(args) -> None:
@@ -27784,6 +27794,17 @@ def _cmd_approvals_decision_latency(args) -> None:
             f"{_format_age(r['slowest_seconds']):>8}  "
             f"{_format_age(r['median_seconds']):>7}  "
             f"{_format_age(r['mean_seconds']):>6}"
+        )
+    # Drill-down hint: slowest-median engine -> per-engine
+    # summary. Lets the operator see the actual narratives
+    # to understand why decisions take so long (low-confidence
+    # proposals, high-volume noise, etc).
+    if rows:
+        top_engine = rows[0]["engine"]
+        print()
+        print(
+            f"  Drill down: `shopai engine summary "
+            f"{top_engine}`"
         )
 
 
