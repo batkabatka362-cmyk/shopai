@@ -7892,13 +7892,25 @@ def _cmd_store_list(args) -> None:
         print("No stores configured. Add one with: shopai store add <id> <url> <key>")
         return
     print(f"Stores ({len(stores)}):\n")
+    any_active = False
     for s in stores:
-        active = " [ACTIVE]" if s.get("is_active") else ""
+        is_active = bool(s.get("is_active"))
+        any_active = any_active or is_active
+        active = " [ACTIVE]" if is_active else ""
         print(f"  {s['store_id']}{active}")
         print(f"    URL:  {s['shop_url']}")
         print(f"    Type: {s.get('store_type', 'unknown')}")
         print(f"    Niche: {s.get('niche', '-')}")
         print()
+    # Drill-down hint: no active store -> operators need to
+    # switch one in before per-store commands work. Pick
+    # alphabetically-first as deterministic anchor.
+    if not any_active:
+        first = sorted(s["store_id"] for s in stores)[0]
+        print(
+            f"  Next: `shopai store switch {first}` "
+            "(no store is active)"
+        )
 
 
 def _cmd_store_switch(args) -> None:
