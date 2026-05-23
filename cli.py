@@ -20321,6 +20321,15 @@ def _cmd_launch_audit(args) -> None:
     print()
     if ready:
         print("All checks pass -- store is launchable.")
+        # Once the store passes the audit, the natural
+        # next move is post-launch enrichment (SEO +
+        # descriptions). Mirrors the drill-down hint
+        # pattern across the rest of the chain.
+        print(
+            "  Next: `shopai post-launch --apply` to "
+            "enrich SEO + descriptions on the live "
+            "catalog."
+        )
     else:
         print(
             f"Missing: {result.get('missing_summary', '')}"
