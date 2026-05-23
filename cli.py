@@ -9593,6 +9593,14 @@ def _cmd_world_model_show(args) -> None:
                     f"{', '.join(release_cands[:5])}"
                     f"{' ...' if len(release_cands) > 5 else ''}"
                 )
+                # Drill-down hint: the operator CAN release
+                # these now (the bridge already cleared
+                # them). Suggest the release-alert command.
+                print(
+                    f"    Release: `shopai approvals "
+                    f"quarantine --release-alert "
+                    f"{release_cands[0]}`"
+                )
             if pause_cands:
                 print(
                     f"  Pause candidates "
