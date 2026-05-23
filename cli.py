@@ -5077,6 +5077,15 @@ def _cmd_transfer_history(args) -> None:
             f"[{r['status']}]  {age_str}"
         )
         print(f"      action_id: {r['action_id']}")
+    # Drill-down hint: transfer history shows WHAT was
+    # enqueued; transfer outcomes shows whether those
+    # transfers actually paid off (cross-store learning
+    # measurement). Natural follow-up question.
+    print()
+    print(
+        "  Drill down: `shopai transfer outcomes` "
+        "to measure payoff."
+    )
 
 
 def _parse_from_store_from_narrative(narrative: str) -> str:
