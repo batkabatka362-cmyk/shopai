@@ -67,8 +67,9 @@ class TestDefaultRender:
         assert "== Color palette" in out
         assert "== Navigation" in out
         assert "== Mobile" in out
-        # Read-only footer
+        # Read-only footer points at design-apply
         assert "Read-only preview" in out
+        assert "shopai store design-apply" in out
 
     def test_default_profile_when_no_store(self, cli):
         out, code = _capture(cli._cmd_store_design, _ns())
@@ -244,3 +245,103 @@ class TestOutputContent:
         for m in opts:
             assert "area" in m
             assert "recommendation" in m
+
+
+# ─── design-apply ────────────────────────────────────────────
+
+
+def _apply_ns(**kw):
+    defaults = dict(
+        theme_id="gid://shopify/OnlineStoreTheme/1",
+        store=None, json=False,
+    )
+    defaults.update(kw)
+    return argparse.Namespace(**defaults)
+
+
+class TestDesignApply:
+    """`shopai store design-apply` runs the engine then writes
+    the tokens + snippet to the named theme via the existing
+    design_applier (Pattern Z compliant)."""
+
+    def test_missing_theme_id_fails_fast(self, cli):
+        out, code = _capture(
+            cli._cmd_store_design_apply,
+            _apply_ns(theme_id=""),
+        )
+        assert code == 1
+        assert "--theme-id is required" in out
+
+    def test_success_renders_applied_files(self, cli):
+        from unittest.mock import MagicMock
+        apply_result = {
+            "applied": True,
+            "theme_id": "gid://shopify/OnlineStoreTheme/1",
+            "files_written": [
+                "assets/shopai-design-tokens.json",
+                "snippets/shopai-design-recommendations.liquid",
+            ],
+            "error": None,
+        }
+        with patch(
+            "engines.store_design.design_applier.apply_design",
+            return_value=apply_result,
+        ):
+            out, code = _capture(
+                cli._cmd_store_design_apply, _apply_ns(),
+            )
+        assert code == 0
+        assert "Applied store_design to theme" in out
+        assert "shopai-design-tokens.json" in out
+        # Drill-down hint to engine summary
+        assert (
+            "shopai engine summary store_design" in out
+        )
+
+    def test_failure_exits_1(self, cli):
+        apply_result = {
+            "applied": False,
+            "theme_id": "gid://shopify/OnlineStoreTheme/1",
+            "files_written": [],
+            "error": "router_unavailable",
+        }
+        with patch(
+            "engines.store_design.design_applier.apply_design",
+            return_value=apply_result,
+        ):
+            out, code = _capture(
+                cli._cmd_store_design_apply, _apply_ns(),
+            )
+        assert code == 1
+        assert "Apply failed: router_unavailable" in out
+
+    def test_json_envelope(self, cli):
+        apply_result = {
+            "applied": True,
+            "theme_id": "gid://shopify/OnlineStoreTheme/1",
+            "files_written": ["a.json", "b.liquid"],
+            "error": None,
+        }
+        with patch(
+            "engines.store_design.design_applier.apply_design",
+            return_value=apply_result,
+        ):
+            out, code = _capture(
+                cli._cmd_store_design_apply,
+                _apply_ns(json=True),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data["status"] == "ok"
+        assert data["result"]["applied"] is True
+
+    def test_engine_failure_surfaces(self, cli):
+        with patch(
+            "engines.store_design.flow.StoreDesignEngine.run",
+            side_effect=RuntimeError("engine boom"),
+        ):
+            out, code = _capture(
+                cli._cmd_store_design_apply, _apply_ns(),
+            )
+        assert code == 1
+        assert "engine boom" in out

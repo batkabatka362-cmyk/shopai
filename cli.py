@@ -141,6 +141,38 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    design_apply_p = store_sub.add_parser(
+        "design-apply",
+        help=(
+            "Apply store_design recommendations to a Shopify "
+            "theme: writes 2 additive theme files (design "
+            "tokens JSON + Liquid snippet) via "
+            "SHOPIFY_UPSERT_THEME_FILES. Records via Pattern "
+            "Z. The launch_orchestrator's Step 6 also uses "
+            "the same engine + applier."
+        ),
+    )
+    design_apply_p.add_argument(
+        "--theme-id", required=True,
+        help=(
+            "Target theme GID (e.g. "
+            "gid://shopify/OnlineStoreTheme/12345). Caller "
+            "picks which theme (main / unpublished) the "
+            "tokens land in."
+        ),
+    )
+    design_apply_p.add_argument(
+        "--store", default=None,
+        help=(
+            "Store ID for Pattern Z scope (falls back to "
+            "active store)."
+        ),
+    )
+    design_apply_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     seed_products_p = store_sub.add_parser(
         "seed-products",
         help=(
@@ -8224,10 +8256,143 @@ def _cmd_store_design(args) -> None:
         print()
 
     print(
-        "Read-only preview. To apply suggestions, manually edit "
-        "your Shopify theme/menu/settings (no Phase 7 writeback "
-        "yet for store_design)."
+        "Read-only preview. To apply tokens + snippet to a "
+        "theme, run `shopai store design-apply --theme-id "
+        "gid://shopify/OnlineStoreTheme/<id>` -- writes 2 "
+        "additive files (assets/shopai-design-tokens.json + "
+        "snippets/shopai-design-recommendations.liquid). "
+        "Other suggestions (menu / settings) remain manual."
     )
+
+
+def _cmd_store_design_apply(args) -> None:
+    """Run the store_design engine, then apply its tokens +
+    snippet to the target Shopify theme.
+
+    Two-step: first the engine produces recommendations
+    (layout / color / navigation / mobile), then the applier
+    writes two ADDITIVE theme files:
+
+      * ``assets/shopai-design-tokens.json``
+      * ``snippets/shopai-design-recommendations.liquid``
+
+    Records via ``record_writeback`` (Pattern Z). The
+    launch_orchestrator's Step 6 uses the same engine +
+    applier path; this CLI is the stand-alone surface for
+    applying without a full launch run.
+    """
+    as_json = bool(getattr(args, "json", False))
+    sm = _get_store_manager()
+    store_id = (
+        getattr(args, "store", None) or sm.active_store_id
+    )
+    theme_id = (
+        getattr(args, "theme_id", "") or ""
+    ).strip()
+
+    if not theme_id:
+        msg = "--theme-id is required"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+        return
+
+    # Run engine to produce recommendations.
+    try:
+        from engines.store_design.flow import (
+            StoreDesignEngine,
+        )
+        envelope = StoreDesignEngine().run({
+            "status": "success",
+            "data": {
+                "brand": {
+                    "colors": [], "fonts": [],
+                    "voice": "professional",
+                },
+                "products": [],
+                "analytics": {
+                    "bounce_rate": 0.0,
+                    "device_split": {},
+                },
+            },
+            "meta": {},
+            "error": None,
+        })
+    except Exception as exc:  # noqa: BLE001
+        msg = f"store_design engine raised: {exc}"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+        return
+
+    if envelope.get("status") != "success":
+        msg = envelope.get("error") or "engine_failed"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Engine failed: {msg}")
+        sys.exit(1)
+        return
+
+    try:
+        from engines.store_design.design_applier import (
+            apply_design,
+        )
+        result = apply_design(
+            envelope,
+            theme_id=theme_id,
+            store_id=store_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        msg = f"apply_design raised: {exc}"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+        return
+
+    if as_json:
+        print(json.dumps(
+            {"status": "ok", "result": result},
+            indent=2, default=str,
+        ))
+        if not result.get("applied"):
+            sys.exit(1)
+        return
+
+    if result.get("applied"):
+        print(
+            f"Applied store_design to theme {theme_id}"
+        )
+        files = result.get("files_written") or []
+        for f in files:
+            print(f"  [ok  ] {f}")
+        print()
+        print(
+            "  Next: `shopai engine summary store_design` "
+            "to confirm Pattern Z recording."
+        )
+    else:
+        err = result.get("error") or "unknown"
+        print(f"Apply failed: {err}")
+        sys.exit(1)
 
 
 def _cmd_store_seed_products(args) -> None:
@@ -29000,6 +29165,7 @@ def main(argv: list[str] | None = None) -> None:
             "remove": _cmd_store_remove,
             "configure": _cmd_store_configure,
             "design": _cmd_store_design,
+            "design-apply": _cmd_store_design_apply,
             "verify": _cmd_store_verify,
             "setup": _cmd_store_setup,
             "report": _cmd_store_report,
