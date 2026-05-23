@@ -4473,6 +4473,17 @@ def _cmd_transfer_suggest(args) -> None:
         if s.get("sample_params"):
             keys = sorted(s["sample_params"].keys())[:5]
             print(f"      sample params: {', '.join(keys)}")
+    # Drill-down hint: top suggestion is the highest-priority
+    # transfer to actually run. Pre-fill the operator's next
+    # command with --dry-run so the audit trail is preview-
+    # first (no surprise enqueues).
+    top = suggestions[0]
+    print()
+    print(
+        f"  Next: `shopai transfer apply --from {from_store} "
+        f"--to {to_store} --engine {top['engine']} "
+        f"--action-type {top['action_type']} --dry-run`"
+    )
 
 
 def _cmd_transfer_apply(args) -> None:
