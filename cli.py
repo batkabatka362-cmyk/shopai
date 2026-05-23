@@ -29283,6 +29283,14 @@ def _cmd_approvals_recent(args) -> None:
             line += f"  ({a.decision_reason})"
         line += _engine_quarantine_marker(a.engine)
         print(line)
+    # Drill-down hint: row IDs are truncated to 18 chars to
+    # keep the table compact. Surface the FIRST row's full
+    # action_id so the natural "show me this one" follow-up
+    # is one paste away.
+    print()
+    print(
+        f"  Drill down: `shopai approvals show {actions[0].id}`"
+    )
 
 
 def _cmd_approvals_outcome(args) -> None:
