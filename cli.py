@@ -12236,6 +12236,26 @@ def _cmd_engine_compare(args) -> None:
             f"  {metric:<20s} {str(va):>15s} {str(vb):>15s} "
             f"{w[:20]:>20s}"
         )
+    # Overall winner roll-up -- count metric-level wins.
+    # The 'WINNER' column is per-row; this is the
+    # one-line summary an operator wants for
+    # 'which engine is better overall?'.
+    a_wins = sum(1 for w in winners.values() if w == engine_a)
+    b_wins = sum(1 for w in winners.values() if w == engine_b)
+    ties = sum(1 for w in winners.values() if w == "tie")
+    print()
+    if a_wins > b_wins:
+        verdict = f"{engine_a} wins"
+    elif b_wins > a_wins:
+        verdict = f"{engine_b} wins"
+    else:
+        verdict = "even (no clear winner)"
+    print(
+        f"  Overall: {verdict}  "
+        f"({engine_a}={a_wins} wins, "
+        f"{engine_b}={b_wins} wins, "
+        f"{ties} ties out of {len(winners)} metrics)"
+    )
 
 
 
