@@ -7704,6 +7704,26 @@ def _cmd_daily_brief(args) -> None:
         for a in alerts:
             target = a.get("store_id") or a.get("engine") or "-"
             print(f"  [{a['kind']:<18s}] {target:<22s} {a['detail']}")
+        # Drill-down hint: pick the first sync-class alert
+        # and suggest the sync command. Engine-health alerts
+        # already drill via the engine_health section above.
+        sync_alert = next(
+            (
+                a for a in alerts
+                if a.get("kind") in (
+                    "sync_stale", "never_synced",
+                )
+                and a.get("store_id")
+            ),
+            None,
+        )
+        if sync_alert:
+            print()
+            print(
+                f"  Next: `shopai sync "
+                f"{sync_alert['store_id']}` to resolve the "
+                "first sync alert."
+            )
     else:
         print("Alerts: (none)")
 
