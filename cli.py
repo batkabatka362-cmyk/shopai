@@ -6851,6 +6851,17 @@ def _cmd_daily_brief(args) -> None:
         "unhealthy_engines": (
             fleet_health["verdict_counts"]["unhealthy"]
         ),
+        # Engine-degradation counts -- mirror of the fleet
+        # view's aggregates (3f4e14cc) so JSON consumers
+        # can read 'how many engines are degrading?' from
+        # either surface with the same field names.
+        "engine_regression_count": len(engine_regressions),
+        "engine_chronic_warning_count": len(
+            chronic_warnings,
+        ),
+        "engine_outcome_alert_count": len(
+            engine_outcome_alerts_list,
+        ),
     }
     if launch_readiness["checked"]:
         ready_count = sum(
