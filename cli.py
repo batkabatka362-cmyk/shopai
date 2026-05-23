@@ -31,6 +31,22 @@ import sys
 import time
 from typing import Any
 
+# Reconfigure stdout/stderr to UTF-8 so the many Unicode glyphs
+# the CLI emits (box-drawing ─━ │, check / ballot ✓ ✗, arrows
+# → ↳, deltas Δ, em-dash —) print correctly on Windows
+# consoles whose default encoding is cp1252. Without this,
+# code paths like ``shopai mind status`` and
+# ``shopai mind cycle`` crash with UnicodeEncodeError mid-
+# command. Fail-open: if reconfigure raises (e.g. stdout is
+# already wrapped, or a non-Python stream), we silently
+# continue -- the caller's terminal may or may not render
+# correctly, but we don't break the CLI.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 from utils.logger import get_logger
 
 logger = get_logger("cli")
