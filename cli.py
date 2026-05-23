@@ -7875,6 +7875,14 @@ def _cmd_store_fleet(args) -> None:
             if len(never_synced) > 3 else ""
         )
         print(f"  Never synced:  {ids}{more}")
+        # Drill-down hint: first never-synced store -> sync it
+        # explicitly. The "never" state is operator-actionable;
+        # surface the exact command instead of just the list.
+        first = never_synced[0]["store_id"]
+        print(
+            f"    Next: `shopai sync {first}` to seed the "
+            "first store"
+        )
 
 
 def _cmd_store_list(args) -> None:
