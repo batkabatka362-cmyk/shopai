@@ -170,6 +170,7 @@ GUARDRAIL_ENGINES: tuple[str, ...] = (
     "email_marketing",
     "wholesale_b2b",
     "discount_strategy",
+    "churn_prediction",
 )
 
 
