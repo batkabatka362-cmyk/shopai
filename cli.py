@@ -9912,6 +9912,16 @@ def _cmd_world_model_show(args) -> None:
         if cli_seq and not ready:
             for cmd in cli_seq[:3]:
                 print(f"  $ {cmd}")
+        # When this store IS ready, the natural next move is
+        # post-launch enrichment of the live catalog. Mirrors
+        # the same hint surfaced by `launch-audit` (72ee4645),
+        # `daily-brief` (f443747e), and `world-model fleet`
+        # (bb68b3c0).
+        if ready:
+            print(
+                "  Next: `shopai post-launch --apply` "
+                "to enrich the live catalog."
+            )
 
 
 def _cmd_model_router(args) -> None:
