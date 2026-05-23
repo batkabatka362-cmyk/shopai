@@ -29070,6 +29070,16 @@ def _cmd_approvals_approve(args) -> None:
 
     if args.execute:
         _run_execute(args.action_id)
+    else:
+        # Drill-down hint: approve transitions to APPROVED but
+        # doesn't run the dispatcher. Suggest the execute step
+        # so operators don't forget the second half of the
+        # approve -> execute flow.
+        print()
+        print(
+            f"  Next: `shopai approvals execute "
+            f"{action.id}`  (or re-run with --execute)"
+        )
 
 
 def _cmd_approvals_reject(args) -> None:
