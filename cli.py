@@ -13042,7 +13042,20 @@ def _cmd_engine_compare(args) -> None:
         f"{engine_b}={b_wins} wins, "
         f"{ties} ties out of {len(winners)} metrics)"
     )
-
+    # Drill-down hint: when there's a clear winner, the
+    # natural next move is `engine fleet <winner>` to see
+    # WHERE the winner is winning. Tied comparisons point
+    # at engine_a's summary (deterministic anchor).
+    if a_wins > b_wins:
+        drill_engine = engine_a
+    elif b_wins > a_wins:
+        drill_engine = engine_b
+    else:
+        drill_engine = engine_a
+    print(
+        f"    Drill down: `shopai engine fleet "
+        f"{drill_engine}`"
+    )
 
 
 def _cmd_engine_ranking(args) -> None:
