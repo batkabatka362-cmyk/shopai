@@ -8903,6 +8903,19 @@ def _cmd_world_model_fleet(args) -> None:
             )
         else:
             agg_drift = None
+        # Engine-degradation counts -- pulled from the
+        # first non-error row's cycle section since those
+        # signals are fleet-wide (same content across
+        # every snapshot). Cheap to expose: no extra
+        # fetch.
+        first_cycle = next(
+            (
+                (r.get("cycle") or {})
+                for r in rows
+                if "error" not in r
+            ),
+            {},
+        )
         agg: dict[str, Any] = {
             "total_revenue": agg_revenue,
             "total_products": agg_products,
@@ -8910,6 +8923,21 @@ def _cmd_world_model_fleet(args) -> None:
             "total_customers": agg_customers,
             "total_pending_approvals": agg_pending,
             "total_drift_writes": agg_drift,
+            "engine_regression_count": len(
+                first_cycle.get(
+                    "engine_regressions",
+                ) or []
+            ),
+            "engine_chronic_warning_count": len(
+                first_cycle.get(
+                    "engine_chronic_warnings",
+                ) or []
+            ),
+            "engine_outcome_alert_count": len(
+                first_cycle.get(
+                    "engine_outcome_alerts",
+                ) or []
+            ),
         }
         if include_launch_readiness:
             ready_n = 0
