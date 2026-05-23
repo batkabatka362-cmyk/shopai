@@ -29207,6 +29207,16 @@ def _cmd_approvals_sweep(args) -> None:
                 f"  {a.id} {a.engine}/{a.action_type} "
                 f"(age {_format_age(age)})"
             )
+        # Drill-down hint: dry-run shows what WOULD expire;
+        # the operator's natural next step is to actually
+        # expire them. Pre-fill with the same --older-than
+        # value so the only change is dropping --dry-run.
+        print()
+        print(
+            f"  Next: `shopai approvals sweep "
+            f"--older-than {args.older_than}` (drop "
+            "--dry-run to actually expire)"
+        )
         return
 
     expired = queue.expire_stale(max_age_seconds=max_age)
