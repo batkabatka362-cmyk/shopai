@@ -12709,6 +12709,12 @@ def _cmd_engine_summary(args) -> None:
                 f"(writers={len(writeback_info['writers'])}, "
                 f"opt_ins={len(writeback_info['opt_ins'])})"
             )
+            if writeback_info.get("opt_ins"):
+                flags = ", ".join(
+                    f"data.{f}=True"
+                    for f in writeback_info["opt_ins"]
+                )
+                print(f"    Enable via: {flags}")
         if quarantine_info:
             flags = [
                 f for f in (
@@ -12766,6 +12772,15 @@ def _cmd_engine_summary(args) -> None:
             f"(writers={len(writeback_info['writers'])}, "
             f"opt_ins={len(writeback_info['opt_ins'])})"
         )
+        # Surface the actual opt-in flag names so operators
+        # know HOW to trigger the writeback. Wired engines
+        # without this hint require grepping the source.
+        if writeback_info.get("opt_ins"):
+            flags = ", ".join(
+                f"data.{f}=True"
+                for f in writeback_info["opt_ins"]
+            )
+            print(f"  Enable via: {flags}")
         print()
     # Health state -- regressing/chronic mirror of the
     # no-activity path's surfacing (8717ffb7).
