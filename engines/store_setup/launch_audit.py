@@ -347,6 +347,20 @@ def audit_store(
         else "all checks passed"
     )
 
+    # Group failing checks by remediation bucket so JSON
+    # consumers don't have to re-derive what's operator-
+    # driven (Shopify admin) vs orchestrator-closeable.
+    failing_keys = [
+        c.get("key", "") for c in checks
+        if not c.get("ok") and c.get("key")
+    ]
+    manual_admin_gaps = sorted(
+        set(failing_keys) & _MANUAL_ADMIN_KEYS
+    )
+    launch_closeable_gaps = sorted(
+        set(failing_keys) & _LAUNCH_CLOSEABLE
+    )
+
     result = {
         "checks": checks,
         "ready_to_launch": ready_to_launch,
@@ -354,6 +368,8 @@ def audit_store(
         "missing_summary": missing_summary,
         "next_action": next_action_hint(checks),
         "plan": _build_audit_plan(checks),
+        "manual_admin_gaps": manual_admin_gaps,
+        "launch_closeable_gaps": launch_closeable_gaps,
     }
 
     _record_audit(
