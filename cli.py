@@ -27978,6 +27978,16 @@ def _cmd_approvals_pending(args) -> None:
         print(f"  [{a.id}] {a.engine}/{a.action_type}{conf}")
         if narrative:
             print(f"      {narrative}")
+    # Drill-down hint: first pending action's full id +
+    # --with-context to show similar past decisions inline.
+    # Saves operator a copy-paste + a separate retrieve call
+    # when triaging.
+    top_id = actions[0].id
+    print()
+    print(
+        f"  Drill down: `shopai approvals show {top_id} "
+        "--with-context`"
+    )
 
 
 def _cmd_approvals_stats(args) -> None:

@@ -120,6 +120,12 @@ class TestPending:
         assert "cart_recovery/mint_cart_recovery_code" in out
         assert "conf=0.85" in out
         assert "recovery for cust_1" in out
+        # Drill-down hint points at the first pending action
+        # with --with-context for inline similar-decisions.
+        assert (
+            f"shopai approvals show {action.id} --with-context"
+            in out
+        )
 
     def test_engine_filter(self, isolated_queue, cli):
         isolated_queue.enqueue(
