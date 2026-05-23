@@ -7047,7 +7047,24 @@ def _cmd_daily_brief(args) -> None:
             f"Launch readiness: {len(ready)}/{len(stores_lr)} "
             f"store(s) ready"
         )
-        for lr in stores_lr:
+        # Sort NOT READY first (lowest completion_pct first),
+        # then READY stores alphabetically. At empire-scale
+        # the operator wants the actionable rows surfaced
+        # before the already-done ones.
+        def _lr_sort_key(s: dict) -> tuple:
+            if s.get("error"):
+                return (0, 0, s.get("store_id", ""))
+            is_ready = bool(s.get("ready_to_launch"))
+            pct = int(s.get("completion_pct", 0) or 0)
+            # Buckets: errors first (0), not-ready ascending
+            # by pct (1, pct), then ready last (2).
+            return (
+                1 if not is_ready else 2,
+                pct if not is_ready else 0,
+                s.get("store_id", ""),
+            )
+
+        for lr in sorted(stores_lr, key=_lr_sort_key):
             sid = lr.get("store_id", "?")
             if lr.get("error"):
                 print(f"  {sid}: ERROR ({lr['error']})")
