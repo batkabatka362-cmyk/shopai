@@ -11545,6 +11545,23 @@ def _engine_pulse_fleet(args, *, as_json: bool) -> None:
             exc,
         )
 
+    # Pre-compute writeback status per engine (single
+    # audit_writeback_coverage call covers the whole
+    # fleet -- O(1) vs N).
+    writeback_by_engine: dict[str, str] = {}
+    try:
+        from engines._writeback_audit import (
+            audit_writeback_coverage,
+        )
+        wb_report = audit_writeback_coverage("engines")
+        for s in wb_report.engines:
+            writeback_by_engine[s.name] = s.status
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine_pulse_fleet writeback probe raised: %s",
+            exc,
+        )
+
     # Apply --regressing / --chronic filters (after the
     # set is computed). Both can be combined (intersection
     # of the verdict + state filters).
@@ -11568,6 +11585,13 @@ def _engine_pulse_fleet(args, *, as_json: bool) -> None:
             engine = row.get("engine", "")
             row["regressing"] = engine in regressing_set
             row["chronic"] = engine in chronic_set
+            # Writeback status string (matches the
+            # uniform shape from engine pulse single
+            # mode -- 'wired' / 'advisory' / 'partial' /
+            # 'unknown').
+            row["writeback_status"] = (
+                writeback_by_engine.get(engine, "unknown")
+            )
         print(json.dumps({
             "fleet": results,
             "verdict_counts": _verdict_rollup(results),
