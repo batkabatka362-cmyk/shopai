@@ -15197,11 +15197,30 @@ def _cmd_autonomous_cycle(args) -> None:
                 )
             return
         import time as _time
+        until_at = float(state.get("paused_until_at", 0) or 0)
         until_str = _time.strftime(
             "%Y-%m-%d %H:%M:%S",
-            _time.localtime(state["paused_until_at"]),
+            _time.localtime(until_at),
         )
-        print(f"Cycle PAUSED until {until_str}")
+        # Mirror autonomous-cycle's skip-path render --
+        # remaining + elapsed timing so operators don't
+        # have to mentally subtract from absolute clock.
+        now_ts = _time.time()
+        remaining_h = max(0.0, (until_at - now_ts)) / 3600.0
+        paused_at = float(state.get("paused_at", 0) or 0)
+        elapsed_h = (
+            max(0.0, (now_ts - paused_at)) / 3600.0
+            if paused_at > 0 else 0.0
+        )
+        print(
+            f"Cycle PAUSED until {until_str}  "
+            f"({remaining_h:.1f}h remaining"
+            + (
+                f", paused {elapsed_h:.1f}h ago"
+                if paused_at > 0 else ""
+            )
+            + ")"
+        )
         if state.get("reason"):
             print(f"  Reason: {state['reason']}")
         if freq.get("pause_count", 0):
