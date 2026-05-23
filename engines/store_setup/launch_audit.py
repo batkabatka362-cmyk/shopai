@@ -138,6 +138,12 @@ _FIX_HINTS: dict[str, str] = {
         "email, currency must all be configured before "
         "checkout works correctly)"
     ),
+    "storefront_setup": (
+        "Manual: complete the Shopify setup checklist at "
+        "admin.shopify.com (store-level setup_required + "
+        "checkout_api_supported are Shopify's own canonical "
+        "signals for transaction readiness)"
+    ),
 }
 
 
@@ -178,6 +184,7 @@ _MANUAL_ADMIN_KEYS: frozenset[str] = frozenset({
     "shipping_zones",
     "fulfillable_locations",
     "shop_identity",
+    "storefront_setup",
 })
 _MANUAL_ADMIN_URLS: dict[str, str] = {
     "shipping_zones":
@@ -186,6 +193,8 @@ _MANUAL_ADMIN_URLS: dict[str, str] = {
         "admin.shopify.com/settings/locations",
     "shop_identity":
         "admin.shopify.com/settings/general",
+    "storefront_setup":
+        "admin.shopify.com",
 }
 
 
@@ -308,6 +317,7 @@ def audit_store(
         ),
     )
     checks.append(_check_shop_identity())
+    checks.append(_check_storefront_setup())
 
     # Decorate every check with its operator-actionable hint
     # in one place so individual probes stay focused on the
@@ -321,7 +331,7 @@ def audit_store(
     for check in checks:
         key = check.get("key", "")
         if (
-            key == "shop_identity"
+            key in ("shop_identity", "storefront_setup")
             and check.get("missing") == ["shop_unreachable"]
         ):
             check["fix_hint"] = (
@@ -804,6 +814,74 @@ def _check_shop_identity() -> dict[str, Any]:
         "ok": not missing,
         "applied": applied,
         "expected": len(_REQUIRED_SHOP_FIELDS),
+        "missing": missing,
+    }
+
+
+def _check_storefront_setup() -> dict[str, Any]:
+    """Verify Shopify's own canonical "ready for transactions"
+    signals on the shop record.
+
+    Catches a real launch blocker the other 10 checks don't:
+    a store can have policies + pages + products + shipping
+    all configured and STILL be in Shopify's
+    ``setup_required`` state because, e.g., the merchant
+    hasn't completed the setup checklist or chosen a plan.
+    Such a store accepts no orders -- the storefront is
+    visible but checkout silently breaks.
+
+    Two boolean signals on SHOPIFY_GET_SHOP:
+      * ``setup_required`` should be False (Shopify-side
+        setup checklist complete)
+      * ``checkout_api_supported`` should be True (checkout
+        API enabled -- programmatic order paths work)
+
+    Both are CHEAP reads of the shop root record (same
+    GraphQL call shop_identity uses). Marked as a
+    manual_admin gap since neither can be auto-fixed --
+    setup_required closes via the Shopify admin checklist,
+    checkout_api_supported via plan upgrade if needed.
+    """
+    data = _router_read(
+        capability_attr="SHOPIFY_GET_SHOP",
+        params={},
+        empty_default={},
+    )
+    shop = data.get("shop") if isinstance(data, dict) else {}
+    if not isinstance(shop, dict):
+        shop = {}
+
+    # Distinguish "shop unreachable" (router/auth failure) so
+    # operators get the connection diagnostic instead of the
+    # generic "complete the setup checklist" hint -- same
+    # pattern as _check_shop_identity (f20618ab).
+    if not shop:
+        return {
+            "key": "storefront_setup",
+            "ok": False,
+            "applied": 0,
+            "expected": 2,
+            "missing": ["shop_unreachable"],
+        }
+
+    missing: list[str] = []
+    # setup_required defaults to True on a fresh adapter
+    # response (the field's absence is treated as "we don't
+    # know, assume incomplete" to avoid false-passing audits
+    # on older API versions).
+    setup_required = bool(shop.get("setup_required", True))
+    checkout_api = bool(shop.get("checkout_api_supported", False))
+    if setup_required:
+        missing.append("setup_required")
+    if not checkout_api:
+        missing.append("checkout_api_supported")
+
+    applied = 2 - len(missing)
+    return {
+        "key": "storefront_setup",
+        "ok": not missing,
+        "applied": applied,
+        "expected": 2,
         "missing": missing,
     }
 

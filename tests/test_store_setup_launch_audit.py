@@ -122,6 +122,12 @@ _ALL_GOOD = {
             "contact_email": "ops@acme.example",
             "currency_code": "USD",
             "primary_host": "acme.myshopify.com",
+            # Storefront-setup check (11th audit, added with
+            # this PR): setup_required=False + checkout_api_
+            # supported=True together mean Shopify considers
+            # the store ready for transactions.
+            "setup_required": False,
+            "checkout_api_supported": True,
         },
         "found": True,
     }),
@@ -163,8 +169,8 @@ class TestAllPass:
             "engines.store_setup.launch_audit.record_writeback",
         ):
             result = audit_store()
-        # 9 of 10 pass -> round(100 * 9/10) = 90
-        assert result["completion_pct"] == 90
+        # 10 of 11 pass -> round(100 * 10/11) = 91
+        assert result["completion_pct"] == 91
         assert result["ready_to_launch"] is False
 
 
@@ -1304,3 +1310,145 @@ class TestShopIdentityCheck:
         assert check["ok"] is False
         assert check["applied"] == 0
         assert check["missing"] == ["shop_unreachable"]
+
+
+class TestStorefrontSetupCheck:
+    """Cover the 11th check: Shopify's own canonical
+    transaction-readiness signals (setup_required +
+    checkout_api_supported) on the shop record."""
+
+    def _run(self, responses):
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            return audit_store()
+
+    def _setup_check(self, result):
+        return next(
+            c for c in result["checks"]
+            if c["key"] == "storefront_setup"
+        )
+
+    def test_both_signals_good_passes(self):
+        result = self._run(_ALL_GOOD)
+        check = self._setup_check(result)
+        assert check["ok"] is True
+        assert check["applied"] == 2
+        assert check["expected"] == 2
+        assert check["missing"] == []
+
+    def test_setup_required_true_fails(self):
+        """Shopify still considers the setup checklist
+        incomplete -- storefront can't take orders."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "ops@x.example",
+                "contact_email": "ops@x.example",
+                "currency_code": "USD",
+                "primary_host": "x.myshopify.com",
+                "setup_required": True,
+                "checkout_api_supported": True,
+            },
+        })
+        check = self._setup_check(self._run(responses))
+        assert check["ok"] is False
+        assert "setup_required" in check["missing"]
+        assert check["applied"] == 1
+
+    def test_checkout_api_unsupported_fails(self):
+        """The checkout API gate caps programmatic order
+        paths -- relevant for plan tiers that don't support
+        it."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "ops@x.example",
+                "contact_email": "ops@x.example",
+                "currency_code": "USD",
+                "primary_host": "x.myshopify.com",
+                "setup_required": False,
+                "checkout_api_supported": False,
+            },
+        })
+        check = self._setup_check(self._run(responses))
+        assert check["ok"] is False
+        assert "checkout_api_supported" in check["missing"]
+        assert check["applied"] == 1
+
+    def test_both_signals_bad_fails_with_two_missing(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "ops@x.example",
+                "contact_email": "ops@x.example",
+                "currency_code": "USD",
+                "primary_host": "x.myshopify.com",
+                "setup_required": True,
+                "checkout_api_supported": False,
+            },
+        })
+        check = self._setup_check(self._run(responses))
+        assert check["ok"] is False
+        assert check["applied"] == 0
+        assert set(check["missing"]) == {
+            "setup_required",
+            "checkout_api_supported",
+        }
+
+    def test_default_assumes_incomplete(self):
+        """Absence of the two fields on an older API
+        response defaults to 'we don't know, assume
+        incomplete' -- avoids false-passing audits on
+        legacy adapter versions."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "ops@x.example",
+                "contact_email": "ops@x.example",
+                "currency_code": "USD",
+                "primary_host": "x.myshopify.com",
+                # No setup_required / checkout_api_supported
+            },
+        })
+        check = self._setup_check(self._run(responses))
+        assert check["ok"] is False
+        assert check["applied"] == 0
+
+    def test_router_failure_returns_shop_unreachable(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _fail()
+        check = self._setup_check(self._run(responses))
+        assert check["ok"] is False
+        assert check["missing"] == ["shop_unreachable"]
+        # The fix_hint swap kicks in for shop_unreachable on
+        # storefront_setup just like for shop_identity.
+        assert "OAuth" in check["fix_hint"] or "Connection" in check["fix_hint"]
+
+    def test_classified_as_manual_admin_gap(self):
+        """storefront_setup belongs to the manual_admin
+        bucket -- the orchestrator can't auto-close it."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "ops@x.example",
+                "contact_email": "ops@x.example",
+                "currency_code": "USD",
+                "primary_host": "x.myshopify.com",
+                "setup_required": True,
+                "checkout_api_supported": True,
+            },
+        })
+        result = self._run(responses)
+        assert "storefront_setup" in result["manual_admin_gaps"]
+        assert "storefront_setup" not in result["launch_closeable_gaps"]
