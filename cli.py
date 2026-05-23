@@ -8752,10 +8752,22 @@ def _cmd_world_model_fleet(args) -> None:
     # --not-ready-only filter: only applies when launch-
     # readiness was opted in. Filter BEFORE rendering so
     # both JSON + text views are consistent.
-    not_ready_only = bool(
-        getattr(args, "not_ready_only", False)
-        and include_launch_readiness,
+    raw_not_ready = bool(
+        getattr(args, "not_ready_only", False),
     )
+    not_ready_only = bool(
+        raw_not_ready and include_launch_readiness,
+    )
+    # Operator passed --not-ready-only WITHOUT
+    # --launch-readiness -- the filter would have no
+    # data to filter on. Make this visible instead of
+    # silently dropping the flag.
+    if raw_not_ready and not include_launch_readiness:
+        if not as_json:
+            print(
+                "Warning: --not-ready-only requires "
+                "--launch-readiness. Flag ignored."
+            )
     if not_ready_only:
         rows = [
             r for r in rows
