@@ -9615,6 +9615,18 @@ def _cmd_world_model_show(args) -> None:
                     f"(threshold={bridge.get('threshold_days', '?')}d, "
                     f"window={bridge.get('window_days', '?')}d)"
                 )
+                # Drill-down hint: if pause candidates
+                # exist + the bridge is OFF, operators
+                # might want to enable it. If candidates
+                # exist + bridge is ON, the bridge will
+                # auto-pause on next daily-brief.
+                if pause_cands and not bridge.get("enabled"):
+                    print(
+                        "      Bridge is OFF -- "
+                        "candidates won't auto-pause. "
+                        "Set SHOPAI_AUTO_QUARANTINE_FROM_ALERTS=1 "
+                        "to enable."
+                    )
 
             # Per-store roll-up: which fleet entries actually
             # affect THIS store?
