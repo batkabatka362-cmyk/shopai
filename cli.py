@@ -7055,15 +7055,40 @@ def _cmd_daily_brief(args) -> None:
             f"  Chronic ({len(chronic_warnings)}): "
             f"{top_str}{more}"
         )
-    # Drill-down hint when either signal class fires.
+    # Engine outcome alerts -- compute_engine_alerts
+    # results. Distinct signal class from regressions /
+    # chronic (operates on approval-queue outcomes,
+    # not engine_health scores).
+    if engine_outcome_alerts_list:
+        top = engine_outcome_alerts_list[:3]
+        top_str = ", ".join(
+            f"{a['engine']}(-{a['drop']:.2f})"
+            for a in top
+        )
+        more = (
+            f" +{len(engine_outcome_alerts_list) - 3} more"
+            if len(engine_outcome_alerts_list) > 3 else ""
+        )
+        print(
+            f"  Outcome alerts "
+            f"({len(engine_outcome_alerts_list)}): "
+            f"{top_str}{more}"
+        )
+    # Drill-down hint when any signal class fires.
     # Tells operators where to investigate without making
-    # them remember the CLI shape.
-    if engine_regressions or chronic_warnings:
-        # Suggest the most-impacted engine's drill-down.
+    # them remember the CLI shape. Priority order matches
+    # the status warn-Next: line (d83354a4).
+    if (
+        engine_regressions
+        or chronic_warnings
+        or engine_outcome_alerts_list
+    ):
         top_engine = (
             engine_regressions[0]["engine"]
             if engine_regressions else
             chronic_warnings[0]["engine"]
+            if chronic_warnings else
+            engine_outcome_alerts_list[0]["engine"]
         )
         print(
             f"    Drill down: `shopai engine pulse "
