@@ -23823,8 +23823,15 @@ def _cmd_engines_calibration(args) -> None:
         print()
         print(
             f"ALERT: {len(alerts)} engine(s) are auto-approved AND "
-            "have inverted calibration. Consider disabling them "
-            "via: shopai approvals auto-config --disable <engine>"
+            "have inverted calibration. Consider disabling them."
+        )
+        # Pre-fill the disable command with the first alerted
+        # engine so the operator can paste-and-go on the
+        # highest-priority case.
+        top = alerts[0]["engine"]
+        print(
+            f"  Next: `shopai approvals auto-config "
+            f"--disable {top}`"
         )
 
 
