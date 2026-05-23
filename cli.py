@@ -11751,6 +11751,15 @@ def _cmd_engine_pulse(args) -> None:
                 print(
                     "History: (no recorded events in window)"
                 )
+        # Drill-down hint: pulse answers WHEN this engine is
+        # sick / healthy; fleet answers WHERE. Complementary
+        # surfaces. Render after the (optional) history trail
+        # so it's the last line operators see.
+        print()
+        print(
+            f"  Drill down: `shopai engine fleet "
+            f"{health.engine}`"
+        )
 
     if health.verdict == "unhealthy":
         sys.exit(1)
