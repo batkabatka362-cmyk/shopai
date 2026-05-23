@@ -26038,6 +26038,14 @@ def _cmd_approvals_health_regressions(args) -> None:
                 f"({r['latest_verdict']}, "
                 f"n={r['samples_in_baseline']})"
             )
+        # Drill-down hint -- matches the pattern across
+        # the other engine-health surfaces (fa28b151).
+        if rows:
+            print()
+            print(
+                f"  Drill down: `shopai engine pulse "
+                f"{rows[0]['engine']} --history`"
+            )
 
     if rows:
         sys.exit(1)
@@ -26124,6 +26132,14 @@ def _cmd_approvals_chronic_warnings(args) -> None:
                 f"avg={r['avg_score']:>4.1f}/10  "
                 f"({r['latest_verdict']}, "
                 f"n={r['samples']})"
+            )
+        # Drill-down hint -- matches the pattern across
+        # the other engine-health surfaces.
+        if rows:
+            print()
+            print(
+                f"  Drill down: `shopai engine pulse "
+                f"{rows[0]['engine']} --history`"
             )
 
     if rows:
