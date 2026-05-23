@@ -20749,6 +20749,14 @@ def _render_post_launch_audit_followup(
     if cli_seq and not a_ready:
         for cmd in cli_seq[:3]:
             print(f"  $ {cmd}")
+    # When post-launch + audit both come back READY, the
+    # store is genuinely live and enriched. Suggest the
+    # autonomous-cycle (operational layer) as the next step.
+    if a_ready:
+        print(
+            "  Next: `shopai autonomous-cycle` "
+            "to start the loop on the live store."
+        )
 
 
 def _cmd_shopify_scopes_live_check(args) -> None:

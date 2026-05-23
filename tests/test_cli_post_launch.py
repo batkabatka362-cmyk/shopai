@@ -375,6 +375,46 @@ class TestAuditFollowUp:
         assert "audit_after_post_launch" in data
         assert data["audit_after_post_launch"]["ready_to_launch"] is True
 
+    def test_audit_ready_hints_autonomous_cycle(self, cli):
+        """When post-launch + audit both return READY the
+        renderer points at the autonomous-cycle as the next
+        operational layer (mirrors the all-ready hint chain
+        on the other launch surfaces)."""
+        audit_result = {
+            "checks": [
+                {"key": "legal_policies", "ok": True,
+                 "applied": 5, "expected": 5, "missing": [],
+                 "fix_hint": ""},
+            ],
+            "ready_to_launch": True,
+            "completion_pct": 100,
+            "missing_summary": "all checks passed",
+            "next_action": "",
+        }
+        with patch.object(
+            cli, "_get_store_manager", return_value=_fake_sm(),
+        ), patch(
+            "core.adapters.get_router",
+            return_value=_ok_router(_SAMPLE),
+        ), patch(
+            "engines.store_setup.seo_meta_enricher.apply_seo",
+            return_value={"applied_count": 2, "results": []},
+        ), patch(
+            "engines.store_setup.product_description_enricher."
+            "apply_descriptions",
+            return_value={"applied_count": 2, "results": []},
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=audit_result,
+        ):
+            out, code = _capture(
+                cli._cmd_post_launch,
+                _ns(apply=True, audit=True),
+            )
+        assert code == 0
+        assert "READY" in out
+        assert "Next: `shopai autonomous-cycle`" in out
+
     def test_audit_skipped_on_preview(self, cli):
         """--audit is intentionally a post-apply check.
         Running on preview (no --apply) doesn't fire the
