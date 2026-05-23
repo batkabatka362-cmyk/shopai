@@ -11734,6 +11734,40 @@ def _cmd_engine_summary(args) -> None:
             exc,
         )
 
+    # Health-state flags (regressing / chronic) -- matches
+    # the engine pulse JSON shape (e76ab5f2) so summary +
+    # pulse stay uniform for JSON consumers.
+    regressing = False
+    chronic = False
+    try:
+        from core.approval.engine_health_history import (
+            find_regressions, find_chronic_warnings,
+        )
+        if any(
+            r.engine == engine_name
+            for r in find_regressions(
+                min_drop=3.0,
+                baseline_window_seconds=86400.0 * 7.0,
+                latest_window_seconds=86400.0 * 1.0,
+                min_baseline_samples=3,
+            )
+        ):
+            regressing = True
+        if any(
+            w.engine == engine_name
+            for w in find_chronic_warnings(
+                sample_window_seconds=86400.0 * 7.0,
+                min_samples=3,
+                healthy_score_floor=7,
+            )
+        ):
+            chronic = True
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine summary health-state probe raised: %s",
+            exc,
+        )
+
     alert_streak = 0
     last_alert_at: float | None = None
     recent_alerts: list[dict] = []
@@ -11823,6 +11857,8 @@ def _cmd_engine_summary(args) -> None:
             "outcomes": outcomes,
             "quarantine": quarantine_info,
             "writeback": writeback_info,
+            "regressing": regressing,
+            "chronic": chronic,
             "recent": recent,
         }, indent=2, default=str))
         return
