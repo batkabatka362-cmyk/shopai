@@ -5989,6 +5989,10 @@ def _cmd_daily_brief(args) -> None:
     # Uses default thresholds (recent=24h, baseline=168h,
     # threshold=0.2, min_recent=3) -- conservative + matches
     # the standalone command.
+    # Captured at function scope so the envelope can expose
+    # it as a top-level field alongside engine_regressions /
+    # engine_chronic_warnings.
+    engine_outcome_alerts_list: list[dict[str, Any]] = []
     try:
         from core.approval.outcome_trends import (
             compute_engine_alerts,
@@ -6037,6 +6041,20 @@ def _cmd_daily_brief(args) -> None:
                     f"{a.detail} (flagged {days} day(s) running)"
                 )
             alerts.append(entry)
+            # Mirror the world-model cycle section's
+            # engine_outcome_alerts shape so JSON consumers
+            # see the same fields whether they hit
+            # daily-brief or world-model.
+            engine_outcome_alerts_list.append({
+                "engine": a.engine,
+                "recent_score": a.recent_score,
+                "baseline_score": a.baseline_score,
+                "drop": a.drop,
+                "recent_executed": a.recent_executed,
+                "baseline_executed": a.baseline_executed,
+                "detail": a.detail,
+                "kind": a.kind,
+            })
 
         # Auto-quarantine bridge: when the consecutive-day
         # count crosses the configured threshold AND the
@@ -6853,6 +6871,9 @@ def _cmd_daily_brief(args) -> None:
             "fleet_health": fleet_health,
             "engine_regressions": engine_regressions,
             "engine_chronic_warnings": chronic_warnings,
+            "engine_outcome_alerts": (
+                engine_outcome_alerts_list
+            ),
             "launch_readiness": launch_readiness,
             "plan_history": plan_history_summary,
             "capability_overrides": overrides_summary,
