@@ -11489,6 +11489,43 @@ def _cmd_engine_summary(args) -> None:
         print(
             f"  (no recorded activity yet for {engine_name})"
         )
+        # Even with no activity, surface the engine's
+        # static state -- operators want to know whether
+        # the engine is wired/advisory/quarantined when
+        # they're asking 'why is this engine quiet?'.
+        try:
+            from engines._writeback_audit import (
+                audit_writeback_coverage,
+            )
+            wb_report = audit_writeback_coverage("engines")
+            wb = next(
+                (
+                    s for s in wb_report.engines
+                    if s.name == engine_name
+                ),
+                None,
+            )
+            if wb:
+                print(
+                    f"  writeback: {wb.status}  "
+                    f"(writers={len(wb.writer_files)}, "
+                    f"opt_ins={len(wb.opt_in_flags)})"
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "engine_summary writeback probe raised: "
+                "%s", exc,
+            )
+        if quarantine_info:
+            flags = [
+                f for f in (
+                    "exempt", "released", "alert_paused",
+                ) if quarantine_info.get(f)
+            ]
+            if flags:
+                print(
+                    f"  quarantine: {', '.join(flags)}"
+                )
         return
     print("Queue counts:")
     for status_value, n in counts.items():
