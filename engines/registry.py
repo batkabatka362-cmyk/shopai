@@ -196,6 +196,9 @@ _ENGINE_MAP: dict[str, str] = {
     "campaign_strategy": "engines.campaign_strategy",
     "workflow_builder": "engines.workflow_builder",
     "roas_guardrails": "engines.roas_guardrails",
+    "ad_creative_generator": "engines.ad_creative_generator",
+    "product_launch": "engines.product_launch",
+    "winning_products": "engines.winning_products",
 
     # ── Reporting Engines (flow.py pattern) ────────────────────
     "report_dashboard": "engines.report_dashboard",
