@@ -12443,6 +12443,26 @@ def _cmd_engine_ranking(args) -> None:
             f"{score_str:>6s} "
             f"${b['revenue']:>10,.2f}  {flags_str}"
         )
+    # Top-engine highlight + truncation count -- helps
+    # operators see who's the leader at a glance instead
+    # of squinting at row 1.
+    if top:
+        leader = top[0]
+        score_str = (
+            "n/a" if leader["outcome_score"] is None
+            else f"{leader['outcome_score']:.0%}"
+        )
+        truncated = max(0, len(ranked) - len(top))
+        print()
+        line = (
+            f"  Top: {leader['engine']} "
+            f"(score={score_str}, "
+            f"executed={leader['executed']}, "
+            f"revenue=${leader['revenue']:,.2f})"
+        )
+        if truncated:
+            line += f"  -- +{truncated} more not shown"
+        print(line)
 
 
 def _cmd_engine_alerts(args) -> None:
