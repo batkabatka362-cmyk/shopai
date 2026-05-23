@@ -13260,6 +13260,17 @@ def _cmd_engine_alerts(args) -> None:
             f"baseline executed={a['baseline_executed']} "
             f"({a['baseline_polarised']} polarised)"
         )
+    # Drill-down hint for the top-impacted engine, matching
+    # the pattern across daily-brief / show / fleet / cycle
+    # (a1deb294 et al). Points at engine pulse --history
+    # for time-series inspection.
+    if alerts:
+        top = alerts[0]
+        print()
+        print(
+            f"  Drill down: `shopai engine pulse "
+            f"{top['engine']} --history`"
+        )
 
 
 def _cmd_engines_writebacks(args) -> None:
