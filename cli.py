@@ -8005,8 +8005,35 @@ def _cmd_store_connect(args) -> None:
     result = sm.test_connection(store_id)
     if result.get("connected"):
         print(f"✓ Connected to Shopify: {result.get('shop', store_id)}")
+        return
+    err = result.get("error", "unknown")
+    print(f"✗ Connection failed: {err}")
+    # Drill-down hint: context-aware based on error class.
+    err_lower = str(err).lower()
+    print()
+    if "credential" in err_lower or "token" in err_lower:
+        print(
+            f"  Next: `shopai store add {store_id} <shop_url> "
+            "<api_key>` (re-add credentials)"
+        )
+    elif (
+        "scope" in err_lower
+        or "access_denied" in err_lower
+    ):
+        print(
+            "  Next: `shopai shopify-scopes-live-check` "
+            "(scope drift between manifest + install)"
+        )
+    elif "not found" in err_lower or "unknown" in err_lower:
+        print(
+            "  Next: `shopai store list` (verify the store "
+            "id is registered)"
+        )
     else:
-        print(f"✗ Connection failed: {result.get('error', 'unknown')}")
+        print(
+            "  Next: `shopai shopify-doctor` (full Shopify "
+            "integration health check)"
+        )
 
 
 def _cmd_store_remove(args) -> None:
