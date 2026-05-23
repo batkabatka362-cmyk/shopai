@@ -6942,6 +6942,20 @@ def _cmd_daily_brief(args) -> None:
             f"  Chronic ({len(chronic_warnings)}): "
             f"{top_str}{more}"
         )
+    # Drill-down hint when either signal class fires.
+    # Tells operators where to investigate without making
+    # them remember the CLI shape.
+    if engine_regressions or chronic_warnings:
+        # Suggest the most-impacted engine's drill-down.
+        top_engine = (
+            engine_regressions[0]["engine"]
+            if engine_regressions else
+            chronic_warnings[0]["engine"]
+        )
+        print(
+            f"    Drill down: `shopai engine pulse "
+            f"{top_engine} --history`"
+        )
     print()
 
     # Per-store table (compact)
