@@ -10189,6 +10189,19 @@ def _cmd_memory_recall(args) -> None:
                 for k, v in components.items()
             )
             print(comp_line)
+    # Drill-down hint: top-ranked entry's action_id is the
+    # natural follow-up -- "give me the full detail on this
+    # past decision". `approvals show <id>` is the per-action
+    # detail surface.
+    top = results[0] if results else None
+    if top:
+        top_id = top.get("action_id") or top.get("id") or ""
+        if top_id:
+            print()
+            print(
+                f"  Drill down: `shopai approvals show "
+                f"{top_id}`"
+            )
 
 
 def _cmd_store_verify(args) -> None:

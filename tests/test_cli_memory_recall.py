@@ -302,6 +302,82 @@ class TestEmptyResults:
         assert code == 0
         assert "no similar past decisions" in out
 
+    def test_no_results_no_drill_down(self, cli):
+        """Empty results = no drill-down hint (no top entry to
+        point at)."""
+        inst = _fake_retriever(results=[])
+        with patch(
+            "core.decision_retrieval.DecisionRetrieval",
+            return_value=inst,
+        ):
+            out, _ = _capture(
+                cli._cmd_memory_recall,
+                _ns(engine="loyalty"),
+            )
+        assert "Drill down" not in out
+
+
+class TestDrillDownHint:
+    """Top-ranked entry's action_id is the drill-down target --
+    operators can immediately get full detail on the most
+    relevant past decision via `approvals show <id>`."""
+
+    def test_top_entry_drives_drill_down(self, cli):
+        inst = _fake_retriever(results=[
+            {
+                "action_id": "top-id-123",
+                "action_type": "mint_loyalty_code",
+                "capability": "SHOPIFY_CREATE_DISCOUNT",
+                "status": "executed",
+                "decided_at": 1700000000,
+                "relevance": 0.9,
+                "outcome_summary": {"count": 0},
+                "score_components": {},
+            },
+            {
+                "action_id": "second-id-456",
+                "action_type": "mint_loyalty_code",
+                "capability": "SHOPIFY_CREATE_DISCOUNT",
+                "status": "executed",
+                "decided_at": 1690000000,
+                "relevance": 0.5,
+                "outcome_summary": {"count": 0},
+                "score_components": {},
+            },
+        ])
+        with patch(
+            "core.decision_retrieval.DecisionRetrieval",
+            return_value=inst,
+        ):
+            out, _ = _capture(
+                cli._cmd_memory_recall,
+                _ns(engine="loyalty"),
+            )
+        # Hint targets the TOP-relevance entry, not any other.
+        assert "Drill down: `shopai approvals show top-id-123`" in out
+        assert "second-id-456" not in out.split("Drill down")[-1]
+
+    def test_hint_absent_in_json(self, cli):
+        inst = _fake_retriever(results=[{
+            "action_id": "x",
+            "action_type": "a",
+            "capability": "c",
+            "status": "executed",
+            "decided_at": 1700000000,
+            "relevance": 0.9,
+            "outcome_summary": {"count": 0},
+            "score_components": {},
+        }])
+        with patch(
+            "core.decision_retrieval.DecisionRetrieval",
+            return_value=inst,
+        ):
+            out, _ = _capture(
+                cli._cmd_memory_recall,
+                _ns(engine="loyalty", json=True),
+            )
+        assert "Drill down" not in out
+
 
 # ─── --since-hours flag ──────────────────────────────────────
 
