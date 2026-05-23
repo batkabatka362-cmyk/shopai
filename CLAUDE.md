@@ -832,22 +832,50 @@ The pattern stabilised across the five wireups:
   (mint helpers, token derivation) lives in
   `engines/_recovery_codes.py`.
 
-Phase 7 (more engine writebacks) — **in progress**:
+Phase 7 (more engine writebacks) — **active, 26 wired
+engines**:
 Same pattern as Phase 6 applied to additional recommender
-engines. So far:
+engines. Verified each turn by
+``engines._writeback_audit.audit_writeback_coverage`` --
+the runtime check that scans engines/ for ``*_applier.py``,
+``*_minter.py``, ``*_payer.py`` writer files + ``data.get
+("apply_*")`` opt-in flags in flow.py.
 
-- PR #49 — `product_lifecycle` archives declining products
-  via `SHOPIFY_UPDATE_PRODUCT` (status=ARCHIVED). First
+Currently wired (26 / 135 = 19%):
+  affiliate, browse_recovery, bundle, cart_recovery,
+  catalog, churn_prediction, content_generation,
+  customer_segmentation, discount_strategy, dynamic_pricing,
+  email_marketing, fraud_detection, inventory,
+  landing_page, legal_document, loyalty, pricing,
+  product_lifecycle, product_optimization,
+  product_research, returns_management,
+  search_optimization, shipping_optimization, store_design,
+  tag_management, wholesale_b2b
+
+Notable wireups beyond Phase 6's original 5:
+- ``product_lifecycle`` archives declining products via
+  ``SHOPIFY_UPDATE_PRODUCT`` (status=ARCHIVED). First
   destructive writeback; needed stricter safety gates
-  (stage + velocity + confidence). Engine output now also
-  carries `confidence: float` so the writer can gate on it
-  without re-running the classifier.
+  (stage + velocity + confidence floor).
+- ``store_design`` integrates ``design_applier`` as opt-in
+  Phase 7 via ``data.apply_design + data.theme_id`` so
+  cycle/fleet-plan integration is possible (5b029d82).
+- ``churn_prediction`` mints retention codes for high-risk
+  customers when retention_action == win_back_offer. AGI
+  guardrail integrated; cost-tier -> percentage mapping
+  (10/15/20%). Added to GUARDRAIL_ENGINES roster
+  (c58ec58d + a6c3be2b).
+- ``product_research`` tags research-validated SKUs with
+  ``research:winner`` + ``research:<verdict>`` via
+  ``SHOPIFY_UPDATE_PRODUCT``. Pure tag-write -- no
+  guardrail integration since financial impact is zero
+  (afc31024).
 
-Future Phase 7 candidates: `inventory` (INVENTORY_ADJUST),
-`wholesale_b2b` (CREATE_DISCOUNT B2B-scoped),
-`product_optimization` (multi-modal UPDATE_PRODUCT),
-`search_optimization` (UPDATE_PRODUCT seo fields — needs the
-products adapter extended first).
+The next-candidate question: pick advisory engines with
+clear single-mutation outputs. Don't wire engines whose
+recommendations need operator review (e.g. personal_outreach
+in churn_prediction's retention_action set was skipped --
+not a discount, not auto-mintable).
 
 Phase 8 (autonomous-loop integration) — **complete**:
 Closes the gap that Phase 6 / 7 exposed. Engine writebacks
