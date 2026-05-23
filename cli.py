@@ -16730,6 +16730,57 @@ def _cmd_autonomous_cycle(args) -> None:
         pause_state = _cp.get_pause_state()
         if pause_state.get("active"):
             summary["paused"] = pause_state
+            # Even on a paused cycle, expose engine-health
+            # counts so cron monitors parsing the JSON
+            # don't lose visibility of degradation
+            # signals just because the cycle skipped.
+            try:
+                from core.approval.engine_health_history import (
+                    find_regressions, find_chronic_warnings,
+                )
+                from core.approval.outcome_trends import (
+                    compute_engine_alerts,
+                )
+                from core.approval.queue import (
+                    get_approval_queue,
+                )
+                summary["engine_health"] = {
+                    "regression_count": len(
+                        find_regressions(
+                            min_drop=3.0,
+                            baseline_window_seconds=(
+                                86400.0 * 7.0
+                            ),
+                            latest_window_seconds=(
+                                86400.0 * 1.0
+                            ),
+                            min_baseline_samples=3,
+                        ),
+                    ),
+                    "chronic_warning_count": len(
+                        find_chronic_warnings(
+                            sample_window_seconds=(
+                                86400.0 * 7.0
+                            ),
+                            min_samples=3,
+                            healthy_score_floor=7,
+                        ),
+                    ),
+                    "outcome_alert_count": len(
+                        compute_engine_alerts(
+                            get_approval_queue(),
+                            recent_hours=24.0,
+                            baseline_hours=168.0,
+                            threshold=0.2,
+                            min_recent=3,
+                        ),
+                    ),
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "paused-cycle engine_health probe "
+                    "raised: %s", exc,
+                )
             if as_json:
                 print(json.dumps(
                     summary, indent=2, default=str,
