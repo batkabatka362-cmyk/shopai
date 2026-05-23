@@ -14648,6 +14648,13 @@ def _cmd_engines_writebacks(args) -> None:
         print(
             f"  Drill down: `shopai engine summary {first}`"
         )
+        # Fleet smoke-test surface (7d2f2c51). Lets operators
+        # verify every wired engine in one shot -- CI gate
+        # for Phase 7 regressions.
+        print(
+            "  Smoke-test all: `shopai engine try-wireup "
+            "--all` (dry-run)"
+        )
 
 
 def _collect_engines_stats(top_n: int, filter_mode: str) -> dict:
