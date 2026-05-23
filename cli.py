@@ -12802,6 +12802,14 @@ def _cmd_engine_fleet(args) -> None:
         f"score={score_str}, "
         f"rev=${rollup['total_revenue']:,.2f}"
     )
+    # Drill-down hint: fleet view shows WHERE; pulse history
+    # shows WHEN. Operator's natural follow-up is "has this
+    # engine always behaved like this on these stores?".
+    if rollup["stores_with_activity"] > 0:
+        print(
+            f"    Drill down: `shopai engine pulse "
+            f"{engine_name} --history`"
+        )
 
 
 def _cmd_engine_compare(args) -> None:
