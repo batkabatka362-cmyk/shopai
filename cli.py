@@ -22730,6 +22730,23 @@ def _cmd_unified_doctor(args) -> None:
             f"Overall: FAILED -- {' + '.join(broken)} has gaps. "
             "Inspect sections above."
         )
+        # Drill-down hint: route to the side-specific doctor
+        # that has more detail per check + clear fix hints.
+        if not shopify_ok and not approvals_ok:
+            print(
+                "  Next: `shopai shopify-doctor` "
+                "(or `shopai approvals doctor`)"
+            )
+        elif not shopify_ok:
+            print(
+                "  Next: `shopai shopify-doctor` for the "
+                "Shopify-side detail"
+            )
+        else:
+            print(
+                "  Next: `shopai approvals doctor` for the "
+                "approval-queue detail"
+            )
         sys.exit(1)
 
 
