@@ -9470,11 +9470,28 @@ def _cmd_world_model_show(args) -> None:
         next_action = launch_readiness.get("next_action")
         if next_action and not ready:
             print(f"  Next: {next_action}")
-        missing = launch_readiness.get(
-            "missing_summary", "",
+        # Surface the gap buckets when NOT READY. The two
+        # buckets answer different operator questions: 'what
+        # can I close with one command?' vs 'what's stuck on
+        # Shopify admin?'.
+        closeable = (
+            launch_readiness.get(
+                "launch_closeable_gaps",
+            ) or []
         )
-        if missing and not ready:
-            print(f"  Missing: {missing}")
+        manual = (
+            launch_readiness.get("manual_admin_gaps") or []
+        )
+        if not ready and closeable:
+            print(
+                f"  Launch-closeable ({len(closeable)}): "
+                f"{', '.join(closeable)}"
+            )
+        if not ready and manual:
+            print(
+                f"  Manual admin ({len(manual)}): "
+                f"{', '.join(manual)}"
+            )
         # Surface the structured plan's CLI sequence so
         # operators see actionable commands inline. Mirrors
         # daily-brief's launch-readiness rendering.

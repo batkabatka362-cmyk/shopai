@@ -1302,6 +1302,12 @@ class WorldModel:
                 ),
                 "checks": audit.get("checks") or [],
                 "plan": audit.get("plan") or None,
+                "manual_admin_gaps": (
+                    audit.get("manual_admin_gaps") or []
+                ),
+                "launch_closeable_gaps": (
+                    audit.get("launch_closeable_gaps") or []
+                ),
             }
         except Exception as exc:  # noqa: BLE001
             logger.debug(
