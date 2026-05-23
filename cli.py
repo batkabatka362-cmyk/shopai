@@ -11297,6 +11297,34 @@ def _cmd_engine_pulse(args) -> None:
             "raised: %s", exc,
         )
 
+    # Writeback wire-up state (935a8116 + 5dc310e4 added
+    # this to engine summary; mirror here so engine pulse
+    # has the same JSON shape).
+    payload["writeback"] = None
+    try:
+        from engines._writeback_audit import (
+            audit_writeback_coverage,
+        )
+        wb_report = audit_writeback_coverage("engines")
+        wb = next(
+            (
+                s for s in wb_report.engines
+                if s.name == engine_name
+            ),
+            None,
+        )
+        if wb:
+            payload["writeback"] = {
+                "status": wb.status,
+                "writers": list(wb.writer_files),
+                "opt_ins": list(wb.opt_in_flags),
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine_pulse writeback probe (json) "
+            "raised: %s", exc,
+        )
+
     if as_json:
         print(json.dumps(payload, indent=2, default=str))
     else:
