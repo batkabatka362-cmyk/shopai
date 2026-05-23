@@ -17301,30 +17301,55 @@ def _cmd_autonomous_cycle(args) -> None:
     # aggregates (3f4e14cc). Lets cron monitoring
     # pipelines that parse cycle JSON detect engine
     # degradation without a separate command.
+    engine_health_block: dict[str, Any] = {
+        "regression_count": 0,
+        "chronic_warning_count": 0,
+        "outcome_alert_count": 0,
+    }
     try:
         from core.approval.engine_health_history import (
             find_regressions, find_chronic_warnings,
         )
-        summary["engine_health"] = {
-            "regression_count": len(find_regressions(
+        engine_health_block["regression_count"] = len(
+            find_regressions(
                 min_drop=3.0,
                 baseline_window_seconds=86400.0 * 7.0,
                 latest_window_seconds=86400.0 * 1.0,
                 min_baseline_samples=3,
-            )),
-            "chronic_warning_count": len(
-                find_chronic_warnings(
-                    sample_window_seconds=86400.0 * 7.0,
-                    min_samples=3,
-                    healthy_score_floor=7,
-                ),
             ),
-        }
+        )
+        engine_health_block["chronic_warning_count"] = len(
+            find_chronic_warnings(
+                sample_window_seconds=86400.0 * 7.0,
+                min_samples=3,
+                healthy_score_floor=7,
+            ),
+        )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "autonomous-cycle: engine_health JSON "
             "raised: %s", exc,
         )
+    try:
+        from core.approval.outcome_trends import (
+            compute_engine_alerts,
+        )
+        from core.approval.queue import get_approval_queue
+        engine_health_block["outcome_alert_count"] = len(
+            compute_engine_alerts(
+                get_approval_queue(),
+                recent_hours=24.0,
+                baseline_hours=168.0,
+                threshold=0.2,
+                min_recent=3,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "autonomous-cycle: outcome_alert_count "
+            "raised: %s", exc,
+        )
+    summary["engine_health"] = engine_health_block
 
     if as_json:
         print(json.dumps(summary, indent=2, default=str))
