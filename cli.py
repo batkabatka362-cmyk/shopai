@@ -4346,6 +4346,16 @@ def _cmd_store_add(args) -> None:
     print(f"  Type: {args.store_type}")
     if args.niche:
         print(f"  Niche: {args.niche}")
+    # Drill-down hint: just-added store needs auth verification
+    # + first sync before per-store commands work. Skip when
+    # credentials weren't supplied (caller knows they're not
+    # done yet).
+    if args.api_key or args.client_id:
+        print()
+        print(
+            f"  Next: `shopai store connect {args.store_id}` "
+            "(verify auth)."
+        )
 
 
 def _cmd_transfer(args) -> None:
