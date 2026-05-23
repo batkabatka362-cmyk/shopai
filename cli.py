@@ -26169,6 +26169,14 @@ def _cmd_setup() -> None:
                     for dtype, info in synced.items():
                         print(f"  {dtype}: {info.get('count', 0)} records")
                     print(f"\n✓ Setup complete! Your store is ready.")
+                    # Drill-down hint: post-setup the natural
+                    # next step is launch-readiness check ->
+                    # launch -> autonomous-cycle.
+                    print()
+                    print(
+                        f"  Next: `shopai launch-audit "
+                        f"{store_id}` to see launch readiness."
+                    )
                 else:
                     print(f"  Sync issue: {sync_result.get('error', 'check credentials')}")
             else:
