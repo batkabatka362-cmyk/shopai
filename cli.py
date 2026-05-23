@@ -409,13 +409,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     world_fleet_p.add_argument(
         "--sort", default="id",
-        choices=("id", "revenue", "sync", "readiness"),
+        choices=(
+            "id", "revenue", "sync", "readiness",
+            "alerts",
+        ),
         help=(
             "Row sort: id (alphabetical, default), "
             "revenue (desc -- highest first), sync (oldest "
-            "first -- staleness flag), or readiness "
-            "(lowest completion_pct first; requires "
-            "--launch-readiness)."
+            "first -- staleness flag), readiness (lowest "
+            "completion_pct first; requires "
+            "--launch-readiness), or alerts (most-alerted "
+            "store first -- per-store cycle alerts)."
         ),
     )
     world_fleet_p.add_argument(
@@ -8942,6 +8946,14 @@ def _cmd_world_model_fleet(args) -> None:
                 -1 if pct is None else int(pct)
             )
             return (is_err, sort_pct, snap_row.get(
+                "store_id", "",
+            ))
+        if sort_mode == "alerts":
+            # Sort by per-store cycle alert count desc
+            # (most-alerted first).
+            cycle_sec = snap_row.get("cycle") or {}
+            alert_n = -len(cycle_sec.get("alerts") or [])
+            return (is_err, alert_n, snap_row.get(
                 "store_id", "",
             ))
         return (is_err, snap_row.get("store_id", ""))
