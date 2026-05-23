@@ -12047,6 +12047,19 @@ def _cmd_engine_summary(args) -> None:
                 print(
                     f"  quarantine: {', '.join(flags)}"
                 )
+        # Surface engine-health state even with no activity
+        # -- a regressing/chronic engine that's been
+        # quarantined might show 'no activity' but the
+        # underlying scores still exist.
+        state_bits: list[str] = []
+        if regressing:
+            state_bits.append("REGRESSING")
+        if chronic:
+            state_bits.append("CHRONIC")
+        if state_bits:
+            print(
+                f"  health state: {' + '.join(state_bits)}"
+            )
         return
     print("Queue counts:")
     for status_value, n in counts.items():
