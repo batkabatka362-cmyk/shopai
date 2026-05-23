@@ -58,7 +58,7 @@ def register_all() -> None:
             "'set up the store', 'make the store launchable', "
             "or any task whose outcome is a working "
             "storefront on a fresh Shopify install. Closes "
-            "up to 7 of 9 launch_audit checks in one shot."
+            "up to 7 of 10 launch_audit checks in one shot."
         ),
         module_path=(
             "engines.store_setup.launch_orchestrator:launch_store"
