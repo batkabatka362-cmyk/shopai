@@ -8740,6 +8740,37 @@ def _cmd_world_model_fleet(args) -> None:
     rows = sorted(rows, key=_sort_key)
 
     if as_json:
+        # Pre-compute the same aggregates the text view
+        # prints so JSON consumers don't have to re-derive
+        # them. Mirror of the post-table rollups.
+        agg_revenue = sum(
+            (r.get("stats") or {}).get("total_revenue", 0.0)
+            for r in rows if "error" not in r
+        )
+        agg_pending = sum(
+            (r.get("approvals") or {}).get(
+                "pending_total", 0,
+            )
+            for r in rows if "error" not in r
+        )
+        agg: dict[str, Any] = {
+            "total_revenue": agg_revenue,
+            "total_pending_approvals": agg_pending,
+        }
+        if include_launch_readiness:
+            ready_n = 0
+            checked_n = 0
+            for r in rows:
+                lr = r.get("launch_readiness") or {}
+                if lr.get("checked"):
+                    checked_n += 1
+                    if lr.get("ready_to_launch"):
+                        ready_n += 1
+            agg["launch_readiness"] = {
+                "audited": checked_n,
+                "ready": ready_n,
+                "not_ready": checked_n - ready_n,
+            }
         print(json.dumps({
             "skip_live": skip_live,
             "include_launch_readiness": (
@@ -8747,6 +8778,7 @@ def _cmd_world_model_fleet(args) -> None:
             ),
             "not_ready_only": not_ready_only,
             "sort": sort_mode,
+            "aggregates": agg,
             "stores": rows,
         }, indent=2, default=str))
         return
