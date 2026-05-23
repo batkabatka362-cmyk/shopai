@@ -1408,10 +1408,10 @@ class TestLaunchReadiness:
                 cli._cmd_daily_brief,
                 _ns(include_launch_readiness=True),
             )
-        # READY mark, no Next line
+        # READY mark + post-launch enrichment hint
         assert "ready-store" in out
         assert "READY" in out
-        assert "Next:" not in out
+        assert "Next: `shopai post-launch --apply`" in out
 
     def test_opt_in_audit_raise_per_store_doesnt_break(self, cli):
         sm = _fake_sm([
