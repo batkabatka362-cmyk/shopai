@@ -9566,6 +9566,21 @@ def _cmd_world_model_show(args) -> None:
                     f"{a['recent_score']:.2f} "
                     f"(-{a['drop']:.2f})"
                 )
+        # Drill-down hint when ANY engine-degradation
+        # signal fired -- mirror of daily-brief's hint
+        # (a1deb294). Suggest the top engine from
+        # regressions / chronics / outcome_alerts in
+        # priority order.
+        if regressions or chronics or outcome_alerts:
+            top_engine = (
+                (regressions[0]["engine"] if regressions
+                 else chronics[0]["engine"] if chronics
+                 else outcome_alerts[0]["engine"])
+            )
+            print(
+                f"    Drill down: `shopai engine pulse "
+                f"{top_engine} --history`"
+            )
 
     # Launch-readiness section (opt-in; only renders when
     # --launch-readiness was passed so default snapshots
