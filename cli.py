@@ -25830,6 +25830,17 @@ def _cmd_outcomes(args) -> None:
             if isinstance(rev, (int, float)) and rev:
                 line += f"  rev={rev:.2f}"
         print(line)
+    # Drill-down hint: the most recent outcome (first row,
+    # since list_recent_outcomes returns newest-first) is the
+    # natural target for "show me everything about this
+    # action". Action_id is truncated in the table so the
+    # hint surfaces the full id.
+    top_id = outcomes[0].get("action_id") if outcomes else ""
+    if top_id:
+        print()
+        print(
+            f"  Drill down: `shopai approvals show {top_id}`"
+        )
 
 
 def _print_approval_status() -> None:

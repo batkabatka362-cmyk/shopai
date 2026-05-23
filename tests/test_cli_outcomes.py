@@ -104,6 +104,8 @@ class TestTextRender:
         assert "orders/create" in out
         # Revenue surfaced inline when present
         assert "rev=50.00" in out
+        # Drill-down hint points at the top action
+        assert "Drill down: `shopai approvals show" in out
 
     def test_empty_renders_friendly_message(self, cli, isolated_queue):
         out, code = _capture(cli._cmd_outcomes, _ns())
