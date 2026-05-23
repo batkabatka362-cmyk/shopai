@@ -28730,8 +28730,11 @@ def _cmd_approvals_trace(args) -> None:
 
     print()
     print(
-        "  No side effects executed. "
-        f"Run `shopai approvals execute {a['id']}` to apply."
+        "  No side effects executed."
+    )
+    print(
+        f"  Next: `shopai approvals execute {a['id']}` "
+        "to apply."
     )
 
     # Exit 1 if any issues were detected so scripts can gate on
