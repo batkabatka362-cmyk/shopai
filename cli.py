@@ -26623,6 +26623,30 @@ def _cmd_approvals_quarantine_simulate(args) -> None:
     print(f"  exempt:       {exempt}")
     print(f"  released:     {released}")
     print(f"  alert_paused: {alert_paused}")
+    # Drill-down hint: when quarantined, point operator at the
+    # right release command for the dominant cause. Pre-fill
+    # the store filter when this was a per-store simulation.
+    if decision.should_quarantine:
+        store_flag = (
+            f" --release-alert-store {store_id}"
+            if store_id else ""
+        )
+        if alert_paused:
+            print()
+            print(
+                f"  Next: `shopai approvals quarantine "
+                f"--release-alert {engine}{store_flag}` "
+                "to clear the alert pause."
+            )
+        else:
+            # Outcome-based or fleet-wide quarantine -- the
+            # actionable lever is engine pulse + history to
+            # see why the negative_ratio crossed the gate.
+            print()
+            print(
+                f"  Drill down: `shopai engine pulse "
+                f"{engine} --history`"
+            )
 
 
 def _cmd_approvals_health_history(args) -> None:
