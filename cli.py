@@ -11239,6 +11239,15 @@ def _cmd_engine_pulse(args) -> None:
                 print(
                     f"  Health state: {' + '.join(state_bits)}"
                 )
+                # Hint: ``--history`` shows the trajectory
+                # so operators investigating WHY can see
+                # when the regression / chronic state
+                # started.
+                if not getattr(args, "history", False):
+                    print(
+                        f"    Run with --history to see "
+                        f"the score trajectory."
+                    )
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "engine_pulse health state probe raised: %s",
