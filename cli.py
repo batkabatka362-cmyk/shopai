@@ -17631,7 +17631,30 @@ def _cmd_autonomous_cycle(args) -> None:
             min_samples=3,
             healthy_score_floor=7,
         )
-        if regs_list or chronic_list:
+        # Also pull outcome alerts so the surface matches
+        # the paused-path rendering (50e78263) + the JSON
+        # (e21b2e4f) which carries all three counts.
+        outcome_alerts_list: list[Any] = []
+        try:
+            from core.approval.outcome_trends import (
+                compute_engine_alerts,
+            )
+            from core.approval.queue import (
+                get_approval_queue,
+            )
+            outcome_alerts_list = compute_engine_alerts(
+                get_approval_queue(),
+                recent_hours=24.0,
+                baseline_hours=168.0,
+                threshold=0.2,
+                min_recent=3,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "autonomous-cycle: outcome_alerts probe "
+                "raised: %s", exc,
+            )
+        if regs_list or chronic_list or outcome_alerts_list:
             parts: list[str] = []
             if regs_list:
                 parts.append(
@@ -17641,9 +17664,16 @@ def _cmd_autonomous_cycle(args) -> None:
                 parts.append(
                     f"{len(chronic_list)} chronic"
                 )
+            if outcome_alerts_list:
+                parts.append(
+                    f"{len(outcome_alerts_list)} "
+                    "outcome alert(s)"
+                )
             top_engine = (
                 regs_list[0].engine if regs_list
                 else chronic_list[0].engine
+                if chronic_list
+                else outcome_alerts_list[0].engine
             )
             print()
             print(
