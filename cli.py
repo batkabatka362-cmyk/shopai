@@ -28042,6 +28042,17 @@ def _cmd_approvals_history(args) -> None:
                 reason = reason[:57] + "..."
             line += f"  reason={reason}"
         print(line)
+    # Drill-down hint: only in global-ticker mode (where each
+    # row's action_id is truncated to 18 chars). Per-action
+    # mode already shows the full action_id in the title.
+    if not args.action_id and rows:
+        top_id = rows[0].get("action_id") or ""
+        if top_id:
+            print()
+            print(
+                f"  Drill down: `shopai approvals show "
+                f"{top_id}`"
+            )
 
 
 def _cmd_approvals_pending(args) -> None:
