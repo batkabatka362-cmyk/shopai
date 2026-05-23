@@ -5798,15 +5798,26 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
         chronic_count = int(
             envelope.get("chronic_count", 0) or 0
         )
-        if regr_count > 0 or chronic_count > 0:
-            cmd = (
-                "shopai approvals health-regressions"
-                if regr_count > 0
-                else "shopai approvals chronic-warnings"
-            )
+        outcome_count = int(
+            envelope.get("outcome_alert_count", 0) or 0
+        )
+        if regr_count > 0:
+            cmd = "shopai approvals health-regressions"
             print(
                 f"  Next: engine health degraded -- "
                 f"run `{cmd}` for the affected engines."
+            )
+        elif chronic_count > 0:
+            cmd = "shopai approvals chronic-warnings"
+            print(
+                f"  Next: engine health degraded -- "
+                f"run `{cmd}` for the affected engines."
+            )
+        elif outcome_count > 0:
+            print(
+                "  Next: engine outcome scores degrading "
+                "-- run `shopai engine alerts` for the "
+                "affected engines."
             )
         else:
             print(
