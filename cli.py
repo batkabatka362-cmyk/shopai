@@ -8759,11 +8759,18 @@ def _cmd_world_model_fleet(args) -> None:
     if as_json:
         # Pre-compute the same aggregates the text view
         # prints so JSON consumers don't have to re-derive
-        # them. Mirror of the post-table rollups.
-        agg_revenue = sum(
-            (r.get("stats") or {}).get("total_revenue", 0.0)
-            for r in rows if "error" not in r
-        )
+        # them. Mirror of the post-table rollups + a few
+        # more useful empire-scale counts.
+        def _stat_sum(key: str) -> float:
+            return sum(
+                (r.get("stats") or {}).get(key, 0) or 0
+                for r in rows if "error" not in r
+            )
+
+        agg_revenue = _stat_sum("total_revenue")
+        agg_products = int(_stat_sum("products"))
+        agg_orders = int(_stat_sum("orders"))
+        agg_customers = int(_stat_sum("customers"))
         agg_pending = sum(
             (r.get("approvals") or {}).get(
                 "pending_total", 0,
@@ -8790,6 +8797,9 @@ def _cmd_world_model_fleet(args) -> None:
             agg_drift = None
         agg: dict[str, Any] = {
             "total_revenue": agg_revenue,
+            "total_products": agg_products,
+            "total_orders": agg_orders,
+            "total_customers": agg_customers,
             "total_pending_approvals": agg_pending,
             "total_drift_writes": agg_drift,
         }
