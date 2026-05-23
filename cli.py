@@ -16955,28 +16955,39 @@ def _cmd_autonomous_cycle(args) -> None:
         from core.approval.engine_health_history import (
             find_regressions, find_chronic_warnings,
         )
-        n_reg = len(find_regressions(
+        regs_list = find_regressions(
             min_drop=3.0,
             baseline_window_seconds=86400.0 * 7.0,
             latest_window_seconds=86400.0 * 1.0,
             min_baseline_samples=3,
-        ))
-        n_chronic = len(find_chronic_warnings(
+        )
+        chronic_list = find_chronic_warnings(
             sample_window_seconds=86400.0 * 7.0,
             min_samples=3,
             healthy_score_floor=7,
-        ))
-        if n_reg or n_chronic:
+        )
+        if regs_list or chronic_list:
             parts: list[str] = []
-            if n_reg:
-                parts.append(f"{n_reg} regression(s)")
-            if n_chronic:
-                parts.append(f"{n_chronic} chronic")
+            if regs_list:
+                parts.append(
+                    f"{len(regs_list)} regression(s)"
+                )
+            if chronic_list:
+                parts.append(
+                    f"{len(chronic_list)} chronic"
+                )
+            top_engine = (
+                regs_list[0].engine if regs_list
+                else chronic_list[0].engine
+            )
             print()
             print(
                 "  Engine health: "
                 + ", ".join(parts)
-                + "  (run `shopai daily-brief` for detail)"
+            )
+            print(
+                f"    Drill down: `shopai engine pulse "
+                f"{top_engine} --history`"
             )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
