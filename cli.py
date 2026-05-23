@@ -8113,6 +8113,20 @@ def _cmd_store_seed_products(args) -> None:
         getattr(args, "store", None) or sm.active_store_id
     )
 
+    # --audit is a no-op without --apply -- the audit
+    # only makes sense after the seeder actually writes
+    # products. Warn so the operator notices.
+    if (
+        getattr(args, "audit", False)
+        and not apply_writes
+        and not as_json
+    ):
+        print(
+            "Warning: --audit requires --apply (the "
+            "audit only makes sense after the seeder "
+            "writes products). Flag ignored."
+        )
+
     try:
         from engines.store_setup.product_seeder import (
             generate_starter_products,
