@@ -419,12 +419,13 @@ class TestTree:
             ),
         )
         assert code == 0
-        # All 9 audits appear as children
+        # All 8 audits appear as children (pattern_s_audit
+        # was removed from this branch -- see f1a214d7).
         for audit_name in (
             "pattern_k_audit", "pattern_y_audit",
             "pattern_i_audit", "pattern_j_audit",
             "pattern_z_audit", "pattern_q_audit",
-            "pattern_s_audit", "oauth_audit",
+            "oauth_audit",
             "scope_health_check",
         ):
             assert audit_name in out
