@@ -13241,6 +13241,14 @@ def _cmd_engine_ranking(args) -> None:
         if truncated:
             line += f"  -- +{truncated} more not shown"
         print(line)
+        # Drill-down hint: operator sees the leader, the
+        # natural next question is "what is this engine
+        # actually doing?". engine summary is the per-engine
+        # decision + outcome breakdown.
+        print(
+            f"    Drill down: `shopai engine summary "
+            f"{leader['engine']}`"
+        )
 
 
 def _cmd_engine_alerts(args) -> None:
