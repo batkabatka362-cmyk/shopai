@@ -3419,6 +3419,13 @@ def build_parser() -> argparse.ArgumentParser:
             "--with-context is supplied. Default: 3."
         ),
     )
+    approvals_show.add_argument(
+        "--json", action="store_true",
+        help=(
+            "Emit the full action payload as JSON instead of "
+            "the human-readable text view."
+        ),
+    )
 
     approvals_approve = approvals_sub.add_parser(
         "approve",
@@ -28845,7 +28852,139 @@ def _cmd_approvals_show(args) -> None:
             logger.debug("agi_context lookup failed: %s", exc)
             payload["agi_context"] = {"error": str(exc)}
 
-    print(json.dumps(payload, indent=2, default=str))
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
+    _render_approvals_show_text(payload)
+
+
+def _render_approvals_show_text(payload: dict) -> None:
+    """Render the approvals-show payload in human-readable
+    form. Operators get JSON via --json; this is the default."""
+    print(f"Action: {payload.get('id', '?')}")
+    print(f"  engine:       {payload.get('engine', '?')}")
+    print(f"  action_type:  {payload.get('action_type', '?')}")
+    print(f"  capability:   {payload.get('capability', '?')}")
+    print(f"  status:       {payload.get('status', '?')}")
+    if payload.get("store_id"):
+        print(f"  store_id:     {payload['store_id']}")
+    conf = payload.get("confidence")
+    if isinstance(conf, (int, float)):
+        print(f"  confidence:   {conf:.2f}")
+    narrative = payload.get("narrative") or ""
+    if narrative:
+        print(f"  narrative:    {narrative}")
+    decided_by = payload.get("decided_by")
+    if decided_by:
+        print(f"  decided_by:   {decided_by}")
+    reason = payload.get("decision_reason") or payload.get(
+        "reason",
+    )
+    if reason:
+        print(f"  reason:       {reason}")
+
+    params = payload.get("params") or {}
+    if params:
+        print()
+        print("Params:")
+        for k, v in params.items():
+            v_str = str(v)
+            if len(v_str) > 60:
+                v_str = v_str[:57] + "..."
+            print(f"  {k}: {v_str}")
+
+    flags = payload.get("engine_quarantine_flags") or []
+    if flags:
+        print()
+        print(f"Engine quarantine: {', '.join(flags)}")
+
+    recent_alerts = payload.get("engine_recent_alerts") or []
+    if recent_alerts:
+        print()
+        print(
+            f"Engine recent alerts ({len(recent_alerts)}):"
+        )
+        now = time.time()
+        for ev in recent_alerts:
+            ts = float(ev.get("recorded_at") or 0.0)
+            age = now - ts if ts else 0
+            ago = (
+                f"{int(age/3600)}h ago" if age < 86400
+                else f"{int(age/86400)}d ago"
+            )
+            drop = float(ev.get("drop", 0.0) or 0.0)
+            print(
+                f"  {ago:<10s} drop={drop:.0%}"
+                f"  recent={ev.get('recent_score', 0.0):.1f}"
+                f"  baseline={ev.get('baseline_score', 0.0):.1f}"
+            )
+
+    outcomes = payload.get("outcomes") or []
+    if outcomes:
+        pos = sum(
+            1 for o in outcomes
+            if (o.get("polarity") or "") == "positive"
+        )
+        neg = sum(
+            1 for o in outcomes
+            if (o.get("polarity") or "") == "negative"
+        )
+        print()
+        print(
+            f"Outcomes ({len(outcomes)}): "
+            f"+{pos} / -{neg} / "
+            f"~{len(outcomes) - pos - neg}"
+        )
+        for o in outcomes[:5]:
+            polarity = o.get("polarity") or "?"
+            topic = o.get("topic") or "?"
+            m = o.get("metrics") or {}
+            rev = m.get("revenue") if isinstance(m, dict) else None
+            rev_str = (
+                f"  rev={rev:.2f}"
+                if isinstance(rev, (int, float)) and rev
+                else ""
+            )
+            print(f"  [{polarity}] {topic}{rev_str}")
+        if len(outcomes) > 5:
+            print(f"  ... +{len(outcomes) - 5} more")
+
+    agi = payload.get("agi_context") or {}
+    if agi and "summary" in agi:
+        summary = agi["summary"]
+        print()
+        print("AGI context:")
+        print(
+            f"  similar_count:    {summary.get('similar_count', 0)}"
+        )
+        print(
+            f"  recent_positive:  {summary.get('recent_positive', False)}"
+        )
+        print(
+            f"  recent_negative:  {summary.get('recent_negative', False)}"
+        )
+        print(
+            f"  avg_relevance:    "
+            f"{summary.get('avg_relevance', 0.0):.2f}"
+        )
+        similar = agi.get("similar") or []
+        if similar:
+            print(
+                f"  Top {len(similar[:3])} similar past decisions:"
+            )
+            for s in similar[:3]:
+                rel = float(s.get("relevance", 0.0) or 0.0)
+                status = s.get("status") or "?"
+                print(
+                    f"    rel={rel:.2f}  status={status}  "
+                    f"id={s.get('action_id', '?')}"
+                )
+
+    print()
+    print(
+        "  (use --json for the full machine-readable payload)"
+    )
 
 
 def _summarize_context(similar: list[dict]) -> dict:
