@@ -11408,6 +11408,19 @@ def _engine_pulse_fleet(args, *, as_json: bool) -> None:
 
     verdict_filter = getattr(args, "verdict", None) or None
 
+    # Single-engine flags silently no-op in fleet mode.
+    # Warn so operators who passed them notice (mirror of
+    # the inverse warning in _cmd_engine_pulse single
+    # path).
+    if (
+        getattr(args, "history", False)
+        and not as_json
+    ):
+        print(
+            "Warning: --history is single-engine only "
+            "and is ignored in --fleet mode."
+        )
+
     results: list[dict] = []
     for engine in sorted(ENGINE_GOAL_MAP):
         try:
