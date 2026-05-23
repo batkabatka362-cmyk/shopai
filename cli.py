@@ -11567,6 +11567,37 @@ def _cmd_engine_summary(args) -> None:
     recent.sort(key=lambda r: -(r.get("decided_at") or 0))
     recent = recent[:recent_n]
 
+    # Writeback wire-up state for the engine -- matches
+    # the text view's static-context line in the
+    # no-activity case + helps JSON consumers (LLMs,
+    # dashboards) see the engine's posture.
+    writeback_info: dict = {
+        "status": "unknown", "writers": [], "opt_ins": [],
+    }
+    try:
+        from engines._writeback_audit import (
+            audit_writeback_coverage,
+        )
+        wb_report = audit_writeback_coverage("engines")
+        wb = next(
+            (
+                s for s in wb_report.engines
+                if s.name == engine_name
+            ),
+            None,
+        )
+        if wb:
+            writeback_info = {
+                "status": wb.status,
+                "writers": list(wb.writer_files),
+                "opt_ins": list(wb.opt_in_flags),
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine summary writeback probe raised: %s",
+            exc,
+        )
+
     if as_json:
         print(json.dumps({
             "engine": engine_name,
@@ -11574,6 +11605,7 @@ def _cmd_engine_summary(args) -> None:
             "total_activity": total_activity,
             "outcomes": outcomes,
             "quarantine": quarantine_info,
+            "writeback": writeback_info,
             "recent": recent,
         }, indent=2, default=str))
         return
