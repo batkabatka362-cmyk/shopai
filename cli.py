@@ -7331,6 +7331,16 @@ def _cmd_daily_brief(args) -> None:
                 print(
                     f"    ... +{len(degrades) - 5} more"
                 )
+            # Drill-down hint: top degradation -> show its
+            # full capability registration + operational
+            # state. Mirrors the engine-pulse hint pattern
+            # for capability-layer signals.
+            top_cap = degrades[0].get("capability")
+            if top_cap:
+                print(
+                    f"    Drill down: `shopai capabilities "
+                    f"show {top_cap}`"
+                )
         print()
 
     # Top revenue capabilities -- bible's measurable

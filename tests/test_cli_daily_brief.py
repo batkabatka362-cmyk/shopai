@@ -1695,6 +1695,11 @@ class TestPlanHistorySection:
         assert "40% recent" in out
         # The drop pp marker
         assert "-50pp" in out
+        # Drill-down hint to the top degraded capability
+        assert (
+            "Drill down: `shopai capabilities show shaky_cap`"
+            in out
+        )
 
     def test_degradation_bridge_status_tag_renders(
         self, cli,
