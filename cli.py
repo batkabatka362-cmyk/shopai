@@ -6287,6 +6287,18 @@ def _cmd_daily_brief(args) -> None:
                         # Structured planner plan (None when
                         # ready or when planner unavailable).
                         "plan": audit.get("plan"),
+                        # Remediation buckets (122b1593)
+                        # so JSON consumers don't have to
+                        # re-derive them.
+                        "manual_admin_gaps": (
+                            audit.get("manual_admin_gaps")
+                            or []
+                        ),
+                        "launch_closeable_gaps": (
+                            audit.get(
+                                "launch_closeable_gaps",
+                            ) or []
+                        ),
                     })
                 except Exception as exc:  # noqa: BLE001
                     logger.debug(
