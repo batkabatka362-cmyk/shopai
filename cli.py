@@ -26518,6 +26518,17 @@ def _cmd_approvals_quarantine(args) -> None:
             f"    window days:           "
             f"{aq_block['window_days']}"
         )
+    # Drill-down hint: when there's an alert_paused set, the
+    # natural next move is to find safe-to-release candidates
+    # (engines whose alerts have gone quiet) -- much more
+    # useful than guessing which one to clear.
+    if s.alert_paused:
+        print()
+        print(
+            "  Next: `shopai approvals "
+            "alert-release-candidates` to find engines safe "
+            "to release."
+        )
 
 
 def _cmd_approvals_quarantine_simulate(args) -> None:
