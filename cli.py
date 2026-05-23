@@ -12627,6 +12627,15 @@ def _cmd_engine_guardrail(args) -> None:
     elif recent_n > 0:
         print(f"Recent blocks: (none in last {window_hours}h)")
         print()
+    # Drill-down hint: when blocks exist but --recent-n wasn't
+    # passed, point operators at the detail view they need
+    # (which engine + action got refused + why).
+    if total_blocks > 0 and recent_n == 0:
+        print(
+            f"  Drill down: `shopai engine guardrail "
+            f"--recent-n {min(total_blocks, 10)}` for "
+            "per-block detail."
+        )
     if enabled_count == 0:
         print(
             "  Enable any engine via env var, e.g.:\n"
