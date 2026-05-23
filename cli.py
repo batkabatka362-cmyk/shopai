@@ -141,6 +141,49 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    brand_upload_p = store_sub.add_parser(
+        "brand-upload",
+        help=(
+            "Upload brand asset URLs (logo / favicon / hero / "
+            "og_image) to Shopify Files via "
+            "SHOPIFY_UPLOAD_FILE. Stand-alone surface for the "
+            "launch_orchestrator's Step 5 (brand assets)."
+        ),
+    )
+    brand_upload_p.add_argument(
+        "--store-name", default="",
+        help=(
+            "Store display name (drives alt-text). Required."
+        ),
+    )
+    brand_upload_p.add_argument(
+        "--logo-url", default="",
+        help="Public HTTPS URL for the logo (required).",
+    )
+    brand_upload_p.add_argument(
+        "--favicon-url", default="",
+        help="Public HTTPS URL for the favicon (required).",
+    )
+    brand_upload_p.add_argument(
+        "--hero-url", default="",
+        help="Optional hero image URL.",
+    )
+    brand_upload_p.add_argument(
+        "--og-image-url", default="",
+        help="Optional social-sharing og:image URL.",
+    )
+    brand_upload_p.add_argument(
+        "--store", default=None,
+        help=(
+            "Store ID for Pattern Z scope (falls back to "
+            "active store)."
+        ),
+    )
+    brand_upload_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     design_apply_p = store_sub.add_parser(
         "design-apply",
         help=(
@@ -8263,6 +8306,108 @@ def _cmd_store_design(args) -> None:
         "snippets/shopai-design-recommendations.liquid). "
         "Other suggestions (menu / settings) remain manual."
     )
+
+
+def _cmd_store_brand_upload(args) -> None:
+    """Push brand asset URLs (logo / favicon / hero / og_image)
+    to Shopify Files. Stand-alone surface for the
+    launch_orchestrator's Step 5.
+
+    Same engine the launch flow uses; this CLI is the
+    stand-alone surface for stores that have already launched
+    but need a brand-asset backfill without re-running the
+    full launch. Records via Pattern Z so the upload feeds
+    Phase 8's learning loop.
+    """
+    as_json = bool(getattr(args, "json", False))
+    sm = _get_store_manager()
+    store_id = (
+        getattr(args, "store", None) or sm.active_store_id
+    )
+    store_name = (
+        getattr(args, "store_name", "") or ""
+    ).strip()
+    logo_url = (
+        getattr(args, "logo_url", "") or ""
+    ).strip()
+    favicon_url = (
+        getattr(args, "favicon_url", "") or ""
+    ).strip()
+    hero_url = (
+        getattr(args, "hero_url", "") or ""
+    ).strip()
+    og_image_url = (
+        getattr(args, "og_image_url", "") or ""
+    ).strip()
+
+    def _emit_error(msg: str) -> None:
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+
+    if not store_name:
+        _emit_error("--store-name is required")
+        return
+    if not logo_url and not favicon_url:
+        _emit_error(
+            "at least one of --logo-url or --favicon-url "
+            "is required"
+        )
+        return
+
+    try:
+        from engines.store_setup.brand_uploader import (
+            upload_brand_assets,
+        )
+        result = upload_brand_assets(
+            store_name=store_name,
+            logo_url=logo_url or None,
+            favicon_url=favicon_url or None,
+            hero_url=hero_url or None,
+            og_image_url=og_image_url or None,
+            store_id=store_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _emit_error(f"upload_brand_assets raised: {exc}")
+        return
+
+    if as_json:
+        print(json.dumps(
+            {"status": "ok", "result": result},
+            indent=2, default=str,
+        ))
+        if not result.get("ok"):
+            sys.exit(1)
+        return
+
+    if result.get("ok"):
+        count = result.get("uploaded_count", 0)
+        files = result.get("files") or []
+        print(f"Uploaded {count} brand asset(s):")
+        for f in files:
+            print(
+                f"  [ok  ] {f.get('asset', '?')}: "
+                f"{f.get('file_id', '?')}"
+            )
+        missing = result.get("missing_assets") or []
+        if missing:
+            print(
+                f"  Missing (optional): {', '.join(missing)}"
+            )
+        print()
+        print(
+            "  Next: `shopai launch-audit` to confirm "
+            "brand_assets check passes."
+        )
+    else:
+        err = result.get("error") or "unknown"
+        print(f"Upload failed: {err}")
+        sys.exit(1)
 
 
 def _cmd_store_design_apply(args) -> None:
@@ -29166,6 +29311,7 @@ def main(argv: list[str] | None = None) -> None:
             "configure": _cmd_store_configure,
             "design": _cmd_store_design,
             "design-apply": _cmd_store_design_apply,
+            "brand-upload": _cmd_store_brand_upload,
             "verify": _cmd_store_verify,
             "setup": _cmd_store_setup,
             "report": _cmd_store_report,

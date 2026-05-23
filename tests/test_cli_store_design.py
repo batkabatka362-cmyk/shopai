@@ -345,3 +345,111 @@ class TestDesignApply:
             )
         assert code == 1
         assert "engine boom" in out
+
+
+# ─── brand-upload ─────────────────────────────────────────────
+
+
+def _brand_ns(**kw):
+    defaults = dict(
+        store_name="Acme",
+        logo_url="https://cdn.example.com/logo.png",
+        favicon_url="https://cdn.example.com/fav.png",
+        hero_url="",
+        og_image_url="",
+        store=None,
+        json=False,
+    )
+    defaults.update(kw)
+    return argparse.Namespace(**defaults)
+
+
+class TestBrandUpload:
+    """`shopai store brand-upload` pushes brand asset URLs
+    through engines.store_setup.brand_uploader. Stand-alone
+    surface mirroring launch_orchestrator's Step 5."""
+
+    def test_missing_store_name_fails(self, cli):
+        out, code = _capture(
+            cli._cmd_store_brand_upload,
+            _brand_ns(store_name=""),
+        )
+        assert code == 1
+        assert "--store-name is required" in out
+
+    def test_missing_logo_and_favicon_fails(self, cli):
+        out, code = _capture(
+            cli._cmd_store_brand_upload,
+            _brand_ns(logo_url="", favicon_url=""),
+        )
+        assert code == 1
+        assert "logo-url" in out
+        assert "favicon-url" in out
+
+    def test_success_renders_uploaded_files(self, cli):
+        upload_result = {
+            "uploaded_count": 2,
+            "files": [
+                {"asset": "logo", "file_id": "gid://1"},
+                {"asset": "favicon", "file_id": "gid://2"},
+            ],
+            "missing_assets": ["hero", "og_image"],
+            "ok": True,
+        }
+        with patch(
+            "engines.store_setup.brand_uploader."
+            "upload_brand_assets",
+            return_value=upload_result,
+        ):
+            out, code = _capture(
+                cli._cmd_store_brand_upload, _brand_ns(),
+            )
+        assert code == 0
+        assert "Uploaded 2 brand asset(s)" in out
+        assert "logo" in out
+        assert "Missing (optional): hero, og_image" in out
+        # Drill-down hint to launch-audit
+        assert "shopai launch-audit" in out
+
+    def test_failure_exits_1(self, cli):
+        upload_result = {
+            "uploaded_count": 0,
+            "files": [],
+            "missing_assets": ["logo", "favicon"],
+            "ok": False,
+            "error": "router_unavailable",
+        }
+        with patch(
+            "engines.store_setup.brand_uploader."
+            "upload_brand_assets",
+            return_value=upload_result,
+        ):
+            out, code = _capture(
+                cli._cmd_store_brand_upload, _brand_ns(),
+            )
+        assert code == 1
+        assert "Upload failed: router_unavailable" in out
+
+    def test_json_envelope(self, cli):
+        upload_result = {
+            "uploaded_count": 2,
+            "files": [
+                {"asset": "logo", "file_id": "gid://1"},
+                {"asset": "favicon", "file_id": "gid://2"},
+            ],
+            "missing_assets": [],
+            "ok": True,
+        }
+        with patch(
+            "engines.store_setup.brand_uploader."
+            "upload_brand_assets",
+            return_value=upload_result,
+        ):
+            out, code = _capture(
+                cli._cmd_store_brand_upload,
+                _brand_ns(json=True),
+            )
+        assert code == 0
+        data = json.loads(out)
+        assert data["status"] == "ok"
+        assert data["result"]["uploaded_count"] == 2
