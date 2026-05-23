@@ -11965,6 +11965,18 @@ def _engine_pulse_fleet(args, *, as_json: bool) -> None:
                     f"{r['engine']:<28s}"
                     f"{concerns_str}{tag_str}"
                 )
+            # Drill-down hint: leaderboard is sorted sickest
+            # first, so results[0] is the worst-off engine.
+            # Point operator at the single-engine pulse with
+            # history trail for the natural "what went wrong
+            # and when?" follow-up.
+            sickest = results[0].get("engine")
+            if sickest:
+                print()
+                print(
+                    f"  Drill down: `shopai engine pulse "
+                    f"{sickest} --history`"
+                )
 
     if any(r["verdict"] == "unhealthy" for r in results):
         sys.exit(1)
