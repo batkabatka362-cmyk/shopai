@@ -141,6 +141,36 @@ class TestGoalPath:
         assert isinstance(data["cli_sequence"], list)
         assert isinstance(data["audit_coverage"], list)
 
+    def test_execute_hint_renders_with_goal(self, cli):
+        """When plan has steps, the text view ends with a
+        Next-line pre-filled for `plan "<goal>" --execute`."""
+        out, code = _capture(
+            cli._cmd_plan, _ns(goal="mobile design"),
+        )
+        assert code == 0
+        assert (
+            'Next: `shopai plan "mobile design" --execute`'
+            in out
+        )
+
+    def test_execute_hint_absent_in_json(self, cli):
+        out, code = _capture(
+            cli._cmd_plan,
+            _ns(goal="mobile design", json=True),
+        )
+        assert code == 0
+        assert "Next:" not in out
+
+    def test_execute_hint_absent_on_empty_plan(self, cli):
+        """Empty plan (no registry match) -> no execute hint
+        since there's nothing to run."""
+        out, code = _capture(
+            cli._cmd_plan,
+            _ns(goal="cryptocurrency_mining"),
+        )
+        assert code == 0
+        assert "--execute" not in out
+
 
 class TestAutoCorrelate:
     """``shopai plan --auto-correlate`` batch-runs outcome

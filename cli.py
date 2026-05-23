@@ -15843,6 +15843,24 @@ def _cmd_plan(args) -> None:
         print("Notes:")
         for n in plan.notes:
             print(f"  - {n}")
+    # Drill-down hint: when the plan has steps, suggest the
+    # one-shot --execute path. Operator's natural follow-up
+    # to seeing a plan is "actually run it" -- the harness
+    # walks every step with proper Pattern Z + audit
+    # bookkeeping.
+    if plan.steps:
+        if close_gaps:
+            print()
+            print(
+                "  Next: `shopai plan --close-audit-gaps "
+                "--execute` to walk the plan."
+            )
+        elif goal:
+            print()
+            print(
+                f"  Next: `shopai plan \"{goal}\" --execute` "
+                "to walk the plan."
+            )
 
 
 def _interval_to_cron(interval: str) -> str | None:
