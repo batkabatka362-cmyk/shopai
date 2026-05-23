@@ -691,9 +691,9 @@ Engines that need real data return ``status="error"`` cleanly;
 they still emit the four-key envelope (engines/loyalty/flow.py
 is the canonical reference).
 
-## The seven institutional audits
+## The eight institutional audits
 
-The repo gates every PR on seven AST + runtime audits (each is a
+The repo gates every PR on eight AST + runtime audits (each is a
 standalone CLI command + a CI step + a section in
 ``shopai doctor`` + an entry in the consolidated ``shopai audit``):
 
@@ -706,6 +706,7 @@ standalone CLI command + a CI step + a section in
 | Pattern J | writes to learning singletons are test-guarded | AST |
 | Pattern Z | every writer module calls ``record_writeback`` | AST |
 | Pattern Q | every engine's ``run()`` returns the canonical envelope | runtime |
+| Wireup resolve | every Phase-7 wired engine has a resolvable ``apply_*`` flag (621f9f26) | runtime |
 
 When adding a new pattern, the convention is:
 
