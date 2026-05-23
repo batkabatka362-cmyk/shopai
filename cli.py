@@ -19782,6 +19782,21 @@ def _cmd_post_launch(args) -> None:
     """
     as_json = bool(getattr(args, "json", False))
     apply_writes = bool(getattr(args, "apply", False))
+    # --audit chains the launch-audit only after --apply
+    # (without --apply, no writes happened so re-auditing
+    # would just return the pre-existing state). Warn so
+    # operators notice their flag was ignored. Mirror of
+    # c5a43fef for seed-products.
+    if (
+        getattr(args, "audit", False)
+        and not apply_writes
+        and not as_json
+    ):
+        print(
+            "Warning: --audit requires --apply (the "
+            "audit only makes sense after the writes). "
+            "Flag ignored."
+        )
     sm = _get_store_manager()
     store_id = (
         getattr(args, "store", None) or sm.active_store_id
