@@ -7991,6 +7991,13 @@ def _cmd_store_status(args) -> None:
     print()
     if last_sync_at is None:
         print("  Last sync: never")
+        # Drill-down hint: never-synced store -> seed it.
+        # Most operator-actionable state on this surface.
+        print()
+        print(
+            f"  Next: `shopai sync {store_id}` to seed "
+            "Shopify data."
+        )
     else:
         age = last_sync_age_seconds or 0
         ago = (
