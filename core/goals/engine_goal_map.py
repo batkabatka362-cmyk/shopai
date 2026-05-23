@@ -36,7 +36,7 @@ ENGINE_GOAL_MAP: dict[str, str] = {
     "profit_optimization": "maximize_profit",
     "wholesale_b2b": "maximize_profit",
     "shipping_optimization": "maximize_profit",
-    "tax": "maximize_profit",
+    "tax_engine": "maximize_profit",
     # v2 expansion — high-confidence profit levers:
     "accounting": "maximize_profit",
     "financial": "maximize_profit",
@@ -106,9 +106,7 @@ ENGINE_GOAL_MAP: dict[str, str] = {
 
     # ─ Opportunity capture ────────────────────────────────
     "trend_detection": "capture_opportunity",
-    "ads_spy": "capture_opportunity",
     "campaign_strategy": "capture_opportunity",
-    "creative": "capture_opportunity",
     "roas_guardrails": "capture_opportunity",
     "landing_page": "capture_opportunity",
     "social_media": "capture_opportunity",
