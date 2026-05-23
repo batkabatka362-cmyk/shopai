@@ -11262,6 +11262,41 @@ def _cmd_engine_pulse(args) -> None:
         )
         payload["history"] = history_rows
 
+    # Health-state flags (regressing / chronic) -- JSON
+    # consumers care about these too; they're already
+    # rendered in the text path (c0d7c163) but were
+    # missing from the JSON envelope.
+    payload["regressing"] = False
+    payload["chronic"] = False
+    try:
+        from core.approval.engine_health_history import (
+            find_regressions, find_chronic_warnings,
+        )
+        if any(
+            r.engine == engine_name
+            for r in find_regressions(
+                min_drop=3.0,
+                baseline_window_seconds=86400.0 * 7.0,
+                latest_window_seconds=86400.0 * 1.0,
+                min_baseline_samples=3,
+            )
+        ):
+            payload["regressing"] = True
+        if any(
+            w.engine == engine_name
+            for w in find_chronic_warnings(
+                sample_window_seconds=86400.0 * 7.0,
+                min_samples=3,
+                healthy_score_floor=7,
+            )
+        ):
+            payload["chronic"] = True
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine_pulse health-state probe (json) "
+            "raised: %s", exc,
+        )
+
     if as_json:
         print(json.dumps(payload, indent=2, default=str))
     else:
