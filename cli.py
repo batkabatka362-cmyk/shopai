@@ -15903,14 +15903,33 @@ def _cmd_autonomous_cycle(args) -> None:
                 ))
                 return
             import time as _time
+            until_at = float(
+                pause_state.get("paused_until_at", 0) or 0,
+            )
             until_str = _time.strftime(
                 "%Y-%m-%d %H:%M",
-                _time.localtime(
-                    pause_state["paused_until_at"],
-                ),
+                _time.localtime(until_at),
+            )
+            # Remaining + elapsed timing -- tells operators
+            # at a glance how long the pause has left to
+            # run vs how long ago it started.
+            now_ts = _time.time()
+            remaining_h = max(0.0, (until_at - now_ts)) / 3600.0
+            paused_at = float(
+                pause_state.get("paused_at", 0) or 0,
+            )
+            elapsed_h = (
+                max(0.0, (now_ts - paused_at)) / 3600.0
+                if paused_at > 0 else 0.0
             )
             print(
-                f"Cycle PAUSED until {until_str}"
+                f"Cycle PAUSED until {until_str}  "
+                f"({remaining_h:.1f}h remaining"
+                + (
+                    f", paused {elapsed_h:.1f}h ago"
+                    if paused_at > 0 else ""
+                )
+                + ")"
             )
             if pause_state.get("reason"):
                 print(
