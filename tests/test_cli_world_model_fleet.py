@@ -160,7 +160,7 @@ class TestRowPopulation:
             )
         # The snapshot call received skip_live=False
         wm_cls.return_value.snapshot.assert_called_once_with(
-            "a", skip_live=False,
+            "a", skip_live=False, include_launch_readiness=False,
         )
 
 
@@ -363,7 +363,7 @@ class TestFleetHealthLine:
             "good": _snap_with_health("good"),
         }
 
-        def _snap_side(store_id, skip_live=True):
+        def _snap_side(store_id, skip_live=True, **_kw):
             if store_id == "broken":
                 raise RuntimeError("snapshot dead")
             return snapshot_map[store_id]

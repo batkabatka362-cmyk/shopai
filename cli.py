@@ -9307,6 +9307,17 @@ def _cmd_world_model_fleet(args) -> None:
                 f"{not_ready_count} not ready  "
                 f"({checked_count} audited)"
             )
+            # Drill-down hint: when EVERY audited store is
+            # ready, the next move is post-launch enrichment
+            # (matches the launch-audit + daily-brief hints).
+            if (
+                ready_count == checked_count
+                and not_ready_count == 0
+            ):
+                print(
+                    "    Next: `shopai post-launch --apply` "
+                    "to enrich the live catalog."
+                )
     # Fleet engine-health rollup -- ``fleet_health`` is GLOBAL
     # (same content in every per-store snapshot) so we pull it
     # from the first store that scored successfully. Omitted
