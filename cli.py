@@ -14203,6 +14203,17 @@ def _cmd_engines_stats(args) -> None:
             f"{e['executed']:>5} {e['failed']:>5} "
             f"{e['pending']:>5} {e['total_actions']:>6}"
         )
+    # Drill-down hint: only when there's actual activity --
+    # otherwise the table is alphabetical and the "top"
+    # engine is just whatever sorts first. When activity
+    # exists, entries[0] is the most-active engine; point
+    # at its per-engine summary.
+    if entries and entries[0]["total_actions"] > 0:
+        leader = entries[0]["name"]
+        print()
+        print(
+            f"  Drill down: `shopai engine summary {leader}`"
+        )
 
 
 def _render_catalog_markdown(report, entries) -> None:
