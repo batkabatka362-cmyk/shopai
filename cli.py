@@ -9149,6 +9149,30 @@ def _cmd_world_model_show(args) -> None:
         sys.exit(1)
         return
 
+    # Validate the store_id is known before snapshotting --
+    # spelling typos otherwise produce an empty-looking
+    # snapshot with no clear 'this store doesn't exist'
+    # signal.
+    known_ids = {
+        s.get("store_id", "") for s in (sm.list_stores() or [])
+    }
+    if store_id not in known_ids:
+        if as_json:
+            print(json.dumps({
+                "status": "error",
+                "error": "unknown_store",
+                "store_id": store_id,
+                "known_stores": sorted(known_ids),
+            }, indent=2, default=str))
+        else:
+            known_list = ", ".join(sorted(known_ids)) or "(none)"
+            print(
+                f"Unknown store '{store_id}'. "
+                f"Known: {known_list}"
+            )
+        sys.exit(1)
+        return
+
     from core.world_model import WorldModel
 
     snap = WorldModel(sm=sm).snapshot(
