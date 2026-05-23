@@ -52,6 +52,9 @@ ENGINE_GOAL_MAP: dict[str, str] = {
     "forecasting": "maximize_profit",
     "checkout_optimizer": "maximize_profit",
     "monetization": "maximize_profit",
+    "dropshipping": "maximize_profit",
+    "supplier": "maximize_profit",
+    "supplier_communication": "maximize_profit",
 
     # ─ Customer growth / retention ────────────────────────
     "loyalty": "grow_customers",
@@ -82,6 +85,12 @@ ENGINE_GOAL_MAP: dict[str, str] = {
     "video_marketing": "grow_customers",
     "notification": "grow_customers",
     "warranty": "grow_customers",
+    "brand_identity": "grow_customers",
+    "brand_perception": "grow_customers",
+    "brand_positioning": "grow_customers",
+    "brand_visual": "grow_customers",
+    "brand_voice_enforcer": "grow_customers",
+    "store_design": "grow_customers",
 
     # ─ AOV / order-size levers ────────────────────────────
     "bundle": "increase_aov",
@@ -103,6 +112,8 @@ ENGINE_GOAL_MAP: dict[str, str] = {
     "backup_recovery": "survive_crisis",
     "security_monitor": "survive_crisis",
     "product_risk": "survive_crisis",
+    "legal_document": "survive_crisis",
+    "order_quality": "survive_crisis",
 
     # ─ Opportunity capture ────────────────────────────────
     "trend_detection": "capture_opportunity",
@@ -124,6 +135,12 @@ ENGINE_GOAL_MAP: dict[str, str] = {
     "competition_analyzer": "capture_opportunity",
     "competitor_monitor": "capture_opportunity",
     "competitor_ad_intelligence": "capture_opportunity",
+    "competitor_reaction_simulator": "capture_opportunity",
+    "competitor_social": "capture_opportunity",
+    "ad_creative_generator": "capture_opportunity",
+    "market_simulator": "capture_opportunity",
+    "product_launch": "capture_opportunity",
+    "winning_products": "capture_opportunity",
     "marketplace": "capture_opportunity",
     "stock_prediction": "capture_opportunity",
 
