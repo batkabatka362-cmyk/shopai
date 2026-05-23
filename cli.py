@@ -182,6 +182,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     seed_products_p.add_argument(
+        "--audit", action="store_true",
+        help=(
+            "After --apply, chain `shopai launch-audit` "
+            "and surface its readiness summary so the "
+            "operator confirms active_products closed in "
+            "one command. No-op without --apply."
+        ),
+    )
+    seed_products_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
     )
@@ -8095,15 +8104,38 @@ def _cmd_store_seed_products(args) -> None:
     results = applied.get("results") or []
     failures = [r for r in results if not r.get("ok")]
 
+    # Optional --audit chain: run launch-audit after the
+    # seed so the operator gets one-shot confirmation that
+    # active_products closed.
+    audit_after: dict | None = None
+    if getattr(args, "audit", False):
+        try:
+            from engines.store_setup.launch_audit import (
+                audit_store,
+            )
+            audit_after = audit_store(store_id=store_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "seed-products --audit follow-up raised: %s",
+                exc,
+            )
+            audit_after = {
+                "error": "audit_unavailable",
+                "message": str(exc),
+            }
+
     if as_json:
-        print(json.dumps({
+        payload = {
             "ok": not failures,
             "applied": True,
             "niche": niche,
             "spec_count": len(specs),
             "applied_count": applied_count,
             "failures": failures,
-        }, indent=2))
+        }
+        if audit_after is not None:
+            payload["audit_after_seed"] = audit_after
+        print(json.dumps(payload, indent=2))
         if failures:
             sys.exit(1)
         return
@@ -8113,19 +8145,66 @@ def _cmd_store_seed_products(args) -> None:
             f"seed-products APPLIED -- "
             f"{applied_count}/{len(specs)} created"
         )
-        return
-
-    print(
-        f"seed-products PARTIAL -- "
-        f"{applied_count}/{len(specs)} created, "
-        f"{len(failures)} failed"
-    )
-    for f in failures:
+    else:
         print(
-            f"  FAIL {f.get('title')} "
-            f"({f.get('handle')}): {f.get('error')}"
+            f"seed-products PARTIAL -- "
+            f"{applied_count}/{len(specs)} created, "
+            f"{len(failures)} failed"
         )
-    sys.exit(1)
+        for f in failures:
+            print(
+                f"  FAIL {f.get('title')} "
+                f"({f.get('handle')}): {f.get('error')}"
+            )
+
+    if audit_after:
+        print()
+        if audit_after.get("error"):
+            print(
+                f"  --audit follow-up failed: "
+                f"{audit_after.get('message', 'unknown')}"
+            )
+        else:
+            ready = bool(
+                audit_after.get("ready_to_launch")
+            )
+            pct = int(audit_after.get(
+                "completion_pct", 0,
+            ))
+            print(
+                f"  Audit after seed: "
+                f"{'READY' if ready else 'NOT READY'} "
+                f"({pct}%)"
+            )
+            # Show whether active_products specifically
+            # closed -- that's the check seed-products
+            # targets.
+            ap_check = next(
+                (
+                    c for c in (audit_after.get("checks")
+                                or [])
+                    if c.get("key") == "active_products"
+                ),
+                None,
+            )
+            if ap_check is not None:
+                mark = (
+                    "CLOSED"
+                    if ap_check.get("ok") else "STILL OPEN"
+                )
+                applied_n = int(
+                    ap_check.get("applied", 0),
+                )
+                expected_n = int(
+                    ap_check.get("expected", 0),
+                )
+                print(
+                    f"    active_products: {mark} "
+                    f"({applied_n}/{expected_n})"
+                )
+
+    if failures:
+        sys.exit(1)
 
 
 def _cmd_store_setup(args) -> None:
