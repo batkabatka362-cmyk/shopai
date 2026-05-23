@@ -9501,10 +9501,19 @@ def _cmd_world_model_show(args) -> None:
         print("  [skip] connection")
     if config.get("checked") and "error" not in config:
         verdict = "drift" if config.get("has_drift") else "ok"
+        planned = config.get("planned_writes", 0)
         print(
             f"  [{verdict:4s}] config  "
-            f"({config.get('planned_writes', 0)} planned write(s))"
+            f"({planned} planned write(s))"
         )
+        # Drill-down hint when drift is present -- mirrors
+        # the engine-health drill-down pattern (a1deb294
+        # et al). Points at the configurator CLI.
+        if config.get("has_drift") and planned > 0:
+            print(
+                f"      Apply: `shopai store configure "
+                f"{store_id}`  (or --dry-run for preview)"
+            )
     else:
         why = config.get("error", "skipped")
         print(f"  [skip] config  ({why})")
