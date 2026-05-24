@@ -15341,6 +15341,7 @@ def _cmd_cluster_list(args) -> None:
     from engines._clusters import list_clusters
     from engines._cluster_captain import cluster_health
     from engines._cluster_memory import fleet_cluster_health
+    from engines._cluster_bus import bus_stats
 
     clusters = list_clusters()
     # Pull memory rollup ONCE for the fleet (single SQL hit)
@@ -15350,6 +15351,14 @@ def _cmd_cluster_list(args) -> None:
             memory_by_cluster[h.cluster] = h
     except Exception:  # noqa: BLE001
         memory_by_cluster = {}
+
+    # Pull bus emit-counts per cluster (last 24h)
+    bus_emits: dict[str, int] = {}
+    try:
+        b = bus_stats(window_hours=24.0)
+        bus_emits = dict(b.get("by_emitter", {}))
+    except Exception:  # noqa: BLE001
+        bus_emits = {}
 
     rows: list[dict] = []
     for c in clusters:
@@ -15366,6 +15375,7 @@ def _cmd_cluster_list(args) -> None:
             "executed": m.total_executed if m else 0,
             "positive_ratio": m.positive_ratio if m else 0.0,
             "revenue": m.total_revenue if m else 0.0,
+            "bus_emits_24h": bus_emits.get(c.name, 0),
         })
 
     if getattr(args, "json", False):
@@ -15391,7 +15401,7 @@ def _cmd_cluster_list(args) -> None:
     print()
     print(
         "  cluster        wired   "
-        "add/mod/dst  verdict      execd  rev"
+        "add/mod/dst  verdict      execd   rev   bus24h"
     )
     for r in rows:
         rb = r["risk_buckets"]
@@ -15409,11 +15419,15 @@ def _cmd_cluster_list(args) -> None:
         rev_str = (
             f"${r['revenue']:.0f}" if r["revenue"] > 0 else "-"
         )
+        bus_str = (
+            str(r["bus_emits_24h"])
+            if r["bus_emits_24h"] > 0 else "-"
+        )
         print(
             f"  {r['name']:<14} {r['wired_members']:>4d}/"
             f"{r['total_members']:<2d}  "
             f"{risk_str:<10}  {verdict_marker} {r['verdict']:<9}  "
-            f"{r['executed']:>5d}  {rev_str}"
+            f"{r['executed']:>5d}  {rev_str:<6} {bus_str}"
         )
     print()
     print(
