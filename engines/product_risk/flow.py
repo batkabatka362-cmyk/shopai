@@ -165,6 +165,23 @@ class ProductRiskEngine:
         # ---- Stage 7: Memory Writer (non-fatal) ----
         _write_result = write_risk_result(risks=risks)
 
+        # Phase 7: optional risk-tag apply. Opt-in via
+        # data.apply_risk_tags=True. Tags products at high
+        # or critical risk_level.
+        tagged_high_risk: list[dict[str, Any]] = []
+        if bool(data.get("apply_risk_tags")):
+            try:
+                from .tag_applier import apply_risk_tags
+                tagged_high_risk = apply_risk_tags(
+                    risks, products,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "product_risk: apply loop raised: %s",
+                    exc,
+                )
+
         # ---- Stage 8: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -172,6 +189,7 @@ class ProductRiskEngine:
             "status": "success",
             "data": {
                 "risks": risks,
+                "tagged_high_risk": tagged_high_risk,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
