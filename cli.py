@@ -1691,6 +1691,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # ── Empire orchestrator (Tier 1) ─────────────────────────
+    # ── Cluster outcomes (time-windowed cluster rollup) ──────
+    cluster_outcomes_p = sub.add_parser(
+        "cluster-outcomes",
+        help=(
+            "Time-windowed outcome rollup per cluster + per "
+            "engine. Answers 'did our cluster actions drive "
+            "revenue recently?'. Complement to the existing "
+            "`outcomes` command (per-action chronological)."
+        ),
+    )
+    cluster_outcomes_p.add_argument(
+        "--window", default="168", metavar="HOURS",
+        help=(
+            "Time window in hours (default 168 = 7 days). "
+            "Try 24 for 'yesterday', 720 for ~30 days."
+        ),
+    )
+    cluster_outcomes_p.add_argument(
+        "--cluster", default=None, metavar="NAME",
+        help="Filter to one cluster",
+    )
+    cluster_outcomes_p.add_argument(
+        "--engine", default=None, metavar="NAME",
+        help="Show outcomes for one engine (not cluster rollup)",
+    )
+    cluster_outcomes_p.add_argument(
+        "--store", default=None, metavar="ID",
+        help="Filter to one store",
+    )
+    cluster_outcomes_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     # ── Empire cycle (Tier 1 → Tier 4 full invocation) ──────
     cycle_p = sub.add_parser(
         "cycle",
@@ -15440,6 +15474,186 @@ def _cmd_cluster_plan(args) -> None:
         print("  NOTES:")
         for n in plan.notes:
             print(f"    {n}")
+
+
+def _cmd_outcomes_report(args) -> None:
+    """Time-windowed outcome rollup.
+
+    Per-cluster (default): rolls up all member engines'
+    outcomes within the window.
+    Per-engine (--engine): shows ONE engine's outcomes.
+    """
+    from engines._outcome_window import (
+        engine_outcomes_window,
+        cluster_outcomes_window,
+        fleet_outcomes_window,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    try:
+        window_hours = float(
+            getattr(args, "window", "168") or "168"
+        )
+    except (TypeError, ValueError):
+        window_hours = 168.0
+
+    engine_name = (getattr(args, "engine", None) or "").strip()
+    cluster_name = (getattr(args, "cluster", None) or "").strip()
+    store_id = (getattr(args, "store", None) or "").strip() or None
+
+    # Mode: single-engine drill-down
+    if engine_name:
+        w = engine_outcomes_window(
+            engine_name, window_hours=window_hours,
+            store_id=store_id,
+        )
+        if as_json:
+            print(json.dumps({
+                "scope": w.scope,
+                "window_hours": w.window_hours,
+                "positive": w.positive_count,
+                "negative": w.negative_count,
+                "neutral": w.neutral_count,
+                "total_outcomes": w.total_outcomes,
+                "total_revenue": w.total_revenue,
+                "positive_ratio": w.positive_ratio,
+                "trending_positive": w.is_trending_positive,
+                "trending_negative": w.is_trending_negative,
+                "sample_rows": w.sample_rows,
+            }, indent=2, default=str))
+            return
+        print(
+            f"Engine outcomes: {engine_name}  "
+            f"(window: {window_hours:.0f}h, store: "
+            f"{store_id or 'fleet'})"
+        )
+        print()
+        print(
+            f"  Positive:  {w.positive_count:3d}    "
+            f"Negative: {w.negative_count:3d}    "
+            f"Neutral:  {w.neutral_count:3d}"
+        )
+        print(
+            f"  Total:     {w.total_outcomes:3d}    "
+            f"Revenue:  ${w.total_revenue:.2f}"
+        )
+        print(
+            f"  Positive ratio: {w.positive_ratio:.2f}"
+        )
+        if w.is_trending_positive:
+            print("  Trend: improving")
+        elif w.is_trending_negative:
+            print("  Trend: degrading")
+        if w.sample_rows:
+            print()
+            print("  Recent outcomes:")
+            for s in w.sample_rows[:5]:
+                print(
+                    f"    {s['polarity']:<10} "
+                    f"topic={s['topic']:<20} "
+                    f"rev=${s['revenue']:.2f}"
+                )
+        return
+
+    # Mode: single cluster
+    if cluster_name:
+        w = cluster_outcomes_window(
+            cluster_name, window_hours=window_hours,
+            store_id=store_id,
+        )
+        if as_json:
+            print(json.dumps({
+                "scope": w.scope,
+                "window_hours": w.window_hours,
+                "positive": w.positive_count,
+                "negative": w.negative_count,
+                "neutral": w.neutral_count,
+                "total_outcomes": w.total_outcomes,
+                "total_revenue": w.total_revenue,
+                "positive_ratio": w.positive_ratio,
+            }, indent=2, default=str))
+            return
+        print(
+            f"Cluster outcomes: {cluster_name}  "
+            f"(window: {window_hours:.0f}h)"
+        )
+        print()
+        print(
+            f"  Positive:  {w.positive_count:3d}    "
+            f"Negative: {w.negative_count:3d}    "
+            f"Neutral:  {w.neutral_count:3d}"
+        )
+        print(
+            f"  Total:     {w.total_outcomes:3d}    "
+            f"Revenue:  ${w.total_revenue:.2f}"
+        )
+        print(
+            f"  Positive ratio: {w.positive_ratio:.2f}"
+        )
+        return
+
+    # Mode: fleet-wide rollup
+    windows = fleet_outcomes_window(window_hours=window_hours)
+    if as_json:
+        print(json.dumps({
+            "window_hours": window_hours,
+            "clusters": [
+                {
+                    "scope": w.scope,
+                    "positive": w.positive_count,
+                    "negative": w.negative_count,
+                    "neutral": w.neutral_count,
+                    "total_outcomes": w.total_outcomes,
+                    "total_revenue": w.total_revenue,
+                    "positive_ratio": w.positive_ratio,
+                    "trending_positive": w.is_trending_positive,
+                    "trending_negative": w.is_trending_negative,
+                }
+                for w in windows
+            ],
+        }, indent=2, default=str))
+        return
+
+    print(
+        f"Fleet outcomes  (window: {window_hours:.0f}h "
+        f"= {window_hours/24:.1f} days)"
+    )
+    print()
+    total_pos = sum(w.positive_count for w in windows)
+    total_neg = sum(w.negative_count for w in windows)
+    total_neu = sum(w.neutral_count for w in windows)
+    total_rev = sum(w.total_revenue for w in windows)
+    print(
+        f"  Empire total: {total_pos+total_neg+total_neu} "
+        f"outcomes, ${total_rev:.2f} revenue"
+    )
+    print(
+        f"    positive={total_pos}  negative={total_neg}  "
+        f"neutral={total_neu}"
+    )
+    print()
+    print(
+        f"  {'cluster':<14} {'pos':>4} {'neg':>4} "
+        f"{'neu':>4} {'revenue':>10} trend"
+    )
+    for w in windows:
+        cluster = w.scope.replace("cluster:", "")
+        trend = (
+            "improving" if w.is_trending_positive
+            else "degrading" if w.is_trending_negative
+            else "-"
+        )
+        rev_str = f"${w.total_revenue:.0f}"
+        print(
+            f"  {cluster:<14} "
+            f"{w.positive_count:>4d} "
+            f"{w.negative_count:>4d} "
+            f"{w.neutral_count:>4d} "
+            f"{rev_str:>10} {trend}"
+        )
+    print()
+    print("  Drill: `shopai cluster-outcomes --cluster <name>`")
+    print("         `shopai cluster-outcomes --engine <name>`")
 
 
 def _cmd_cycle_run(args) -> None:
@@ -32083,6 +32297,10 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_cycle_run(args)
             return
         print("Usage: shopai cycle {run}")
+        return
+
+    if args.command == "cluster-outcomes":
+        _cmd_outcomes_report(args)
         return
 
     if args.command == "memory-recall":
