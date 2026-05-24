@@ -183,6 +183,29 @@ class ReviewManagementEngine:
             confidence=confidence,
         )
 
+        # Phase 7: optional review-health tag apply. Opt-in
+        # via data.apply_review_health_tags=True. Tags the
+        # product with reviews:poor_rating / negative_sentiment
+        # / declining based on engine output.
+        tagged_review_health: dict[str, Any] = {}
+        if bool(data.get("apply_review_health_tags")) and product_id:
+            try:
+                from .tag_applier import apply_review_health_tags
+                tagged_review_health = apply_review_health_tags(
+                    product_id=product_id,
+                    summary=summary,
+                    sentiment=sentiment,
+                    trend=trend,
+                    existing_tags=data.get("product_tags") or [],
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "review_management: apply loop raised: %s",
+                    exc,
+                )
+                tagged_review_health = {}
+
         # ---- Stage 11: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -216,6 +239,7 @@ class ReviewManagementEngine:
                 "insights": insights,
                 "improvements": improvements,
                 "confidence": confidence,
+                "tagged_review_health": tagged_review_health,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
