@@ -104,6 +104,24 @@ class CohortAnalysisEngine:
             best_cohort=best_cohort, trends=trends,
         )
 
+        # Phase 7: optional cohort-tag apply. Opt-in via
+        # data.apply_cohort_tags=True. Tags every customer in
+        # every cohort with cohort:<period> via
+        # SHOPIFY_TAG_CUSTOMER. First customer-tag wireup --
+        # uses build_result's cohorts (which carry customer_ids)
+        # rather than the LTV projections (which strip them).
+        tagged_cohorts: list[dict[str, Any]] = []
+        if bool(data.get("apply_cohort_tags")):
+            try:
+                from .tag_applier import apply_cohort_tags
+                tagged_cohorts = apply_cohort_tags(cohorts)
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "cohort_analysis: apply loop raised: %s",
+                    exc,
+                )
+
         elapsed = time.monotonic() - start
         return {
             "status": "success",
@@ -112,6 +130,7 @@ class CohortAnalysisEngine:
                 "retention_matrix": retention_matrix,
                 "best_cohort": best_cohort,
                 "trends": trends,
+                "tagged_cohorts": tagged_cohorts,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
