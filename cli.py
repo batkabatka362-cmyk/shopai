@@ -1690,6 +1690,47 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── Store supervisor (Tier 2a) ───────────────────────────
+    store_supervise_p = store_sub.add_parser(
+        "supervise",
+        help=(
+            "Tier 2a Store Supervisor: per-store cycle plan. "
+            "Activates the right clusters, signals their "
+            "captains, aggregates plans. The middle manager "
+            "between Tier 1 orchestrator + Tier 2b cluster "
+            "captains."
+        ),
+    )
+    store_supervise_p.add_argument(
+        "store_id", nargs="?", default=None,
+        help=(
+            "Store to supervise (defaults to active store). "
+            "Pass an explicit ID to plan a non-active store."
+        ),
+    )
+    store_supervise_p.add_argument(
+        "--clusters", default=None, metavar="CSV",
+        help=(
+            "Comma-separated cluster names to activate this "
+            "cycle. Tier 1 priority override. Example: "
+            "`--clusters retention,quality`. Omit for default "
+            "activation (all except setup + content)."
+        ),
+    )
+    store_supervise_p.add_argument(
+        "--signals", default=None, metavar="JSON",
+        help=(
+            "Per-cluster signals JSON. Example: "
+            "'{\"retention\":{\"at_risk_count\":5}}'. Captains "
+            "use signal-driven strategy when their signals "
+            "are supplied."
+        ),
+    )
+    store_supervise_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     # ── Transfer (cross-store) commands ──────────────────────
     transfer_p = sub.add_parser(
         "transfer",
@@ -15303,6 +15344,122 @@ def _cmd_cluster_plan(args) -> None:
         print("  NOTES:")
         for n in plan.notes:
             print(f"    {n}")
+
+
+def _cmd_store_supervise(args) -> None:
+    """Tier 2a per-store supervisor plan.
+
+    Builds the per-cluster captain plan aggregate for one
+    store-cycle. Doesn't execute -- shows what the supervisor
+    WOULD do this cycle. Tier 1 orchestrator (future) or
+    operator manually invokes the plan via `shopai cluster
+    fire`.
+    """
+    from engines._store_supervisor import (
+        make_supervisor_plan, supervisor_summary,
+    )
+
+    store_id = (
+        getattr(args, "store_id", None)
+        or _get_store_manager().active_store_id
+    )
+
+    # Parse --clusters CSV
+    cluster_override: list[str] | None = None
+    raw_clusters = getattr(args, "clusters", None) or ""
+    if raw_clusters:
+        cluster_override = [
+            c.strip() for c in raw_clusters.split(",") if c.strip()
+        ]
+
+    # Parse --signals JSON
+    signals_by_cluster: dict | None = None
+    raw_signals = getattr(args, "signals", None) or ""
+    if raw_signals:
+        try:
+            parsed = json.loads(raw_signals)
+            if not isinstance(parsed, dict):
+                print("Error: --signals must be a JSON object")
+                sys.exit(1)
+                return
+            signals_by_cluster = parsed
+        except json.JSONDecodeError as exc:
+            print(f"Error: --signals invalid JSON: {exc}")
+            sys.exit(1)
+            return
+
+    plan = make_supervisor_plan(
+        store_id=store_id,
+        signals_by_cluster=signals_by_cluster,
+        cluster_override=cluster_override,
+    )
+    summary = supervisor_summary(plan)
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "store_id": plan.store_id,
+            "summary": summary,
+            "captain_plans": [
+                {
+                    "cluster": cp.cluster,
+                    "fire_count": cp.fire_count,
+                    "members_to_fire": cp.members_to_fire,
+                    "modifications_queued": cp.modifications_queued,
+                    "members_to_skip": cp.members_to_skip,
+                }
+                for cp in plan.captain_plans
+            ],
+            "skipped_clusters": plan.skipped_clusters,
+        }, indent=2, default=str))
+        return
+
+    print(
+        f"Store supervisor: {plan.store_id or '(active)'}"
+    )
+    print()
+    print(
+        f"  Active clusters:    {summary['active_clusters']:3d}"
+    )
+    print(
+        f"  Skipped clusters:   {summary['skipped_clusters']:3d}"
+    )
+    print(
+        f"  Total to fire:      {summary['total_to_fire']:3d} "
+        "engine(s)"
+    )
+    print(
+        f"  Modifications:      "
+        f"{summary['total_modifications']:3d} "
+        "engine(s) (need approval)"
+    )
+    print()
+    print("  Cluster breakdown:")
+    print(
+        f"    {'cluster':<14}  fire  queued  skipped  notes"
+    )
+    for row in summary["cluster_breakdown"]:
+        notes_str = (
+            f"  {row['notes'][0][:40]}" if row["notes"] else ""
+        )
+        print(
+            f"    {row['cluster']:<14}  "
+            f"{row['fire']:>4d}  "
+            f"{row['queued']:>6d}  "
+            f"{row['skipped']:>7d}  "
+            f"{notes_str}"
+        )
+
+    if plan.skipped_clusters:
+        print()
+        print("  Skipped clusters:")
+        for s in plan.skipped_clusters:
+            print(
+                f"    {s['cluster']:<14}  reason={s['reason']}"
+            )
+
+    print()
+    print("  Drill: `shopai cluster show <name>`")
+    print("  Fire:  `shopai cluster fire <name> --yes`")
 
 
 def _cmd_cluster_fire(args) -> None:
@@ -31400,6 +31557,7 @@ def main(argv: list[str] | None = None) -> None:
             "report": _cmd_store_report,
             "fleet": _cmd_store_fleet,
             "seed-products": _cmd_store_seed_products,
+            "supervise": _cmd_store_supervise,
         }
         handler = dispatch.get(args.store_action)
         if handler:
@@ -31407,7 +31565,9 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print(
                 "Usage: shopai store "
-                "{add|list|switch|status|connect|remove|configure|design|verify|setup|report|fleet}"
+                "{add|list|switch|status|connect|remove|"
+                "configure|design|verify|setup|report|fleet|"
+                "supervise}"
             )
         return
 
