@@ -15163,11 +15163,21 @@ def _cmd_cluster_list(args) -> None:
     """List all 10 Tier 2b clusters with member counts + KPIs."""
     from engines._clusters import list_clusters
     from engines._cluster_captain import cluster_health
+    from engines._cluster_memory import fleet_cluster_health
 
     clusters = list_clusters()
+    # Pull memory rollup ONCE for the fleet (single SQL hit)
+    memory_by_cluster: dict = {}
+    try:
+        for h in fleet_cluster_health():
+            memory_by_cluster[h.cluster] = h
+    except Exception:  # noqa: BLE001
+        memory_by_cluster = {}
+
     rows: list[dict] = []
     for c in clusters:
         h = cluster_health(c.name)
+        m = memory_by_cluster.get(c.name)
         rows.append({
             "name": c.name,
             "kpi": c.kpi,
@@ -15175,6 +15185,10 @@ def _cmd_cluster_list(args) -> None:
             "wired_members": h["wired_members"],
             "risk_buckets": h["risk_buckets"],
             "description": c.description,
+            "verdict": m.health_verdict if m else "unknown",
+            "executed": m.total_executed if m else 0,
+            "positive_ratio": m.positive_ratio if m else 0.0,
+            "revenue": m.total_revenue if m else 0.0,
         })
 
     if getattr(args, "json", False):
@@ -15199,8 +15213,8 @@ def _cmd_cluster_list(args) -> None:
     )
     print()
     print(
-        "  cluster        members   wired   "
-        "additive/mod/dest   KPI"
+        "  cluster        wired   "
+        "add/mod/dst  verdict      execd  rev"
     )
     for r in rows:
         rb = r["risk_buckets"]
@@ -15209,10 +15223,20 @@ def _cmd_cluster_list(args) -> None:
             f"{rb.get('modification', 0)}/"
             f"{rb.get('destructive', 0)}"
         )
+        verdict_marker = {
+            "healthy": "[OK ]",
+            "warning": "[WRN]",
+            "unhealthy": "[BAD]",
+            "unknown": "[ - ]",
+        }.get(r["verdict"], "[ ? ]")
+        rev_str = (
+            f"${r['revenue']:.0f}" if r["revenue"] > 0 else "-"
+        )
         print(
-            f"  {r['name']:<14} {r['total_members']:>4d}     "
-            f"{r['wired_members']:>4d}    "
-            f"{risk_str:<17}  {r['kpi']}"
+            f"  {r['name']:<14} {r['wired_members']:>4d}/"
+            f"{r['total_members']:<2d}  "
+            f"{risk_str:<10}  {verdict_marker} {r['verdict']:<9}  "
+            f"{r['executed']:>5d}  {rev_str}"
         )
     print()
     print(
