@@ -12867,6 +12867,22 @@ def _cmd_engine_try_wireup(args) -> None:
     data.update(extra_params)
     data[apply_flag] = True
 
+    # Pull this engine's tag namespaces from the AST catalog
+    # so the dry-run preview shows EXACTLY what will land on
+    # Shopify (operators don't have to grep the applier).
+    engine_tags: list[str] = []
+    try:
+        from engines._tag_catalog import catalog_tags
+        tag_cat = catalog_tags("engines")
+        engine_tags = sorted({
+            e.tag for e in tag_cat.entries
+            if e.engine == engine_name
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "try-wireup tag-catalog probe raised: %s", exc,
+        )
+
     plan = {
         "engine": engine_name,
         "store_id": store_id,
@@ -12874,6 +12890,7 @@ def _cmd_engine_try_wireup(args) -> None:
         "writers": wb.writer_files,
         "opt_in_flags": wb.opt_in_flags,
         "data_keys": sorted(data.keys()),
+        "writes_tags": engine_tags,
     }
 
     if not yes:
@@ -12890,6 +12907,10 @@ def _cmd_engine_try_wireup(args) -> None:
         print(
             f"  Writers:     {', '.join(wb.writer_files)}"
         )
+        if engine_tags:
+            print(
+                f"  Writes tag(s): {', '.join(engine_tags)}"
+            )
         print(f"  Store_id:    {store_id or '(none)'}")
         print(f"  Data keys:   {sorted(data.keys())}")
         print()
