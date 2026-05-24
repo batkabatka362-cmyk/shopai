@@ -1399,3 +1399,115 @@ behaviour preserved.
 6. The enum at `core/adapters/base.py:102-115`.
 7. Whatever specific Shopify doc page covers the GraphQL operation
    I'm about to wrap.
+
+## Ant-colony architecture (Wave 1-5, 2026-05-25)
+
+Tier 1-2b substrate built on top of the existing engine +
+adapter layers. The user's framing: "queen rules but doesn't
+micromanage workers." Single-step delegation only.
+
+```text
+Owner (CLI)
+   ↓
+Tier 1  Orchestrator     engines/_orchestrator.py
+   ↓
+Tier 2a Store Supervisor engines/_store_supervisor.py
+   ↓
+Tier 2b Cluster Captain  engines/_cluster_captain.py
+   ↓
+Tier 3  Engines (135)    engines/<name>/flow.py
+   ↓
+Tier 4  Adapters (130+)  core/adapters/shopify/<name>.py
+```
+
+Substrate modules:
+
+- `engines/_clusters.py` -- 10 concern clusters, 100 engines
+- `engines/_writeback_risk.py` -- additive/modification/destructive
+- `engines/_captain_signals.py` -- HeuristicSignalCollector
+- `engines/_cluster_memory.py` -- per-cluster outcome rollup
+- `engines/_outcome_window.py` -- time-windowed outcomes
+- `engines/_cluster_bus.py` -- horizontal event bus
+- `engines/_ai_strategies.py` -- AI plug-ins (opt-in via env-var)
+- `engines/_cluster_audit.py` -- 9th institutional gate
+
+CLI surfaces (operator end-to-end):
+
+```text
+shopai cycle verify              -- preflight check
+shopai cycle run [--yes]         -- empire entry point
+shopai cycle schedule            -- cron / systemd config
+shopai orchestrator plan         -- Tier 1 view
+shopai store supervise <id>      -- Tier 2a view
+shopai cluster list/show/plan    -- Tier 2b ops
+shopai cluster fire <name> --yes -- live captain dispatch
+shopai cluster bus               -- horizontal event inspector
+shopai cluster bus --emit X:Y    -- manual event injection
+shopai cluster-outcomes          -- time-windowed rollup
+```
+
+### Risk taxonomy (enforced at multiple layers)
+
+51 writers classified by `engines/_writeback_risk.py`:
+
+- **additive** (45): tags, mint codes, create entities. Auto-fire.
+- **modification** (6): pricing, dynamic_pricing, product_lifecycle,
+  product_optimization, content_generation, store_setup policy.
+  Invoked with `require_approval=True`; engine internally enqueues
+  to ApprovalQueue.
+- **destructive** (0): operator-only escalation. Never auto-fired.
+
+CI invariants:
+
+- additive >= 5x modification (architectural floor)
+- destructive <= 3 (hard ceiling)
+- every wired engine has a known risk class
+- every domain engine is mapped to a cluster
+
+### Strategy plug-ins (substrate-first proof)
+
+All decision logic is pluggable via Protocol-based strategies:
+
+- `OrchestratorStrategy`: Deterministic, AI
+- `CaptainStrategy`: Deterministic, SignalDriven, MemoryAware, AI
+- `SignalCollectorStrategy`: Heuristic (real Phase 8 data later)
+- `ClusterMemoryStrategy`: QueueOutcomeRollup (DataArch later)
+
+AI strategies (opt-in via `SHOPAI_AI_STRATEGY=1`):
+
+- Default deterministic baseline runs FIRST
+- LLM asked to REVIEW / REFINE (not author)
+- Validated against wired_members + risk taxonomy
+- Falls back to deterministic if LLM unavailable / invalid
+
+### Safety env-var gates (live-mode blast radius)
+
+- `SHOPAI_CYCLE_RUN_CONFIRM=1` for `cycle run --yes`
+- `SHOPAI_CLUSTER_FIRE_CONFIRM=1` for `cluster fire --yes`
+- `SHOPAI_TRY_WIREUP_ALL_CONFIRM=1` for `engine try-wireup --all --yes`
+- `SHOPAI_CLUSTER_BUS_CLEAR_CONFIRM=1` for `cluster bus --clear`
+
+### Horizontal collaboration
+
+`engines/_cluster_bus.py` provides:
+
+- `emit_event(emitter, topic, payload, store_id)` -- captain
+  auto-emits on non-zero signals
+- `subscribe_events(...)` -- filter by topic / emitter / store / window
+- `cross_cluster_signals(store_id, window_hours)` -- convert
+  recent events into next-cycle signals dict
+
+Topic -> consumer-cluster signal:
+
+```text
+high_roas_product   -> merchandising:high_roas_product_count
+churn_risk_detected -> retention:at_risk_count
+thin_margin_flagged -> pricing:thin_margin_count
+stockout_warning    -> fulfillment:stockout_imminent_count
+negative_review     -> quality:negative_review_count
+undercut_detected   -> pricing:undercut_count
+```
+
+Bus is observational + advisory. Captain CAN consume events
+via mapped signals, but doesn't HAVE to. Vertical authority
+unchanged.
