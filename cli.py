@@ -2458,6 +2458,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     engine_tag_catalog_p.add_argument(
+        "--namespace", default=None, metavar="STR",
+        help=(
+            "Reverse-lookup filter: show only namespaces / tags "
+            "matching this substring (case-insensitive). Use "
+            "this when you see a tag in the Shopify admin and "
+            "want to know which engine wrote it. Example: "
+            "`--namespace shopai-segment`."
+        ),
+    )
+    engine_tag_catalog_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
     )
@@ -14831,19 +14841,49 @@ def _cmd_engine_tag_catalog(args) -> None:
             print(f"Tag catalog unavailable: {exc}")
         return
 
+    # Optional --namespace filter -- reverse-lookup from a tag
+    # the operator sees in Shopify admin to the engine that
+    # wrote it.
+    ns_filter = (getattr(args, "namespace", None) or "").strip()
+    if ns_filter:
+        # Match: namespace key contains the filter OR any tag in
+        # the namespace contains the filter (case-insensitive).
+        f_lower = ns_filter.lower()
+        filtered_namespaces = {
+            ns: entries
+            for ns, entries in catalog.by_namespace.items()
+            if (
+                f_lower in ns.lower()
+                or any(f_lower in e.tag.lower() for e in entries)
+            )
+        }
+        # Re-aggregate by_target from filtered entries
+        filtered_entries = [
+            e for entries in filtered_namespaces.values()
+            for e in entries
+        ]
+        filtered_by_target: dict[str, list] = {}
+        for e in filtered_entries:
+            filtered_by_target.setdefault(e.target, []).append(e)
+    else:
+        filtered_namespaces = dict(catalog.by_namespace)
+        filtered_entries = list(catalog.entries)
+        filtered_by_target = dict(catalog.by_target)
+
     if getattr(args, "json", False):
         print(json.dumps({
             "summary": {
                 "engines_scanned": catalog.engines_scanned,
-                "total_tags": catalog.total_tags,
-                "total_namespaces": catalog.total_namespaces,
+                "total_tags": len(filtered_entries),
+                "total_namespaces": len(filtered_namespaces),
                 "by_target": {
-                    t: len(es) for t, es in catalog.by_target.items()
+                    t: len(es) for t, es in filtered_by_target.items()
                 },
+                "filter": ns_filter or None,
             },
             "namespaces": {
                 ns: sorted({e.tag for e in entries})
-                for ns, entries in sorted(catalog.by_namespace.items())
+                for ns, entries in sorted(filtered_namespaces.items())
             },
             "entries": [
                 {
@@ -14852,22 +14892,37 @@ def _cmd_engine_tag_catalog(args) -> None:
                     "capability": e.capability,
                     "target": e.target,
                 }
-                for e in catalog.entries
+                for e in filtered_entries
             ],
         }, indent=2, default=str))
         return
 
-    print(
-        f"Shopify tag catalog -- {catalog.total_tags} tags across "
-        f"{catalog.total_namespaces} namespaces "
-        f"({catalog.engines_scanned} engines scanned)"
-    )
+    if ns_filter:
+        print(
+            f"Shopify tag catalog -- "
+            f"{len(filtered_entries)} tags matching '{ns_filter}' "
+            f"across {len(filtered_namespaces)} namespace(s)"
+        )
+    else:
+        print(
+            f"Shopify tag catalog -- {catalog.total_tags} tags "
+            f"across {catalog.total_namespaces} namespaces "
+            f"({catalog.engines_scanned} engines scanned)"
+        )
     print()
+
+    if not filtered_namespaces:
+        print(f"  No tags match '{ns_filter}'.")
+        print(
+            "  Run `shopai engine tag-catalog` without --namespace "
+            "to see all 30+ namespaces."
+        )
+        return
 
     # Render by target (product / customer / order)
     target_order = ["product", "customer", "order", "unknown"]
     for target in target_order:
-        entries = catalog.by_target.get(target, [])
+        entries = filtered_by_target.get(target, [])
         if not entries:
             continue
         print(f"  {target}: {len(entries)} tag(s)")
@@ -14877,10 +14932,10 @@ def _cmd_engine_tag_catalog(args) -> None:
     # the eye scans tags, not namespace label widths.
     print("  By namespace:")
     max_ns_width = max(
-        (len(ns) for ns in catalog.by_namespace),
+        (len(ns) for ns in filtered_namespaces),
         default=0,
     )
-    for ns, entries in sorted(catalog.by_namespace.items()):
+    for ns, entries in sorted(filtered_namespaces.items()):
         tags = sorted({e.tag for e in entries})
         engines = sorted({e.engine for e in entries})
         target = entries[0].target if entries else "unknown"
