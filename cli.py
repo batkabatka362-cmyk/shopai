@@ -1748,6 +1748,26 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    cycle_history_p = cycle_sub.add_parser(
+        "history",
+        help=(
+            "Show recent cycle runs. Operator answer to "
+            "'when did the last cycle run + how did it go?'."
+        ),
+    )
+    cycle_history_p.add_argument(
+        "--limit", type=int, default=10,
+        help="How many recent runs to show (default 10)",
+    )
+    cycle_history_p.add_argument(
+        "--store", default=None,
+        help="Filter to runs that touched one store",
+    )
+    cycle_history_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     cycle_verify_p = cycle_sub.add_parser(
         "verify",
         help=(
@@ -15794,6 +15814,76 @@ _WINDOWS_TASK_TRIGGER = {
 }
 
 
+def _cmd_cycle_history(args) -> None:
+    """Show recent cycle run history.
+
+    Sourced from data/cycle_history.json populated by
+    `cycle run --yes`. Dry-run cycles don't get recorded.
+    """
+    import time as _time
+    from engines._cycle_history import (
+        recent_runs, runs_for_store,
+    )
+
+    limit = max(1, int(getattr(args, "limit", 10) or 10))
+    store_id = (getattr(args, "store", None) or "").strip() or None
+    as_json = bool(getattr(args, "json", False))
+
+    if store_id:
+        runs = runs_for_store(store_id, limit=limit)
+    else:
+        runs = recent_runs(limit=limit)
+
+    if as_json:
+        print(json.dumps({
+            "filter_store": store_id,
+            "limit": limit,
+            "count": len(runs),
+            "runs": [r.to_dict() for r in runs],
+        }, indent=2, default=str))
+        return
+
+    print(f"Cycle history  ({len(runs)} runs)")
+    if store_id:
+        print(f"  filter: store={store_id}")
+    print()
+    if not runs:
+        print("  (no cycle runs recorded yet)")
+        print()
+        print(
+            "  Run one live: SHOPAI_CYCLE_RUN_CONFIRM=1 "
+            "shopai cycle run --yes"
+        )
+        return
+
+    print(
+        f"  {'when':<22} {'mode':<8} {'stores':>6} "
+        f"{'invoked':>7} {'ok':>4} {'err':>4} verdict"
+    )
+    now = _time.time()
+    for r in runs:
+        age = now - r.started_at
+        if age < 60:
+            when = f"{int(age)}s ago"
+        elif age < 3600:
+            when = f"{int(age/60)}m ago"
+        elif age < 86400:
+            when = f"{age/3600:.1f}h ago"
+        else:
+            when = f"{age/86400:.1f}d ago"
+        print(
+            f"  {when:<22} {r.mode:<8} "
+            f"{r.total_stores:>6d} {r.total_invoked:>7d} "
+            f"{r.total_ok:>4d} {r.total_errors:>4d} "
+            f"{r.verdict}"
+        )
+    print()
+    print(
+        "  Drill: `shopai cycle history --store <id>`  "
+        "(per-store)"
+    )
+
+
 def _cmd_cycle_verify(args) -> None:
     """End-to-end smoke test of the cycle pipeline.
 
@@ -16384,6 +16474,24 @@ def _cmd_cycle_run(args) -> None:
         "ok": sum(s["ok"] for s in per_store_results),
         "errors": sum(s["errors"] for s in per_store_results),
     }
+
+    # Persist this run to history so operators can audit
+    # "what fired this cycle?" later via `cycle history`.
+    try:
+        from engines._cycle_history import record_cycle_run
+        record_cycle_run(
+            cycle_label=fleet_plan.cycle_label,
+            mode="live",
+            total_stores=len(per_store_results),
+            total_invoked=overall["total_invoked"],
+            total_ok=overall["ok"],
+            total_errors=overall["errors"],
+            per_store=per_store_results,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "cycle history record failed: %s", exc,
+        )
 
     if as_json:
         print(json.dumps({
@@ -33075,7 +33183,12 @@ def main(argv: list[str] | None = None) -> None:
         if action == "verify":
             _cmd_cycle_verify(args)
             return
-        print("Usage: shopai cycle {run|schedule|verify}")
+        if action == "history":
+            _cmd_cycle_history(args)
+            return
+        print(
+            "Usage: shopai cycle {run|schedule|verify|history}"
+        )
         return
 
     if args.command == "cluster-outcomes":
