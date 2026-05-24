@@ -12569,6 +12569,25 @@ def _try_wireup_all(
         key=lambda s: s.name,
     )
 
+    # Build tag map ONCE per fleet pass (single AST scan across
+    # 42 applier files).
+    tag_map: dict[str, list[str]] = {}
+    try:
+        from engines._tag_catalog import catalog_tags
+        tag_cat = catalog_tags("engines")
+        for tag_entry in tag_cat.entries:
+            tag_map.setdefault(tag_entry.engine, []).append(
+                tag_entry.tag,
+            )
+        tag_map = {
+            eng: sorted(set(tags))
+            for eng, tags in tag_map.items()
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "try-wireup --all tag-catalog probe raised: %s", exc,
+        )
+
     results: list[dict[str, Any]] = []
     any_error = False
     for wb in wired:
@@ -12576,6 +12595,7 @@ def _try_wireup_all(
             "engine": wb.name,
             "writers": list(wb.writer_files),
             "opt_in_flags": list(wb.opt_in_flags),
+            "writes_tags": tag_map.get(wb.name, []),
         }
         apply_flag = next(
             (
