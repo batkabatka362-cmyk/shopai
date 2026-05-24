@@ -96,6 +96,24 @@ class ProductRankingEngine:
             top_tier_count=top_tier,
         )
 
+        # Phase 7: optional top-tier tag apply. Opt-in via
+        # data.apply_top_tier_tags=True. See tag_applier for
+        # filter logic (rank in 1..3). Empty list when not
+        # opted in OR when no products are top-tier.
+        tagged_top_tier: list[dict[str, Any]] = []
+        if bool(data.get("apply_top_tier_tags")):
+            try:
+                from .tag_applier import apply_top_tier_tags
+                tagged_top_tier = apply_top_tier_tags(
+                    explained, products,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "product_ranking: apply loop raised: %s",
+                    exc,
+                )
+
         elapsed = time.monotonic() - start
         return {
             "status": "success",
@@ -103,6 +121,7 @@ class ProductRankingEngine:
                 "ranked_products": explained,
                 "total_ranked": len(explained),
                 "top_tier_count": top_tier,
+                "tagged_top_tier": tagged_top_tier,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
