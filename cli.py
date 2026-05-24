@@ -1790,8 +1790,17 @@ def build_parser() -> argparse.ArgumentParser:
         "status",
         help=(
             "One-glance empire health snapshot. Last run, "
-            "cluster verdicts, bus activity, audit state -- "
-            "all in one screen."
+            "cluster verdicts, bus activity, audit state, "
+            "AI strategy -- all in one screen. --store filters "
+            "to per-store view."
+        ),
+    )
+    cycle_status_p.add_argument(
+        "--store", default=None, metavar="ID",
+        help=(
+            "Filter the snapshot to one store_id. Last run "
+            "becomes 'last run that touched this store', "
+            "bus activity filters per-store."
         ),
     )
     cycle_status_p.add_argument(
@@ -16019,14 +16028,21 @@ def _cmd_ai_strategy_test(args) -> None:
 def _cmd_cycle_status(args) -> None:
     """One-glance empire health dashboard."""
     import time as _time
-    from engines._cycle_history import last_run
+    from engines._cycle_history import last_run, runs_for_store
     from engines._cluster_memory import fleet_cluster_health
     from engines._cluster_bus import bus_stats
 
     as_json = bool(getattr(args, "json", False))
+    store_filter = (
+        getattr(args, "store", None) or ""
+    ).strip() or None
 
-    # 1. Last cycle run
-    last = last_run()
+    # 1. Last cycle run (optionally per-store)
+    if store_filter:
+        runs = runs_for_store(store_filter, limit=1)
+        last = runs[0] if runs else None
+    else:
+        last = last_run()
     last_block = None
     if last is not None:
         age = _time.time() - last.started_at
@@ -16057,20 +16073,50 @@ def _cmd_cycle_status(args) -> None:
         v = h.health_verdict
         verdict_counts[v] = verdict_counts.get(v, 0) + 1
 
-    # 3. Bus activity
+    # 3. Bus activity (filterable per-store via subscribe)
     try:
-        bs = bus_stats(window_hours=24.0)
-        bus_block = {
-            "total_events": bs["total_events"],
-            "top_topic": (
-                list(bs["by_topic"].keys())[0]
-                if bs["by_topic"] else None
-            ),
-            "top_emitter": (
-                list(bs["by_emitter"].keys())[0]
-                if bs["by_emitter"] else None
-            ),
-        }
+        from engines._cluster_bus import subscribe_events
+        if store_filter:
+            events = subscribe_events(
+                store_id=store_filter, window_hours=24.0,
+            )
+            by_topic: dict = {}
+            by_emitter: dict = {}
+            for e in events:
+                by_topic[e.topic] = by_topic.get(e.topic, 0) + 1
+                by_emitter[e.emitter_cluster] = (
+                    by_emitter.get(e.emitter_cluster, 0) + 1
+                )
+            by_topic_sorted = dict(sorted(
+                by_topic.items(), key=lambda kv: -kv[1],
+            ))
+            by_emitter_sorted = dict(sorted(
+                by_emitter.items(), key=lambda kv: -kv[1],
+            ))
+            bus_block = {
+                "total_events": len(events),
+                "top_topic": (
+                    list(by_topic_sorted.keys())[0]
+                    if by_topic_sorted else None
+                ),
+                "top_emitter": (
+                    list(by_emitter_sorted.keys())[0]
+                    if by_emitter_sorted else None
+                ),
+            }
+        else:
+            bs = bus_stats(window_hours=24.0)
+            bus_block = {
+                "total_events": bs["total_events"],
+                "top_topic": (
+                    list(bs["by_topic"].keys())[0]
+                    if bs["by_topic"] else None
+                ),
+                "top_emitter": (
+                    list(bs["by_emitter"].keys())[0]
+                    if bs["by_emitter"] else None
+                ),
+            }
     except Exception:  # noqa: BLE001
         bus_block = {"total_events": 0}
 
@@ -16117,7 +16163,10 @@ def _cmd_cycle_status(args) -> None:
         }, indent=2, default=str))
         return
 
-    print("Empire status")
+    if store_filter:
+        print(f"Empire status  (store filter: {store_filter})")
+    else:
+        print("Empire status")
     print()
 
     print("  Last cycle run:")
