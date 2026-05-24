@@ -12158,6 +12158,21 @@ def _cmd_engine_pulse(args) -> None:
                     f"writers=[{writer_str}]  "
                     f"opt_ins=[{opt_str}]"
                 )
+                # Smoke-test hint for wired engines mirrors
+                # the engine summary line (032cfa49) so both
+                # per-engine surfaces converge on the same
+                # discovery path.
+                if (
+                    wb.status == "wired"
+                    and any(
+                        f.startswith("apply_")
+                        for f in wb.opt_in_flags
+                    )
+                ):
+                    print(
+                        f"    Smoke-test: `shopai engine "
+                        f"try-wireup {health.engine}` (dry-run)"
+                    )
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "engine_pulse writeback probe raised: %s",
