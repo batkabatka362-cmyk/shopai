@@ -1691,6 +1691,45 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # ── Empire orchestrator (Tier 1) ─────────────────────────
+    # ── Empire cycle (Tier 1 → Tier 4 full invocation) ──────
+    cycle_p = sub.add_parser(
+        "cycle",
+        help=(
+            "Empire cycle entry: full Tier 1 -> Tier 2a -> "
+            "Tier 2b -> Tier 3 -> Tier 4 invocation. Reads "
+            "fleet world-model, plans per store, fires safe "
+            "additive members, enqueues modifications for "
+            "approval. The single command that brings the "
+            "ant-colony to life."
+        ),
+    )
+    cycle_sub = cycle_p.add_subparsers(dest="cycle_action")
+
+    cycle_run_p = cycle_sub.add_parser(
+        "run",
+        help=(
+            "Run one full empire cycle. Default DRY-RUN. "
+            "--yes (+ SHOPAI_CYCLE_RUN_CONFIRM=1) actually "
+            "fires the additive members across the fleet."
+        ),
+    )
+    cycle_run_p.add_argument(
+        "--store", default=None, metavar="ID",
+        help="Limit to one store (default: full fleet)",
+    )
+    cycle_run_p.add_argument(
+        "--yes", action="store_true",
+        help=(
+            "Actually invoke engines. Default is dry-run. "
+            "SHOPAI_CYCLE_RUN_CONFIRM=1 also required "
+            "(full-fleet blast radius guard)."
+        ),
+    )
+    cycle_run_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     orchestrator_p = sub.add_parser(
         "orchestrator",
         help=(
@@ -15401,6 +15440,272 @@ def _cmd_cluster_plan(args) -> None:
         print("  NOTES:")
         for n in plan.notes:
             print(f"    {n}")
+
+
+def _cmd_cycle_run(args) -> None:
+    """One full empire cycle: Tier 1 -> Tier 2a -> Tier 2b
+    -> Tier 3 -> Tier 4.
+
+    Reads fleet world-model, runs Tier 1 orchestrator to
+    plan per-store, then for each store-cluster pair invokes
+    the captain plan. Additive members fire directly.
+    Modification members are invoked with
+    require_approval=True (engine internally enqueues).
+    Destructive members skipped (operator-only).
+
+    Default: DRY-RUN. --yes + env-var actually fires.
+    """
+    import time as _time
+    from engines._orchestrator import (
+        make_fleet_plan, fleet_summary,
+    )
+    from core.world_model import WorldModel
+
+    sm = _get_store_manager()
+    only_store = (getattr(args, "store", None) or "").strip()
+    yes = bool(getattr(args, "yes", False))
+    as_json = bool(getattr(args, "json", False))
+
+    # Step 1: pull world-models
+    world_models: dict[str, dict] = {}
+    try:
+        wm = WorldModel()
+        if only_store:
+            world_models[only_store] = wm.snapshot(
+                only_store, skip_live=True,
+            )
+        else:
+            for s in sm.list_stores() or []:
+                sid = s.get("store_id")
+                if sid:
+                    world_models[sid] = wm.snapshot(
+                        sid, skip_live=True,
+                    )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("cycle run world-model raised: %s", exc)
+
+    # Step 2: Tier 1 plan
+    cycle_label = _time.strftime(
+        "%Y-%m-%dT%H:%M:%S", _time.gmtime(),
+    )
+    fleet_plan = make_fleet_plan(
+        world_models=world_models, cycle_label=cycle_label,
+    )
+    summary = fleet_summary(fleet_plan)
+
+    if not yes:
+        # Dry-run: just show the plan
+        if as_json:
+            print(json.dumps({
+                "mode": "dry_run",
+                "cycle_label": fleet_plan.cycle_label,
+                "summary": summary,
+            }, indent=2, default=str))
+            return
+        print(
+            f"Empire cycle (DRY-RUN) -- {fleet_plan.cycle_label}"
+        )
+        print()
+        print(f"  Stores planned:       {summary['total_stores']}")
+        print(
+            f"  Total auto-fire:      {summary['total_to_fire']} "
+            "engine(s)"
+        )
+        print(
+            f"  Total approval-queue: "
+            f"{summary['total_modifications']} engine(s)"
+        )
+        print()
+        if summary["stores"]:
+            print(
+                f"  {'store_id':<25} {'priority':<11} "
+                f"{'clusters':>8} {'fire':>5} {'queue':>6}"
+            )
+            for row in summary["stores"]:
+                print(
+                    f"  {row['store_id'][:25]:<25} "
+                    f"{row['priority']:<11} "
+                    f"{row['active_clusters']:>8d}  "
+                    f"{row['fire']:>4d} {row['queued']:>5d}"
+                )
+        print()
+        print(
+            "  To run live: SHOPAI_CYCLE_RUN_CONFIRM=1 "
+            "shopai cycle run --yes"
+        )
+        return
+
+    # --yes path: actually invoke
+    if not os.environ.get("SHOPAI_CYCLE_RUN_CONFIRM"):
+        msg = (
+            "Empire cycle live mode requires "
+            "SHOPAI_CYCLE_RUN_CONFIRM=1 env var. This fires "
+            "engines across the WHOLE FLEET; set the env var "
+            "to acknowledge the blast radius."
+        )
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+        return
+
+    # Iterate per-store; for each store's SupervisorPlan,
+    # iterate per cluster; for each captain plan, invoke
+    # members (additive direct, modification w/ require_approval)
+    try:
+        from data_pipeline.store.data_provider import DataProvider
+        from engines.registry import get_engine
+    except Exception as exc:  # noqa: BLE001
+        msg = f"runtime registry/provider unavailable: {exc}"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+        return
+
+    per_store_results: list[dict] = []
+    any_error = False
+    for sp in fleet_plan.supervisor_plans:
+        store_id = sp.store_id
+        store_results: list[dict] = []
+        for cp in sp.captain_plans:
+            invocations = []
+            for m in cp.members_to_fire:
+                invocations.append({
+                    "engine": m["engine"],
+                    "apply_flag": m["apply_flag"],
+                    "risk": m.get("risk"),
+                    "require_approval": False,
+                })
+            for m in cp.modifications_queued:
+                invocations.append({
+                    "engine": m["engine"],
+                    "apply_flag": m["apply_flag"],
+                    "risk": m.get("risk"),
+                    "require_approval": True,
+                })
+
+            for member in invocations:
+                engine_name = member["engine"]
+                apply_flag = member["apply_flag"]
+                require_approval = member["require_approval"]
+                entry: dict = {
+                    "store_id": store_id,
+                    "cluster": cp.cluster,
+                    "engine": engine_name,
+                    "apply_flag": apply_flag,
+                    "risk": member.get("risk"),
+                    "approval_required": require_approval,
+                }
+                try:
+                    data = (
+                        DataProvider(sm).get_data_for_engine(
+                            engine_name, store_id,
+                        ) if store_id else {}
+                    )
+                    if not isinstance(data, dict):
+                        data = {}
+                    data[apply_flag] = True
+                    if require_approval:
+                        data["require_approval"] = True
+                except Exception as exc:  # noqa: BLE001
+                    entry["status"] = "data_error"
+                    entry["error"] = str(exc)
+                    any_error = True
+                    store_results.append(entry)
+                    continue
+
+                try:
+                    engine = get_engine(engine_name)
+                    if engine is None:
+                        entry["status"] = "not_registered"
+                        any_error = True
+                        store_results.append(entry)
+                        continue
+                    result = engine.run(data)
+                    entry["status"] = (
+                        result.get("status", "?")
+                        if isinstance(result, dict) else "?"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    entry["status"] = "engine_raised"
+                    entry["error"] = str(exc)
+                    any_error = True
+                store_results.append(entry)
+
+        per_store_results.append({
+            "store_id": store_id,
+            "total_invoked": len(store_results),
+            "ok": sum(
+                1 for r in store_results
+                if r.get("status") in ("success", "ok")
+            ),
+            "errors": sum(
+                1 for r in store_results
+                if r.get("status") not in ("success", "ok")
+            ),
+            "results": store_results,
+        })
+
+    overall = {
+        "cycle_label": fleet_plan.cycle_label,
+        "stores": len(per_store_results),
+        "total_invoked": sum(
+            s["total_invoked"] for s in per_store_results
+        ),
+        "ok": sum(s["ok"] for s in per_store_results),
+        "errors": sum(s["errors"] for s in per_store_results),
+    }
+
+    if as_json:
+        print(json.dumps({
+            "mode": "live",
+            "summary": overall,
+            "stores": per_store_results,
+        }, indent=2, default=str))
+        if any_error:
+            sys.exit(1)
+        return
+
+    print(
+        f"Empire cycle (LIVE) -- {fleet_plan.cycle_label}"
+    )
+    print()
+    print(
+        f"  Stores processed:     {overall['stores']:3d}"
+    )
+    print(
+        f"  Total invoked:        {overall['total_invoked']:3d} "
+        "engine(s)"
+    )
+    print(
+        f"  OK:    {overall['ok']:3d}      "
+        f"Errors: {overall['errors']:3d}"
+    )
+    print()
+    for sr in per_store_results:
+        sid = sr["store_id"] or "(no-id)"
+        print(
+            f"  store: {sid:<25}  "
+            f"invoked={sr['total_invoked']:3d}  "
+            f"ok={sr['ok']:3d}  err={sr['errors']:3d}"
+        )
+    print()
+    print(
+        "  Drill: `shopai approvals list --status pending` "
+        "(see modification-tier engine outputs awaiting "
+        "approval)"
+    )
+    if any_error:
+        sys.exit(1)
 
 
 def _cmd_orchestrator_plan(args) -> None:
@@ -31770,6 +32075,14 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_orchestrator_plan(args)
             return
         print("Usage: shopai orchestrator {plan}")
+        return
+
+    if args.command == "cycle":
+        action = getattr(args, "cycle_action", None)
+        if action == "run":
+            _cmd_cycle_run(args)
+            return
+        print("Usage: shopai cycle {run}")
         return
 
     if args.command == "memory-recall":
