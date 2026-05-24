@@ -1725,6 +1725,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    # ── AI strategy operator surface ─────────────────────────
+    ai_strategy_p = sub.add_parser(
+        "ai-strategy",
+        help=(
+            "AI strategy state + test. Show whether AI "
+            "consultant is enabled, which model, and verify "
+            "the LLM endpoint actually answers."
+        ),
+    )
+    ai_strategy_sub = ai_strategy_p.add_subparsers(
+        dest="ai_strategy_action",
+    )
+
+    ai_strategy_status_p = ai_strategy_sub.add_parser(
+        "status",
+        help=(
+            "Show: env-var state, LLM availability, model "
+            "name, fallback mode."
+        ),
+    )
+    ai_strategy_status_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
+    ai_strategy_test_p = ai_strategy_sub.add_parser(
+        "test",
+        help=(
+            "Hit the LLM with a known prompt + verify a "
+            "valid JSON response comes back. Doesn't change "
+            "anything; just proves connectivity."
+        ),
+    )
+    ai_strategy_test_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     # ── Empire cycle (Tier 1 → Tier 4 full invocation) ──────
     cycle_p = sub.add_parser(
         "cycle",
@@ -15825,6 +15863,157 @@ _WINDOWS_TASK_TRIGGER = {
     "daily":       "/sc DAILY /st 03:00",
     "every-6h":    "/sc HOURLY /mo 6",
 }
+
+
+def _cmd_ai_strategy_status(args) -> None:
+    """Show AI strategy state for the operator."""
+    from engines._ai_strategies import _ai_enabled, _LLMClient
+
+    as_json = bool(getattr(args, "json", False))
+
+    enabled = _ai_enabled()
+    has_api_key = bool(os.environ.get("OPENAI_API_KEY"))
+    has_openai_lib = False
+    try:
+        import openai  # noqa: F401
+        has_openai_lib = True
+    except ImportError:
+        pass
+
+    llm = _LLMClient()
+    available = llm.available
+    model = os.environ.get(
+        "SHOPAI_AI_STRATEGY_MODEL", "gpt-4o-mini",
+    )
+    timeout = float(
+        os.environ.get("SHOPAI_AI_STRATEGY_TIMEOUT", "15")
+        or "15"
+    )
+
+    effective_mode = (
+        "ai" if (enabled and available) else "deterministic"
+    )
+
+    if as_json:
+        print(json.dumps({
+            "effective_mode": effective_mode,
+            "env_enabled": enabled,
+            "has_openai_lib": has_openai_lib,
+            "has_api_key": has_api_key,
+            "llm_available": available,
+            "model": model,
+            "timeout_seconds": timeout,
+        }, indent=2))
+        return
+
+    print("AI strategy status")
+    print()
+    print(f"  Effective mode:        {effective_mode}")
+    print()
+    print(f"  Env-var enabled:       "
+          f"{'yes' if enabled else 'no'} "
+          f"(SHOPAI_AI_STRATEGY={'1' if enabled else '0'})")
+    print(f"  openai library:        "
+          f"{'installed' if has_openai_lib else 'missing'}")
+    print(f"  OPENAI_API_KEY set:    "
+          f"{'yes' if has_api_key else 'no'}")
+    print(f"  LLM available:         "
+          f"{'yes' if available else 'no'}")
+    print(f"  Model:                 {model}")
+    print(f"  Timeout (seconds):     {timeout}")
+    print()
+    if effective_mode == "deterministic":
+        print("  Reason for deterministic fallback:")
+        if not enabled:
+            print("    - SHOPAI_AI_STRATEGY env-var not set")
+        if not has_openai_lib:
+            print(
+                "    - openai library not installed "
+                "(pip install openai)"
+            )
+        if not has_api_key:
+            print(
+                "    - OPENAI_API_KEY env-var not set"
+            )
+        print()
+    print("  To enable AI consult:")
+    print("    pip install openai")
+    print("    export OPENAI_API_KEY=sk-...")
+    print("    export SHOPAI_AI_STRATEGY=1")
+    print()
+    print("  Test connectivity:  `shopai ai-strategy test`")
+
+
+def _cmd_ai_strategy_test(args) -> None:
+    """Test LLM connectivity with a known prompt."""
+    from engines._ai_strategies import _LLMClient
+
+    as_json = bool(getattr(args, "json", False))
+
+    llm = _LLMClient()
+    if not llm.available:
+        msg = (
+            "LLM not available. Run `shopai ai-strategy status` "
+            "to see what's missing (openai lib / API key)."
+        )
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+        return
+
+    system = (
+        "You are a connectivity test. Return JSON: "
+        "{\"ok\": true, \"answer\": <short string>}"
+    )
+    user = (
+        "Reply with ok=true and answer='pong'. "
+        "This is a smoke test for ShopAI's LLM substrate."
+    )
+
+    try:
+        resp = llm.chat_json(system, user)
+    except Exception as exc:  # noqa: BLE001
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": str(exc)},
+                indent=2,
+            ))
+        else:
+            print(f"Error: LLM call raised: {exc}")
+        sys.exit(1)
+        return
+
+    if resp is None:
+        if as_json:
+            print(json.dumps({
+                "status": "error",
+                "error": "LLM returned None (network / parse)",
+            }, indent=2))
+        else:
+            print("Error: LLM returned None")
+        sys.exit(1)
+        return
+
+    if as_json:
+        print(json.dumps({
+            "status": "ok",
+            "response": resp,
+        }, indent=2, default=str))
+        return
+
+    print("AI strategy test  (LLM connectivity)")
+    print()
+    print(f"  Response: {json.dumps(resp)[:200]}")
+    print()
+    if resp.get("ok"):
+        print("  [OK] LLM responding + returning valid JSON")
+    else:
+        print("  [WRN] LLM responded but ok=false")
 
 
 def _cmd_cycle_status(args) -> None:
@@ -33368,6 +33557,17 @@ def main(argv: list[str] | None = None) -> None:
             "Usage: shopai cycle "
             "{run|schedule|verify|history|status}"
         )
+        return
+
+    if args.command == "ai-strategy":
+        action = getattr(args, "ai_strategy_action", None)
+        if action == "status":
+            _cmd_ai_strategy_status(args)
+            return
+        if action == "test":
+            _cmd_ai_strategy_test(args)
+            return
+        print("Usage: shopai ai-strategy {status|test}")
         return
 
     if args.command == "cluster-outcomes":
