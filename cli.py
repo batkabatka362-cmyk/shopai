@@ -1747,6 +1747,33 @@ def build_parser() -> argparse.ArgumentParser:
             "fires the additive members across the fleet."
         ),
     )
+
+    cycle_schedule_p = cycle_sub.add_parser(
+        "schedule",
+        help=(
+            "Emit a ready-to-paste cron / systemd / Task "
+            "Scheduler config that runs the empire cycle "
+            "automatically. Operator picks a frequency + "
+            "platform; this prints the line to install."
+        ),
+    )
+    cycle_schedule_p.add_argument(
+        "--frequency", default="hourly",
+        choices=["hourly", "every-15min", "daily", "every-6h"],
+        help="How often to run (default hourly)",
+    )
+    cycle_schedule_p.add_argument(
+        "--platform", default="cron",
+        choices=["cron", "systemd", "windows-task", "powershell"],
+        help="Target platform for the schedule line",
+    )
+    cycle_schedule_p.add_argument(
+        "--log-file", default=None, metavar="PATH",
+        help=(
+            "Where to write the cycle log (default: "
+            "stdout via the scheduler's own logging)"
+        ),
+    )
     cycle_run_p.add_argument(
         "--store", default=None, metavar="ID",
         help="Limit to one store (default: full fleet)",
@@ -15654,6 +15681,143 @@ def _cmd_outcomes_report(args) -> None:
     print()
     print("  Drill: `shopai cluster-outcomes --cluster <name>`")
     print("         `shopai cluster-outcomes --engine <name>`")
+
+
+_CRON_FREQUENCY = {
+    "hourly":      "0 * * * *",
+    "every-15min": "*/15 * * * *",
+    "daily":       "0 3 * * *",
+    "every-6h":    "0 */6 * * *",
+}
+_SYSTEMD_ON_CALENDAR = {
+    "hourly":      "hourly",
+    "every-15min": "*:0/15",
+    "daily":       "*-*-* 03:00:00",
+    "every-6h":    "0/6:00:00",
+}
+_WINDOWS_TASK_TRIGGER = {
+    "hourly":      "/sc HOURLY /mo 1",
+    "every-15min": "/sc MINUTE /mo 15",
+    "daily":       "/sc DAILY /st 03:00",
+    "every-6h":    "/sc HOURLY /mo 6",
+}
+
+
+def _cmd_cycle_schedule(args) -> None:
+    """Print ready-to-paste schedule config for the empire cycle."""
+    import os as _os
+    freq = (getattr(args, "frequency", None) or "hourly").strip()
+    platform = (getattr(args, "platform", None) or "cron").strip()
+    log_file = getattr(args, "log_file", None)
+
+    repo_root = _os.path.dirname(_os.path.abspath(__file__))
+    cycle_cmd = (
+        f"SHOPAI_CYCLE_RUN_CONFIRM=1 python "
+        f"{repo_root}/cli.py cycle run --yes"
+    )
+
+    print(f"Empire cycle schedule ({freq}, {platform})")
+    print()
+
+    if platform == "cron":
+        cron_spec = _CRON_FREQUENCY[freq]
+        line = f"{cron_spec} {cycle_cmd}"
+        if log_file:
+            line += f" >> {log_file} 2>&1"
+        print("  Append this line to your crontab:")
+        print()
+        print(f"    {line}")
+        print()
+        print(
+            "  Install:  crontab -l | { cat; echo '...'; }"
+            " | crontab -"
+        )
+
+    elif platform == "systemd":
+        unit_name = "shopai-cycle"
+        print(
+            f"  Create /etc/systemd/system/{unit_name}.service:"
+        )
+        print()
+        print("    [Unit]")
+        print("    Description=ShopAI empire cycle")
+        print()
+        print("    [Service]")
+        print("    Type=oneshot")
+        print(f"    WorkingDirectory={repo_root}")
+        print('    Environment="SHOPAI_CYCLE_RUN_CONFIRM=1"')
+        print(
+            f"    ExecStart=/usr/bin/python {repo_root}/cli.py "
+            "cycle run --yes"
+        )
+        print()
+        print(
+            f"  Then /etc/systemd/system/{unit_name}.timer:"
+        )
+        print()
+        print("    [Unit]")
+        print("    Description=ShopAI empire cycle timer")
+        print()
+        print("    [Timer]")
+        print(
+            f"    OnCalendar={_SYSTEMD_ON_CALENDAR[freq]}"
+        )
+        print("    Persistent=true")
+        print()
+        print("    [Install]")
+        print("    WantedBy=timers.target")
+        print()
+        print(
+            "  Install:  sudo systemctl daemon-reload && "
+            f"sudo systemctl enable --now {unit_name}.timer"
+        )
+
+    elif platform == "windows-task":
+        trigger = _WINDOWS_TASK_TRIGGER[freq]
+        py = _os.path.join(_os.path.dirname(sys.executable), "python.exe")
+        print("  Run this in an elevated PowerShell:")
+        print()
+        ps_cmd = (
+            f'$env:SHOPAI_CYCLE_RUN_CONFIRM=1; '
+            f'& "{py}" "{repo_root}\\cli.py" cycle run --yes'
+        )
+        if log_file:
+            ps_cmd += f' *>> "{log_file}"'
+        print(
+            f'    schtasks /create /tn "ShopAI-Cycle" '
+            f'/tr "powershell.exe -NoProfile -Command \"{ps_cmd}\"" '
+            f"{trigger} /f"
+        )
+
+    elif platform == "powershell":
+        print("  PowerShell-loop variant (foreground):")
+        print()
+        print(
+            f'    while ($true) {{ '
+            f'$env:SHOPAI_CYCLE_RUN_CONFIRM=1; '
+            f'py "{repo_root}\\cli.py" cycle run --yes; '
+            f'Start-Sleep -Seconds {_freq_to_seconds(freq)} '
+            f'}}'
+        )
+
+    print()
+    print(
+        "  Test first (dry-run):  "
+        f"python {repo_root}/cli.py cycle run"
+    )
+    print(
+        "  Test live, once:       "
+        f"{cycle_cmd}"
+    )
+
+
+def _freq_to_seconds(freq: str) -> int:
+    return {
+        "hourly": 3600,
+        "every-15min": 900,
+        "daily": 86400,
+        "every-6h": 21600,
+    }.get(freq, 3600)
 
 
 def _cmd_cycle_run(args) -> None:
@@ -32296,7 +32460,10 @@ def main(argv: list[str] | None = None) -> None:
         if action == "run":
             _cmd_cycle_run(args)
             return
-        print("Usage: shopai cycle {run}")
+        if action == "schedule":
+            _cmd_cycle_schedule(args)
+            return
+        print("Usage: shopai cycle {run|schedule}")
         return
 
     if args.command == "cluster-outcomes":
