@@ -86,6 +86,22 @@ class WarrantyEngine:
 
         _write = write_warranty_result(claims_processed=claims_processed, costs=costs)
 
+        # Phase 7: optional warranty-risk tag apply. Opt-in via
+        # data.apply_warranty_risk_tags=True. Tags products at
+        # high/medium warranty risk via SHOPIFY_UPDATE_PRODUCT.
+        tagged_warranty_risks: list[dict[str, Any]] = []
+        if bool(data.get("apply_warranty_risk_tags")):
+            try:
+                from .tag_applier import apply_warranty_risk_tags
+                tagged_warranty_risks = apply_warranty_risk_tags(
+                    risk_analysis, products,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "warranty: apply loop raised: %s", exc,
+                )
+
         elapsed = time.monotonic() - start
         return {
             "status": "success",
@@ -94,6 +110,7 @@ class WarrantyEngine:
                 "costs": costs,
                 "risk_analysis": risk_analysis,
                 "policy_recommendations": policy_recommendations,
+                "tagged_warranty_risks": tagged_warranty_risks,
             },
             "meta": {"engine": self.ENGINE_NAME, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "elapsed_seconds": round(elapsed, 3)},
             "error": None,
