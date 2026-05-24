@@ -143,6 +143,26 @@ class SelectionDecisionEngine:
             portfolio_balance=portfolio_balance,
         )
 
+        # Phase 7: optional selection-tag apply. Opt-in via
+        # data.apply_selection_tags=True. Tags every
+        # selected product with selection:approved. Empty
+        # list when not opted in OR no selected products.
+        # Uses ranked_products as the merge base since the
+        # engine doesn't take a separate products list.
+        tagged_selected: list[dict[str, Any]] = []
+        if bool(data.get("apply_selection_tags")):
+            try:
+                from .tag_applier import apply_selection_tags
+                tagged_selected = apply_selection_tags(
+                    selected, ranked_products,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "selection_decision: apply loop raised: %s",
+                    exc,
+                )
+
         # ---- Stage 8: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -152,6 +172,7 @@ class SelectionDecisionEngine:
                 "selected": selected,
                 "rejected": rejected,
                 "portfolio_balance": portfolio_balance,
+                "tagged_selected": tagged_selected,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
