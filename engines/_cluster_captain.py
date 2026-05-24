@@ -410,6 +410,55 @@ class MemoryAwareCaptainStrategy:
         return sorted(defaults & set(base))
 
 
+_SIGNAL_TO_TOPIC = {
+    # When a captain's signal is non-trivial, emit the
+    # corresponding bus topic so OTHER clusters can pick
+    # it up next cycle.
+    "at_risk_count": "churn_risk_detected",
+    "thin_margin_count": "thin_margin_flagged",
+    "stockout_imminent_count": "stockout_warning",
+    "negative_review_count": "negative_review",
+    "undercut_count": "undercut_detected",
+}
+
+
+def _emit_signal_events(
+    cluster: "Cluster",
+    signals: dict[str, Any],
+    store_id: str | None,
+) -> None:
+    """When a cluster sees a non-zero signal, emit a bus
+    event so other clusters can pick it up next cycle.
+    Best-effort -- failure does not break the captain plan.
+    """
+    try:
+        from engines._cluster_bus import emit_event
+    except Exception:  # noqa: BLE001
+        return
+    for signal_name, value in (signals or {}).items():
+        topic = _SIGNAL_TO_TOPIC.get(signal_name)
+        if topic is None:
+            continue
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            continue
+        if n <= 0:
+            continue
+        try:
+            emit_event(
+                emitter_cluster=cluster.name,
+                topic=topic,
+                payload={
+                    "signal": signal_name,
+                    "count": n,
+                },
+                store_id=store_id,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def make_captain_plan(
     cluster_name: str,
     *,
@@ -443,6 +492,11 @@ def make_captain_plan(
     signals = signals or {}
     strategy = strategy or DeterministicCaptainStrategy()
     plan = CaptainPlan(cluster=cluster.name, store_id=store_id)
+
+    # Emit horizontal bus events for non-zero signals so the
+    # NEXT cycle's other captains can read this signal as
+    # cross-cluster intelligence.
+    _emit_signal_events(cluster, signals, store_id)
 
     # Pull writeback wiring + risk classification ONCE per
     # plan -- cheap (single AST scan) + reused below.
