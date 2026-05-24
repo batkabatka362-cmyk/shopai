@@ -220,3 +220,48 @@ def cross_cluster_signals(
 def clear_bus() -> bool:
     """Wipe the bus -- useful for tests / operator reset."""
     return _save_events([])
+
+
+def bus_stats(
+    *, window_hours: float = 24.0,
+) -> dict[str, Any]:
+    """Aggregate view of the bus over a window."""
+    cutoff = time.time() - (window_hours * 3600.0)
+    events = [
+        e for e in _load_events()
+        if e.emitted_at >= cutoff
+    ]
+    by_topic: dict[str, int] = {}
+    by_emitter: dict[str, int] = {}
+    by_store: dict[str, int] = {}
+    for e in events:
+        by_topic[e.topic] = by_topic.get(e.topic, 0) + 1
+        by_emitter[e.emitter_cluster] = (
+            by_emitter.get(e.emitter_cluster, 0) + 1
+        )
+        sid = e.store_id or "(none)"
+        by_store[sid] = by_store.get(sid, 0) + 1
+
+    now = time.time()
+    if events:
+        oldest_age = now - min(e.emitted_at for e in events)
+        newest_age = now - max(e.emitted_at for e in events)
+    else:
+        oldest_age = None
+        newest_age = None
+
+    return {
+        "total_events": len(events),
+        "window_hours": window_hours,
+        "by_topic": dict(sorted(
+            by_topic.items(), key=lambda kv: -kv[1],
+        )),
+        "by_emitter": dict(sorted(
+            by_emitter.items(), key=lambda kv: -kv[1],
+        )),
+        "by_store": dict(sorted(
+            by_store.items(), key=lambda kv: -kv[1],
+        )),
+        "oldest_age_seconds": oldest_age,
+        "newest_age_seconds": newest_age,
+    }

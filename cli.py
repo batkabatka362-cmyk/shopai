@@ -2782,6 +2782,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     cluster_bus_p.add_argument(
+        "--stats", action="store_true",
+        help=(
+            "Show aggregate stats instead of event list: "
+            "by-topic / by-emitter / by-store counts."
+        ),
+    )
+    cluster_bus_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
     )
@@ -16654,9 +16661,53 @@ def _cmd_cluster_bus(args) -> None:
         subscribe_events,
         clear_bus,
         cross_cluster_signals,
+        bus_stats,
     )
 
     as_json = bool(getattr(args, "json", False))
+
+    # Mode: stats summary
+    if getattr(args, "stats", False):
+        try:
+            window_hours = float(
+                getattr(args, "window", "24") or "24"
+            )
+        except (TypeError, ValueError):
+            window_hours = 24.0
+        stats = bus_stats(window_hours=window_hours)
+        if as_json:
+            print(json.dumps(stats, indent=2, default=str))
+            return
+        print(
+            f"Cluster bus stats (window: {window_hours:.0f}h)"
+        )
+        print()
+        print(f"  Total events: {stats['total_events']}")
+        if stats["oldest_age_seconds"] is not None:
+            print(
+                f"  Oldest: "
+                f"{stats['oldest_age_seconds']/3600:.1f}h ago"
+            )
+            print(
+                f"  Newest: "
+                f"{stats['newest_age_seconds']/60:.0f}m ago"
+            )
+        if stats["by_topic"]:
+            print()
+            print("  By topic:")
+            for topic, n in stats["by_topic"].items():
+                print(f"    {topic:<28} {n}")
+        if stats["by_emitter"]:
+            print()
+            print("  By emitter cluster:")
+            for emitter, n in stats["by_emitter"].items():
+                print(f"    {emitter:<28} {n}")
+        if stats["by_store"]:
+            print()
+            print("  By store:")
+            for sid, n in stats["by_store"].items():
+                print(f"    {sid:<28} {n}")
+        return
 
     # Mode: emit one event manually
     emit_spec = (getattr(args, "emit", None) or "").strip()
