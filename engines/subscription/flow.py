@@ -132,6 +132,20 @@ class SubscriptionEngine:
             mrr=mrr,
         )
 
+        # Phase 7: optional churn-risk tag apply. Opt-in via
+        # data.apply_churn_risk_tags=True. Tags subscribers at
+        # high/medium churn risk via SHOPIFY_TAG_CUSTOMER.
+        tagged_churn_risks: list[dict[str, Any]] = []
+        if bool(data.get("apply_churn_risk_tags")):
+            try:
+                from .tag_applier import apply_churn_risk_tags
+                tagged_churn_risks = apply_churn_risk_tags(churn_risks)
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "subscription: apply loop raised: %s", exc,
+                )
+
         # ---- Stage 7: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -143,6 +157,7 @@ class SubscriptionEngine:
                 "churn_risks": churn_risks,
                 "upgrade_opportunities": upgrade_opportunities,
                 "mrr": mrr,
+                "tagged_churn_risks": tagged_churn_risks,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
