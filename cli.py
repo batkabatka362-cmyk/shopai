@@ -16086,6 +16086,22 @@ def _cmd_cycle_status(args) -> None:
     except Exception:  # noqa: BLE001
         audit_ok = False
 
+    # 5. AI strategy state
+    try:
+        from engines._ai_strategies import (
+            _ai_enabled, _LLMClient,
+        )
+        ai_enabled_env = _ai_enabled()
+        ai_available = _LLMClient().available
+        ai_mode = (
+            "ai" if (ai_enabled_env and ai_available)
+            else "deterministic"
+        )
+    except Exception:  # noqa: BLE001
+        ai_enabled_env = False
+        ai_available = False
+        ai_mode = "deterministic"
+
     if as_json:
         print(json.dumps({
             "last_run": last_block,
@@ -16093,6 +16109,11 @@ def _cmd_cycle_status(args) -> None:
             "bus_24h": bus_block,
             "audit_ok": audit_ok,
             "audit_violations": audit_violations,
+            "ai_strategy": {
+                "mode": ai_mode,
+                "env_enabled": ai_enabled_env,
+                "llm_available": ai_available,
+            },
         }, indent=2, default=str))
         return
 
@@ -16170,6 +16191,18 @@ def _cmd_cycle_status(args) -> None:
         print(
             "    Drill: `shopai audit --only cluster_topology`"
         )
+    print()
+
+    print("  AI strategy:")
+    ai_marker = "[OK ]" if ai_mode == "ai" else "[ - ]"
+    print(
+        f"    {ai_marker} {ai_mode:<14}  "
+        f"(env={'on' if ai_enabled_env else 'off'}, "
+        f"llm={'available' if ai_available else 'no'})"
+    )
+    print(
+        "    Drill: `shopai ai-strategy status`"
+    )
     print()
     print("  Drill:")
     print("    shopai cluster list           -- per-cluster detail")
