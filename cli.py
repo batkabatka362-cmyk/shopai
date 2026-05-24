@@ -2738,9 +2738,9 @@ def build_parser() -> argparse.ArgumentParser:
     cluster_bus_p = cluster_sub.add_parser(
         "bus",
         help=(
-            "Inspect the cross-cluster event bus. Lists "
-            "recent events emitted by captains so operators "
-            "see horizontal collaboration in action."
+            "Inspect / inject / clear the cross-cluster event "
+            "bus. Operators see horizontal collaboration in "
+            "action."
         ),
     )
     cluster_bus_p.add_argument(
@@ -2764,6 +2764,21 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "WIPE the bus (operator reset). Requires "
             "SHOPAI_CLUSTER_BUS_CLEAR_CONFIRM=1 env var."
+        ),
+    )
+    cluster_bus_p.add_argument(
+        "--emit", default=None, metavar="EMITTER:TOPIC",
+        help=(
+            "Manually inject one event. Format: "
+            "'emitter_cluster:topic'. Use --payload-json + "
+            "--store to attach data. Useful for testing "
+            "downstream consumer captains."
+        ),
+    )
+    cluster_bus_p.add_argument(
+        "--payload-json", default="{}", metavar="JSON",
+        help=(
+            "Payload dict for --emit. Default empty object."
         ),
     )
     cluster_bus_p.add_argument(
@@ -16628,17 +16643,79 @@ def _cmd_store_supervise(args) -> None:
 def _cmd_cluster_bus(args) -> None:
     """Operator surface for the cross-cluster event bus.
 
-    Lists recent events (within --window hours) with optional
-    filters. --clear wipes the bus (requires env var).
+    Modes:
+      - default: list recent events
+      - --clear: wipe the bus (requires env var)
+      - --emit EMITTER:TOPIC: manually inject one event
     """
     import time as _time
     from engines._cluster_bus import (
+        emit_event,
         subscribe_events,
         clear_bus,
         cross_cluster_signals,
     )
 
     as_json = bool(getattr(args, "json", False))
+
+    # Mode: emit one event manually
+    emit_spec = (getattr(args, "emit", None) or "").strip()
+    if emit_spec:
+        if ":" not in emit_spec:
+            msg = (
+                f"--emit format must be 'emitter:topic'. "
+                f"Got: {emit_spec!r}"
+            )
+            if as_json:
+                print(json.dumps(
+                    {"status": "error", "error": msg},
+                    indent=2,
+                ))
+            else:
+                print(f"Error: {msg}")
+            sys.exit(1)
+            return
+        emitter, topic = emit_spec.split(":", 1)
+        emitter = emitter.strip()
+        topic = topic.strip()
+        if not emitter or not topic:
+            print("Error: emitter and topic both required")
+            sys.exit(1)
+            return
+        try:
+            payload = json.loads(
+                getattr(args, "payload_json", None) or "{}"
+            )
+            if not isinstance(payload, dict):
+                payload = {}
+        except json.JSONDecodeError as exc:
+            print(f"Error: --payload-json invalid: {exc}")
+            sys.exit(1)
+            return
+        store_id = getattr(args, "store", None) or None
+        event = emit_event(
+            emitter_cluster=emitter,
+            topic=topic,
+            payload=payload,
+            store_id=store_id,
+        )
+        if as_json:
+            print(json.dumps({
+                "status": "ok",
+                "event": event.to_dict(),
+            }, indent=2, default=str))
+        else:
+            print(
+                f"Event emitted:  emitter={emitter}  "
+                f"topic={topic}  store={store_id or '-'}"
+            )
+            print(
+                f"  payload: {json.dumps(payload)}"
+            )
+            print(
+                "  Verify: `shopai cluster bus --window 1`"
+            )
+        return
 
     if getattr(args, "clear", False):
         if not os.environ.get("SHOPAI_CLUSTER_BUS_CLEAR_CONFIRM"):
