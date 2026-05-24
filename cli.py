@@ -14853,21 +14853,32 @@ def _cmd_engine_tag_catalog(args) -> None:
         print(f"  {target}: {len(entries)} tag(s)")
     print()
 
+    # Render width: align tag lists at a consistent column so
+    # the eye scans tags, not namespace label widths.
     print("  By namespace:")
+    max_ns_width = max(
+        (len(ns) for ns in catalog.by_namespace),
+        default=0,
+    )
     for ns, entries in sorted(catalog.by_namespace.items()):
         tags = sorted({e.tag for e in entries})
         engines = sorted({e.engine for e in entries})
         target = entries[0].target if entries else "unknown"
+        # Two-space gap between label and content; no colon
+        # after the label so it doesn't look like Shopify filter
+        # syntax (which is `tag:<value>`, where <value> is the
+        # full tag itself, NOT the namespace).
+        ns_label = f"{ns}".ljust(max_ns_width + 2)
         print(
-            f"    {ns}:  "
+            f"    {ns_label}"
             f"{', '.join(tags)}"
             f"  ({target}; {', '.join(engines)})"
         )
 
     print()
     print(
-        "  Filter the Shopify admin catalog by any of these tags "
-        "to see the engine-tagged subset (e.g. 'tag:profit:high_roi')."
+        "  Filter the Shopify admin catalog by full tag: "
+        "`tag:profit:high_roi`, `tag:shopai-segment-vip`, etc."
     )
     # Drill-down hint: try-wireup verifies any wired engine
     # actually fires its tag.
