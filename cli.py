@@ -1748,6 +1748,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    cycle_status_p = cycle_sub.add_parser(
+        "status",
+        help=(
+            "One-glance empire health snapshot. Last run, "
+            "cluster verdicts, bus activity, audit state -- "
+            "all in one screen."
+        ),
+    )
+    cycle_status_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     cycle_history_p = cycle_sub.add_parser(
         "history",
         help=(
@@ -15812,6 +15825,168 @@ _WINDOWS_TASK_TRIGGER = {
     "daily":       "/sc DAILY /st 03:00",
     "every-6h":    "/sc HOURLY /mo 6",
 }
+
+
+def _cmd_cycle_status(args) -> None:
+    """One-glance empire health dashboard."""
+    import time as _time
+    from engines._cycle_history import last_run
+    from engines._cluster_memory import fleet_cluster_health
+    from engines._cluster_bus import bus_stats
+
+    as_json = bool(getattr(args, "json", False))
+
+    # 1. Last cycle run
+    last = last_run()
+    last_block = None
+    if last is not None:
+        age = _time.time() - last.started_at
+        if age < 3600:
+            age_str = f"{int(age/60)}m ago"
+        elif age < 86400:
+            age_str = f"{age/3600:.1f}h ago"
+        else:
+            age_str = f"{age/86400:.1f}d ago"
+        last_block = {
+            "verdict": last.verdict,
+            "age_str": age_str,
+            "total_invoked": last.total_invoked,
+            "total_ok": last.total_ok,
+            "total_errors": last.total_errors,
+            "mode": last.mode,
+            "stores": last.total_stores,
+        }
+
+    # 2. Fleet cluster verdicts
+    try:
+        fleet_health = fleet_cluster_health()
+    except Exception:  # noqa: BLE001
+        fleet_health = []
+
+    verdict_counts: dict[str, int] = {}
+    for h in fleet_health:
+        v = h.health_verdict
+        verdict_counts[v] = verdict_counts.get(v, 0) + 1
+
+    # 3. Bus activity
+    try:
+        bs = bus_stats(window_hours=24.0)
+        bus_block = {
+            "total_events": bs["total_events"],
+            "top_topic": (
+                list(bs["by_topic"].keys())[0]
+                if bs["by_topic"] else None
+            ),
+            "top_emitter": (
+                list(bs["by_emitter"].keys())[0]
+                if bs["by_emitter"] else None
+            ),
+        }
+    except Exception:  # noqa: BLE001
+        bus_block = {"total_events": 0}
+
+    # 4. Audit summary (cheap version: just count violations
+    # since full audit re-run is expensive)
+    audit_ok = True
+    audit_violations = 0
+    try:
+        from engines._cluster_audit import audit_clusters
+        cr = audit_clusters()
+        audit_ok = not cr.has_violations
+        audit_violations = len(cr.violations)
+    except Exception:  # noqa: BLE001
+        audit_ok = False
+
+    if as_json:
+        print(json.dumps({
+            "last_run": last_block,
+            "cluster_verdicts": verdict_counts,
+            "bus_24h": bus_block,
+            "audit_ok": audit_ok,
+            "audit_violations": audit_violations,
+        }, indent=2, default=str))
+        return
+
+    print("Empire status")
+    print()
+
+    print("  Last cycle run:")
+    if last_block is None:
+        print("    (no runs recorded yet)")
+        print(
+            "    Start with: `shopai cycle verify --store X`"
+        )
+    else:
+        verdict_marker = {
+            "clean": "[OK ]",
+            "mostly_ok": "[OK ]",
+            "dry_run": "[ - ]",
+            "empty": "[ - ]",
+            "degraded": "[WRN]",
+            "failed": "[BAD]",
+        }.get(last_block["verdict"], "[ ? ]")
+        print(
+            f"    {verdict_marker} {last_block['verdict']:<10}  "
+            f"{last_block['age_str']}  "
+            f"({last_block['mode']}, "
+            f"stores={last_block['stores']}, "
+            f"invoked={last_block['total_invoked']}, "
+            f"ok={last_block['total_ok']}, "
+            f"err={last_block['total_errors']})"
+        )
+    print()
+
+    print("  Cluster health (10 clusters):")
+    if not verdict_counts:
+        print("    (no history yet)")
+    else:
+        for v in ("healthy", "warning", "unhealthy", "unknown"):
+            n = verdict_counts.get(v, 0)
+            marker = {
+                "healthy": "[OK ]",
+                "warning": "[WRN]",
+                "unhealthy": "[BAD]",
+                "unknown": "[ - ]",
+            }[v]
+            print(f"    {marker} {v:<11}  {n} cluster(s)")
+    print()
+
+    print("  Horizontal bus (24h):")
+    n_events = bus_block.get("total_events", 0)
+    if n_events == 0:
+        print(
+            "    (no events -- run a cycle to populate)"
+        )
+    else:
+        print(f"    {n_events} events")
+        if bus_block.get("top_topic"):
+            print(f"    top topic:   {bus_block['top_topic']}")
+        if bus_block.get("top_emitter"):
+            print(
+                f"    top emitter: {bus_block['top_emitter']}"
+            )
+    print()
+
+    print("  Institutional audits:")
+    if audit_ok:
+        print("    [OK ] cluster topology + risk taxonomy")
+        print(
+            "    (run `shopai audit` for all 9 gates)"
+        )
+    else:
+        print(
+            f"    [BAD] cluster topology has "
+            f"{audit_violations} violation(s)"
+        )
+        print(
+            "    Drill: `shopai audit --only cluster_topology`"
+        )
+    print()
+    print("  Drill:")
+    print("    shopai cluster list           -- per-cluster detail")
+    print("    shopai cycle history          -- past runs")
+    print("    shopai cluster bus --stats    -- bus aggregate")
+    print("    shopai cycle verify --store X -- preflight check")
 
 
 def _cmd_cycle_history(args) -> None:
@@ -33186,8 +33361,12 @@ def main(argv: list[str] | None = None) -> None:
         if action == "history":
             _cmd_cycle_history(args)
             return
+        if action == "status":
+            _cmd_cycle_status(args)
+            return
         print(
-            "Usage: shopai cycle {run|schedule|verify|history}"
+            "Usage: shopai cycle "
+            "{run|schedule|verify|history|status}"
         )
         return
 
