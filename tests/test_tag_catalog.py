@@ -59,6 +59,25 @@ class TestExtraction:
         tags = _extract_tag_literals(tree)
         assert not tags
 
+    def test_extracts_tag_prefix_constant(self):
+        # customer_segmentation-style: _TAG_PREFIX = "ns-"
+        src = textwrap.dedent('''
+            _TAG_PREFIX = "shopai-segment-"
+        ''')
+        tree = ast.parse(src)
+        tags = _extract_tag_literals(tree)
+        assert "shopai-segment-*" in tags
+
+    def test_skips_capitalized_fstring_prefixes(self):
+        # f"Bundle: foo" in a docstring/log shouldn't be a tag
+        src = textwrap.dedent('''
+            def go(x):
+                return f"Bundle: {x}"
+        ''')
+        tree = ast.parse(src)
+        tags = _extract_tag_literals(tree)
+        assert not tags
+
 
 class TestCatalog:
 
@@ -93,7 +112,13 @@ class TestCatalog:
 
     def test_namespace_grouping(self):
         catalog = catalog_tags("engines")
-        # Every namespace key matches a tag's prefix
+        # Every namespace key matches a tag's prefix. Tags use one
+        # of two conventions: ``namespace:value`` (most engines)
+        # OR ``namespace-value`` (customer_segmentation,
+        # bundle's shopai-X-Y-{slug} style).
         for ns, entries in catalog.by_namespace.items():
             for e in entries:
-                assert e.tag.startswith(f"{ns}:")
+                assert (
+                    e.tag.startswith(f"{ns}:")
+                    or e.tag.startswith(f"{ns}-")
+                )

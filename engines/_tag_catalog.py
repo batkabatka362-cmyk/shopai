@@ -52,20 +52,32 @@ class TagCatalog:
         return len(self.by_namespace)
 
 
-# Tag-namespace literal pattern: word:word. Excludes URLs (no ://),
-# excludes capability constants (which are all-caps).
+# Tag-namespace literal pattern: word:word (colon convention)
+# OR word-word-... (dash convention used by customer_segmentation
+# for shopai-segment-{slug}). Excludes URLs (no ://), excludes
+# capability constants (which are all-caps).
 _TAG_PATTERN = re.compile(r"^[a-z][a-z0-9_]*:[a-z0-9_]+$")
+# Permissive dash-prefix pattern for _TAG_PREFIX = "shopai-segment-"
+# style constants (the trailing dash signals dynamic suffix).
+_TAG_PREFIX_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*-$")
 
 # Map SHOPIFY_X capability to the entity it touches.
 _CAPABILITY_TO_TARGET = {
     "SHOPIFY_UPDATE_PRODUCT": "product",
+    "SHOPIFY_CREATE_PRODUCT": "product",
     "SHOPIFY_TAG_CUSTOMER": "customer",
     "SHOPIFY_TAG_ORDER": "order",
 }
 
 
 def catalog_tags(engines_dir: str = "engines") -> TagCatalog:
-    """Walk engines/*/tag_applier.py files and build the catalog.
+    """Walk every engines/*/*_applier.py file and build the catalog.
+
+    Includes ``tag_applier.py`` (the canonical name) AND any
+    other ``*_applier.py`` (e.g. ``customer_applier.py`` in
+    customer_segmentation, ``winner_applier.py`` in
+    product_research). Excludes minters/payers which don't
+    write tags.
 
     Args:
         engines_dir: Root engines directory (default ``engines``).
@@ -78,9 +90,18 @@ def catalog_tags(engines_dir: str = "engines") -> TagCatalog:
     if not root.exists() or not root.is_dir():
         return catalog
 
-    for applier_path in sorted(root.glob("*/tag_applier.py")):
-        catalog.engines_scanned += 1
+    applier_paths: list[Path] = []
+    for engine_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        for path in sorted(engine_dir.glob("*_applier.py")):
+            applier_paths.append(path)
+
+    seen_engines: set[str] = set()
+    for applier_path in applier_paths:
         engine_name = applier_path.parent.name
+        # Count each engine ONCE even if it has multiple appliers
+        if engine_name not in seen_engines:
+            catalog.engines_scanned += 1
+            seen_engines.add(engine_name)
         try:
             source = applier_path.read_text(encoding="utf-8")
             tree = ast.parse(source)
@@ -100,11 +121,31 @@ def catalog_tags(engines_dir: str = "engines") -> TagCatalog:
                 target=target,
             )
             catalog.entries.append(entry)
-            namespace = tag.split(":", 1)[0]
+            namespace = _tag_namespace(tag)
             catalog.by_namespace.setdefault(namespace, []).append(entry)
             catalog.by_target.setdefault(target, []).append(entry)
 
     return catalog
+
+
+def _tag_namespace(tag: str) -> str:
+    """Extract the namespace from a tag literal.
+
+    Supports two Shopify-tag conventions:
+      * ``namespace:value`` (most appliers)
+      * ``namespace-value`` (legacy customer_segmentation
+        ``shopai-segment-{slug}`` style)
+    """
+    if ":" in tag:
+        return tag.split(":", 1)[0]
+    # Dash convention: take everything up to the LAST dash as
+    # the namespace (so 'shopai-segment-vip' has namespace
+    # 'shopai-segment').
+    if "-" in tag and tag.endswith("*"):
+        return tag.rsplit("-", 1)[0] if tag.count("-") >= 2 else tag.split("-", 1)[0]
+    if "-" in tag:
+        return tag.split("-", 1)[0]
+    return tag
 
 
 def _extract_capability(tree: ast.AST) -> str:
@@ -139,11 +180,20 @@ def _extract_tag_literals(tree: ast.AST) -> set[str]:
     blacklist after collection.
     """
     out: set[str] = set()
+    # Blacklist of f-string prefixes that LOOK like namespaces but
+    # are actually error message codes, log keys, or internal
+    # identifiers -- never reach Shopify as tags.
     error_prefixes = {
-        "adapter_failed", "adapter_raised", "enqueue_raised",
+        "adapter_failed", "adapter_raised", "adapter_raise",
+        "adapter_rejected", "enqueue_raised", "enqueue_raise",
+        "engine_output_not_successful", "engine_output",
+        "product_optimization",  # internal action_type, not tag
+        "store_design",
     }
 
-    # Pass 1: module-level _FOO_TAG = "namespace:value" assignments
+    # Pass 1: module-level _FOO_TAG / _FOO_TAG_PREFIX assignments
+    #   - _TAG = "ns:value"        -> stored verbatim
+    #   - _TAG_PREFIX = "ns-"      -> stored as "ns-*" (dynamic)
     for node in getattr(tree, "body", []) or []:
         if not isinstance(node, ast.Assign):
             continue
@@ -151,14 +201,27 @@ def _extract_tag_literals(tree: ast.AST) -> set[str]:
             continue
         if not isinstance(node.value.value, str):
             continue
-        if not _TAG_PATTERN.match(node.value.value):
-            continue
+        literal = node.value.value
         for target in node.targets:
-            if isinstance(target, ast.Name) and target.id.endswith("_TAG"):
-                out.add(node.value.value)
+            if not isinstance(target, ast.Name):
+                continue
+            name = target.id
+            if name.endswith("_TAG") and _TAG_PATTERN.match(literal):
+                out.add(literal)
+                break
+            if (
+                "_PREFIX" in name
+                and _TAG_PREFIX_PATTERN.match(literal)
+            ):
+                # Strip the trailing dash, render as ns-*
+                ns = literal.rstrip("-")
+                if ns and ns not in error_prefixes:
+                    out.add(f"{ns}-*")
                 break
 
-    # Pass 2: collect f-string heads with namespace prefix
+    # Pass 2: collect f-string heads with namespace prefix.
+    # Only accept lowercase-only prefixes (the convention) and
+    # exclude common error-message false positives.
     for node in ast.walk(tree):
         if isinstance(node, ast.JoinedStr):
             head = ""
@@ -169,9 +232,13 @@ def _extract_tag_literals(tree: ast.AST) -> set[str]:
                     break
             if head and ":" in head:
                 prefix, _, _ = head.partition(":")
-                if prefix and prefix.replace("_", "").isalnum():
-                    if prefix not in error_prefixes:
-                        out.add(f"{prefix}:*")
+                if (
+                    prefix
+                    and prefix.islower()
+                    and prefix.replace("_", "").isalnum()
+                    and prefix not in error_prefixes
+                ):
+                    out.add(f"{prefix}:*")
 
     # Pass 3: tag-literals inside list/tuple expressions (handles
     # appliers that inline ["ns:value"] without a _FOO_TAG constant)
