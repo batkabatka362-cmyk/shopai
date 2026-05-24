@@ -2531,6 +2531,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Store ID scope. Falls back to active store.",
     )
     cluster_plan_p.add_argument(
+        "--signals", default=None, metavar="JSON",
+        help=(
+            "Signals JSON dict for SignalDrivenCaptainStrategy. "
+            "Example: '{\"at_risk_count\":5}'. Omit to use "
+            "deterministic fire-all-wired strategy."
+        ),
+    )
+    cluster_plan_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
     )
@@ -2561,6 +2569,15 @@ def build_parser() -> argparse.ArgumentParser:
             "happen. SHOPAI_CLUSTER_FIRE_CONFIRM=1 env var "
             "is ALSO required for --yes (cluster blast radius "
             "guard)."
+        ),
+    )
+    cluster_fire_p.add_argument(
+        "--signals", default=None, metavar="JSON",
+        help=(
+            "Signals JSON dict for SignalDrivenCaptainStrategy. "
+            "Example: '{\"at_risk_count\":5,"
+            "\"abandoned_cart_count\":3}'. Omit to fire all "
+            "wired members."
         ),
     )
     cluster_fire_p.add_argument(
@@ -15179,7 +15196,10 @@ def _cmd_cluster_show(args) -> None:
 
 def _cmd_cluster_plan(args) -> None:
     """Generate + render a captain plan for one cluster."""
-    from engines._cluster_captain import make_captain_plan
+    from engines._cluster_captain import (
+        make_captain_plan,
+        SignalDrivenCaptainStrategy,
+    )
 
     cluster_name = (args.cluster_name or "").strip()
     if not cluster_name:
@@ -15191,7 +15211,30 @@ def _cmd_cluster_plan(args) -> None:
         or _get_store_manager().active_store_id
     )
 
-    plan = make_captain_plan(cluster_name, store_id=store_id)
+    # Parse --signals if supplied + switch to signal-driven
+    # strategy. Otherwise use the default (deterministic
+    # fire-all-wired).
+    signals: dict | None = None
+    strategy = None
+    raw_signals = getattr(args, "signals", None) or ""
+    if raw_signals:
+        try:
+            parsed = json.loads(raw_signals)
+            if not isinstance(parsed, dict):
+                print("Error: --signals must be a JSON object")
+                sys.exit(1)
+                return
+            signals = parsed
+            strategy = SignalDrivenCaptainStrategy()
+        except json.JSONDecodeError as exc:
+            print(f"Error: --signals invalid JSON: {exc}")
+            sys.exit(1)
+            return
+
+    plan = make_captain_plan(
+        cluster_name, store_id=store_id,
+        signals=signals, strategy=strategy,
+    )
 
     if getattr(args, "json", False):
         print(json.dumps({
@@ -15268,11 +15311,13 @@ def _cmd_cluster_fire(args) -> None:
     Default: dry-run (same as `cluster plan`).
     --yes + SHOPAI_CLUSTER_FIRE_CONFIRM=1: actually invoke
     every additive member via engine.run() with the
-    apply_X flag set. Modification members are reported
-    (the approval-queue dispatcher lives in the next
-    layer -- this commit doesn't enqueue them).
+    apply_X flag set. Modification members invoked with
+    require_approval=True so they enqueue internally.
     """
-    from engines._cluster_captain import make_captain_plan
+    from engines._cluster_captain import (
+        make_captain_plan,
+        SignalDrivenCaptainStrategy,
+    )
 
     cluster_name = (args.cluster_name or "").strip()
     if not cluster_name:
@@ -15286,7 +15331,28 @@ def _cmd_cluster_fire(args) -> None:
     yes = bool(getattr(args, "yes", False))
     as_json = bool(getattr(args, "json", False))
 
-    plan = make_captain_plan(cluster_name, store_id=store_id)
+    # Signal-driven strategy when --signals supplied
+    signals: dict | None = None
+    strategy = None
+    raw_signals = getattr(args, "signals", None) or ""
+    if raw_signals:
+        try:
+            parsed = json.loads(raw_signals)
+            if not isinstance(parsed, dict):
+                print("Error: --signals must be a JSON object")
+                sys.exit(1)
+                return
+            signals = parsed
+            strategy = SignalDrivenCaptainStrategy()
+        except json.JSONDecodeError as exc:
+            print(f"Error: --signals invalid JSON: {exc}")
+            sys.exit(1)
+            return
+
+    plan = make_captain_plan(
+        cluster_name, store_id=store_id,
+        signals=signals, strategy=strategy,
+    )
 
     if not yes:
         # Dry-run: same shape as `cluster plan`
