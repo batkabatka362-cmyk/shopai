@@ -260,6 +260,16 @@ def make_fleet_plan(
     from engines._captain_signals import HeuristicSignalCollector
     collector = HeuristicSignalCollector()
 
+    # Horizontal collaboration: cross-cluster events from the
+    # bus get folded into the next cycle's signals. Last 24h.
+    try:
+        from engines._cluster_bus import cross_cluster_signals
+        bus_signals_fleet = cross_cluster_signals(
+            window_hours=24.0,
+        )
+    except Exception:  # noqa: BLE001
+        bus_signals_fleet = {}
+
     for store_id, wm in sorted(world_models.items()):
         priority = strategy.decide_priority(store_id, wm or {})
         plan.priorities.append(priority)
@@ -271,15 +281,32 @@ def make_fleet_plan(
             store_id, wm or {}, queue_stats,
         )
 
-        # Layer Tier-1 priority hints on top of collected
-        # signals -- priority class fills in gaps when
-        # heuristic returns empty for a cluster.
+        # Per-store bus signals (cross-cluster horizontal
+        # collaboration scoped to this store)
+        try:
+            from engines._cluster_bus import (
+                cross_cluster_signals as _xc_signals,
+            )
+            bus_signals_store = _xc_signals(
+                store_id=store_id, window_hours=24.0,
+            )
+        except Exception:  # noqa: BLE001
+            bus_signals_store = {}
+
+        # Layer hints: bus -> heuristic -> priority -> caller
+        # (later layers win on conflicts via dict.update)
         priority_hints = _signals_for_priority(
             priority.priority, wm or {},
         )
         signals_by_cluster: dict[str, dict[str, Any]] = {}
-        for k in set(collected) | set(priority_hints):
-            merged = dict(collected.get(k, {}))
+        all_keys = (
+            set(bus_signals_fleet) | set(bus_signals_store)
+            | set(collected) | set(priority_hints)
+        )
+        for k in all_keys:
+            merged = dict(bus_signals_fleet.get(k, {}))
+            merged.update(bus_signals_store.get(k, {}))
+            merged.update(collected.get(k, {}))
             merged.update(priority_hints.get(k, {}))
             signals_by_cluster[k] = merged
 
