@@ -13239,6 +13239,23 @@ def _cmd_engine_summary(args) -> None:
                     f"    Smoke-test: `shopai engine "
                     f"try-wireup {engine_name}` (dry-run)"
                 )
+                try:
+                    from engines._tag_catalog import catalog_tags
+                    tag_cat = catalog_tags("engines")
+                    engine_tags = sorted({
+                        e.tag for e in tag_cat.entries
+                        if e.engine == engine_name
+                    })
+                    if engine_tags:
+                        print(
+                            f"    Writes tag(s): "
+                            f"{', '.join(engine_tags)}"
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "engine summary tag-catalog probe raised: %s",
+                        exc,
+                    )
         if quarantine_info:
             flags = [
                 f for f in (
@@ -13305,6 +13322,26 @@ def _cmd_engine_summary(args) -> None:
                 for f in writeback_info["opt_ins"]
             )
             print(f"  Enable via: {flags}")
+        # Surface the tag namespaces this engine writes -- so
+        # operators know what Shopify-admin filter to use after
+        # the engine fires. Pulled from the AST-derived catalog
+        # (engines/_tag_catalog.py) so it stays accurate.
+        try:
+            from engines._tag_catalog import catalog_tags
+            tag_cat = catalog_tags("engines")
+            engine_tags = sorted({
+                e.tag for e in tag_cat.entries
+                if e.engine == engine_name
+            })
+            if engine_tags:
+                print(
+                    f"  Writes tag(s): {', '.join(engine_tags)}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "engine summary tag-catalog probe raised: %s",
+                exc,
+            )
         print()
     # Health state -- regressing/chronic mirror of the
     # no-activity path's surfacing (8717ffb7).
