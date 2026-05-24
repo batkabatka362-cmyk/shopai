@@ -2447,6 +2447,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    engine_tag_catalog_p = engine_sub.add_parser(
+        "tag-catalog",
+        help=(
+            "List every Shopify tag namespace written by a "
+            "Phase 7 wireup, grouped by namespace and entity "
+            "(product / customer / order). Operators discover "
+            "what catalog-filter tags are available without "
+            "grep-diving the codebase."
+        ),
+    )
+    engine_tag_catalog_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     engines_writebacks_p = sub.add_parser(
         "engines-writebacks",
         help=(
@@ -14686,6 +14701,104 @@ def _cmd_engines_writebacks(args) -> None:
         print(
             "  Smoke-test all: `shopai engine try-wireup "
             "--all` (dry-run)"
+        )
+
+
+def _cmd_engine_tag_catalog(args) -> None:
+    """List every Shopify tag namespace written by a Phase 7 wireup.
+
+    Phase 7 wireups tag products / customers / orders with
+    structured ``namespace:value`` tags so operators can filter
+    the Shopify admin catalog without re-running engines. This
+    command builds the catalog from the actual ``*_applier.py``
+    sources -- accurate by construction, no manual list to keep
+    in sync.
+
+    Output groups by tag namespace (e.g. ``risk:``, ``cohort:``)
+    and shows which engine writes each tag + the Shopify entity
+    it lands on (product / customer / order).
+
+    Dynamic tags (built from runtime values via f-strings) are
+    rendered as ``namespace:*`` -- the engine knows the prefix
+    but the suffix depends on data.
+    """
+    from engines._tag_catalog import catalog_tags
+
+    try:
+        catalog = catalog_tags("engines")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("tag catalog raised: %s", exc)
+        if getattr(args, "json", False):
+            print(json.dumps({"error": str(exc)}, indent=2))
+        else:
+            print(f"Tag catalog unavailable: {exc}")
+        return
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "summary": {
+                "engines_scanned": catalog.engines_scanned,
+                "total_tags": catalog.total_tags,
+                "total_namespaces": catalog.total_namespaces,
+                "by_target": {
+                    t: len(es) for t, es in catalog.by_target.items()
+                },
+            },
+            "namespaces": {
+                ns: sorted({e.tag for e in entries})
+                for ns, entries in sorted(catalog.by_namespace.items())
+            },
+            "entries": [
+                {
+                    "tag": e.tag,
+                    "engine": e.engine,
+                    "capability": e.capability,
+                    "target": e.target,
+                }
+                for e in catalog.entries
+            ],
+        }, indent=2, default=str))
+        return
+
+    print(
+        f"Shopify tag catalog -- {catalog.total_tags} tags across "
+        f"{catalog.total_namespaces} namespaces "
+        f"({catalog.engines_scanned} engines scanned)"
+    )
+    print()
+
+    # Render by target (product / customer / order)
+    target_order = ["product", "customer", "order", "unknown"]
+    for target in target_order:
+        entries = catalog.by_target.get(target, [])
+        if not entries:
+            continue
+        print(f"  {target}: {len(entries)} tag(s)")
+    print()
+
+    print("  By namespace:")
+    for ns, entries in sorted(catalog.by_namespace.items()):
+        tags = sorted({e.tag for e in entries})
+        engines = sorted({e.engine for e in entries})
+        target = entries[0].target if entries else "unknown"
+        print(
+            f"    {ns}:  "
+            f"{', '.join(tags)}"
+            f"  ({target}; {', '.join(engines)})"
+        )
+
+    print()
+    print(
+        "  Filter the Shopify admin catalog by any of these tags "
+        "to see the engine-tagged subset (e.g. 'tag:profit:high_roi')."
+    )
+    # Drill-down hint: try-wireup verifies any wired engine
+    # actually fires its tag.
+    if catalog.entries:
+        first = catalog.entries[0].engine
+        print(
+            f"  Drill down: `shopai engine try-wireup {first}` "
+            "(dry-run)"
         )
 
 
@@ -30580,10 +30693,13 @@ def main(argv: list[str] | None = None) -> None:
         if action == "try-wireup":
             _cmd_engine_try_wireup(args)
             return
+        if action == "tag-catalog":
+            _cmd_engine_tag_catalog(args)
+            return
         print(
             "Usage: shopai engine "
             "{summary|guardrail|fleet|compare|ranking|alerts"
-            "|pulse|try-wireup}"
+            "|pulse|try-wireup|tag-catalog}"
         )
         return
 
