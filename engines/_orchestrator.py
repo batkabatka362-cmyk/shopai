@@ -228,17 +228,43 @@ def make_fleet_plan(
         )
         return plan
 
+    # Pull queue stats ONCE for the fleet (shared across all
+    # stores). The signal collector reuses these per store.
+    queue_stats: dict[str, dict[str, int]] = {}
+    try:
+        from core.approval.queue import get_approval_queue
+        queue_stats = (
+            get_approval_queue().stats_by_engine() or {}
+        )
+    except Exception:  # noqa: BLE001
+        queue_stats = {}
+
+    # Signal collector for per-cluster signal auto-derivation
+    from engines._captain_signals import HeuristicSignalCollector
+    collector = HeuristicSignalCollector()
+
     for store_id, wm in sorted(world_models.items()):
         priority = strategy.decide_priority(store_id, wm or {})
         plan.priorities.append(priority)
 
-        # Translate priority into per-cluster signals for the
-        # supervisor. Each focus cluster gets a baseline
-        # signal so the captain's SignalDrivenStrategy fires
-        # appropriately.
-        signals_by_cluster = _signals_for_priority(
+        # Auto-derive per-cluster signals from world-model +
+        # queue stats. This is the autonomous-mode keystone --
+        # captain reads its environment without operator JSON.
+        collected = collector.collect(
+            store_id, wm or {}, queue_stats,
+        )
+
+        # Layer Tier-1 priority hints on top of collected
+        # signals -- priority class fills in gaps when
+        # heuristic returns empty for a cluster.
+        priority_hints = _signals_for_priority(
             priority.priority, wm or {},
         )
+        signals_by_cluster: dict[str, dict[str, Any]] = {}
+        for k in set(collected) | set(priority_hints):
+            merged = dict(collected.get(k, {}))
+            merged.update(priority_hints.get(k, {}))
+            signals_by_cluster[k] = merged
 
         supervisor_plan = make_supervisor_plan(
             store_id=store_id,
