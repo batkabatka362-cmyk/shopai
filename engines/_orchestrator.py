@@ -219,7 +219,24 @@ def make_fleet_plan(
         Populated :class:`FleetPlan`.
     """
     world_models = world_models or {}
-    strategy = strategy or DeterministicOrchestratorStrategy()
+
+    # Strategy selection: AI when SHOPAI_AI_STRATEGY=1 + LLM
+    # available, deterministic otherwise. Both implement the
+    # same OrchestratorStrategy protocol; substrate doesn't
+    # care which is in use. Operator opt-in via env-var.
+    if strategy is None:
+        import os as _os
+        if _os.environ.get("SHOPAI_AI_STRATEGY"):
+            try:
+                from engines._ai_strategies import (
+                    AIOrchestratorStrategy,
+                )
+                strategy = AIOrchestratorStrategy()
+            except Exception:  # noqa: BLE001
+                strategy = DeterministicOrchestratorStrategy()
+        else:
+            strategy = DeterministicOrchestratorStrategy()
+
     plan = FleetPlan(cycle_label=cycle_label)
 
     if not world_models:

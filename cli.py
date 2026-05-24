@@ -15872,17 +15872,27 @@ def _cmd_cycle_run(args) -> None:
     )
     summary = fleet_summary(fleet_plan)
 
+    # Surface AI-strategy state (enabled / available)
+    ai_mode = (
+        "ai"
+        if os.environ.get("SHOPAI_AI_STRATEGY")
+        else "deterministic"
+    )
+
     if not yes:
         # Dry-run: just show the plan
         if as_json:
             print(json.dumps({
                 "mode": "dry_run",
+                "ai_strategy": ai_mode,
                 "cycle_label": fleet_plan.cycle_label,
                 "summary": summary,
             }, indent=2, default=str))
             return
         print(
-            f"Empire cycle (DRY-RUN) -- {fleet_plan.cycle_label}"
+            f"Empire cycle (DRY-RUN) -- "
+            f"{fleet_plan.cycle_label}  "
+            f"[strategy: {ai_mode}]"
         )
         print()
         print(f"  Stores planned:       {summary['total_stores']}")

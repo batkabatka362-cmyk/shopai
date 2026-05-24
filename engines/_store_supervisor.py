@@ -179,10 +179,26 @@ def make_supervisor_plan(
         # empty -- captain falls back to fire-all-wired)
         signals = signals_by_cluster.get(cluster.name) or {}
 
-        # Use signal-driven strategy when signals supplied
-        strategy = (
-            SignalDrivenCaptainStrategy() if signals else None
-        )
+        # Strategy selection:
+        #   SHOPAI_AI_STRATEGY=1 -> AICaptainStrategy
+        #   signals supplied     -> SignalDrivenCaptainStrategy
+        #   else                 -> Deterministic (caller-default)
+        import os as _os
+        if _os.environ.get("SHOPAI_AI_STRATEGY"):
+            try:
+                from engines._ai_strategies import (
+                    AICaptainStrategy,
+                )
+                strategy = AICaptainStrategy()
+            except Exception:  # noqa: BLE001
+                strategy = (
+                    SignalDrivenCaptainStrategy() if signals
+                    else None
+                )
+        else:
+            strategy = (
+                SignalDrivenCaptainStrategy() if signals else None
+            )
 
         captain_plan = make_captain_plan(
             cluster.name,
