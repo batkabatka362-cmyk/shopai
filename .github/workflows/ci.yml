@@ -212,6 +212,16 @@ jobs:
         run: |
           python cli.py engines-capability-audit
 
+      - name: Cluster topology + risk taxonomy audit
+        # 9th institutional gate. Protects the Tier 2b ant-colony
+        # substrate against drift: dropped cluster, multi-cluster
+        # engine, unknown-risk writer, ballooning destructive
+        # count, additive/modification ratio collapse.
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python cli.py audit --only cluster_topology
+
       - name: Deployable config dry-run (prepare-deploy)
         # End-to-end gate: every required institutional protection
         # check passes AND the deployable shopify.app.toml emits

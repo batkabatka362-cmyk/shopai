@@ -3035,7 +3035,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[
             "pattern_k", "oauth", "pattern_y",
             "pattern_i", "pattern_j", "pattern_z",
-            "pattern_q",
+            "pattern_q", "wireup_resolve",
+            "cluster_topology",
         ],
         metavar="NAME",
         help=(
@@ -24744,6 +24745,18 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                 "resolved_count": total_wired - len(unresolved),
                 "unresolved": unresolved,
             }
+        if name == "cluster_topology":
+            # 9th gate: cluster topology + risk taxonomy
+            # invariants. Protects the Tier 2b substrate
+            # against drift: dropped cluster, multi-cluster
+            # engine, unknown-risk writer, etc.
+            from engines._cluster_audit import audit_clusters
+            cr = audit_clusters()
+            return {
+                "ok": not cr.has_violations,
+                "violations": list(cr.violations),
+                "info": list(cr.info),
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -24753,6 +24766,7 @@ def _run_one_audit(name: str) -> dict[str, Any]:
 _AUDIT_ORDER = (
     "pattern_k", "oauth", "pattern_y", "pattern_i", "pattern_j",
     "pattern_z", "pattern_q", "wireup_resolve",
+    "cluster_topology",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -24763,6 +24777,7 @@ _AUDIT_LABELS = {
     "pattern_z": "Pattern Z (writer-recorder parity)",
     "pattern_q": "Pattern Q (engine envelope parity)",
     "wireup_resolve": "Phase 7 wireup resolution",
+    "cluster_topology": "Cluster topology + risk taxonomy",
 }
 
 
