@@ -23289,10 +23289,11 @@ def _cmd_unified_doctor(args) -> None:
     one run.
 
     The 'is everything OK?' command for operators. Combines the
-    Shopify institutional-protection audit (7 sections) with the
-    approval-queue health check (5 sections) into a single
-    verdict. Fatal failures in either side flip the overall to
-    FAILED and exit 1.
+    Shopify institutional-protection audit (now 7 sections incl.
+    wireup_resolve added in f04a5669) with the approval-queue
+    health check (6 sections) into a single verdict. Fatal
+    failures in either side flip the overall to FAILED and
+    exit 1.
 
     Reuses the two existing collectors (`_collect_doctor_sections`
     and `_collect_approvals_doctor_sections`) so the underlying
