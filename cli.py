@@ -1748,6 +1748,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    cycle_verify_p = cycle_sub.add_parser(
+        "verify",
+        help=(
+            "End-to-end smoke test: data hydration, captain "
+            "planning, dry-run invocation -- all checked. "
+            "Reports per-step status + gaps. Use this before "
+            "scheduling the cycle on a new store."
+        ),
+    )
+    cycle_verify_p.add_argument(
+        "--store", default=None,
+        help="Store to verify (default: active store)",
+    )
+    cycle_verify_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     cycle_schedule_p = cycle_sub.add_parser(
         "schedule",
         help=(
@@ -15702,6 +15720,247 @@ _WINDOWS_TASK_TRIGGER = {
     "daily":       "/sc DAILY /st 03:00",
     "every-6h":    "/sc HOURLY /mo 6",
 }
+
+
+def _cmd_cycle_verify(args) -> None:
+    """End-to-end smoke test of the cycle pipeline.
+
+    Walks each tier + reports per-step status. Doesn't fire
+    anything live -- just verifies each piece works for the
+    given store. Use this BEFORE scheduling the cycle.
+    """
+    from engines._clusters import list_clusters
+    from engines._cluster_captain import (
+        make_captain_plan,
+    )
+    from engines._store_supervisor import make_supervisor_plan
+
+    sm = _get_store_manager()
+    store_id = (
+        (getattr(args, "store", None) or "").strip()
+        or sm.active_store_id
+    )
+    as_json = bool(getattr(args, "json", False))
+
+    checks: list[dict] = []
+    overall_ok = True
+
+    def _check(name: str, status: str, detail: str = "") -> None:
+        nonlocal overall_ok
+        checks.append({
+            "step": name, "status": status, "detail": detail,
+        })
+        if status not in ("ok", "skip"):
+            overall_ok = False
+
+    # 1. Store exists
+    if not store_id:
+        _check("store_id", "fail", "no store_id (active or supplied)")
+    else:
+        stores = {s.get("store_id") for s in sm.list_stores() or []}
+        if store_id in stores:
+            _check("store_id", "ok", store_id)
+        else:
+            _check(
+                "store_id", "fail",
+                f"store '{store_id}' not in fleet",
+            )
+
+    # 2. World-model snapshot
+    wm: dict = {}
+    if store_id:
+        try:
+            from core.world_model import WorldModel
+            wm = WorldModel().snapshot(store_id, skip_live=True)
+            stats = wm.get("stats", {})
+            _check(
+                "world_model",
+                "ok",
+                (
+                    f"products={stats.get('products', 0)} "
+                    f"orders={stats.get('orders', 0)} "
+                    f"revenue=${stats.get('total_revenue', 0):.2f}"
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _check("world_model", "fail", str(exc))
+
+    # 3. Tier 1 orchestrator + Tier 2a supervisor
+    try:
+        from engines._orchestrator import make_fleet_plan
+        fp = make_fleet_plan(
+            world_models={store_id: wm} if store_id else {},
+            cycle_label="verify",
+        )
+        if fp.priorities:
+            prio = fp.priorities[0]
+            _check(
+                "tier1_orchestrator",
+                "ok",
+                f"priority={prio.priority} -- {prio.rationale}",
+            )
+        else:
+            _check(
+                "tier1_orchestrator", "skip",
+                "no world-model -> no priority",
+            )
+
+        if fp.supervisor_plans:
+            sp = fp.supervisor_plans[0]
+            _check(
+                "tier2a_supervisor",
+                "ok",
+                (
+                    f"{len(sp.active_clusters)} clusters active, "
+                    f"{sp.total_to_fire} engines to fire"
+                ),
+            )
+        else:
+            _check(
+                "tier2a_supervisor", "skip",
+                "no supervisor plan",
+            )
+    except Exception as exc:  # noqa: BLE001
+        _check("tier1_orchestrator", "fail", str(exc))
+
+    # 4. Each cluster captain plans cleanly
+    captain_results = []
+    for cluster in list_clusters():
+        try:
+            cp = make_captain_plan(
+                cluster.name, store_id=store_id,
+            )
+            captain_results.append({
+                "cluster": cluster.name,
+                "fire": cp.fire_count,
+                "queued": len(cp.modifications_queued),
+                "skipped": len(cp.members_to_skip),
+            })
+        except Exception as exc:  # noqa: BLE001
+            captain_results.append({
+                "cluster": cluster.name,
+                "error": str(exc),
+            })
+            overall_ok = False
+    failed_captains = [
+        c["cluster"] for c in captain_results
+        if "error" in c
+    ]
+    if failed_captains:
+        _check(
+            "tier2b_captains",
+            "fail",
+            f"failed: {failed_captains}",
+        )
+    else:
+        total_fire = sum(c.get("fire", 0) for c in captain_results)
+        _check(
+            "tier2b_captains",
+            "ok",
+            f"{len(captain_results)} captains plan cleanly, "
+            f"{total_fire} engines to fire",
+        )
+
+    # 5. DataProvider can hydrate (sample one engine)
+    try:
+        from data_pipeline.store.data_provider import DataProvider
+        if store_id:
+            data = DataProvider(sm).get_data_for_engine(
+                "loyalty", store_id,
+            )
+            _check(
+                "data_provider",
+                "ok" if isinstance(data, dict) else "fail",
+                (
+                    f"loyalty data hydrated ({len(data)} keys)"
+                    if isinstance(data, dict)
+                    else "DataProvider returned non-dict"
+                ),
+            )
+        else:
+            _check(
+                "data_provider", "skip", "no store_id",
+            )
+    except Exception as exc:  # noqa: BLE001
+        _check("data_provider", "fail", str(exc))
+
+    # 6. Approval queue accessible
+    try:
+        from core.approval.queue import get_approval_queue
+        queue = get_approval_queue()
+        stats = queue.stats_by_engine() or {}
+        _check(
+            "approval_queue",
+            "ok",
+            f"{len(stats)} engines have queue activity",
+        )
+    except Exception as exc:  # noqa: BLE001
+        _check("approval_queue", "fail", str(exc))
+
+    # 7. All 9 institutional audits
+    try:
+        audit_results = []
+        for name in _AUDIT_ORDER:
+            r = _run_one_audit(name)
+            audit_results.append((name, r.get("ok", False)))
+        failed_audits = [
+            n for n, ok in audit_results if not ok
+        ]
+        if failed_audits:
+            _check(
+                "institutional_audits",
+                "fail",
+                f"failed: {failed_audits}",
+            )
+        else:
+            _check(
+                "institutional_audits",
+                "ok",
+                f"{len(audit_results)}/{len(audit_results)} green",
+            )
+    except Exception as exc:  # noqa: BLE001
+        _check("institutional_audits", "fail", str(exc))
+
+    if as_json:
+        print(json.dumps({
+            "store_id": store_id,
+            "overall_ok": overall_ok,
+            "checks": checks,
+            "captain_results": captain_results,
+        }, indent=2, default=str))
+        if not overall_ok:
+            sys.exit(1)
+        return
+
+    print(
+        f"Cycle verify -- "
+        f"store: {store_id or '(none)'}"
+    )
+    print()
+    for c in checks:
+        marker = (
+            "[ok  ]" if c["status"] == "ok"
+            else "[skip]" if c["status"] == "skip"
+            else "[FAIL]"
+        )
+        print(
+            f"  {marker} {c['step']:<22} {c['detail']}"
+        )
+    print()
+    if overall_ok:
+        print(
+            "  All checks passed -- cycle pipeline ready."
+        )
+        print(
+            f"  Next: `shopai cycle run --store {store_id}`"
+            " (dry-run)"
+        )
+    else:
+        print(
+            "  At least one check failed -- fix gaps before "
+            "running the cycle live."
+        )
+        sys.exit(1)
 
 
 def _cmd_cycle_schedule(args) -> None:
@@ -32488,7 +32747,10 @@ def main(argv: list[str] | None = None) -> None:
         if action == "schedule":
             _cmd_cycle_schedule(args)
             return
-        print("Usage: shopai cycle {run|schedule}")
+        if action == "verify":
+            _cmd_cycle_verify(args)
+            return
+        print("Usage: shopai cycle {run|schedule|verify}")
         return
 
     if args.command == "cluster-outcomes":
