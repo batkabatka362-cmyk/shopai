@@ -2472,6 +2472,69 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    cluster_p = sub.add_parser(
+        "cluster",
+        help=(
+            "Tier 2b cluster captains: 10 concern-grouped sets "
+            "of engines (pricing, retention, acquisition, "
+            "quality, merchandising, fulfillment, content, "
+            "governance, discovery, setup). The ant-colony "
+            "supervisor layer between Tier 1 orchestrator and "
+            "Tier 3 engines."
+        ),
+    )
+    cluster_sub = cluster_p.add_subparsers(dest="cluster_action")
+
+    cluster_list_p = cluster_sub.add_parser(
+        "list",
+        help=(
+            "List all 10 clusters with their member counts + "
+            "KPIs."
+        ),
+    )
+    cluster_list_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
+    cluster_show_p = cluster_sub.add_parser(
+        "show",
+        help=(
+            "Show a single cluster's health: members + their "
+            "wiring + risk tier. Captain-eye view of the "
+            "cluster."
+        ),
+    )
+    cluster_show_p.add_argument(
+        "cluster_name",
+        help="Cluster to show (e.g. retention, pricing)",
+    )
+    cluster_show_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
+    cluster_plan_p = cluster_sub.add_parser(
+        "plan",
+        help=(
+            "Generate a captain plan: which members will "
+            "auto-fire, which need approval, which are skipped. "
+            "Dry-run only -- shows the plan without executing."
+        ),
+    )
+    cluster_plan_p.add_argument(
+        "cluster_name",
+        help="Cluster to plan for (e.g. retention)",
+    )
+    cluster_plan_p.add_argument(
+        "--store", default=None,
+        help="Store ID scope. Falls back to active store.",
+    )
+    cluster_plan_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     engines_writebacks_p = sub.add_parser(
         "engines-writebacks",
         help=(
@@ -14970,6 +15033,200 @@ def _cmd_engine_tag_catalog(args) -> None:
             f"  Drill down: `shopai engine try-wireup {first}` "
             "(dry-run)"
         )
+
+
+def _cmd_cluster_list(args) -> None:
+    """List all 10 Tier 2b clusters with member counts + KPIs."""
+    from engines._clusters import list_clusters
+    from engines._cluster_captain import cluster_health
+
+    clusters = list_clusters()
+    rows: list[dict] = []
+    for c in clusters:
+        h = cluster_health(c.name)
+        rows.append({
+            "name": c.name,
+            "kpi": c.kpi,
+            "total_members": h["total_members"],
+            "wired_members": h["wired_members"],
+            "risk_buckets": h["risk_buckets"],
+            "description": c.description,
+        })
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "summary": {
+                "total_clusters": len(rows),
+                "total_engines_mapped": sum(
+                    r["total_members"] for r in rows
+                ),
+                "wired_total": sum(
+                    r["wired_members"] for r in rows
+                ),
+            },
+            "clusters": rows,
+        }, indent=2, default=str))
+        return
+
+    print(
+        f"Tier 2b clusters: {len(rows)} concerns covering "
+        f"{sum(r['total_members'] for r in rows)} engines "
+        f"({sum(r['wired_members'] for r in rows)} wired)"
+    )
+    print()
+    print(
+        "  cluster        members   wired   "
+        "additive/mod/dest   KPI"
+    )
+    for r in rows:
+        rb = r["risk_buckets"]
+        risk_str = (
+            f"{rb.get('additive', 0)}/"
+            f"{rb.get('modification', 0)}/"
+            f"{rb.get('destructive', 0)}"
+        )
+        print(
+            f"  {r['name']:<14} {r['total_members']:>4d}     "
+            f"{r['wired_members']:>4d}    "
+            f"{risk_str:<17}  {r['kpi']}"
+        )
+    print()
+    print(
+        "  Drill: `shopai cluster show <name>` "
+        "(detailed member view)"
+    )
+    print(
+        "  Plan:  `shopai cluster plan <name>` "
+        "(captain dispatch preview)"
+    )
+
+
+def _cmd_cluster_show(args) -> None:
+    """Show one cluster's detailed member breakdown."""
+    from engines._cluster_captain import cluster_health
+
+    cluster_name = (args.cluster_name or "").strip()
+    if not cluster_name:
+        print("Error: cluster_name required")
+        sys.exit(1)
+
+    h = cluster_health(cluster_name)
+    if "error" in h:
+        print(f"Error: {h['error']}")
+        print()
+        print("Available clusters:")
+        from engines._clusters import list_clusters
+        for c in list_clusters():
+            print(f"  {c.name}")
+        sys.exit(1)
+
+    if getattr(args, "json", False):
+        print(json.dumps(h, indent=2, default=str))
+        return
+
+    print(f"Cluster: {h['cluster']}")
+    print(f"  KPI:         {h['kpi']}")
+    print(f"  Description: {h['description']}")
+    print(
+        f"  Members:     "
+        f"{h['wired_members']}/{h['total_members']} wired "
+        f"({h['advisory_members']} advisory)"
+    )
+    print(f"  Risk:        {h['risk_buckets']}")
+    print()
+    print("  engine                          writeback   risk")
+    for row in h["members"]:
+        engine = row["engine"][:30]
+        wb = row["writeback"]
+        risk = row["risk"]
+        print(
+            f"    {engine:<30}  {wb:<10}  {risk}"
+        )
+
+
+def _cmd_cluster_plan(args) -> None:
+    """Generate + render a captain plan for one cluster."""
+    from engines._cluster_captain import make_captain_plan
+
+    cluster_name = (args.cluster_name or "").strip()
+    if not cluster_name:
+        print("Error: cluster_name required")
+        sys.exit(1)
+
+    store_id = (
+        getattr(args, "store", None)
+        or _get_store_manager().active_store_id
+    )
+
+    plan = make_captain_plan(cluster_name, store_id=store_id)
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "cluster": plan.cluster,
+            "store_id": plan.store_id,
+            "fire_count": plan.fire_count,
+            "auto_count": plan.auto_count,
+            "members_to_fire": plan.members_to_fire,
+            "modifications_queued": plan.modifications_queued,
+            "members_to_skip": plan.members_to_skip,
+            "notes": plan.notes,
+        }, indent=2, default=str))
+        return
+
+    print(f"Captain plan: {plan.cluster}  (store={plan.store_id or 'all'})")
+    print()
+    print(
+        f"  Auto-fire (additive):     "
+        f"{len(plan.members_to_fire):3d} engine(s)"
+    )
+    print(
+        f"  Queued (modification):    "
+        f"{len(plan.modifications_queued):3d} engine(s)"
+    )
+    print(
+        f"  Skipped:                  "
+        f"{len(plan.members_to_skip):3d} engine(s)"
+    )
+    if plan.notes:
+        print(f"  Notes:                    {len(plan.notes):3d}")
+    print()
+
+    if plan.members_to_fire:
+        print("  AUTO-FIRE (additive, captain decides):")
+        for m in plan.members_to_fire:
+            print(
+                f"    [fire] {m['engine']:<28} "
+                f"apply={m['apply_flag']}"
+            )
+        print()
+
+    if plan.modifications_queued:
+        print("  QUEUED for approval (modification tier):")
+        for m in plan.modifications_queued:
+            print(
+                f"    [queue] {m['engine']:<27} "
+                f"apply={m['apply_flag']}  ({m['risk']})"
+            )
+        print()
+
+    if plan.members_to_skip:
+        print("  SKIPPED:")
+        for m in plan.members_to_skip[:8]:
+            print(
+                f"    [skip] {m['engine']:<28} "
+                f"reason={m['reason']}"
+            )
+        if len(plan.members_to_skip) > 8:
+            print(
+                f"    ... and {len(plan.members_to_skip) - 8} "
+                "more"
+            )
+        print()
+
+    if plan.notes:
+        print("  NOTES:")
+        for n in plan.notes:
+            print(f"    {n}")
 
 
 def _collect_engines_stats(top_n: int, filter_mode: str) -> dict:
@@ -30871,6 +31128,20 @@ def main(argv: list[str] | None = None) -> None:
             "{summary|guardrail|fleet|compare|ranking|alerts"
             "|pulse|try-wireup|tag-catalog}"
         )
+        return
+
+    if args.command == "cluster":
+        action = getattr(args, "cluster_action", None) or ""
+        if action == "list":
+            _cmd_cluster_list(args)
+            return
+        if action == "show":
+            _cmd_cluster_show(args)
+            return
+        if action == "plan":
+            _cmd_cluster_plan(args)
+            return
+        print("Usage: shopai cluster {list|show|plan}")
         return
 
     if args.command == "engines-writebacks":
