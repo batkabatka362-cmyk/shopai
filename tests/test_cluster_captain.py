@@ -1,13 +1,17 @@
 """Tests for engines._cluster_captain."""
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from engines._cluster_captain import (
     CaptainPlan,
     DeterministicCaptainStrategy,
     SignalDrivenCaptainStrategy,
+    MemoryAwareCaptainStrategy,
     make_captain_plan,
     cluster_health,
 )
+from engines._cluster_memory import ClusterHealth
 
 
 class TestUnknownCluster:
@@ -279,3 +283,118 @@ class TestSignalDrivenStrategy:
         fired = {m["engine"] for m in plan.members_to_fire}
         assert "loyalty" in fired
         assert "churn_prediction" not in fired
+
+
+class TestMemoryAwareStrategy:
+    """Captain reads cluster health, adjusts selection."""
+
+    def _mock_health(self, verdict, member_health=None):
+        # Stat ratios target each verdict band:
+        #   healthy   >= 80% success rate
+        #   warning   50-80%
+        #   unhealthy < 50%
+        if verdict == "healthy":
+            exec_, failed = 90, 5
+        elif verdict == "warning":
+            exec_, failed = 70, 20
+        else:  # unhealthy
+            exec_, failed = 10, 60
+        return ClusterHealth(
+            cluster="retention",
+            member_count=9,
+            wired_count=9,
+            total_executed=exec_,
+            total_failed=failed,
+            total_rejected=5,
+            member_health=member_health or [],
+        )
+
+    def test_healthy_cluster_uses_signal_driven_as_is(self):
+        with patch(
+            "engines._cluster_memory.cluster_health_rollup",
+            return_value=self._mock_health("healthy"),
+        ):
+            plan = make_captain_plan(
+                "retention",
+                signals={"at_risk_count": 5},
+                strategy=MemoryAwareCaptainStrategy(),
+            )
+        fired = {m["engine"] for m in plan.members_to_fire}
+        # Same as signal-driven would pick
+        assert "churn_prediction" in fired
+        assert "loyalty" in fired
+
+    def test_warning_cluster_drops_failing_members(self):
+        # loyalty has bad history -- should be dropped
+        member_health = [
+            {
+                "engine": "loyalty",
+                "wired": True,
+                "executed": 2,
+                "failed": 8,
+                "rejected": 0,
+                "pending": 0,
+                "positive": 1,
+                "negative": 7,
+                "revenue": 0.0,
+            },
+            {
+                "engine": "churn_prediction",
+                "wired": True,
+                "executed": 10,
+                "failed": 1,
+                "rejected": 0,
+                "pending": 0,
+                "positive": 8,
+                "negative": 1,
+                "revenue": 0.0,
+            },
+        ]
+        with patch(
+            "engines._cluster_memory.cluster_health_rollup",
+            return_value=self._mock_health(
+                "warning", member_health,
+            ),
+        ):
+            plan = make_captain_plan(
+                "retention",
+                signals={"at_risk_count": 5},
+                strategy=MemoryAwareCaptainStrategy(),
+            )
+        fired = {m["engine"] for m in plan.members_to_fire}
+        # Loyalty had failed > executed -> dropped
+        assert "loyalty" not in fired
+        # churn_prediction has good history -> kept
+        assert "churn_prediction" in fired
+
+    def test_unhealthy_cluster_collapses_to_defaults(self):
+        with patch(
+            "engines._cluster_memory.cluster_health_rollup",
+            return_value=self._mock_health("unhealthy"),
+        ):
+            plan = make_captain_plan(
+                "retention",
+                signals={"at_risk_count": 5},
+                strategy=MemoryAwareCaptainStrategy(),
+            )
+        fired = {m["engine"] for m in plan.members_to_fire}
+        # retention defaults: loyalty + customer_effort_score
+        # Cluster unhealthy -> only those default-rule
+        # members fire (even though at_risk signal matched)
+        assert "churn_prediction" not in fired
+        assert "loyalty" in fired
+        assert "customer_effort_score" in fired
+
+    def test_unknown_verdict_uses_signal_driven(self):
+        # No actions yet -> verdict is unknown -> use base
+        with patch(
+            "engines._cluster_memory.cluster_health_rollup",
+            return_value=None,
+        ):
+            plan = make_captain_plan(
+                "retention",
+                signals={"at_risk_count": 5},
+                strategy=MemoryAwareCaptainStrategy(),
+            )
+        fired = {m["engine"] for m in plan.members_to_fire}
+        assert "churn_prediction" in fired

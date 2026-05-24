@@ -344,6 +344,72 @@ class SignalDrivenCaptainStrategy:
         return sorted(selected)
 
 
+class MemoryAwareCaptainStrategy:
+    """Signal-driven + memory-aware.
+
+    Combines SignalDrivenCaptainStrategy with cluster-memory
+    health verdict:
+      - healthy   -> use signal-driven selection as-is
+      - warning   -> drop members with bad individual history
+                     (failed > executed across recent actions)
+      - unhealthy -> only "always-on" default-rule members fire
+      - unknown   -> signal-driven (no history yet)
+
+    This is the AGI principle: AI uses memory to make better
+    decisions. Captain reads cluster health, adjusts member
+    selection.
+    """
+
+    def __init__(self) -> None:
+        self._inner = SignalDrivenCaptainStrategy()
+
+    def select_members(
+        self,
+        cluster: Cluster,
+        wired_members: list[str],
+        signals: dict[str, Any],
+    ) -> list[str]:
+        base = self._inner.select_members(
+            cluster, wired_members, signals,
+        )
+        try:
+            from engines._cluster_memory import (
+                cluster_health_rollup,
+            )
+            health = cluster_health_rollup(cluster.name)
+        except Exception:  # noqa: BLE001
+            health = None
+
+        if health is None:
+            return base
+
+        verdict = health.health_verdict
+        if verdict in ("healthy", "unknown"):
+            return base
+
+        if verdict == "warning":
+            # Drop members with bad individual history
+            failing: set[str] = set()
+            for row in health.member_health:
+                actions = (
+                    row["executed"] + row["failed"]
+                    + row["rejected"]
+                )
+                if actions > 5 and row["failed"] > row["executed"]:
+                    failing.add(row["engine"])
+            return [e for e in base if e not in failing]
+
+        # unhealthy: collapse to "always-on" default members
+        rules = _CLUSTER_RULES.get(cluster.name, [])
+        defaults: set[str] = set()
+        for r in rules:
+            if r.get("op") == "default":
+                for engine in r["fire"]:
+                    if engine in wired_members:
+                        defaults.add(engine)
+        return sorted(defaults & set(base))
+
+
 def make_captain_plan(
     cluster_name: str,
     *,
