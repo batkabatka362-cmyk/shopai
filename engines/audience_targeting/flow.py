@@ -187,6 +187,22 @@ class AudienceTargetingEngine:
             total_reachable=total_reachable,
         )
 
+        # Phase 7: optional audience-tag apply. Opt-in via
+        # data.apply_audience_tags=True. Tags every matched
+        # customer with audience:<segment_id> via
+        # SHOPIFY_TAG_CUSTOMER (one customer can carry many).
+        tagged_audiences: list[dict[str, Any]] = []
+        if bool(data.get("apply_audience_tags")):
+            try:
+                from .tag_applier import apply_audience_tags
+                tagged_audiences = apply_audience_tags(match_results)
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "audience_targeting: apply loop raised: %s",
+                    exc,
+                )
+
         # ---- Stage 8: Return output ----
         elapsed = time.monotonic() - start
 
@@ -196,6 +212,7 @@ class AudienceTargetingEngine:
                 "audiences": audiences,
                 "recommended_audience": recommended,
                 "total_reachable": total_reachable,
+                "tagged_audiences": tagged_audiences,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
