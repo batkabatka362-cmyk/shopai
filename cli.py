@@ -2535,6 +2535,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    cluster_fire_p = cluster_sub.add_parser(
+        "fire",
+        help=(
+            "Actually invoke a cluster's captain plan. "
+            "Default DRY-RUN -- shows what WOULD fire. "
+            "Pass --yes to invoke (additive members fire, "
+            "modification members are reported but NOT "
+            "enqueued yet -- that's the next layer)."
+        ),
+    )
+    cluster_fire_p.add_argument(
+        "cluster_name",
+        help="Cluster to fire (e.g. retention)",
+    )
+    cluster_fire_p.add_argument(
+        "--store", default=None,
+        help="Store ID scope. Falls back to active store.",
+    )
+    cluster_fire_p.add_argument(
+        "--yes", action="store_true",
+        help=(
+            "Actually invoke (default is dry-run). Without "
+            "this flag, no engines are called and no writes "
+            "happen. SHOPAI_CLUSTER_FIRE_CONFIRM=1 env var "
+            "is ALSO required for --yes (cluster blast radius "
+            "guard)."
+        ),
+    )
+    cluster_fire_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     engines_writebacks_p = sub.add_parser(
         "engines-writebacks",
         help=(
@@ -15227,6 +15260,262 @@ def _cmd_cluster_plan(args) -> None:
         print("  NOTES:")
         for n in plan.notes:
             print(f"    {n}")
+
+
+def _cmd_cluster_fire(args) -> None:
+    """Captain plan, dry-run preview OR actually invoke.
+
+    Default: dry-run (same as `cluster plan`).
+    --yes + SHOPAI_CLUSTER_FIRE_CONFIRM=1: actually invoke
+    every additive member via engine.run() with the
+    apply_X flag set. Modification members are reported
+    (the approval-queue dispatcher lives in the next
+    layer -- this commit doesn't enqueue them).
+    """
+    from engines._cluster_captain import make_captain_plan
+
+    cluster_name = (args.cluster_name or "").strip()
+    if not cluster_name:
+        print("Error: cluster_name required")
+        sys.exit(1)
+
+    store_id = (
+        getattr(args, "store", None)
+        or _get_store_manager().active_store_id
+    )
+    yes = bool(getattr(args, "yes", False))
+    as_json = bool(getattr(args, "json", False))
+
+    plan = make_captain_plan(cluster_name, store_id=store_id)
+
+    if not yes:
+        # Dry-run: same shape as `cluster plan`
+        if as_json:
+            print(json.dumps({
+                "mode": "dry_run",
+                "cluster": plan.cluster,
+                "store_id": plan.store_id,
+                "would_fire": plan.members_to_fire,
+                "would_queue": plan.modifications_queued,
+                "would_skip": plan.members_to_skip,
+                "notes": plan.notes,
+            }, indent=2, default=str))
+            return
+        print(
+            f"Cluster fire: {plan.cluster}  (DRY-RUN, "
+            f"store={plan.store_id or 'all'})"
+        )
+        print()
+        print(
+            f"  Would auto-fire:  "
+            f"{len(plan.members_to_fire):3d} engine(s)"
+        )
+        print(
+            f"  Would queue:      "
+            f"{len(plan.modifications_queued):3d} engine(s) "
+            f"(approval-queue dispatch is next-layer)"
+        )
+        print(
+            f"  Would skip:       "
+            f"{len(plan.members_to_skip):3d} engine(s)"
+        )
+        print()
+        print(
+            "  To actually invoke: SHOPAI_CLUSTER_FIRE_CONFIRM=1 "
+            f"shopai cluster fire {plan.cluster} --yes"
+        )
+        return
+
+    # --yes path: actually invoke additive members
+    if not os.environ.get("SHOPAI_CLUSTER_FIRE_CONFIRM"):
+        msg = (
+            "Cluster fire blast-radius guard: --yes requires "
+            "SHOPAI_CLUSTER_FIRE_CONFIRM=1 env var. Cluster "
+            "fires can invoke many engines at once + write to "
+            "Shopify; set the env var to acknowledge before "
+            "actually invoking."
+        )
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+        return
+
+    # Pull DataProvider once -- reused per engine
+    try:
+        from data_pipeline.store.data_provider import (
+            DataProvider,
+        )
+        sm = _get_store_manager()
+    except Exception as exc:  # noqa: BLE001
+        msg = f"data provider unavailable: {exc}"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+        return
+
+    try:
+        from engines.registry import get_engine
+    except Exception as exc:  # noqa: BLE001
+        msg = f"engine registry unavailable: {exc}"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+        return
+
+    results: list[dict] = []
+    any_error = False
+    for member in plan.members_to_fire:
+        engine_name = member["engine"]
+        apply_flag = member["apply_flag"]
+        entry: dict = {
+            "engine": engine_name,
+            "apply_flag": apply_flag,
+            "risk": member.get("risk"),
+        }
+        try:
+            data = (
+                DataProvider(sm).get_data_for_engine(
+                    engine_name, store_id,
+                ) if store_id else {}
+            )
+            if not isinstance(data, dict):
+                data = {}
+            data[apply_flag] = True
+        except Exception as exc:  # noqa: BLE001
+            entry["status"] = "data_error"
+            entry["error"] = str(exc)
+            any_error = True
+            results.append(entry)
+            continue
+
+        try:
+            engine = get_engine(engine_name)
+            if engine is None:
+                entry["status"] = "not_registered"
+                any_error = True
+                results.append(entry)
+                continue
+        except Exception as exc:  # noqa: BLE001
+            entry["status"] = "load_error"
+            entry["error"] = str(exc)
+            any_error = True
+            results.append(entry)
+            continue
+
+        try:
+            result = engine.run(data)
+            entry["status"] = (
+                result.get("status", "?")
+                if isinstance(result, dict) else "?"
+            )
+            # Surface any writer-result key the engine puts in
+            # its output (apply_results, minted_codes,
+            # tagged_*, payout_results, etc.)
+            inner = (
+                result.get("data") if isinstance(result, dict)
+                else None
+            )
+            if isinstance(inner, dict):
+                writer_keys = [
+                    k for k in inner
+                    if (
+                        k.startswith("apply_")
+                        or k.startswith("minted_")
+                        or k.startswith("tagged_")
+                        or k.startswith("payout_")
+                    )
+                ]
+                writer_outputs: dict = {}
+                for k in writer_keys:
+                    v = inner[k]
+                    if isinstance(v, list):
+                        writer_outputs[k] = len(v)
+                    else:
+                        writer_outputs[k] = bool(v)
+                if writer_outputs:
+                    entry["writer_outputs"] = writer_outputs
+        except Exception as exc:  # noqa: BLE001
+            entry["status"] = "engine_raised"
+            entry["error"] = str(exc)
+            any_error = True
+        results.append(entry)
+
+    summary = {
+        "cluster": plan.cluster,
+        "store_id": store_id,
+        "total_fired": len(results),
+        "ok": sum(
+            1 for r in results
+            if r.get("status") in ("success", "ok")
+        ),
+        "errors": sum(
+            1 for r in results
+            if r.get("status") not in ("success", "ok")
+        ),
+        "queued_for_approval": len(plan.modifications_queued),
+        "skipped": len(plan.members_to_skip),
+    }
+
+    if as_json:
+        print(json.dumps({
+            "mode": "fired",
+            "summary": summary,
+            "fired": results,
+            "modifications_queued": plan.modifications_queued,
+            "skipped": plan.members_to_skip,
+        }, indent=2, default=str))
+        if any_error:
+            sys.exit(1)
+        return
+
+    print(
+        f"Cluster fire: {plan.cluster}  (LIVE, "
+        f"store={plan.store_id or 'all'})"
+    )
+    print()
+    print(f"  Fired: {summary['total_fired']} engine(s)")
+    print(
+        f"  OK:    {summary['ok']:3d}      "
+        f"Errors: {summary['errors']:3d}"
+    )
+    print(
+        f"  Queued (not yet dispatched): "
+        f"{summary['queued_for_approval']}"
+    )
+    print(f"  Skipped: {summary['skipped']}")
+    print()
+    for r in results:
+        marker = (
+            "[ok  ]" if r.get("status") in ("success", "ok")
+            else "[FAIL]"
+        )
+        line = (
+            f"  {marker} {r['engine']:<28} "
+            f"status={r.get('status', '?')}"
+        )
+        if r.get("writer_outputs"):
+            line += f"  outputs={r['writer_outputs']}"
+        if r.get("error"):
+            line += f"  error={r['error'][:60]}"
+        print(line)
+    print()
+    if any_error:
+        sys.exit(1)
 
 
 def _collect_engines_stats(top_n: int, filter_mode: str) -> dict:
@@ -31141,7 +31430,10 @@ def main(argv: list[str] | None = None) -> None:
         if action == "plan":
             _cmd_cluster_plan(args)
             return
-        print("Usage: shopai cluster {list|show|plan}")
+        if action == "fire":
+            _cmd_cluster_fire(args)
+            return
+        print("Usage: shopai cluster {list|show|plan|fire}")
         return
 
     if args.command == "engines-writebacks":
