@@ -106,6 +106,24 @@ class CustomerEffortScoreEngine:
         improvements = improvement_result.get("improvements", [])
         trend = improvement_result.get("trend", "unknown")
 
+        # Phase 7: optional high-effort tag apply. Opt-in via
+        # data.apply_high_effort_tags=True. Tags customers whose
+        # AVG effort_score across their interactions >= 5 (high
+        # effort) via SHOPIFY_TAG_CUSTOMER.
+        tagged_high_effort: list[dict[str, Any]] = []
+        if bool(data.get("apply_high_effort_tags")):
+            try:
+                from .tag_applier import apply_high_effort_tags
+                tagged_high_effort = apply_high_effort_tags(
+                    interaction_scores,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "customer_effort_score: apply loop raised: %s",
+                    exc,
+                )
+
         # ---- Stage 5: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -117,6 +135,7 @@ class CustomerEffortScoreEngine:
                 "friction_points": friction_points,
                 "improvements": improvements,
                 "trend": trend,
+                "tagged_high_effort": tagged_high_effort,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
