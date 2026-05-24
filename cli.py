@@ -15307,16 +15307,16 @@ def _cmd_cluster_fire(args) -> None:
         )
         print()
         print(
-            f"  Would auto-fire:  "
+            f"  Would direct-fire (additive):  "
             f"{len(plan.members_to_fire):3d} engine(s)"
         )
         print(
-            f"  Would queue:      "
+            f"  Would approval-dispatch (mod): "
             f"{len(plan.modifications_queued):3d} engine(s) "
-            f"(approval-queue dispatch is next-layer)"
+            "(invoked with require_approval=True)"
         )
         print(
-            f"  Would skip:       "
+            f"  Would skip:                    "
             f"{len(plan.members_to_skip):3d} engine(s)"
         )
         print()
@@ -15377,15 +15377,37 @@ def _cmd_cluster_fire(args) -> None:
         sys.exit(1)
         return
 
+    # Build the unified invocation list:
+    #   - additive members: apply_X=True (auto-fire)
+    #   - modification members: apply_X=True + require_approval=True
+    #     (engine internally enqueues to ApprovalQueue)
+    invocations: list[dict] = []
+    for m in plan.members_to_fire:
+        invocations.append({
+            "engine": m["engine"],
+            "apply_flag": m["apply_flag"],
+            "risk": m.get("risk"),
+            "require_approval": False,
+        })
+    for m in plan.modifications_queued:
+        invocations.append({
+            "engine": m["engine"],
+            "apply_flag": m["apply_flag"],
+            "risk": m.get("risk"),
+            "require_approval": True,
+        })
+
     results: list[dict] = []
     any_error = False
-    for member in plan.members_to_fire:
+    for member in invocations:
         engine_name = member["engine"]
         apply_flag = member["apply_flag"]
+        require_approval = member["require_approval"]
         entry: dict = {
             "engine": engine_name,
             "apply_flag": apply_flag,
             "risk": member.get("risk"),
+            "approval_required": require_approval,
         }
         try:
             data = (
@@ -15396,6 +15418,12 @@ def _cmd_cluster_fire(args) -> None:
             if not isinstance(data, dict):
                 data = {}
             data[apply_flag] = True
+            # Risk-tier translation: modification members
+            # set require_approval=True so the engine's
+            # internal applier enqueues to ApprovalQueue
+            # rather than firing direct.
+            if require_approval:
+                data["require_approval"] = True
         except Exception as exc:  # noqa: BLE001
             entry["status"] = "data_error"
             entry["error"] = str(exc)
@@ -15458,7 +15486,7 @@ def _cmd_cluster_fire(args) -> None:
     summary = {
         "cluster": plan.cluster,
         "store_id": store_id,
-        "total_fired": len(results),
+        "total_invoked": len(results),
         "ok": sum(
             1 for r in results
             if r.get("status") in ("success", "ok")
@@ -15467,7 +15495,12 @@ def _cmd_cluster_fire(args) -> None:
             1 for r in results
             if r.get("status") not in ("success", "ok")
         ),
-        "queued_for_approval": len(plan.modifications_queued),
+        "direct_fired": sum(
+            1 for r in results if not r.get("approval_required")
+        ),
+        "approval_dispatched": sum(
+            1 for r in results if r.get("approval_required")
+        ),
         "skipped": len(plan.members_to_skip),
     }
 
@@ -15488,14 +15521,21 @@ def _cmd_cluster_fire(args) -> None:
         f"store={plan.store_id or 'all'})"
     )
     print()
-    print(f"  Fired: {summary['total_fired']} engine(s)")
+    print(
+        f"  Invoked: {summary['total_invoked']} engine(s)"
+    )
+    print(
+        f"    direct fire (additive):     "
+        f"{summary['direct_fired']:3d}"
+    )
+    print(
+        f"    approval dispatch (mod):    "
+        f"{summary['approval_dispatched']:3d} "
+        "(engines enqueue internally via require_approval)"
+    )
     print(
         f"  OK:    {summary['ok']:3d}      "
         f"Errors: {summary['errors']:3d}"
-    )
-    print(
-        f"  Queued (not yet dispatched): "
-        f"{summary['queued_for_approval']}"
     )
     print(f"  Skipped: {summary['skipped']}")
     print()
@@ -15504,8 +15544,11 @@ def _cmd_cluster_fire(args) -> None:
             "[ok  ]" if r.get("status") in ("success", "ok")
             else "[FAIL]"
         )
+        approval_marker = (
+            " [APPR]" if r.get("approval_required") else ""
+        )
         line = (
-            f"  {marker} {r['engine']:<28} "
+            f"  {marker}{approval_marker} {r['engine']:<26} "
             f"status={r.get('status', '?')}"
         )
         if r.get("writer_outputs"):
@@ -15514,6 +15557,11 @@ def _cmd_cluster_fire(args) -> None:
             line += f"  error={r['error'][:60]}"
         print(line)
     print()
+    if summary["approval_dispatched"] > 0:
+        print(
+            "  [APPR] engines enqueued to ApprovalQueue. "
+            "Review: `shopai approvals list --status pending`"
+        )
     if any_error:
         sys.exit(1)
 
