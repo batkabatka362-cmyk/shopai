@@ -158,6 +158,23 @@ class StockPredictionEngine:
             confidence=avg_confidence,
         )
 
+        # Phase 7: optional restock-tag apply. Opt-in via
+        # data.apply_restock_tags=True. Tags products with
+        # restock_qty > 0.
+        tagged_restock: list[dict[str, Any]] = []
+        if bool(data.get("apply_restock_tags")):
+            try:
+                from .tag_applier import apply_restock_tags
+                tagged_restock = apply_restock_tags(
+                    predictions, products,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "stock_prediction: apply loop raised: %s",
+                    exc,
+                )
+
         # ---- Stage 8: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -167,6 +184,7 @@ class StockPredictionEngine:
                 "predictions": predictions,
                 "seasonal_factors": seasonal_factors,
                 "confidence": avg_confidence,
+                "tagged_restock": tagged_restock,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
