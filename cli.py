@@ -2735,6 +2735,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    cluster_bus_p = cluster_sub.add_parser(
+        "bus",
+        help=(
+            "Inspect the cross-cluster event bus. Lists "
+            "recent events emitted by captains so operators "
+            "see horizontal collaboration in action."
+        ),
+    )
+    cluster_bus_p.add_argument(
+        "--window", default="24", metavar="HOURS",
+        help="Time window for events (default 24h)",
+    )
+    cluster_bus_p.add_argument(
+        "--topic", default=None,
+        help="Filter to one bus topic",
+    )
+    cluster_bus_p.add_argument(
+        "--emitter", default=None,
+        help="Filter to one emitting cluster",
+    )
+    cluster_bus_p.add_argument(
+        "--store", default=None,
+        help="Filter to one store_id",
+    )
+    cluster_bus_p.add_argument(
+        "--clear", action="store_true",
+        help=(
+            "WIPE the bus (operator reset). Requires "
+            "SHOPAI_CLUSTER_BUS_CLEAR_CONFIRM=1 env var."
+        ),
+    )
+    cluster_bus_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     cluster_fire_p = cluster_sub.add_parser(
         "fire",
         help=(
@@ -16587,6 +16623,153 @@ def _cmd_store_supervise(args) -> None:
     print()
     print("  Drill: `shopai cluster show <name>`")
     print("  Fire:  `shopai cluster fire <name> --yes`")
+
+
+def _cmd_cluster_bus(args) -> None:
+    """Operator surface for the cross-cluster event bus.
+
+    Lists recent events (within --window hours) with optional
+    filters. --clear wipes the bus (requires env var).
+    """
+    import time as _time
+    from engines._cluster_bus import (
+        subscribe_events,
+        clear_bus,
+        cross_cluster_signals,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+
+    if getattr(args, "clear", False):
+        if not os.environ.get("SHOPAI_CLUSTER_BUS_CLEAR_CONFIRM"):
+            msg = (
+                "Bus --clear requires "
+                "SHOPAI_CLUSTER_BUS_CLEAR_CONFIRM=1 env var. "
+                "Wiping the bus drops all cross-cluster "
+                "signal history."
+            )
+            if as_json:
+                print(json.dumps(
+                    {"status": "error", "error": msg},
+                    indent=2,
+                ))
+            else:
+                print(f"Error: {msg}")
+            sys.exit(1)
+            return
+        ok = clear_bus()
+        if as_json:
+            print(json.dumps(
+                {"status": "ok" if ok else "error",
+                 "cleared": ok},
+                indent=2,
+            ))
+        else:
+            print(
+                "Bus cleared." if ok
+                else "Bus clear FAILED."
+            )
+        return
+
+    try:
+        window_hours = float(
+            getattr(args, "window", "24") or "24"
+        )
+    except (TypeError, ValueError):
+        window_hours = 24.0
+
+    topic = getattr(args, "topic", None) or None
+    emitter = getattr(args, "emitter", None) or None
+    store_id = getattr(args, "store", None) or None
+
+    events = subscribe_events(
+        topic=topic,
+        emitter_cluster=emitter,
+        store_id=store_id,
+        window_hours=window_hours,
+    )
+
+    # Compute the next-cycle signals view (what consumers
+    # will see if Tier 1 runs right now)
+    next_cycle_signals = cross_cluster_signals(
+        store_id=store_id, window_hours=window_hours,
+    )
+
+    if as_json:
+        print(json.dumps({
+            "window_hours": window_hours,
+            "filters": {
+                "topic": topic, "emitter": emitter,
+                "store_id": store_id,
+            },
+            "event_count": len(events),
+            "next_cycle_signals": next_cycle_signals,
+            "events": [
+                {
+                    "emitter_cluster": e.emitter_cluster,
+                    "topic": e.topic,
+                    "payload": e.payload,
+                    "emitted_at": e.emitted_at,
+                    "store_id": e.store_id,
+                }
+                for e in events
+            ],
+        }, indent=2, default=str))
+        return
+
+    print(
+        f"Cluster event bus  (window: {window_hours:.0f}h)"
+    )
+    print()
+    print(f"  Events: {len(events)}")
+    if topic:
+        print(f"  Filter topic:    {topic}")
+    if emitter:
+        print(f"  Filter emitter:  {emitter}")
+    if store_id:
+        print(f"  Filter store:    {store_id}")
+    print()
+
+    if not events:
+        print("  (no events in window)")
+        print()
+        print(
+            "  Captains auto-emit on non-zero signals. Run "
+            "`shopai cycle run --yes` to start events flowing."
+        )
+        return
+
+    # Per-event row
+    print(
+        f"  {'when':<20} {'emitter':<14} {'topic':<22} "
+        f"{'store':<10} payload"
+    )
+    now = _time.time()
+    for e in events[:20]:
+        age = now - e.emitted_at
+        if age < 60:
+            ago = f"{int(age)}s ago"
+        elif age < 3600:
+            ago = f"{int(age/60)}m ago"
+        else:
+            ago = f"{age/3600:.1f}h ago"
+        payload_str = json.dumps(e.payload)[:30]
+        print(
+            f"  {ago:<20} {e.emitter_cluster:<14} "
+            f"{e.topic:<22} {(e.store_id or '-'):<10} "
+            f"{payload_str}"
+        )
+    if len(events) > 20:
+        print(f"  ... and {len(events) - 20} more")
+    print()
+
+    if next_cycle_signals:
+        print("  Next-cycle signals (consumers will see):")
+        for cluster, sigs in sorted(
+            next_cycle_signals.items(),
+        ):
+            for name, val in sigs.items():
+                print(f"    {cluster}:{name} = {val}")
 
 
 def _cmd_cluster_fire(args) -> None:
@@ -32874,7 +33057,10 @@ def main(argv: list[str] | None = None) -> None:
         if action == "fire":
             _cmd_cluster_fire(args)
             return
-        print("Usage: shopai cluster {list|show|plan|fire}")
+        if action == "bus":
+            _cmd_cluster_bus(args)
+            return
+        print("Usage: shopai cluster {list|show|plan|fire|bus}")
         return
 
     if args.command == "engines-writebacks":
