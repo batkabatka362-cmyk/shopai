@@ -14738,6 +14738,7 @@ def _cmd_engines_writebacks(args) -> None:
         round(100 * report.wired_count / report.total_engines)
         if report.total_engines else 0
     )
+    tag_writers = sum(1 for tags in tag_map.values() if tags)
     print(
         f"Engine writeback coverage: "
         f"{report.wired_count}/{report.total_engines} wired "
@@ -14745,6 +14746,12 @@ def _cmd_engines_writebacks(args) -> None:
         f"{report.advisory_count} advisory, "
         f"{report.partial_count} partial"
     )
+    if tag_writers > 0:
+        print(
+            f"  Of the wired engines, "
+            f"{tag_writers} write Shopify tags. "
+            f"Run `shopai engine tag-catalog` for the full namespace map."
+        )
 
     if not engines_filtered:
         print()
