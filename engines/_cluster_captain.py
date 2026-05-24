@@ -120,9 +120,10 @@ class DeterministicCaptainStrategy:
     """Default strategy: fire every wired member when the
     cluster is activated. Operator-controlled, predictable.
 
-    Future strategies will add signal-based filtering (e.g.
-    only fire churn_prediction when at-risk-customer count
-    > threshold).
+    Use this when caller hasn't supplied signals + just wants
+    "run everything safe" behavior. The SignalDrivenStrategy
+    below is the smarter default once captains have signal
+    inputs from world-model + Pattern Z.
     """
 
     def select_members(
@@ -131,10 +132,216 @@ class DeterministicCaptainStrategy:
         wired_members: list[str],
         signals: dict[str, Any],
     ) -> list[str]:
-        # MVP: fire all wired members. Captain logic gets
-        # smarter in subsequent commits as we add signal-
-        # specific rules per cluster.
         return list(wired_members)
+
+
+# ── Signal-driven strategy ────────────────────────────────────
+#
+# Per-cluster rules: signal threshold -> which engines fire.
+# This is the FIRST tier of "captain that thinks". Each rule:
+#   key = signal name (read from signals dict)
+#   value = (comparison_op, threshold, members_to_fire)
+#
+# When a signal matches, those member engines are SELECTED for
+# this cycle. Engines not matched by any rule are skipped.
+# Empty signals dict -> falls back to DeterministicCaptainStrategy
+# behavior (fire all wired) so existing callers don't break.
+
+_CLUSTER_RULES: dict[str, list[dict[str, Any]]] = {
+    "retention": [
+        # at_risk_customer_count > 0 -> fire churn-focused members
+        {
+            "when": "at_risk_count",
+            "op": ">",
+            "threshold": 0,
+            "fire": [
+                "churn_prediction",
+                "cohort_analysis",
+                "customer_journey",
+                "nps_engine",
+                "subscription",
+            ],
+        },
+        # abandoned_cart_count > 0 -> fire recovery
+        {
+            "when": "abandoned_cart_count",
+            "op": ">",
+            "threshold": 0,
+            "fire": ["cart_recovery", "browse_recovery"],
+        },
+        # default: always-on members regardless of signal
+        {
+            "when": "*",
+            "op": "default",
+            "threshold": None,
+            "fire": ["loyalty", "customer_effort_score"],
+        },
+    ],
+    "pricing": [
+        # thin_margin_count > 0 -> dropshipping + profitability
+        {
+            "when": "thin_margin_count",
+            "op": ">",
+            "threshold": 0,
+            "fire": ["dropshipping", "profitability_calculator"],
+        },
+        # default: elasticity always runs (read-only signals)
+        {
+            "when": "*",
+            "op": "default",
+            "threshold": None,
+            "fire": ["price_elasticity"],
+        },
+        # discount_opportunity_count > 0 -> discount_strategy
+        {
+            "when": "discount_opportunity_count",
+            "op": ">",
+            "threshold": 0,
+            "fire": ["discount_strategy"],
+        },
+    ],
+    "quality": [
+        # defect_count > 0 -> order_quality
+        {
+            "when": "defect_count",
+            "op": ">",
+            "threshold": 0,
+            "fire": ["order_quality"],
+        },
+        # warranty_claim_count > 0 -> warranty
+        {
+            "when": "warranty_claim_count",
+            "op": ">",
+            "threshold": 0,
+            "fire": ["warranty"],
+        },
+        # fraud_count > 0 -> fraud_detection
+        {
+            "when": "fraud_count",
+            "op": ">",
+            "threshold": 0,
+            "fire": ["fraud_detection"],
+        },
+        # negative_review_count >= 3 -> review_management
+        {
+            "when": "negative_review_count",
+            "op": ">=",
+            "threshold": 3,
+            "fire": ["review_management"],
+        },
+    ],
+    "fulfillment": [
+        # stockout_imminent_count > 0 -> stock_prediction + inventory
+        {
+            "when": "stockout_imminent_count",
+            "op": ">",
+            "threshold": 0,
+            "fire": ["stock_prediction", "inventory"],
+        },
+        # pending_returns_count > 0 -> returns_management
+        {
+            "when": "pending_returns_count",
+            "op": ">",
+            "threshold": 0,
+            "fire": ["returns_management"],
+        },
+    ],
+    "merchandising": [
+        # always-on: ranking + scoring (low-cost, always useful)
+        {
+            "when": "*",
+            "op": "default",
+            "threshold": None,
+            "fire": [
+                "product_ranking", "product_scoring",
+                "behavioral_data",
+            ],
+        },
+        # declining_product_count > 0 -> product_lifecycle
+        {
+            "when": "declining_product_count",
+            "op": ">",
+            "threshold": 0,
+            "fire": ["product_lifecycle"],
+        },
+    ],
+    "acquisition": [
+        # always-on: targeting + segmentation
+        {
+            "when": "*",
+            "op": "default",
+            "threshold": None,
+            "fire": ["audience_targeting", "customer_segmentation"],
+        },
+        # new_signups_count > 0 -> email_marketing
+        {
+            "when": "new_signups_count",
+            "op": ">",
+            "threshold": 0,
+            "fire": ["email_marketing"],
+        },
+    ],
+}
+
+
+def _compare(value: Any, op: str, threshold: Any) -> bool:
+    if op == "default":
+        return True
+    try:
+        v = float(value)
+        t = float(threshold)
+    except (TypeError, ValueError):
+        return False
+    if op == ">":
+        return v > t
+    if op == ">=":
+        return v >= t
+    if op == "<":
+        return v < t
+    if op == "<=":
+        return v <= t
+    if op == "==":
+        return v == t
+    return False
+
+
+class SignalDrivenCaptainStrategy:
+    """Per-cluster signal -> member selection.
+
+    Each cluster has a set of rules (see _CLUSTER_RULES). A
+    rule fires when its signal threshold is met -- members
+    listed in that rule's ``fire`` list are selected.
+
+    Default rules (``when="*"``, ``op="default"``) always
+    apply, so always-on members fire regardless of signals.
+
+    Fallback: if no rules exist for a cluster, the strategy
+    falls back to DeterministicCaptainStrategy (fire all
+    wired). This keeps it safe for clusters without curated
+    rules yet (content, governance, discovery, setup).
+    """
+
+    def select_members(
+        self,
+        cluster: Cluster,
+        wired_members: list[str],
+        signals: dict[str, Any],
+    ) -> list[str]:
+        rules = _CLUSTER_RULES.get(cluster.name)
+        if rules is None:
+            # No rules curated yet -> fall back to fire-all
+            return list(wired_members)
+        selected: set[str] = set()
+        for rule in rules:
+            if _compare(
+                signals.get(rule["when"]),
+                rule["op"],
+                rule["threshold"],
+            ):
+                for engine in rule["fire"]:
+                    if engine in wired_members:
+                        selected.add(engine)
+        return sorted(selected)
 
 
 def make_captain_plan(

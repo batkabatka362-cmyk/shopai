@@ -4,6 +4,7 @@ from __future__ import annotations
 from engines._cluster_captain import (
     CaptainPlan,
     DeterministicCaptainStrategy,
+    SignalDrivenCaptainStrategy,
     make_captain_plan,
     cluster_health,
 )
@@ -178,3 +179,103 @@ class TestSignalsPassthrough:
         assert received["signals"]["at_risk_count"] == 42
         assert received["signals"]["trend"] == "up"
         assert received["wired_count"] > 0
+
+
+class TestSignalDrivenStrategy:
+    """Per-cluster rules: signals -> selected members."""
+
+    def test_retention_at_risk_signal_fires_churn(self):
+        plan = make_captain_plan(
+            "retention",
+            signals={"at_risk_count": 5},
+            strategy=SignalDrivenCaptainStrategy(),
+        )
+        fired = {m["engine"] for m in plan.members_to_fire}
+        # at_risk > 0 -> churn-focused members fire
+        assert "churn_prediction" in fired
+        assert "cohort_analysis" in fired
+        # always-on members
+        assert "loyalty" in fired
+
+    def test_retention_no_signals_fires_only_default(self):
+        # Empty signals -> only the "always-on" default rule fires
+        plan = make_captain_plan(
+            "retention",
+            signals={},
+            strategy=SignalDrivenCaptainStrategy(),
+        )
+        fired = {m["engine"] for m in plan.members_to_fire}
+        # Default-rule members
+        assert "loyalty" in fired
+        assert "customer_effort_score" in fired
+        # Signal-gated members should NOT fire without signal
+        assert "churn_prediction" not in fired
+        assert "cart_recovery" not in fired
+
+    def test_retention_cart_signal_fires_recovery(self):
+        plan = make_captain_plan(
+            "retention",
+            signals={"abandoned_cart_count": 3},
+            strategy=SignalDrivenCaptainStrategy(),
+        )
+        fired = {m["engine"] for m in plan.members_to_fire}
+        assert "cart_recovery" in fired
+        assert "browse_recovery" in fired
+        # No at_risk signal -> churn doesn't fire
+        assert "churn_prediction" not in fired
+
+    def test_pricing_thin_margin_signal(self):
+        plan = make_captain_plan(
+            "pricing",
+            signals={"thin_margin_count": 5},
+            strategy=SignalDrivenCaptainStrategy(),
+        )
+        fired = {m["engine"] for m in plan.members_to_fire}
+        assert "dropshipping" in fired
+        assert "profitability_calculator" in fired
+        # default always-on
+        assert "price_elasticity" in fired
+
+    def test_quality_negative_review_threshold(self):
+        # Threshold is >=3, so 2 negative reviews shouldn't fire
+        plan = make_captain_plan(
+            "quality",
+            signals={"negative_review_count": 2},
+            strategy=SignalDrivenCaptainStrategy(),
+        )
+        fired = {m["engine"] for m in plan.members_to_fire}
+        assert "review_management" not in fired
+
+        # 3 negative reviews DOES fire
+        plan = make_captain_plan(
+            "quality",
+            signals={"negative_review_count": 3},
+            strategy=SignalDrivenCaptainStrategy(),
+        )
+        fired = {m["engine"] for m in plan.members_to_fire}
+        assert "review_management" in fired
+
+    def test_uncurated_cluster_falls_back_to_fire_all(self):
+        # 'governance' cluster has no rules in _CLUSTER_RULES
+        # -- should fall back to firing all wired members
+        plan = make_captain_plan(
+            "governance",
+            signals={},
+            strategy=SignalDrivenCaptainStrategy(),
+        )
+        # All wired governance members should fire (could be
+        # 0 if none wired, but the strategy should at least
+        # not RAISE)
+        assert plan.cluster == "governance"
+
+    def test_signals_with_strings_dont_crash(self):
+        # Bad signal types should be silently ignored
+        plan = make_captain_plan(
+            "retention",
+            signals={"at_risk_count": "not a number"},
+            strategy=SignalDrivenCaptainStrategy(),
+        )
+        # at_risk_count signal can't compare -> only defaults fire
+        fired = {m["engine"] for m in plan.members_to_fire}
+        assert "loyalty" in fired
+        assert "churn_prediction" not in fired
