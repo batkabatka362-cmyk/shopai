@@ -122,3 +122,74 @@ class TestCatalog:
                     e.tag.startswith(f"{ns}:")
                     or e.tag.startswith(f"{ns}-")
                 )
+
+
+class TestCIInvariants:
+    """CI guardrail: tag-writing wireups must be discoverable.
+
+    A wired engine that uses SHOPIFY_UPDATE_PRODUCT,
+    SHOPIFY_TAG_CUSTOMER, SHOPIFY_TAG_ORDER, or
+    SHOPIFY_CREATE_PRODUCT in its applier MUST appear in the
+    catalog. Otherwise the operator surfaces silently miss it
+    and operators can't discover the namespace it writes.
+    """
+
+    def _tag_writing_engines(self) -> set[str]:
+        """Engines whose *_applier.py actually writes a tags field
+        to Shopify (not just any UPDATE_PRODUCT call -- many use
+        UPDATE_PRODUCT for status/price changes without tags).
+
+        Heuristic: applier mentions a tag-write capability AND
+        the source contains ``"tags":`` or ``tags=[`` (the
+        actual write-site markers).
+        """
+        import re
+        from pathlib import Path
+
+        cap_pattern = re.compile(
+            r"SHOPIFY_(UPDATE_PRODUCT|CREATE_PRODUCT|TAG_CUSTOMER|TAG_ORDER)"
+        )
+        # The applier must construct a tags payload to count as
+        # a tag-writer. Otherwise UPDATE_PRODUCT is used for
+        # status changes, price changes, etc. and there's no
+        # tag to catalog.
+        tag_marker = re.compile(r'"tags"\s*:|tags\s*=\s*\[')
+        out: set[str] = set()
+        for engine_dir in Path("engines").iterdir():
+            if not engine_dir.is_dir():
+                continue
+            for applier in engine_dir.glob("*_applier.py"):
+                try:
+                    source = applier.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                if cap_pattern.search(source) and tag_marker.search(source):
+                    out.add(engine_dir.name)
+                    break
+        return out
+
+    def test_every_tag_writing_engine_in_catalog(self):
+        """Catalog catches every applier with a Shopify tag-write
+        capability. Regressions where a new applier uses an
+        undetectable pattern break this test loudly."""
+        catalog = catalog_tags("engines")
+        catalog_engines = {e.engine for e in catalog.entries}
+        tag_writers = self._tag_writing_engines()
+
+        missing = tag_writers - catalog_engines
+        # Engines we KNOW use other constructs (not tag literals
+        # we can statically detect). They're tag-writing but the
+        # tag value comes from dynamic input the catalog can't see.
+        # Tag-management is a prime example -- it writes whatever
+        # tags the upstream engine emits, not a fixed namespace.
+        known_dynamic = {
+            "tag_management",      # caller-supplied tags
+        }
+        unexpected_missing = missing - known_dynamic
+        assert not unexpected_missing, (
+            f"These engines write Shopify tags but the catalog "
+            f"doesn't catch any of their tag literals: "
+            f"{sorted(unexpected_missing)}. Either add a detection "
+            f"pattern in engines/_tag_catalog.py or add the engine "
+            f"name to the known_dynamic allow-list in this test."
+        )

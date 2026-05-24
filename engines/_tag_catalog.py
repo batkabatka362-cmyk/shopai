@@ -60,6 +60,12 @@ _TAG_PATTERN = re.compile(r"^[a-z][a-z0-9_]*:[a-z0-9_]+$")
 # Permissive dash-prefix pattern for _TAG_PREFIX = "shopai-segment-"
 # style constants (the trailing dash signals dynamic suffix).
 _TAG_PREFIX_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*-$")
+# Full dash-style tag pattern for _TAG_X = "shopai-return-approved"
+# style. Requires 2+ dashes so we don't match "https-only" or
+# single-word-dash legitimate non-tags.
+_TAG_DASH_PATTERN = re.compile(
+    r"^[a-z][a-z0-9_]*(-[a-z0-9_]+){2,}$"
+)
 
 # Map SHOPIFY_X capability to the entity it touches.
 _CAPABILITY_TO_TARGET = {
@@ -132,20 +138,24 @@ def _tag_namespace(tag: str) -> str:
     """Extract the namespace from a tag literal.
 
     Supports two Shopify-tag conventions:
-      * ``namespace:value`` (most appliers)
-      * ``namespace-value`` (legacy customer_segmentation
-        ``shopai-segment-{slug}`` style)
+      * ``namespace:value`` -- prefix before the colon
+      * ``namespace-value`` -- prefix before the LAST dash
+        (concrete tag, e.g. ``shopai-return-approved`` -> ns
+        ``shopai-return``)
+      * ``namespace-*`` -- prefix as-is, * marker stripped
+        (dynamic tag, e.g. ``shopai-segment-*`` -> ns
+        ``shopai-segment``)
     """
     if ":" in tag:
         return tag.split(":", 1)[0]
-    # Dash convention: take everything up to the LAST dash as
-    # the namespace (so 'shopai-segment-vip' has namespace
-    # 'shopai-segment').
-    if "-" in tag and tag.endswith("*"):
-        return tag.rsplit("-", 1)[0] if tag.count("-") >= 2 else tag.split("-", 1)[0]
-    if "-" in tag:
-        return tag.split("-", 1)[0]
-    return tag
+    if "-" not in tag:
+        return tag
+    if tag.endswith("*"):
+        # Dynamic: strip the trailing "-*" or "*" and keep the rest
+        clean = tag[:-1].rstrip("-")
+        return clean
+    # Concrete: strip the final segment to get the namespace
+    return tag.rsplit("-", 1)[0]
 
 
 def _extract_capability(tree: ast.AST) -> str:
@@ -191,9 +201,13 @@ def _extract_tag_literals(tree: ast.AST) -> set[str]:
         "store_design",
     }
 
-    # Pass 1: module-level _FOO_TAG / _FOO_TAG_PREFIX assignments
-    #   - _TAG = "ns:value"        -> stored verbatim
-    #   - _TAG_PREFIX = "ns-"      -> stored as "ns-*" (dynamic)
+    # Pass 1: module-level constant assignments. Three patterns:
+    #   - _TAG = "ns:value"               -> stored verbatim
+    #   - _TAG_X = "shopai-return-X"      -> stored verbatim
+    #   - _TAG_PREFIX = "ns-"             -> stored as "ns-*"
+    # (Caller-side: the constant must start with _ and contain TAG
+    # somewhere in the name -- this rules out arbitrary string
+    # constants like _DEFAULT_SETTING.)
     for node in getattr(tree, "body", []) or []:
         if not isinstance(node, ast.Assign):
             continue
@@ -206,14 +220,18 @@ def _extract_tag_literals(tree: ast.AST) -> set[str]:
             if not isinstance(target, ast.Name):
                 continue
             name = target.id
-            if name.endswith("_TAG") and _TAG_PATTERN.match(literal):
+            if "TAG" not in name:
+                continue
+            if _TAG_PATTERN.match(literal):
+                out.add(literal)
+                break
+            if _TAG_DASH_PATTERN.match(literal):
                 out.add(literal)
                 break
             if (
-                "_PREFIX" in name
+                "PREFIX" in name
                 and _TAG_PREFIX_PATTERN.match(literal)
             ):
-                # Strip the trailing dash, render as ns-*
                 ns = literal.rstrip("-")
                 if ns and ns not in error_prefixes:
                     out.add(f"{ns}-*")
@@ -252,5 +270,20 @@ def _extract_tag_literals(tree: ast.AST) -> set[str]:
                 prefix = elt.value.split(":", 1)[0]
                 if prefix not in error_prefixes:
                     out.add(elt.value)
+
+    # Pass 4: tag-literals passed as arguments to function calls
+    # (e.g. tags.append("fraud-review") inside a helper). Restricted
+    # to dash-style tags with 2+ dashes to avoid false positives
+    # on arbitrary 2-word literals.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for arg in node.args:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                if not _TAG_DASH_PATTERN.match(arg.value):
+                    continue
+                head = arg.value.split("-", 1)[0]
+                if head not in error_prefixes:
+                    out.add(arg.value)
 
     return out
