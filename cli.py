@@ -14663,6 +14663,24 @@ def _cmd_engines_writebacks(args) -> None:
             s for s in report.engines if s.status == filter_mode
         ]
 
+    # Build tag map ONCE (single AST scan), then attach per
+    # engine. Cheap enough for the full catalog (~25 files).
+    tag_map: dict[str, list[str]] = {}
+    try:
+        from engines._tag_catalog import catalog_tags
+        tag_cat = catalog_tags("engines")
+        for entry in tag_cat.entries:
+            tag_map.setdefault(entry.engine, []).append(entry.tag)
+        # dedup + sort per engine
+        tag_map = {
+            eng: sorted(set(tags))
+            for eng, tags in tag_map.items()
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engines-writebacks tag-catalog probe raised: %s", exc,
+        )
+
     if getattr(args, "json", False):
         print(json.dumps({
             "summary": {
@@ -14678,6 +14696,7 @@ def _cmd_engines_writebacks(args) -> None:
                     "status": s.status,
                     "writer_files": s.writer_files,
                     "opt_in_flags": s.opt_in_flags,
+                    "writes_tags": tag_map.get(s.name, []),
                 }
                 for s in engines_filtered
             ],
