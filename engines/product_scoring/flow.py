@@ -106,6 +106,24 @@ class ProductScoringEngine:
             avg_composite_score=avg_score,
         )
 
+        # Phase 7: optional tier-A tag apply. Opt-in via
+        # data.apply_tier_tags=True. Tags only tier-A
+        # products (composite_score >= 7.5). Empty list when
+        # not opted in OR no tier-A products.
+        tagged_tier_a: list[dict[str, Any]] = []
+        if bool(data.get("apply_tier_tags")):
+            try:
+                from .tag_applier import apply_tier_tags
+                tagged_tier_a = apply_tier_tags(
+                    scored_products, products,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "product_scoring: apply loop raised: %s",
+                    exc,
+                )
+
         elapsed = time.monotonic() - start
 
         return {
@@ -114,6 +132,7 @@ class ProductScoringEngine:
                 "scored_products": scored_products,
                 "score_distribution": score_distribution,
                 "avg_composite_score": avg_score,
+                "tagged_tier_a": tagged_tier_a,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
