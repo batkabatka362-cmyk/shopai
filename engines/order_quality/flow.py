@@ -103,6 +103,22 @@ class OrderQualityEngine:
             inspection_plan=inspection_plan, improvement_actions=improvement_actions,
         )
 
+        # Phase 7: optional defect-rate tag apply. Opt-in via
+        # data.apply_defect_rate_tags=True. Tags products with
+        # defect_rate > 5% via SHOPIFY_UPDATE_PRODUCT.
+        tagged_defect_rates: list[dict[str, Any]] = []
+        if bool(data.get("apply_defect_rate_tags")):
+            try:
+                from .tag_applier import apply_defect_rate_tags
+                tagged_defect_rates = apply_defect_rate_tags(
+                    defect_rates, orders,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "order_quality: apply loop raised: %s", exc,
+                )
+
         elapsed = time.monotonic() - start
         return {
             "status": "success",
@@ -111,6 +127,7 @@ class OrderQualityEngine:
                 "supplier_quality_scores": supplier_quality_scores,
                 "inspection_plan": inspection_plan,
                 "improvement_actions": improvement_actions,
+                "tagged_defect_rates": tagged_defect_rates,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
