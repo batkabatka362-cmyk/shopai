@@ -1690,6 +1690,39 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── Empire orchestrator (Tier 1) ─────────────────────────
+    orchestrator_p = sub.add_parser(
+        "orchestrator",
+        help=(
+            "Tier 1 empire orchestrator: fleet-level "
+            "decisioner. Per-store priorities + supervisor "
+            "plans aggregated across the fleet."
+        ),
+    )
+    orchestrator_sub = orchestrator_p.add_subparsers(
+        dest="orchestrator_action",
+    )
+
+    orch_plan_p = orchestrator_sub.add_parser(
+        "plan",
+        help=(
+            "Build a FleetPlan: per-store priority + "
+            "supervisor plan. Dry-run only -- shows what "
+            "each store would do this cycle."
+        ),
+    )
+    orch_plan_p.add_argument(
+        "--store", default=None, metavar="ID",
+        help=(
+            "Plan for ONE store. Default plans the whole "
+            "fleet."
+        ),
+    )
+    orch_plan_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     # ── Store supervisor (Tier 2a) ───────────────────────────
     store_supervise_p = store_sub.add_parser(
         "supervise",
@@ -15344,6 +15377,123 @@ def _cmd_cluster_plan(args) -> None:
         print("  NOTES:")
         for n in plan.notes:
             print(f"    {n}")
+
+
+def _cmd_orchestrator_plan(args) -> None:
+    """Build + render a FleetPlan from Tier 1 orchestrator.
+
+    Pulls world-model snapshot for each store, runs the
+    DeterministicOrchestratorStrategy to assign priorities,
+    builds SupervisorPlan per store, aggregates into
+    FleetPlan.
+    """
+    import time as _time
+    from engines._orchestrator import (
+        make_fleet_plan, fleet_summary,
+    )
+    from core.world_model import WorldModel
+
+    sm = _get_store_manager()
+    only_store = (getattr(args, "store", None) or "").strip()
+
+    # Pull world-models for each store (or just the one)
+    world_models: dict[str, dict] = {}
+    try:
+        wm = WorldModel()
+        if only_store:
+            world_models[only_store] = wm.snapshot(
+                only_store, skip_live=True,
+            )
+        else:
+            for s in sm.list_stores() or []:
+                sid = s.get("store_id")
+                if not sid:
+                    continue
+                world_models[sid] = wm.snapshot(
+                    sid, skip_live=True,
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "orchestrator plan world-model raised: %s", exc,
+        )
+
+    cycle_label = _time.strftime(
+        "%Y-%m-%dT%H:%M:%S", _time.gmtime(),
+    )
+    plan = make_fleet_plan(
+        world_models=world_models, cycle_label=cycle_label,
+    )
+    s = fleet_summary(plan)
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "cycle_label": plan.cycle_label,
+            "summary": s,
+            "priorities": [
+                {
+                    "store_id": p.store_id,
+                    "priority": p.priority,
+                    "cluster_focus": p.cluster_focus,
+                    "rationale": p.rationale,
+                    "signals": p.signals,
+                }
+                for p in plan.priorities
+            ],
+            "supervisor_plans": [
+                {
+                    "store_id": sp.store_id,
+                    "active_clusters": sp.active_clusters,
+                    "total_to_fire": sp.total_to_fire,
+                    "total_modifications":
+                        sp.total_modifications,
+                }
+                for sp in plan.supervisor_plans
+            ],
+        }, indent=2, default=str))
+        return
+
+    print(
+        f"Empire orchestrator plan -- cycle {plan.cycle_label}"
+    )
+    print()
+    print(f"  Total stores:        {s['total_stores']:3d}")
+    print(f"  Total to fire:       {s['total_to_fire']:3d}")
+    print(
+        f"  Total modifications: "
+        f"{s['total_modifications']:3d}"
+    )
+    print()
+    if not s["stores"]:
+        print("  (no stores in fleet)")
+        if plan.notes:
+            for n in plan.notes:
+                print(f"  {n}")
+        return
+    print(
+        f"  {'store_id':<25} {'priority':<11} "
+        f"{'clusters':<10} {'fire':>4} {'queue':>5}"
+    )
+    for row in s["stores"]:
+        sid = row["store_id"][:25]
+        print(
+            f"  {sid:<25} {row['priority']:<11} "
+            f"{row['active_clusters']:>8d}  "
+            f"{row['fire']:>4d} {row['queued']:>5d}"
+        )
+    print()
+    print("  Per-store rationale:")
+    for prio in plan.priorities:
+        print(
+            f"    {prio.store_id:<25} {prio.priority:<11} "
+            f"{prio.rationale}"
+        )
+    print()
+    print(
+        "  Drill: `shopai store supervise <store_id>`"
+    )
+    print(
+        "  Fire:  `shopai cluster fire <name> --store <id> --yes`"
+    )
 
 
 def _cmd_store_supervise(args) -> None:
@@ -31588,6 +31738,14 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_world_model_fleet(args)
             return
         print("Usage: shopai world-model {show|fleet}")
+        return
+
+    if args.command == "orchestrator":
+        action = getattr(args, "orchestrator_action", None)
+        if action == "plan":
+            _cmd_orchestrator_plan(args)
+            return
+        print("Usage: shopai orchestrator {plan}")
         return
 
     if args.command == "memory-recall":
