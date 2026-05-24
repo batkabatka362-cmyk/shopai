@@ -114,6 +114,22 @@ class OrderManagementEngine:
                 order_status="cancelled",
             )
 
+            # Phase 7: tag the rejected order so it's discoverable
+            # in the Shopify admin (and any review queue).
+            tagged_fraud_reject: dict[str, Any] = {}
+            if bool(data.get("apply_fraud_tags")):
+                try:
+                    from .tag_applier import apply_fraud_tags
+                    tagged_fraud_reject = apply_fraud_tags(
+                        order_id, fraud_result,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    import logging
+                    logging.getLogger(__name__).debug(
+                        "order_management: apply loop raised: %s",
+                        exc,
+                    )
+
             return {
                 "status": "success",
                 "data": {
@@ -127,6 +143,7 @@ class OrderManagementEngine:
                     "tracking": None,
                     "notification": cancel_notification,
                     "rejection_reason": "Fraud screening rejected this order",
+                    "tagged_fraud": tagged_fraud_reject,
                 },
                 "meta": {
                     "engine": self.ENGINE_NAME,
@@ -221,6 +238,22 @@ class OrderManagementEngine:
             notification=notification_result,
         )
 
+        # Phase 7: optional fraud-tag apply on the non-rejected
+        # path (medium-risk "review" orders). High-risk reject
+        # orders already got tagged above.
+        tagged_fraud: dict[str, Any] = {}
+        if bool(data.get("apply_fraud_tags")):
+            try:
+                from .tag_applier import apply_fraud_tags
+                tagged_fraud = apply_fraud_tags(
+                    order_id, fraud_result,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "order_management: apply loop raised: %s", exc,
+                )
+
         # ---- Stage 11: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -234,6 +267,7 @@ class OrderManagementEngine:
             "shipping": shipping_result,
             "tracking": tracking_result,
             "notification": notification_result,
+            "tagged_fraud": tagged_fraud,
         }
 
         if not all_in_stock:
