@@ -206,6 +206,18 @@ def cross_cluster_signals(
     )
     out: dict[str, dict[str, Any]] = {}
     for e in events:
+        # Revenue regression is a "self-emit" topic: the
+        # affected cluster IS the emitter, and the consuming
+        # signal lands on that same cluster as a regression
+        # count. Lets MemoryAware captain notice "my cluster
+        # has been losing money lately, be conservative".
+        if e.topic == "revenue_regression":
+            cluster = e.emitter_cluster
+            out.setdefault(cluster, {})
+            out[cluster]["recent_regression_count"] = (
+                out[cluster].get("recent_regression_count", 0) + 1
+            )
+            continue
         target = _TOPIC_TO_SIGNAL.get(e.topic)
         if target is None:
             continue

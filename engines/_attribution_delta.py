@@ -344,3 +344,68 @@ def latest_delta(
         regression_pct=regression_pct,
         min_orders=min_orders,
     )
+
+
+def propagate_alerts_to_bus(
+    delta: AttributionDelta,
+    *,
+    store_id: str | None = None,
+) -> int:
+    """Emit one bus event per regression alert.
+
+    Closes the substrate loop: alerts aren't just operator
+    notifications, they become signals the NEXT cycle's
+    captains can consume. The affected cluster sees its own
+    recent regression count next cycle and can adjust
+    (MemoryAwareCaptainStrategy collapses to default-rule
+    members when regression signal fires).
+
+    Args:
+        delta: Result of compute_delta or latest_delta.
+        store_id: Per-store scope tag on each event.
+
+    Returns:
+        Count of events emitted. Zero when no alerts (or when
+        the bus is unavailable).
+    """
+    if not delta.alerts:
+        return 0
+    try:
+        from engines._cluster_bus import emit_event
+    except Exception:  # noqa: BLE001
+        return 0
+
+    # Map engine alerts up to their cluster so the cluster's
+    # captain can see the signal. Cluster-scoped alerts emit
+    # against themselves.
+    cluster_lookup: dict[str, str | None] = {}
+    for e in delta.per_engine:
+        cluster_lookup[e.engine] = e.cluster
+
+    count = 0
+    for alert in delta.alerts:
+        if alert.scope == "cluster":
+            target_cluster = alert.name
+        elif alert.scope == "engine":
+            target_cluster = cluster_lookup.get(alert.name)
+        else:
+            target_cluster = None
+        if not target_cluster:
+            continue
+        try:
+            emit_event(
+                emitter_cluster=target_cluster,
+                topic="revenue_regression",
+                payload={
+                    "scope": alert.scope,
+                    "name": alert.name,
+                    "delta_pct": alert.delta_pct,
+                    "prior_revenue": alert.prior_revenue,
+                    "latest_revenue": alert.latest_revenue,
+                },
+                store_id=store_id,
+            )
+            count += 1
+        except Exception:  # noqa: BLE001
+            continue
+    return count

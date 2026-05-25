@@ -11,6 +11,7 @@ from engines._attribution_delta import (
     EngineDelta,
     compute_delta,
     latest_delta,
+    propagate_alerts_to_bus,
 )
 from engines._attribution_snapshot import AttributionSnapshot
 
@@ -310,6 +311,109 @@ class TestSortOrder:
         )
         d = compute_delta(prior, latest)
         assert d.per_cluster[0].cluster == "big_change"
+
+
+class TestPropagateAlertsToBus:
+
+    def test_no_alerts_emits_zero(self):
+        delta = AttributionDelta(
+            prior_snapshot_id="a", latest_snapshot_id="b",
+            prior_captured_at=1.0, latest_captured_at=2.0,
+            prior_total_revenue=0.0, latest_total_revenue=0.0,
+            prior_attributed_revenue=0.0,
+            latest_attributed_revenue=0.0,
+        )
+        assert propagate_alerts_to_bus(delta) == 0
+
+    def test_cluster_alert_emits_one(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+        from engines._cluster_bus import clear_bus, subscribe_events
+        clear_bus()
+        prior = _snap(
+            sid="a", captured_at=1.0, attributed=100.0,
+            per_cluster=[
+                {"cluster": "retention",
+                 "attributed_revenue": 100.0,
+                 "attributed_orders": 5},
+            ],
+        )
+        latest = _snap(
+            sid="b", captured_at=2.0, attributed=50.0,
+            per_cluster=[
+                {"cluster": "retention",
+                 "attributed_revenue": 50.0,
+                 "attributed_orders": 3},
+            ],
+        )
+        delta = compute_delta(prior, latest)
+        n = propagate_alerts_to_bus(delta)
+        assert n == 1
+        events = subscribe_events(window_hours=1.0)
+        assert any(
+            e.emitter_cluster == "retention"
+            and e.topic == "revenue_regression"
+            for e in events
+        )
+
+    def test_engine_alert_emits_to_engine_cluster(
+        self, monkeypatch, tmp_path,
+    ):
+        monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+        from engines._cluster_bus import clear_bus, subscribe_events
+        clear_bus()
+        prior = _snap(
+            sid="a", captured_at=1.0, attributed=100.0,
+            per_engine=[
+                {"engine": "loyalty",
+                 "cluster": "retention",
+                 "attributed_revenue": 100.0,
+                 "attributed_orders": 5},
+            ],
+        )
+        latest = _snap(
+            sid="b", captured_at=2.0, attributed=20.0,
+            per_engine=[
+                {"engine": "loyalty",
+                 "cluster": "retention",
+                 "attributed_revenue": 20.0,
+                 "attributed_orders": 3},
+            ],
+        )
+        delta = compute_delta(prior, latest)
+        # delta has engine alert; engine cluster is retention.
+        # propagate should emit one event tagged with retention.
+        n = propagate_alerts_to_bus(delta)
+        assert n >= 1
+        events = subscribe_events(window_hours=1.0)
+        emitter_clusters = {e.emitter_cluster for e in events}
+        assert "retention" in emitter_clusters
+
+
+class TestSignalMapping:
+
+    def test_regression_event_rolls_up_in_cross_cluster_signals(
+        self, monkeypatch, tmp_path,
+    ):
+        """Bus's cross_cluster_signals maps revenue_regression
+        events to recent_regression_count per emitter cluster."""
+        monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+        from engines._cluster_bus import (
+            clear_bus, emit_event, cross_cluster_signals,
+        )
+        clear_bus()
+        emit_event(
+            emitter_cluster="retention",
+            topic="revenue_regression",
+            payload={"delta_pct": -0.5},
+        )
+        emit_event(
+            emitter_cluster="retention",
+            topic="revenue_regression",
+            payload={"delta_pct": -0.6},
+        )
+        signals = cross_cluster_signals(window_hours=1.0)
+        assert "retention" in signals
+        assert signals["retention"]["recent_regression_count"] == 2
 
 
 class TestLatestDelta:

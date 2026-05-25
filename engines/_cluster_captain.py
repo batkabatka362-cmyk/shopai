@@ -384,6 +384,30 @@ class MemoryAwareCaptainStrategy:
             return base
 
         verdict = health.health_verdict
+
+        # Wave 13: revenue regression escalates verdict by one
+        # tier. If the bus carries recent_regression_count >= 1
+        # for this cluster (propagated by attribution_delta),
+        # treat healthy as warning, warning as unhealthy. This
+        # is the substrate feedback loop: alerts in cycle N
+        # influence selection in cycle N+1 without operator
+        # intervention. Conservative-on-regression is the safe
+        # default; can be tuned later.
+        try:
+            regression_count = int(
+                (signals or {}).get(
+                    "recent_regression_count", 0,
+                ) or 0,
+            )
+        except (TypeError, ValueError):
+            regression_count = 0
+        if regression_count >= 1:
+            if verdict == "healthy":
+                verdict = "warning"
+            elif verdict == "warning":
+                verdict = "unhealthy"
+            # unknown / unhealthy stay where they are
+
         if verdict in ("healthy", "unknown"):
             return base
 

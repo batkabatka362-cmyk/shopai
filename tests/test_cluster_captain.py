@@ -398,3 +398,78 @@ class TestMemoryAwareStrategy:
             )
         fired = {m["engine"] for m in plan.members_to_fire}
         assert "churn_prediction" in fired
+
+    def test_regression_signal_escalates_healthy_to_warning(self):
+        """Wave 13: when bus carries recent_regression_count >=
+        1 for this cluster, healthy verdict is treated as
+        warning -- captain prunes failing members."""
+        # healthy verdict + bad member history. Without
+        # regression: healthy = keep all. With regression =
+        # warning = drop failing members.
+        member_health = [
+            {
+                "engine": "loyalty",
+                "wired": True,
+                "executed": 2,
+                "failed": 8,
+                "rejected": 0,
+                "pending": 0,
+                "positive": 0,
+                "negative": 0,
+                "revenue": 0.0,
+            },
+        ]
+        with patch(
+            "engines._cluster_memory.cluster_health_rollup",
+            return_value=self._mock_health(
+                "healthy", member_health,
+            ),
+        ):
+            plan = make_captain_plan(
+                "retention",
+                signals={
+                    "at_risk_count": 5,
+                    "recent_regression_count": 2,
+                },
+                strategy=MemoryAwareCaptainStrategy(),
+            )
+        fired = {m["engine"] for m in plan.members_to_fire}
+        # With regression signal -> healthy-bumped-to-warning
+        # -> loyalty (bad history) is dropped
+        assert "loyalty" not in fired
+
+    def test_regression_signal_escalates_warning_to_unhealthy(self):
+        """Warning + regression -> unhealthy = collapse to
+        defaults."""
+        member_health = [
+            {
+                "engine": "churn_prediction",
+                "wired": True,
+                "executed": 10,
+                "failed": 1,
+                "rejected": 0,
+                "pending": 0,
+                "positive": 0,
+                "negative": 0,
+                "revenue": 0.0,
+            },
+        ]
+        with patch(
+            "engines._cluster_memory.cluster_health_rollup",
+            return_value=self._mock_health(
+                "warning", member_health,
+            ),
+        ):
+            plan = make_captain_plan(
+                "retention",
+                signals={
+                    "at_risk_count": 5,
+                    "recent_regression_count": 1,
+                },
+                strategy=MemoryAwareCaptainStrategy(),
+            )
+        fired = {m["engine"] for m in plan.members_to_fire}
+        # Warning + regression -> unhealthy -> only defaults
+        # fire (loyalty + customer_effort_score)
+        assert "churn_prediction" not in fired
+        assert "loyalty" in fired

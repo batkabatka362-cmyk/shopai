@@ -17651,6 +17651,25 @@ def _cmd_cycle_run(args) -> None:
             "attribution snapshot record failed: %s", exc,
         )
 
+    # Propagate any regression alerts onto the cluster bus so
+    # next cycle's captains can react. Substrate loop -- alerts
+    # become decision-time signals, not just operator-facing.
+    try:
+        from engines._attribution_delta import (
+            latest_delta, propagate_alerts_to_bus,
+        )
+        delta = latest_delta()
+        if delta is not None and delta.has_alerts:
+            n = propagate_alerts_to_bus(delta)
+            logger.info(
+                "propagated %d revenue-regression alert(s) "
+                "to cluster bus", n,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "regression alert propagation failed: %s", exc,
+        )
+
     if as_json:
         print(json.dumps({
             "mode": "live",
