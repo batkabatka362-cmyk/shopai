@@ -438,6 +438,75 @@ class TestMemoryAwareStrategy:
         # -> loyalty (bad history) is dropped
         assert "loyalty" not in fired
 
+    def test_declining_revenue_verdict_escalates(self):
+        """Wave 18: ClusterHealth.revenue_verdict == declining
+        escalates verdict by one tier even without a bus signal."""
+        member_health = [
+            {
+                "engine": "loyalty",
+                "wired": True,
+                "executed": 2,
+                "failed": 8,
+                "rejected": 0,
+                "pending": 0,
+                "positive": 0,
+                "negative": 0,
+                "revenue": 0.0,
+            },
+        ]
+        health = self._mock_health("healthy", member_health)
+        health._force_declining = True
+        with patch(
+            "engines._cluster_memory.cluster_health_rollup",
+            return_value=health,
+        ):
+            plan = make_captain_plan(
+                "retention",
+                signals={"at_risk_count": 5},
+                strategy=MemoryAwareCaptainStrategy(),
+            )
+        fired = {m["engine"] for m in plan.members_to_fire}
+        # healthy + declining -> warning tier -> drops loyalty
+        # (bad history)
+        assert "loyalty" not in fired
+
+    def test_regression_signal_takes_precedence_over_declining(self):
+        """Both signals active should not double-escalate."""
+        member_health = [
+            {
+                "engine": "loyalty",
+                "wired": True,
+                "executed": 2,
+                "failed": 8,
+                "rejected": 0,
+                "pending": 0,
+                "positive": 0,
+                "negative": 0,
+                "revenue": 0.0,
+            },
+        ]
+        health = self._mock_health("healthy", member_health)
+        health._force_declining = True
+        with patch(
+            "engines._cluster_memory.cluster_health_rollup",
+            return_value=health,
+        ):
+            plan = make_captain_plan(
+                "retention",
+                signals={
+                    "at_risk_count": 5,
+                    "recent_regression_count": 1,
+                },
+                strategy=MemoryAwareCaptainStrategy(),
+            )
+        fired = {m["engine"] for m in plan.members_to_fire}
+        # Single escalation (regression signal path) -- loyalty
+        # dropped via warning tier, NOT collapsed to defaults
+        # (which would be unhealthy = two escalations)
+        assert "loyalty" not in fired
+        # churn_prediction has good history -> survives warning
+        assert "churn_prediction" in fired
+
     def test_regression_signal_escalates_warning_to_unhealthy(self):
         """Warning + regression -> unhealthy = collapse to
         defaults."""

@@ -115,6 +115,41 @@ class ClusterHealth:
             return "warning"
         return "unhealthy"
 
+    @property
+    def revenue_verdict(self) -> str:
+        """Revenue-dimension verdict: earning / flat / declining /
+        unknown.
+
+        Separate from health_verdict because a cluster can be
+        operationally healthy (high success_rate) but bring $0
+        (engines firing successfully but ineffective). Computed
+        from attributed_revenue + attribution_orders + a coarse
+        threshold.
+
+          unknown   - no attribution data (attribution_orders=0)
+          flat      - attributed but below threshold ($10)
+          earning   - attributed >= $10
+          declining - earning had alerts recently (set externally
+                      by attribution-aware caller; default = same
+                      as earning)
+
+        The ``declining`` tier is observational here -- callers
+        that integrate delta history (cycle-over-cycle) can flip
+        a cluster from earning to declining by setting
+        ``_force_declining`` after computing the delta. The
+        default property never flips on its own.
+        """
+        # When caller-overridden (set after delta computation),
+        # honor that.
+        forced = getattr(self, "_force_declining", False)
+        if forced:
+            return "declining"
+        if self.attribution_orders == 0:
+            return "unknown"
+        if self.attributed_revenue >= 10.0:
+            return "earning"
+        return "flat"
+
 
 class ClusterMemoryStrategy(Protocol):
     """Pluggable: how to compute cluster health rollup."""
@@ -289,4 +324,29 @@ def enrich_with_attribution(
         h.attribution_orders = attr.attributed_orders
         h.attribution_confidence = attr.confidence
         h.attribution_window_hours = window_hours
+
+    # Wave 18: cross-reference latest cycle-over-cycle delta to
+    # flip a cluster's revenue_verdict to "declining" when a
+    # regression alert fires against it. Best-effort -- delta
+    # may be unavailable when fewer than 2 snapshots exist.
+    try:
+        from engines._attribution_delta import latest_delta
+        delta = latest_delta()
+        if delta is not None and delta.alerts:
+            declining_clusters: set[str] = set()
+            for alert in delta.alerts:
+                if alert.scope == "cluster":
+                    declining_clusters.add(alert.name)
+                elif alert.scope == "engine":
+                    # Map engine back to cluster
+                    for e in delta.per_engine:
+                        if e.engine == alert.name and e.cluster:
+                            declining_clusters.add(e.cluster)
+                            break
+            for h in healths:
+                if h.cluster in declining_clusters:
+                    h._force_declining = True
+    except Exception:  # noqa: BLE001
+        pass
+
     return healths

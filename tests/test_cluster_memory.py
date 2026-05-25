@@ -94,6 +94,55 @@ class TestFleetHealth:
         assert "pricing" in names
 
 
+class TestRevenueVerdict:
+    """Wave 18: revenue_verdict is a separate signal from
+    health_verdict so callers can reason about ROI vs uptime."""
+
+    def test_unknown_when_no_attribution_orders(self):
+        h = ClusterHealth(
+            cluster="x", member_count=1, wired_count=1,
+        )
+        assert h.revenue_verdict == "unknown"
+
+    def test_earning_when_above_threshold(self):
+        h = ClusterHealth(
+            cluster="x", member_count=1, wired_count=1,
+            attributed_revenue=500.0,
+            attribution_orders=5,
+        )
+        assert h.revenue_verdict == "earning"
+
+    def test_flat_when_orders_but_low_revenue(self):
+        h = ClusterHealth(
+            cluster="x", member_count=1, wired_count=1,
+            attributed_revenue=5.0,
+            attribution_orders=2,
+        )
+        assert h.revenue_verdict == "flat"
+
+    def test_declining_when_force_flag_set(self):
+        """enrich_with_attribution sets _force_declining when
+        the latest delta carries an alert against this cluster."""
+        h = ClusterHealth(
+            cluster="x", member_count=1, wired_count=1,
+            attributed_revenue=500.0,
+            attribution_orders=5,
+        )
+        h._force_declining = True
+        assert h.revenue_verdict == "declining"
+
+    def test_independent_from_health_verdict(self):
+        """A cluster can be operationally healthy (success_rate
+        high) but bring zero revenue."""
+        h = ClusterHealth(
+            cluster="x", member_count=1, wired_count=1,
+            total_executed=100, total_failed=5,  # healthy
+            attribution_orders=0,  # but unknown revenue
+        )
+        assert h.health_verdict == "healthy"
+        assert h.revenue_verdict == "unknown"
+
+
 class TestAttributionEnrichment:
     """enrich_with_attribution mutates ClusterHealth with
     Shopify-order-derived revenue. Stays additive -- existing
@@ -141,6 +190,54 @@ class TestAttributionEnrichment:
     def test_empty_list_is_noop(self):
         out = enrich_with_attribution([], orders=[])
         assert out == []
+
+    def test_alert_flips_cluster_to_declining(self):
+        """Wave 18: when latest delta has an alert against a
+        cluster, enrich flips its revenue_verdict to declining."""
+        from unittest.mock import patch
+        from engines._attribution_delta import (
+            AttributionDelta, RegressionAlert,
+        )
+        fake_delta = AttributionDelta(
+            prior_snapshot_id="a", latest_snapshot_id="b",
+            prior_captured_at=1.0, latest_captured_at=2.0,
+            prior_total_revenue=1000.0,
+            latest_total_revenue=500.0,
+            prior_attributed_revenue=800.0,
+            latest_attributed_revenue=200.0,
+            alerts=[
+                RegressionAlert(
+                    scope="cluster", name="retention",
+                    prior_revenue=800.0, latest_revenue=200.0,
+                    delta_pct=-0.75,
+                    reason="revenue dropped 75%",
+                ),
+            ],
+        )
+        healths = [
+            ClusterHealth(
+                cluster="retention",
+                member_count=5, wired_count=3,
+                attributed_revenue=200.0,
+                attribution_orders=3,
+            ),
+            ClusterHealth(
+                cluster="pricing",
+                member_count=5, wired_count=3,
+                attributed_revenue=300.0,
+                attribution_orders=4,
+            ),
+        ]
+        with patch(
+            "engines._attribution_delta.latest_delta",
+            return_value=fake_delta,
+        ):
+            enrich_with_attribution(healths, orders=[])
+        retention = next(h for h in healths if h.cluster == "retention")
+        pricing = next(h for h in healths if h.cluster == "pricing")
+        assert retention.revenue_verdict == "declining"
+        # pricing not flagged in delta -> still earning
+        assert pricing.revenue_verdict == "earning"
 
 
 class TestStrategyPluggable:

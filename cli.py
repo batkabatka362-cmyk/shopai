@@ -15637,6 +15637,9 @@ def _cmd_cluster_list(args) -> None:
             "risk_buckets": h["risk_buckets"],
             "description": c.description,
             "verdict": m.health_verdict if m else "unknown",
+            "revenue_verdict": (
+                m.revenue_verdict if m else "unknown"
+            ),
             "executed": m.total_executed if m else 0,
             "positive_ratio": m.positive_ratio if m else 0.0,
             "revenue": m.total_revenue if m else 0.0,
