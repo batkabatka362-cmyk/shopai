@@ -14,9 +14,11 @@ from engines._attribution_snapshot import (
     AttributionSnapshot,
     attribution_trend,
     clear_snapshots,
+    fleet_attribution_rollup,
     last_snapshot,
     recent_snapshots,
     record_snapshot,
+    stores_with_snapshots,
 )
 
 
@@ -264,6 +266,64 @@ class TestPerStoreSnapshots:
         delta_b = latest_delta(store_id="B")
         assert delta_a is not None
         assert delta_b is None
+
+
+class TestFleetRollup:
+    """Wave 15: cross-store empire revenue rollup."""
+
+    def test_stores_with_snapshots_excludes_fleet_bucket(
+        self, isolated_snapshots,
+    ):
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=_fake_report(),
+        ):
+            record_snapshot(window_hours=168.0)  # fleet
+            record_snapshot(window_hours=168.0, store_id="A")
+            record_snapshot(window_hours=168.0, store_id="B")
+        stores = stores_with_snapshots()
+        assert stores == ["A", "B"]
+
+    def test_fleet_rollup_sorts_by_revenue_desc(
+        self, isolated_snapshots,
+    ):
+        # _fake_report.attributed_revenue is a property that
+        # sums per_cluster, so use per_cluster to drive the
+        # value -- attributed/total_orders alone are scalar
+        # totals and don't flow through the property.
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=_fake_report(
+                total_orders=1,
+                per_cluster=[
+                    {"cluster": "retention",
+                     "revenue": 100.0, "orders": 1},
+                ],
+            ),
+        ):
+            record_snapshot(window_hours=168.0, store_id="small")
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=_fake_report(
+                total_orders=20,
+                per_cluster=[
+                    {"cluster": "retention",
+                     "revenue": 5000.0, "orders": 20},
+                ],
+            ),
+        ):
+            record_snapshot(window_hours=168.0, store_id="big")
+        rollup = fleet_attribution_rollup()
+        assert rollup["store_count"] == 2
+        assert rollup["stores"][0]["store_id"] == "big"
+        assert rollup["stores"][1]["store_id"] == "small"
+        assert rollup["total_attributed"] == 5100.0
+
+    def test_fleet_rollup_empty(self, isolated_snapshots):
+        rollup = fleet_attribution_rollup()
+        assert rollup["stores"] == []
+        assert rollup["total_attributed"] == 0.0
+        assert rollup["store_count"] == 0
 
 
 class TestClear:

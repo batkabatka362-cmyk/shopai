@@ -283,3 +283,73 @@ def clear_snapshots() -> None:
             p.unlink()
         except OSError:
             pass
+
+
+def stores_with_snapshots() -> list[str]:
+    """Return unique store_ids that have at least one snapshot.
+
+    Excludes the fleet-wide None bucket. Used by the empire
+    revenue-fleet view to enumerate "which stores has the
+    autonomous loop actually captured?".
+    """
+    snaps = _load()
+    stores: set[str] = set()
+    for s in snaps:
+        if s.store_id:
+            stores.add(s.store_id)
+    return sorted(stores)
+
+
+def fleet_attribution_rollup() -> dict[str, Any]:
+    """Cross-store latest-snapshot rollup.
+
+    Returns:
+        {
+          "stores": [
+            {"store_id", "attributed_revenue",
+             "attributed_orders", "top_cluster",
+             "top_engine", "captured_at"},
+            ...
+          ],
+          "total_attributed": float,
+          "total_orders": int,
+        }
+
+    Sorted by attributed_revenue desc.
+    """
+    stores = stores_with_snapshots()
+    rows: list[dict[str, Any]] = []
+    total_attr = 0.0
+    total_orders = 0
+    for store_id in stores:
+        snap = last_snapshot(store_id=store_id)
+        if snap is None:
+            continue
+        top_cluster = (
+            snap.per_cluster[0]["cluster"]
+            if snap.per_cluster else None
+        )
+        top_engine = (
+            snap.per_engine[0]["engine"]
+            if snap.per_engine else None
+        )
+        rows.append({
+            "store_id": store_id,
+            "attributed_revenue": snap.attributed_revenue,
+            "attributed_orders": snap.total_orders_in_window,
+            "attribution_rate": snap.attribution_rate,
+            "top_cluster": top_cluster,
+            "top_engine": top_engine,
+            "captured_at": snap.captured_at,
+        })
+        total_attr += snap.attributed_revenue
+        total_orders += snap.total_orders_in_window
+    rows.sort(
+        key=lambda r: r["attributed_revenue"], reverse=True,
+    )
+    return {
+        "stores": rows,
+        "total_attributed": round(total_attr, 2),
+        "total_orders": total_orders,
+        "store_count": len(rows),
+    }

@@ -1828,6 +1828,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    cycle_revenue_fleet_p = cycle_sub.add_parser(
+        "revenue-fleet",
+        help=(
+            "Cross-store empire revenue rollup. Each store's "
+            "latest attribution snapshot side-by-side, sorted "
+            "by attributed revenue. Operator answer to 'which "
+            "stores in my fleet are earning?'."
+        ),
+    )
+    cycle_revenue_fleet_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     cycle_attribution_delta_p = cycle_sub.add_parser(
         "attribution-delta",
         help=(
@@ -16556,6 +16570,89 @@ def _cmd_cycle_status(args) -> None:
     print("    shopai cycle history          -- past runs")
     print("    shopai cluster bus --stats    -- bus aggregate")
     print("    shopai cycle verify --store X -- preflight check")
+
+
+def _cmd_cycle_revenue_fleet(args) -> None:
+    """Cross-store empire revenue rollup.
+
+    Each store's latest attribution snapshot rendered side-by-
+    side, sorted by attributed_revenue desc. Builds on
+    per-store snapshots (Wave 14).
+    """
+    import time as _time
+    from engines._attribution_snapshot import (
+        fleet_attribution_rollup,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    rollup = fleet_attribution_rollup()
+
+    if as_json:
+        print(json.dumps(rollup, indent=2, default=str))
+        return
+
+    print("Empire revenue (per store)")
+    print()
+    print(
+        f"  stores with snapshots:  {rollup['store_count']}"
+    )
+    print(
+        f"  total attributed:       "
+        f"${rollup['total_attributed']:,.2f}"
+    )
+    print(
+        f"  total orders captured:  {rollup['total_orders']}"
+    )
+    print()
+
+    if not rollup["stores"]:
+        print(
+            "  (no per-store snapshots yet)"
+        )
+        print()
+        print(
+            "  Per-store snapshots are captured automatically "
+            "on `cycle run --yes`. Run a live cycle, then "
+            "revisit."
+        )
+        return
+
+    print(
+        f"  {'store':<22} {'attributed':>12} "
+        f"{'orders':>7} {'rate':>6}  top_cluster   top_engine"
+    )
+    now = _time.time()
+    for row in rollup["stores"]:
+        age = now - row["captured_at"]
+        if age < 3600:
+            age_suffix = f" ({int(age/60)}m)"
+        elif age < 86400:
+            age_suffix = f" ({age/3600:.1f}h)"
+        else:
+            age_suffix = f" ({age/86400:.1f}d)"
+        store_label = (
+            (row["store_id"] or "")[:18] + age_suffix
+        )[:22]
+        rate = row["attribution_rate"] or 0.0
+        top_c = (row["top_cluster"] or "-")[:14]
+        top_e = (row["top_engine"] or "-")[:16]
+        print(
+            f"  {store_label:<22} "
+            f"${row['attributed_revenue']:>10,.2f} "
+            f"{row['attributed_orders']:>7} "
+            f"{rate*100:>5.1f}%  "
+            f"{top_c:<14} {top_e}"
+        )
+    print()
+    print("  Drill:")
+    print(
+        "    shopai cycle attribution --store X      "
+        "-- per-store cluster detail"
+    )
+    print(
+        "    shopai cycle attribution-history --store X "
+        "-- per-store trend"
+    )
 
 
 def _cmd_cycle_attribution_delta(args) -> None:
@@ -34421,10 +34518,14 @@ def main(argv: list[str] | None = None) -> None:
         if action == "attribution-delta":
             _cmd_cycle_attribution_delta(args)
             return
+        if action == "revenue-fleet":
+            _cmd_cycle_revenue_fleet(args)
+            return
         print(
             "Usage: shopai cycle "
             "{run|schedule|verify|history|status|"
-            "attribution|attribution-history|attribution-delta}"
+            "attribution|attribution-history|attribution-delta|"
+            "revenue-fleet}"
         )
         return
 
