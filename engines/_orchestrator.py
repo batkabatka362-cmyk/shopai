@@ -220,10 +220,14 @@ def make_fleet_plan(
     """
     world_models = world_models or {}
 
-    # Strategy selection: AI when SHOPAI_AI_STRATEGY=1 + LLM
-    # available, deterministic otherwise. Both implement the
-    # same OrchestratorStrategy protocol; substrate doesn't
-    # care which is in use. Operator opt-in via env-var.
+    # Strategy selection (substrate is layered):
+    #   1. AI when SHOPAI_AI_STRATEGY=1 + LLM available
+    #   2. Deterministic otherwise
+    #   3. Wrap with RevenueAware when
+    #      SHOPAI_REVENUE_AWARE_ORCHESTRATOR=1
+    # All implement the same OrchestratorStrategy protocol;
+    # substrate doesn't care which is in use. Operator opt-in
+    # via env-var.
     if strategy is None:
         import os as _os
         if _os.environ.get("SHOPAI_AI_STRATEGY"):
@@ -236,6 +240,20 @@ def make_fleet_plan(
                 strategy = DeterministicOrchestratorStrategy()
         else:
             strategy = DeterministicOrchestratorStrategy()
+        # Optional revenue-aware wrapper -- re-ranks
+        # cluster_focus by attributed revenue. Doesn't change
+        # priority bucket; just reorders which clusters fire
+        # first within a bucket.
+        if _os.environ.get("SHOPAI_REVENUE_AWARE_ORCHESTRATOR"):
+            try:
+                from engines._revenue_aware_orchestrator import (
+                    RevenueAwareOrchestratorStrategy,
+                )
+                strategy = RevenueAwareOrchestratorStrategy(
+                    base=strategy,
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     plan = FleetPlan(cycle_label=cycle_label)
 

@@ -2790,6 +2790,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
     )
+    cluster_list_p.add_argument(
+        "--with-attribution", action="store_true",
+        help=(
+            "Enrich each cluster's row with ground-truth "
+            "revenue attributed from Shopify orders (1 extra "
+            "API call -- skip for fast listing)"
+        ),
+    )
+    cluster_list_p.add_argument(
+        "--attribution-window-hours", type=float, default=168.0,
+        help=(
+            "Attribution window in hours when "
+            "--with-attribution is set (default 168 = 7d)"
+        ),
+    )
 
     cluster_show_p = cluster_sub.add_parser(
         "show",
@@ -15442,14 +15457,27 @@ def _cmd_cluster_list(args) -> None:
     """List all 10 Tier 2b clusters with member counts + KPIs."""
     from engines._clusters import list_clusters
     from engines._cluster_captain import cluster_health
-    from engines._cluster_memory import fleet_cluster_health
+    from engines._cluster_memory import (
+        enrich_with_attribution,
+        fleet_cluster_health,
+    )
     from engines._cluster_bus import bus_stats
+
+    with_attr = bool(getattr(args, "with_attribution", False))
+    attr_window = float(
+        getattr(args, "attribution_window_hours", 168.0) or 168.0
+    )
 
     clusters = list_clusters()
     # Pull memory rollup ONCE for the fleet (single SQL hit)
     memory_by_cluster: dict = {}
     try:
-        for h in fleet_cluster_health():
+        healths = fleet_cluster_health()
+        if with_attr:
+            enrich_with_attribution(
+                healths, window_hours=attr_window,
+            )
+        for h in healths:
             memory_by_cluster[h.cluster] = h
     except Exception:  # noqa: BLE001
         memory_by_cluster = {}
@@ -15477,6 +15505,12 @@ def _cmd_cluster_list(args) -> None:
             "executed": m.total_executed if m else 0,
             "positive_ratio": m.positive_ratio if m else 0.0,
             "revenue": m.total_revenue if m else 0.0,
+            "attributed_revenue": (
+                m.attributed_revenue if m else 0.0
+            ),
+            "attribution_orders": (
+                m.attribution_orders if m else 0
+            ),
             "bus_emits_24h": bus_emits.get(c.name, 0),
         })
 
@@ -15501,10 +15535,17 @@ def _cmd_cluster_list(args) -> None:
         f"({sum(r['wired_members'] for r in rows)} wired)"
     )
     print()
-    print(
-        "  cluster        wired   "
-        "add/mod/dst  verdict      execd   rev   bus24h"
-    )
+    if with_attr:
+        print(
+            "  cluster        wired   "
+            "add/mod/dst  verdict      execd   rev   bus24h "
+            "attrib7d  orders"
+        )
+    else:
+        print(
+            "  cluster        wired   "
+            "add/mod/dst  verdict      execd   rev   bus24h"
+        )
     for r in rows:
         rb = r["risk_buckets"]
         risk_str = (
@@ -15525,12 +15566,23 @@ def _cmd_cluster_list(args) -> None:
             str(r["bus_emits_24h"])
             if r["bus_emits_24h"] > 0 else "-"
         )
-        print(
+        line = (
             f"  {r['name']:<14} {r['wired_members']:>4d}/"
             f"{r['total_members']:<2d}  "
             f"{risk_str:<10}  {verdict_marker} {r['verdict']:<9}  "
             f"{r['executed']:>5d}  {rev_str:<6} {bus_str}"
         )
+        if with_attr:
+            attr_rev = r["attributed_revenue"]
+            attr_orders = r["attribution_orders"]
+            attr_str = (
+                f"${attr_rev:.0f}" if attr_rev > 0 else "-"
+            )
+            order_str = (
+                str(attr_orders) if attr_orders > 0 else "-"
+            )
+            line = f"{line}  {attr_str:<8}  {order_str}"
+        print(line)
     print()
     print(
         "  Drill: `shopai cluster show <name>` "
@@ -15540,6 +15592,11 @@ def _cmd_cluster_list(args) -> None:
         "  Plan:  `shopai cluster plan <name>` "
         "(captain dispatch preview)"
     )
+    if not with_attr:
+        print(
+            "  Attrib: `shopai cluster list --with-attribution` "
+            "(ground-truth revenue per cluster)"
+        )
 
 
 def _cmd_cluster_show(args) -> None:
@@ -15925,6 +15982,16 @@ def _cmd_ai_strategy_status(args) -> None:
         "ai" if (enabled and available) else "deterministic"
     )
 
+    # Revenue-aware orchestrator (substrate wrapper). Independent
+    # of AI gate -- can be enabled with or without LLM consult.
+    try:
+        from engines._revenue_aware_orchestrator import (
+            revenue_aware_enabled,
+        )
+        revenue_aware = revenue_aware_enabled()
+    except Exception:  # noqa: BLE001
+        revenue_aware = False
+
     if as_json:
         print(json.dumps({
             "effective_mode": effective_mode,
@@ -15934,6 +16001,7 @@ def _cmd_ai_strategy_status(args) -> None:
             "llm_available": available,
             "model": model,
             "timeout_seconds": timeout,
+            "revenue_aware_orchestrator": revenue_aware,
         }, indent=2))
         return
 
@@ -15971,6 +16039,17 @@ def _cmd_ai_strategy_status(args) -> None:
     print("    pip install openai")
     print("    export OPENAI_API_KEY=sk-...")
     print("    export SHOPAI_AI_STRATEGY=1")
+    print()
+    print(
+        "  Revenue-aware orchestrator:  "
+        f"{'on' if revenue_aware else 'off'} "
+        f"(SHOPAI_REVENUE_AWARE_ORCHESTRATOR="
+        f"{'1' if revenue_aware else '0'})"
+    )
+    print(
+        "    Re-ranks cluster_focus by attributed revenue; "
+        "independent of AI gate"
+    )
     print()
     print("  Test connectivity:  `shopai ai-strategy test`")
 
