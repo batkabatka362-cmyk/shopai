@@ -304,20 +304,32 @@ class AIOrchestratorStrategy:
         if not self._llm.available:
             return base
 
+        # Wave 24: per-cluster attribution context for this
+        # store. Lets the LLM reason "retention earns $5k here,
+        # acquisition earns $50 -- the priority should reflect
+        # which clusters are pulling weight".
+        attribution_context = self._store_attribution_context(
+            store_id,
+        )
+
         system = (
             "You are a Tier 1 orchestrator for ShopAI -- an "
             "autonomous Shopify merchant empire. Given a "
-            "store's world-model, classify the store's "
-            "current priority. Return JSON: "
+            "store's world-model + per-cluster revenue "
+            "attribution, classify the store's current "
+            "priority. Return JSON: "
             "{\"priority\": \"launching|growing|mature|"
             "at_risk|stagnant\", \"rationale\": \"...\"}. "
             "Deterministic baseline already gave one answer; "
             "you may agree or refine, but only pick from the "
-            "five known classes."
+            "five known classes. Stores earning meaningfully "
+            "tend toward mature/growing; stores with $0 "
+            "attribution toward launching/at_risk."
         )
         user = json.dumps({
             "store_id": store_id,
             "world_model_stats": world_model.get("stats", {}),
+            "attribution_7d": attribution_context,
             "deterministic_classification": {
                 "priority": base.priority,
                 "rationale": base.rationale,
@@ -344,3 +356,55 @@ class AIOrchestratorStrategy:
             ),
             signals=base.signals,
         )
+
+    def _store_attribution_context(
+        self, store_id: str,
+    ) -> dict[str, Any]:
+        """Per-store cluster attribution for the LLM prompt.
+
+        Returns dict shape:
+            {
+              "attributed_revenue": float,
+              "total_orders_in_window": int,
+              "attribution_rate": float,
+              "top_clusters": [
+                {"cluster": ..., "revenue": float,
+                 "orders": int, "confidence": ...},
+                ...
+              ],
+            }
+
+        Empty values when no attribution data -- LLM still
+        works without the signal.
+        """
+        out: dict[str, Any] = {
+            "attributed_revenue": 0.0,
+            "total_orders_in_window": 0,
+            "attribution_rate": 0.0,
+            "top_clusters": [],
+        }
+        try:
+            from engines._revenue_attribution import attribute_revenue
+            report = attribute_revenue(
+                window_hours=168.0, store_id=store_id,
+            )
+        except Exception:  # noqa: BLE001
+            return out
+
+        out["attributed_revenue"] = round(
+            report.attributed_revenue, 2,
+        )
+        out["total_orders_in_window"] = (
+            report.total_orders_in_window
+        )
+        out["attribution_rate"] = report.attribution_rate
+        out["top_clusters"] = [
+            {
+                "cluster": c.cluster,
+                "revenue": round(c.attributed_revenue, 2),
+                "orders": c.attributed_orders,
+                "confidence": c.confidence,
+            }
+            for c in report.per_cluster[:5]
+        ]
+        return out

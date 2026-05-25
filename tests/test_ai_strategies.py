@@ -279,6 +279,76 @@ class TestAIOrchestratorFallback:
         assert "[AI]" in prio.rationale
 
 
+class TestOrchestratorAttributionContext:
+    """Wave 24: AI orchestrator prompt gets per-store cluster
+    attribution context."""
+
+    def _fake_report(self, *, attributed=0.0, total_orders=0,
+                     per_cluster=None):
+        from engines._revenue_attribution import (
+            AttributionReport, ClusterAttribution,
+        )
+        rpt = AttributionReport(window_hours=168.0)
+        rpt.total_orders_in_window = total_orders
+        rpt.total_revenue_in_window = sum(
+            c.get("revenue", 0.0) for c in (per_cluster or [])
+        )
+        for c in (per_cluster or []):
+            rpt.per_cluster.append(
+                ClusterAttribution(
+                    cluster=c["cluster"],
+                    window_hours=168.0,
+                    attributed_revenue=c["revenue"],
+                    attributed_orders=c["orders"],
+                )
+            )
+        return rpt
+
+    def test_context_includes_per_cluster_revenue(self):
+        strategy = AIOrchestratorStrategy()
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=self._fake_report(
+                total_orders=10,
+                per_cluster=[
+                    {"cluster": "retention",
+                     "revenue": 5000.0, "orders": 8},
+                    {"cluster": "acquisition",
+                     "revenue": 50.0, "orders": 2},
+                ],
+            ),
+        ):
+            ctx = strategy._store_attribution_context("store-x")
+        assert ctx["total_orders_in_window"] == 10
+        assert len(ctx["top_clusters"]) == 2
+        # Sorted desc by attribute_revenue (in source data)
+        top = ctx["top_clusters"][0]
+        assert top["cluster"] == "retention"
+        assert top["revenue"] == 5000.0
+
+    def test_context_empty_when_no_attribution(self):
+        strategy = AIOrchestratorStrategy()
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=self._fake_report(),
+        ):
+            ctx = strategy._store_attribution_context("store-x")
+        assert ctx["attributed_revenue"] == 0.0
+        assert ctx["top_clusters"] == []
+
+    def test_context_handles_attribution_raise(self):
+        """Graceful: model still gets the dict shape, just
+        empty values."""
+        strategy = AIOrchestratorStrategy()
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            side_effect=RuntimeError("net blip"),
+        ):
+            ctx = strategy._store_attribution_context("store-x")
+        assert ctx["attributed_revenue"] == 0.0
+        assert ctx["top_clusters"] == []
+
+
 class TestLLMClientGate:
 
     def test_llm_unavailable_without_api_key(
