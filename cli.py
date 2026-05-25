@@ -10956,6 +10956,60 @@ def _cmd_world_model_show(args) -> None:
                 f"{top_engine} --history`"
             )
 
+    # Revenue attribution section (per-store ground truth).
+    # Renders when at least one per-store snapshot exists.
+    attribution = snap.get("attribution") or {}
+    if attribution.get("checked") and attribution.get("has_snapshot"):
+        print()
+        print("Revenue attribution:")
+        print(
+            f"  Attributed (7d):  "
+            f"${attribution['attributed_revenue']:,.2f}   "
+            f"orders={attribution['attributed_orders']}"
+        )
+        rate = attribution.get("attribution_rate") or 0.0
+        print(
+            f"  Rate:             {rate * 100:.1f}%"
+        )
+        if attribution.get("top_cluster"):
+            print(
+                f"  Top cluster:      "
+                f"{attribution['top_cluster']}"
+            )
+        if attribution.get("top_engine"):
+            print(
+                f"  Top engine:       "
+                f"{attribution['top_engine']}"
+            )
+        delta = attribution.get("delta")
+        if delta is not None:
+            d_rev = delta.get("overall_revenue_delta", 0.0)
+            d_pct = delta.get("overall_revenue_delta_pct")
+            alerts = delta.get("alert_count", 0)
+            if d_pct is None:
+                pct_str = "(n/a)"
+            elif d_pct > 0:
+                pct_str = f"+{d_pct * 100:.1f}%"
+            else:
+                pct_str = f"{d_pct * 100:.1f}%"
+            marker = (
+                "[BAD]" if alerts > 0
+                else ("[OK ]" if d_rev >= 0 else "[WRN]")
+            )
+            print(
+                f"  Delta:            {marker} "
+                f"${d_rev:+,.2f}  {pct_str}   "
+                f"alerts={alerts}"
+            )
+            if delta.get("top_alert"):
+                print(
+                    f"    top alert:      {delta['top_alert']}"
+                )
+        print(
+            "  Drill:            "
+            f"shopai cycle attribution --store {store_id}"
+        )
+
     # Launch-readiness section (opt-in; only renders when
     # --launch-readiness was passed so default snapshots
     # stay short).

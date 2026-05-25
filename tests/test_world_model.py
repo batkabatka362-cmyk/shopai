@@ -1725,6 +1725,109 @@ class TestChronicWarningsInCycle:
         assert sec["engine_chronic_warnings"] == []
 
 
+class TestAttributionSection:
+    """Wave 16: attribution surfaced in world-model snapshot."""
+
+    def test_default_returns_no_snapshot(self):
+        """Cold-start store with no per-store snapshots yet."""
+        sm = _fake_sm()
+        with patch(
+            "engines._attribution_snapshot.last_snapshot",
+            return_value=None,
+        ):
+            snap = WorldModel(sm=sm).snapshot(
+                "store-x", skip_live=True,
+            )
+        attr = snap["attribution"]
+        assert attr["checked"] is True
+        assert attr["has_snapshot"] is False
+        assert attr["attributed_revenue"] == 0.0
+        assert attr["top_cluster"] is None
+
+    def test_with_snapshot_surfaces_revenue(self):
+        from engines._attribution_snapshot import AttributionSnapshot
+        fake_snap = AttributionSnapshot(
+            snapshot_id="x", captured_at=1000.0,
+            window_hours=168.0, store_id="store-x",
+            total_orders_in_window=5,
+            total_revenue_in_window=500.0,
+            attributed_revenue=400.0,
+            attribution_rate=0.8,
+            per_cluster=[
+                {"cluster": "retention",
+                 "attributed_revenue": 400.0,
+                 "attributed_orders": 5},
+            ],
+            per_engine=[
+                {"engine": "loyalty", "cluster": "retention",
+                 "attributed_revenue": 400.0,
+                 "attributed_orders": 5},
+            ],
+        )
+        sm = _fake_sm()
+        with patch(
+            "engines._attribution_snapshot.last_snapshot",
+            return_value=fake_snap,
+        ), patch(
+            "engines._attribution_delta.latest_delta",
+            return_value=None,
+        ):
+            snap = WorldModel(sm=sm).snapshot(
+                "store-x", skip_live=True,
+            )
+        attr = snap["attribution"]
+        assert attr["checked"] is True
+        assert attr["has_snapshot"] is True
+        assert attr["attributed_revenue"] == 400.0
+        assert attr["top_cluster"] == "retention"
+        assert attr["top_engine"] == "loyalty"
+        assert attr["delta"] is None
+
+    def test_with_delta_alerts_surfaces_top_alert(self):
+        from engines._attribution_snapshot import AttributionSnapshot
+        from engines._attribution_delta import (
+            AttributionDelta, RegressionAlert,
+        )
+        fake_snap = AttributionSnapshot(
+            snapshot_id="x", captured_at=1000.0,
+            window_hours=168.0, store_id="store-x",
+            total_orders_in_window=5,
+            total_revenue_in_window=500.0,
+            attributed_revenue=200.0,
+            attribution_rate=0.4,
+        )
+        fake_delta = AttributionDelta(
+            prior_snapshot_id="prev", latest_snapshot_id="x",
+            prior_captured_at=900.0, latest_captured_at=1000.0,
+            prior_total_revenue=1000.0,
+            latest_total_revenue=500.0,
+            prior_attributed_revenue=800.0,
+            latest_attributed_revenue=200.0,
+            alerts=[
+                RegressionAlert(
+                    scope="cluster", name="retention",
+                    prior_revenue=800.0, latest_revenue=200.0,
+                    delta_pct=-0.75,
+                    reason="revenue dropped 75%",
+                ),
+            ],
+        )
+        sm = _fake_sm()
+        with patch(
+            "engines._attribution_snapshot.last_snapshot",
+            return_value=fake_snap,
+        ), patch(
+            "engines._attribution_delta.latest_delta",
+            return_value=fake_delta,
+        ):
+            snap = WorldModel(sm=sm).snapshot(
+                "store-x", skip_live=True,
+            )
+        attr = snap["attribution"]
+        assert attr["delta"]["alert_count"] == 1
+        assert "dropped 75%" in attr["delta"]["top_alert"]
+
+
 class TestLaunchReadinessSection:
     """``cycle.launch_readiness`` -- opt-in section that
     pipes the launch-audit result through world-model.show."""

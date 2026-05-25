@@ -1319,6 +1319,80 @@ class WorldModel:
                 "error": str(exc),
             }
 
+    def _section_attribution(
+        self, *, store_id: str,
+    ) -> dict[str, Any]:
+        """Per-store revenue attribution (latest snapshot + delta).
+
+        Reads cached snapshots -- no Shopify call. ``checked``
+        false when no per-store snapshots have been recorded
+        yet (run a cycle to populate).
+        """
+        try:
+            from engines._attribution_snapshot import last_snapshot
+            from engines._attribution_delta import latest_delta
+        except Exception as exc:  # noqa: BLE001
+            return {"checked": False, "error": str(exc)}
+
+        try:
+            snap = last_snapshot(store_id=store_id)
+        except Exception as exc:  # noqa: BLE001
+            return {"checked": False, "error": str(exc)}
+
+        if snap is None:
+            return {
+                "checked": True,
+                "has_snapshot": False,
+                "attributed_revenue": 0.0,
+                "attributed_orders": 0,
+                "attribution_rate": 0.0,
+                "top_cluster": None,
+                "top_engine": None,
+                "delta": None,
+            }
+
+        top_cluster = (
+            snap.per_cluster[0]["cluster"] if snap.per_cluster
+            else None
+        )
+        top_engine = (
+            snap.per_engine[0]["engine"] if snap.per_engine
+            else None
+        )
+
+        delta_dict = None
+        try:
+            d = latest_delta(store_id=store_id)
+            if d is not None:
+                delta_dict = {
+                    "overall_revenue_delta": d.overall_revenue_delta,
+                    "overall_revenue_delta_pct": (
+                        d.overall_revenue_delta_pct
+                    ),
+                    "alert_count": len(d.alerts),
+                    "top_alert": (
+                        d.alerts[0].reason if d.alerts else None
+                    ),
+                }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model attribution delta raised: %s", exc,
+            )
+
+        return {
+            "checked": True,
+            "has_snapshot": True,
+            "snapshot_id": snap.snapshot_id,
+            "captured_at": snap.captured_at,
+            "window_hours": snap.window_hours,
+            "attributed_revenue": snap.attributed_revenue,
+            "attributed_orders": snap.total_orders_in_window,
+            "attribution_rate": snap.attribution_rate,
+            "top_cluster": top_cluster,
+            "top_engine": top_engine,
+            "delta": delta_dict,
+        }
+
     # ── Public API ──────────────────────────────────────────
 
     def snapshot(
@@ -1388,6 +1462,7 @@ class WorldModel:
         fleet_health = self._section_fleet_health()
         substrate = self._section_substrate()
         cycle = self._section_cycle(store_id=store_id)
+        attribution = self._section_attribution(store_id=store_id)
         launch_readiness = self._section_launch_readiness(
             store_id=store_id,
             include=include_launch_readiness,
@@ -1410,6 +1485,7 @@ class WorldModel:
             "fleet_health": fleet_health,
             "substrate": substrate,
             "cycle": cycle,
+            "attribution": attribution,
             "launch_readiness": launch_readiness,
         }
 
