@@ -12643,6 +12643,29 @@ def _cmd_engine_pulse(args) -> None:
     health = score_engine(engine_name)
     payload = health.to_dict()
 
+    # Wave 20: attribution attached to JSON for tooling
+    payload["attribution"] = None
+    try:
+        from engines._revenue_attribution import attribute_revenue
+        ar_report = attribute_revenue(window_hours=168.0)
+        for e in ar_report.per_engine:
+            if e.engine == engine_name:
+                payload["attribution"] = {
+                    "attributed_revenue": round(
+                        e.attributed_revenue, 2,
+                    ),
+                    "attributed_orders": e.attributed_orders,
+                    "confidence": e.confidence,
+                    "cluster": e.cluster,
+                    "window_hours": 168.0,
+                }
+                break
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "engine_pulse json attribution probe raised: %s",
+            exc,
+        )
+
     history_rows: list[dict] = []
     if getattr(args, "history", False):
         history_rows = _engine_pulse_history_rows(
@@ -12818,6 +12841,46 @@ def _cmd_engine_pulse(args) -> None:
             logger.debug(
                 "engine_pulse writeback probe raised: %s",
                 exc,
+            )
+        # Wave 20: revenue attribution probe -- has this engine
+        # actually MADE money in the last 7 days? Cheap (uses
+        # the cached attribution path; one Shopify call if no
+        # snapshot exists yet).
+        try:
+            from engines._revenue_attribution import attribute_revenue
+            ar_report = attribute_revenue(window_hours=168.0)
+            engine_attr = next(
+                (
+                    e for e in ar_report.per_engine
+                    if e.engine == health.engine
+                ),
+                None,
+            )
+            if engine_attr is not None and engine_attr.attributed_orders > 0:
+                cluster_str = (
+                    f" (cluster: {engine_attr.cluster})"
+                    if engine_attr.cluster else ""
+                )
+                print(
+                    f"  Revenue (7d): "
+                    f"${engine_attr.attributed_revenue:,.2f}  "
+                    f"orders={engine_attr.attributed_orders}  "
+                    f"confidence={engine_attr.confidence}"
+                    f"{cluster_str}"
+                )
+            elif ar_report.total_orders_in_window > 0:
+                # Fleet has orders, this engine isn't attributed
+                print(
+                    f"  Revenue (7d): "
+                    f"$0  (no attributed orders -- "
+                    f"engine doesn't write tags, or tags "
+                    f"don't match orders)"
+                )
+            # else: total fleet has zero orders, don't render
+            # (nothing meaningful to say yet)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "engine_pulse revenue probe raised: %s", exc,
             )
         # Engine-health state -- is THIS engine flagged as
         # regressing or chronically sick? Saves the operator
