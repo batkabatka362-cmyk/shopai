@@ -15995,8 +15995,7 @@ def _cmd_ai_strategy_status(args) -> None:
         "ai" if (enabled and available) else "deterministic"
     )
 
-    # Revenue-aware orchestrator (substrate wrapper). Independent
-    # of AI gate -- can be enabled with or without LLM consult.
+    # Revenue-aware substrate wrappers (independent of AI gate).
     try:
         from engines._revenue_aware_orchestrator import (
             revenue_aware_enabled,
@@ -16004,6 +16003,13 @@ def _cmd_ai_strategy_status(args) -> None:
         revenue_aware = revenue_aware_enabled()
     except Exception:  # noqa: BLE001
         revenue_aware = False
+    try:
+        from engines._revenue_aware_captain import (
+            revenue_aware_captain_enabled,
+        )
+        revenue_aware_capt = revenue_aware_captain_enabled()
+    except Exception:  # noqa: BLE001
+        revenue_aware_capt = False
 
     if as_json:
         print(json.dumps({
@@ -16015,6 +16021,7 @@ def _cmd_ai_strategy_status(args) -> None:
             "model": model,
             "timeout_seconds": timeout,
             "revenue_aware_orchestrator": revenue_aware,
+            "revenue_aware_captain": revenue_aware_capt,
         }, indent=2))
         return
 
@@ -16062,6 +16069,16 @@ def _cmd_ai_strategy_status(args) -> None:
     print(
         "    Re-ranks cluster_focus by attributed revenue; "
         "independent of AI gate"
+    )
+    print(
+        "  Revenue-aware captain:       "
+        f"{'on' if revenue_aware_capt else 'off'} "
+        f"(SHOPAI_REVENUE_AWARE_CAPTAIN="
+        f"{'1' if revenue_aware_capt else '0'})"
+    )
+    print(
+        "    Re-orders cluster members by per-engine "
+        "attribution"
     )
     print()
     print("  Test connectivity:  `shopai ai-strategy test`")

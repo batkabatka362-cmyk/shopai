@@ -491,6 +491,21 @@ def make_captain_plan(
 
     signals = signals or {}
     strategy = strategy or DeterministicCaptainStrategy()
+
+    # Optional revenue-aware captain wrapper (Wave 10). Re-ranks
+    # the base strategy's member selection by per-engine
+    # attribution. Opt-in via env-var so existing callers don't
+    # silently change behaviour.
+    import os as _os
+    if _os.environ.get("SHOPAI_REVENUE_AWARE_CAPTAIN"):
+        try:
+            from engines._revenue_aware_captain import (
+                RevenueAwareCaptainStrategy,
+            )
+            strategy = RevenueAwareCaptainStrategy(base=strategy)
+        except Exception:  # noqa: BLE001
+            pass
+
     plan = CaptainPlan(cluster=cluster.name, store_id=store_id)
 
     # Emit horizontal bus events for non-zero signals so the
