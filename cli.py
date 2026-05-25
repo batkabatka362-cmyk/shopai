@@ -15756,13 +15756,19 @@ def _cmd_cluster_list(args) -> None:
         print(
             "  cluster        wired   "
             "add/mod/dst  verdict      execd   rev   bus24h "
-            "attrib7d  orders"
+            "attrib7d  orders  revenue_verdict"
         )
     else:
         print(
             "  cluster        wired   "
             "add/mod/dst  verdict      execd   rev   bus24h"
         )
+    revenue_verdict_marker = {
+        "earning": "[OK ]",
+        "flat": "[ - ]",
+        "declining": "[BAD]",
+        "unknown": "[ ? ]",
+    }
     for r in rows:
         rb = r["risk_buckets"]
         risk_str = (
@@ -15798,7 +15804,12 @@ def _cmd_cluster_list(args) -> None:
             order_str = (
                 str(attr_orders) if attr_orders > 0 else "-"
             )
-            line = f"{line}  {attr_str:<8}  {order_str}"
+            rv = r.get("revenue_verdict", "unknown")
+            rv_marker = revenue_verdict_marker.get(rv, "[ ? ]")
+            line = (
+                f"{line}  {attr_str:<8}  {order_str:<6}  "
+                f"{rv_marker} {rv}"
+            )
         print(line)
     print()
     print(
