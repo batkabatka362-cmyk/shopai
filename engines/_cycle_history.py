@@ -135,6 +135,17 @@ def _short_id() -> str:
     return uuid.uuid4().hex[:8]
 
 
+# Process-wide monotonic sequence so two record_cycle_run calls
+# within the same time.time_ns() tick (Windows has ~15ms
+# granularity on time.time_ns) still sort deterministically.
+_SEQ_LOCK_BARRIER = [0]
+
+
+def _next_seq() -> int:
+    _SEQ_LOCK_BARRIER[0] += 1
+    return _SEQ_LOCK_BARRIER[0]
+
+
 def record_cycle_run(
     *,
     cycle_label: str,
@@ -146,12 +157,16 @@ def record_cycle_run(
     per_store: list[dict[str, Any]] | None = None,
 ) -> CycleRun:
     """Persist one cycle run's summary."""
-    # ns-precision started_at: time.time() at second granularity
-    # on Windows can produce identical timestamps for back-to-
-    # back record calls; ns-precision dodges that tie.
+    # ns-precision started_at + monotonic sequence in run_id.
+    # On Windows, time.time_ns() granularity is ~15ms so two
+    # back-to-back records can share an identical ns value.
+    # The leading zero-padded sequence breaks the tie
+    # deterministically (latest insertion sorts last when
+    # times match, so newest-first sort surfaces it on top).
     now_ns = time.time_ns()
+    seq = _next_seq()
     run = CycleRun(
-        run_id=f"cycle_{now_ns // 1_000_000}_{_short_id()}",
+        run_id=f"cycle_{now_ns // 1_000_000}_{seq:08d}_{_short_id()}",
         started_at=now_ns / 1e9,
         cycle_label=cycle_label,
         mode=mode,

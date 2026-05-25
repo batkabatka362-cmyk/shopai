@@ -15740,6 +15740,10 @@ def _cmd_cluster_list(args) -> None:
 def _cmd_cluster_show(args) -> None:
     """Show one cluster's detailed member breakdown."""
     from engines._cluster_captain import cluster_health
+    from engines._cluster_memory import (
+        cluster_health_rollup,
+        enrich_with_attribution,
+    )
 
     cluster_name = (args.cluster_name or "").strip()
     if not cluster_name:
@@ -15756,8 +15760,55 @@ def _cmd_cluster_show(args) -> None:
             print(f"  {c.name}")
         sys.exit(1)
 
+    # Wave 19: enrich with revenue picture. Best-effort -- if
+    # attribution unavailable, the section just doesn't render.
+    revenue_block: dict | None = None
+    try:
+        health = cluster_health_rollup(cluster_name)
+        if health is not None:
+            enrich_with_attribution(
+                [health], window_hours=168.0,
+            )
+            # Sum per-engine attribution to surface top members
+            from engines._revenue_attribution import attribute_revenue
+            report = attribute_revenue(window_hours=168.0)
+            wired_set = {
+                row["engine"] for row in h["members"]
+                if row.get("writeback") == "wired"
+            }
+            top_engines = []
+            for e in report.per_engine:
+                if e.engine in wired_set:
+                    top_engines.append({
+                        "engine": e.engine,
+                        "attributed_revenue": round(
+                            e.attributed_revenue, 2,
+                        ),
+                        "attributed_orders": e.attributed_orders,
+                        "confidence": e.confidence,
+                    })
+                if len(top_engines) >= 5:
+                    break
+            revenue_block = {
+                "attributed_revenue": health.attributed_revenue,
+                "attribution_orders": health.attribution_orders,
+                "attribution_confidence": (
+                    health.attribution_confidence
+                ),
+                "attribution_window_hours": (
+                    health.attribution_window_hours
+                ),
+                "revenue_verdict": health.revenue_verdict,
+                "health_verdict": health.health_verdict,
+                "top_engines": top_engines,
+            }
+    except Exception:  # noqa: BLE001
+        revenue_block = None
+
     if getattr(args, "json", False):
-        print(json.dumps(h, indent=2, default=str))
+        payload = dict(h)
+        payload["revenue"] = revenue_block
+        print(json.dumps(payload, indent=2, default=str))
         return
 
     print(f"Cluster: {h['cluster']}")
@@ -15769,6 +15820,38 @@ def _cmd_cluster_show(args) -> None:
         f"({h['advisory_members']} advisory)"
     )
     print(f"  Risk:        {h['risk_buckets']}")
+
+    if revenue_block is not None:
+        print()
+        print("  Revenue (7d):")
+        verdict_marker = {
+            "earning": "[OK ]",
+            "flat": "[ - ]",
+            "declining": "[BAD]",
+            "unknown": "[ ? ]",
+        }.get(revenue_block["revenue_verdict"], "[ ? ]")
+        print(
+            f"    Attributed:    "
+            f"${revenue_block['attributed_revenue']:,.2f}   "
+            f"orders={revenue_block['attribution_orders']}   "
+            f"confidence={revenue_block['attribution_confidence']}"
+        )
+        print(
+            f"    Revenue verdict: {verdict_marker} "
+            f"{revenue_block['revenue_verdict']}"
+        )
+        print(
+            f"    Health verdict:  {revenue_block['health_verdict']}"
+        )
+        if revenue_block["top_engines"]:
+            print("    Top earners:")
+            for te in revenue_block["top_engines"]:
+                print(
+                    f"      {te['engine'][:30]:<30}  "
+                    f"${te['attributed_revenue']:>8,.2f}  "
+                    f"orders={te['attributed_orders']}"
+                )
+
     print()
     print("  engine                          writeback   risk")
     for row in h["members"]:
