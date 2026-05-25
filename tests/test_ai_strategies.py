@@ -131,6 +131,96 @@ class TestAICaptainFallback:
         assert len(result) > 0
 
 
+class TestAttributionContext:
+    """Wave 17: AI captain prompt includes per-engine revenue."""
+
+    def _fake_attr_report(
+        self, *, cluster_rev=0.0, engine_revs=None,
+    ):
+        from engines._revenue_attribution import (
+            AttributionReport, ClusterAttribution, EngineAttribution,
+        )
+        rpt = AttributionReport(window_hours=168.0)
+        if cluster_rev > 0:
+            rpt.per_cluster.append(
+                ClusterAttribution(
+                    cluster="retention", window_hours=168.0,
+                    attributed_revenue=cluster_rev,
+                    attributed_orders=1,
+                )
+            )
+        for engine, rev in (engine_revs or {}).items():
+            rpt.per_engine.append(
+                EngineAttribution(
+                    engine=engine, cluster="retention",
+                    window_hours=168.0,
+                    attributed_revenue=rev,
+                    attributed_orders=1 if rev > 0 else 0,
+                )
+            )
+        # Already sorted in attribute_revenue itself; do here
+        # for the test fake.
+        rpt.per_engine.sort(
+            key=lambda e: e.attributed_revenue, reverse=True,
+        )
+        return rpt
+
+    def test_context_includes_cluster_revenue(self):
+        strategy = AICaptainStrategy()
+        cluster = get_cluster("retention")
+        wired = ["loyalty", "churn_prediction"]
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=self._fake_attr_report(
+                cluster_rev=500.0,
+                engine_revs={
+                    "loyalty": 400.0,
+                    "churn_prediction": 100.0,
+                },
+            ),
+        ):
+            ctx = strategy._attribution_context(cluster, wired)
+        assert ctx["cluster_attributed_revenue"] == 500.0
+        assert ctx["top_engine"] == "loyalty"
+        members = {m["engine"]: m["revenue"] for m in ctx["members"]}
+        assert members["loyalty"] == 400.0
+        assert members["churn_prediction"] == 100.0
+
+    def test_context_filters_to_wired_only(self):
+        """Engines outside wired_members shouldn't appear."""
+        strategy = AICaptainStrategy()
+        cluster = get_cluster("retention")
+        wired = ["loyalty"]
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=self._fake_attr_report(
+                engine_revs={
+                    "loyalty": 400.0,
+                    "churn_prediction": 9999.0,
+                },
+            ),
+        ):
+            ctx = strategy._attribution_context(cluster, wired)
+        engine_names = {m["engine"] for m in ctx["members"]}
+        assert engine_names == {"loyalty"}
+
+    def test_context_handles_attribution_raise(self):
+        strategy = AICaptainStrategy()
+        cluster = get_cluster("retention")
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            side_effect=RuntimeError("net blip"),
+        ):
+            ctx = strategy._attribution_context(
+                cluster, ["loyalty"],
+            )
+        # Graceful degradation -- model still gets the dict
+        # shape, just empty values.
+        assert ctx["cluster_attributed_revenue"] == 0.0
+        assert ctx["members"] == []
+        assert ctx["top_engine"] is None
+
+
 class TestAIOrchestratorFallback:
 
     def test_falls_back_when_disabled(self, monkeypatch):

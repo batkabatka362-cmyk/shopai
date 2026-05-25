@@ -172,17 +172,30 @@ class AICaptainStrategy:
         except Exception:  # noqa: BLE001
             pass
 
+        # Wave 17: feed attribution context to the LLM so it
+        # can reason about ROI ("loyalty earned $5k, churn_pred
+        # earned $50 -- prefer loyalty even if both signals
+        # match"). Per-engine attribution scoped to this
+        # cluster's members.
+        attribution_context = self._attribution_context(
+            cluster, wired_members,
+        )
+
         system = (
             "You are a Tier 2b cluster captain for ShopAI -- "
             "an autonomous Shopify merchant. Given cluster "
-            "definition + signals + recent memory, recommend "
-            "which member engines to fire THIS cycle. Return "
-            "JSON: {\"fire\": [\"engine_name\", ...], "
+            "definition + signals + recent memory + per-engine "
+            "revenue attribution, recommend which member "
+            "engines to fire THIS cycle. Return JSON: "
+            "{\"fire\": [\"engine_name\", ...], "
             "\"rationale\": \"...\"}. Only return engines "
             "from the wired_members list. The deterministic "
             "baseline already selected some engines -- you "
             "may REFINE (drop / add / keep) but cannot pick "
-            "engines outside wired_members."
+            "engines outside wired_members. Engines with "
+            "higher recent revenue attribution generally "
+            "deserve priority unless a signal explicitly "
+            "calls for an under-performer."
         )
         user = json.dumps({
             "cluster": cluster.name,
@@ -192,6 +205,7 @@ class AICaptainStrategy:
             "wired_members": wired_members,
             "deterministic_selection": base,
             "memory_summary": memory_summary,
+            "attribution_7d": attribution_context,
         })
 
         resp = self._llm.chat_json(system, user)
@@ -209,6 +223,63 @@ class AICaptainStrategy:
             # fall back to base rather than firing nothing
             return base
         return validated
+
+    def _attribution_context(
+        self,
+        cluster: Cluster,
+        wired_members: list[str],
+    ) -> dict[str, Any]:
+        """Build per-member attribution dict for the LLM prompt.
+
+        Returns a compact dict the model can reason over:
+            {
+              "cluster_attributed_revenue": float,
+              "members": [
+                {"engine": ..., "revenue": float, "orders": int},
+                ...
+              ],
+              "top_engine": str | None,
+            }
+
+        Empty values when no attribution data is available --
+        the model still works without the signal, just less
+        informed.
+        """
+        out: dict[str, Any] = {
+            "cluster_attributed_revenue": 0.0,
+            "members": [],
+            "top_engine": None,
+        }
+        try:
+            from engines._revenue_attribution import attribute_revenue
+            report = attribute_revenue(window_hours=168.0)
+        except Exception:  # noqa: BLE001
+            return out
+
+        wired_set = set(wired_members)
+        # Cluster-level revenue
+        for c in report.per_cluster:
+            if c.cluster == cluster.name:
+                out["cluster_attributed_revenue"] = round(
+                    c.attributed_revenue, 2,
+                )
+                break
+
+        # Per-engine revenue (only for this cluster's wired
+        # members)
+        members: list[dict[str, Any]] = []
+        for e in report.per_engine:
+            if e.engine in wired_set:
+                members.append({
+                    "engine": e.engine,
+                    "revenue": round(e.attributed_revenue, 2),
+                    "orders": e.attributed_orders,
+                })
+        # Already sorted desc by attribution at the report level
+        out["members"] = members
+        if members:
+            out["top_engine"] = members[0]["engine"]
+        return out
 
 
 class AIOrchestratorStrategy:
