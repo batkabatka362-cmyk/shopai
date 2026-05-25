@@ -8306,6 +8306,86 @@ def _cmd_daily_brief(args) -> None:
                 print(f"  Top losers:  {names}")
             print()
 
+    # Wave 26: AGI revenue attribution rollup. Distinct from
+    # the "Fleet revenue trend" above -- that's gross revenue
+    # cycle-over-cycle. This is what the AUTONOMOUS LOOP earned
+    # specifically, via Shopify-orders-to-cluster tag join.
+    try:
+        from engines._attribution_snapshot import (
+            fleet_attribution_rollup, last_snapshot,
+        )
+        from engines._attribution_delta import latest_delta
+        attr_rollup = fleet_attribution_rollup()
+        fleet_snap = last_snapshot()
+        attr_delta = latest_delta()
+    except Exception:  # noqa: BLE001
+        attr_rollup = None
+        fleet_snap = None
+        attr_delta = None
+
+    if (
+        attr_rollup is not None
+        and (
+            attr_rollup.get("store_count", 0) > 0
+            or fleet_snap is not None
+        )
+    ):
+        print("Revenue attribution (AGI, 7d):")
+        total_attr = attr_rollup.get("total_attributed", 0.0)
+        print(
+            f"  Empire attributed:   ${total_attr:,.2f}"
+            f"   stores={attr_rollup.get('store_count', 0)}"
+        )
+        if fleet_snap is not None:
+            print(
+                f"  Fleet snapshot:      "
+                f"${fleet_snap.attributed_revenue:,.2f}"
+                f"   rate="
+                f"{fleet_snap.attribution_rate * 100:.1f}%"
+            )
+            if fleet_snap.per_cluster:
+                top_c = fleet_snap.per_cluster[0]
+                print(
+                    f"  Top cluster:         {top_c['cluster']}  "
+                    f"(${top_c['attributed_revenue']:,.2f})"
+                )
+            if fleet_snap.per_engine:
+                top_e = fleet_snap.per_engine[0]
+                print(
+                    f"  Top engine:          {top_e['engine']}  "
+                    f"(${top_e['attributed_revenue']:,.2f})"
+                )
+        if attr_delta is not None:
+            d_rev = attr_delta.overall_revenue_delta
+            d_pct = attr_delta.overall_revenue_delta_pct
+            alerts = len(attr_delta.alerts)
+            pct_str = (
+                f"+{d_pct * 100:.1f}%" if d_pct and d_pct > 0
+                else f"{d_pct * 100:.1f}%" if d_pct
+                else "(n/a)"
+            )
+            marker = (
+                "[BAD]" if alerts > 0
+                else ("[OK ]" if d_rev >= 0 else "[WRN]")
+            )
+            print(
+                f"  Cycle-over-cycle:    {marker} "
+                f"${d_rev:+,.2f}  {pct_str}   "
+                f"alerts={alerts}"
+            )
+            if attr_delta.alerts:
+                top_alert = attr_delta.alerts[0]
+                print(
+                    f"    top alert:         "
+                    f"{top_alert.scope}:{top_alert.name} -- "
+                    f"{top_alert.reason}"
+                )
+        print(
+            "  Drill: `shopai cycle attribution`  "
+            "`shopai cycle revenue-fleet`"
+        )
+        print()
+
     # Diary inline (last 5 events) -- renders when at least
     # one event was recorded in the window.
     if diary_events:
