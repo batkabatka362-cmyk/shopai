@@ -1828,6 +1828,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    cycle_attribution_p = cycle_sub.add_parser(
+        "attribution",
+        help=(
+            "Show revenue attributed to each cluster from "
+            "Shopify orders in the recent window. Joins orders "
+            "to clusters via tags. The ground-truth answer to "
+            "'is the autonomous cycle actually making money?'."
+        ),
+    )
+    cycle_attribution_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+        help="Attribution window in hours (default 168 = 7d)",
+    )
+    cycle_attribution_p.add_argument(
+        "--store", default=None,
+        help="Filter to one store (default: fleet-wide)",
+    )
+    cycle_attribution_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     cycle_verify_p = cycle_sub.add_parser(
         "verify",
         help=(
@@ -16148,6 +16170,30 @@ def _cmd_cycle_status(args) -> None:
         ai_available = False
         ai_mode = "deterministic"
 
+    # 6. Revenue attribution (Shopify ground truth)
+    attribution_block = None
+    try:
+        from engines._revenue_attribution import attribute_revenue
+        ar = attribute_revenue(
+            window_hours=168.0,
+            store_id=store_filter,
+        )
+        attribution_block = {
+            "window_hours": ar.window_hours,
+            "total_orders_in_window": ar.total_orders_in_window,
+            "total_revenue_in_window": round(
+                ar.total_revenue_in_window, 2,
+            ),
+            "attributed_revenue": round(ar.attributed_revenue, 2),
+            "attribution_rate": ar.attribution_rate,
+            "cluster_count": len(ar.per_cluster),
+            "top_cluster": (
+                ar.per_cluster[0].cluster if ar.per_cluster else None
+            ),
+        }
+    except Exception:  # noqa: BLE001
+        attribution_block = None
+
     if as_json:
         print(json.dumps({
             "last_run": last_block,
@@ -16155,6 +16201,7 @@ def _cmd_cycle_status(args) -> None:
             "bus_24h": bus_block,
             "audit_ok": audit_ok,
             "audit_violations": audit_violations,
+            "attribution_168h": attribution_block,
             "ai_strategy": {
                 "mode": ai_mode,
                 "env_enabled": ai_enabled_env,
@@ -16192,6 +16239,38 @@ def _cmd_cycle_status(args) -> None:
             f"invoked={last_block['total_invoked']}, "
             f"ok={last_block['total_ok']}, "
             f"err={last_block['total_errors']})"
+        )
+    print()
+
+    print("  Revenue attribution (7d):")
+    if attribution_block is None:
+        print("    (attribution unavailable)")
+    elif attribution_block["total_orders_in_window"] == 0:
+        print("    (no orders in window)")
+        print(
+            "    Drill: `shopai store seed-products` "
+            "+ go live to start earning"
+        )
+    else:
+        orders = attribution_block["total_orders_in_window"]
+        rev = attribution_block["total_revenue_in_window"]
+        attr_rev = attribution_block["attributed_revenue"]
+        attr_rate = attribution_block["attribution_rate"]
+        clusters = attribution_block["cluster_count"]
+        top = attribution_block.get("top_cluster")
+        marker = "[OK ]" if attr_rev > 0 else "[WRN]"
+        print(
+            f"    {marker} ${attr_rev:,.2f} attributed   "
+            f"({attr_rate * 100:.0f}% of ${rev:,.2f} "
+            f"across {orders} orders)"
+        )
+        if clusters > 0 and top is not None:
+            print(
+                f"    top cluster: {top}  "
+                f"({clusters} clusters matched)"
+            )
+        print(
+            "    Drill: `shopai cycle attribution`"
         )
     print()
 
@@ -16258,6 +16337,114 @@ def _cmd_cycle_status(args) -> None:
     print("    shopai cycle history          -- past runs")
     print("    shopai cluster bus --stats    -- bus aggregate")
     print("    shopai cycle verify --store X -- preflight check")
+
+
+def _cmd_cycle_attribution(args) -> None:
+    """Show revenue attributed to each cluster from Shopify orders.
+
+    Joins recent orders to clusters via tag catalog. The ground-
+    truth answer to "is the cycle making money?" -- distinct from
+    self-reported outcome metrics that engines emit via
+    record_outcome.
+    """
+    from engines._revenue_attribution import attribute_revenue
+
+    window_hours = float(
+        getattr(args, "window_hours", 168.0) or 168.0
+    )
+    store_id = (getattr(args, "store", None) or "").strip() or None
+    as_json = bool(getattr(args, "json", False))
+
+    try:
+        report = attribute_revenue(
+            window_hours=window_hours,
+            store_id=store_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        if as_json:
+            print(json.dumps({"error": str(exc)}, indent=2))
+        else:
+            print(f"  ERROR: attribution failed: {exc}")
+        return
+
+    if as_json:
+        payload = {
+            "window_hours": report.window_hours,
+            "store_id": store_id,
+            "total_orders_in_window": report.total_orders_in_window,
+            "total_revenue_in_window": round(
+                report.total_revenue_in_window, 2,
+            ),
+            "attributed_revenue": round(
+                report.attributed_revenue, 2,
+            ),
+            "attribution_rate": report.attribution_rate,
+            "per_cluster": [
+                {
+                    "cluster": c.cluster,
+                    "attributed_revenue": round(
+                        c.attributed_revenue, 2,
+                    ),
+                    "attributed_orders": c.attributed_orders,
+                    "confidence": c.confidence,
+                    "tag_matches": c.tag_matches,
+                }
+                for c in report.per_cluster
+            ],
+        }
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
+    print("Revenue attribution by cluster")
+    scope = f"store={store_id}" if store_id else "fleet-wide"
+    print(
+        f"  scope:  {scope}   "
+        f"window: {window_hours:g}h"
+    )
+    print(
+        f"  orders: {report.total_orders_in_window}   "
+        f"revenue: ${report.total_revenue_in_window:,.2f}"
+    )
+    print(
+        f"  attributed: ${report.attributed_revenue:,.2f}   "
+        f"rate: {report.attribution_rate * 100:.1f}%"
+    )
+    print()
+
+    if not report.per_cluster:
+        print("  (no orders matched any cluster's tags)")
+        print()
+        print(
+            "  Tags get written by engine appliers. If you have "
+            "live orders but $0 attributed, check:"
+        )
+        print(
+            "    shopai capabilities run pattern-z-audit "
+            "-- ensures writers record outcomes"
+        )
+        return
+
+    print(
+        f"  {'cluster':<16} {'revenue':>12} "
+        f"{'orders':>7} {'confidence':<10}"
+    )
+    for c in report.per_cluster:
+        print(
+            f"  {c.cluster:<16} "
+            f"${c.attributed_revenue:>10,.2f} "
+            f"{c.attributed_orders:>7} "
+            f"{c.confidence:<10}"
+        )
+    print()
+    print("  Drill:")
+    print(
+        "    shopai cluster show <name>    "
+        "-- per-cluster member detail"
+    )
+    print(
+        "    shopai cluster-outcomes       "
+        "-- self-reported outcome metrics"
+    )
 
 
 def _cmd_cycle_history(args) -> None:
@@ -33635,9 +33822,12 @@ def main(argv: list[str] | None = None) -> None:
         if action == "status":
             _cmd_cycle_status(args)
             return
+        if action == "attribution":
+            _cmd_cycle_attribution(args)
+            return
         print(
             "Usage: shopai cycle "
-            "{run|schedule|verify|history|status}"
+            "{run|schedule|verify|history|status|attribution}"
         )
         return
 

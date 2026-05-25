@@ -67,6 +67,14 @@ class ClusterHealth:
     negative_outcomes: int = 0
     neutral_outcomes: int = 0
     total_revenue: float = 0.0
+    # Attributed revenue (ground-truth from Shopify orders +
+    # tag join, not self-reported via record_outcome). Populated
+    # by ``enrich_with_attribution`` when an AttributionReport
+    # is available. Stays 0.0 when not enriched.
+    attributed_revenue: float = 0.0
+    attribution_window_hours: float = 0.0
+    attribution_orders: int = 0
+    attribution_confidence: str = "none"
     # Per-member breakdown for drill-down
     member_health: list[dict[str, Any]] = field(default_factory=list)
 
@@ -232,3 +240,53 @@ def fleet_cluster_health(
     from engines._clusters import list_clusters
     strategy = strategy or QueueOutcomeRollup()
     return [strategy.health_for(c) for c in list_clusters()]
+
+
+def enrich_with_attribution(
+    healths: list[ClusterHealth],
+    *,
+    window_hours: float = 168.0,
+    store_id: str | None = None,
+    orders: list[dict[str, Any]] | None = None,
+) -> list[ClusterHealth]:
+    """Mutate a list of ClusterHealth with revenue attribution.
+
+    Joins Shopify orders to clusters via tags (ground-truth
+    revenue), distinct from ``total_revenue`` which is the
+    sum of self-reported outcome metrics. Both fields stay
+    available -- callers pick whichever is more meaningful.
+
+    Args:
+        healths: Existing healths to enrich in-place.
+        window_hours: Attribution window.
+        store_id: Optional per-store filter.
+        orders: Pre-fetched orders (for tests). Otherwise
+            ``attribute_revenue`` fetches via adapter.
+
+    Returns:
+        Same list (mutated). Returned for chaining.
+    """
+    try:
+        from engines._revenue_attribution import attribute_revenue
+    except Exception:  # noqa: BLE001
+        return healths
+    try:
+        report = attribute_revenue(
+            window_hours=window_hours,
+            store_id=store_id,
+            orders=orders,
+        )
+    except Exception:  # noqa: BLE001
+        return healths
+
+    by_cluster = {c.cluster: c for c in report.per_cluster}
+    for h in healths:
+        attr = by_cluster.get(h.cluster)
+        if attr is None:
+            h.attribution_window_hours = window_hours
+            continue
+        h.attributed_revenue = round(attr.attributed_revenue, 2)
+        h.attribution_orders = attr.attributed_orders
+        h.attribution_confidence = attr.confidence
+        h.attribution_window_hours = window_hours
+    return healths

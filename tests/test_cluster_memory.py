@@ -5,6 +5,7 @@ from engines._cluster_memory import (
     ClusterHealth,
     QueueOutcomeRollup,
     cluster_health_rollup,
+    enrich_with_attribution,
     fleet_cluster_health,
 )
 from engines._clusters import get_cluster
@@ -91,6 +92,55 @@ class TestFleetHealth:
         names = {h.cluster for h in all_health}
         assert "retention" in names
         assert "pricing" in names
+
+
+class TestAttributionEnrichment:
+    """enrich_with_attribution mutates ClusterHealth with
+    Shopify-order-derived revenue. Stays additive -- existing
+    total_revenue (self-reported) is unchanged."""
+
+    def test_no_orders_leaves_attribution_zero(self):
+        healths = [
+            ClusterHealth(
+                cluster="retention",
+                member_count=5, wired_count=3,
+                total_revenue=100.0,
+            )
+        ]
+        enrich_with_attribution(healths, orders=[])
+        h = healths[0]
+        assert h.attributed_revenue == 0.0
+        assert h.attribution_orders == 0
+        assert h.attribution_confidence == "none"
+        # total_revenue (self-reported) untouched
+        assert h.total_revenue == 100.0
+
+    def test_window_hours_recorded_even_when_no_match(self):
+        """Window is recorded so dashboards know what scope
+        the zero represents."""
+        healths = [
+            ClusterHealth(
+                cluster="retention",
+                member_count=1, wired_count=1,
+            )
+        ]
+        enrich_with_attribution(
+            healths, orders=[], window_hours=72.0,
+        )
+        assert healths[0].attribution_window_hours == 72.0
+
+    def test_returns_list_for_chaining(self):
+        healths = [
+            ClusterHealth(
+                cluster="x", member_count=1, wired_count=0,
+            )
+        ]
+        out = enrich_with_attribution(healths, orders=[])
+        assert out is healths
+
+    def test_empty_list_is_noop(self):
+        out = enrich_with_attribution([], orders=[])
+        assert out == []
 
 
 class TestStrategyPluggable:
