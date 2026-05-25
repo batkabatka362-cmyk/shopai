@@ -10292,13 +10292,17 @@ def _cmd_world_model_fleet(args) -> None:
         f" {'READY':>6s}" if include_launch_readiness
         else ""
     )
+    # Wave 25: attribution column always renders -- world-model
+    # snapshot already pulls the attribution section, cost is
+    # absorbed.
     print(
         f"  {'STORE':<22s} {'NICHE':<10s} {'PROD':>5s} "
         f"{'ORD':>4s} {'REVENUE':>11s} {'SYNC':>6s} "
         f"{'DRIFT':>6s} {'APPRV':>5s} {'DESIGN':>8s}"
+        f" {'ATTR$':>9s}"
         f"{ready_header}"
     )
-    width = 87 + (7 if include_launch_readiness else 0)
+    width = 87 + 10 + (7 if include_launch_readiness else 0)
     print("  " + "-" * width)
 
     # Rows already sorted above (before the JSON branch).
@@ -10347,6 +10351,14 @@ def _cmd_world_model_fleet(args) -> None:
                 )
             else:
                 ready_cell = f" {'-':>6s}"
+        # Wave 25: attribution cell from world-model snapshot
+        attribution = snap.get("attribution") or {}
+        if attribution.get("has_snapshot"):
+            attr_str = (
+                f"${attribution.get('attributed_revenue', 0.0):>8,.2f}"
+            )
+        else:
+            attr_str = f"{'-':>9s}"
         print(
             f"  {snap['store_id']:<22s} "
             f"{(store.get('niche') or '-'):<10s} "
@@ -10355,6 +10367,7 @@ def _cmd_world_model_fleet(args) -> None:
             f"${stats.get('total_revenue', 0.0):>10,.2f} "
             f"{sync_str:>6s} {drift_str:>6s} "
             f"{pending_str:>5s} {design_str:>8s}"
+            f" {attr_str}"
             f"{ready_cell}"
         )
     print()
