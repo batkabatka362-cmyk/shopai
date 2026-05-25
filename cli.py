@@ -4465,6 +4465,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     quarantine_action.add_argument(
+        "--apply-revenue-bridge", action="store_true",
+        help=(
+            "Manually trigger the revenue-regression "
+            "quarantine bridge (normally runs inside "
+            "`cycle run --yes`). Requires "
+            "SHOPAI_AUTO_QUARANTINE_FROM_REVENUE=1."
+        ),
+    )
+    quarantine_action.add_argument(
+        "--revenue-streaks", action="store_true",
+        help=(
+            "Show per-engine consecutive-cycle regression "
+            "streaks (read-only -- doesn't pause anything)."
+        ),
+    )
+    quarantine_action.add_argument(
         "--list", action="store_true",
         help=(
             "Show current exemptions + released + alert-paused "
@@ -18016,6 +18032,49 @@ def _cmd_cycle_run(args) -> None:
             "regression alert propagation failed: %s", exc,
         )
 
+    # Wave 21+22 closing chain: when an engine has fired
+    # regression alerts across N consecutive cycles, auto-pause
+    # it via the revenue-quarantine bridge. Env-gated default
+    # OFF -- operators delegate the auto-pause decision
+    # explicitly. Bridge handles both fleet and per-store
+    # scopes; iterate same way as the propagation block above
+    # so per-store regressions land in per-store pauses.
+    try:
+        from engines._revenue_quarantine import (
+            maybe_auto_quarantine_from_revenue,
+        )
+        paused_fleet = maybe_auto_quarantine_from_revenue()
+        if paused_fleet:
+            logger.info(
+                "revenue-regression auto-paused (fleet): %s",
+                ", ".join(paused_fleet),
+            )
+        for sr in per_store_results:
+            store_id = sr.get("store_id")
+            if not store_id:
+                continue
+            try:
+                paused_store = (
+                    maybe_auto_quarantine_from_revenue(
+                        store_id=store_id,
+                    )
+                )
+                if paused_store:
+                    logger.info(
+                        "revenue-regression auto-paused "
+                        "(store=%s): %s",
+                        store_id, ", ".join(paused_store),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "per-store revenue-quarantine failed "
+                    "for %s: %s", store_id, exc,
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "revenue-quarantine bridge failed: %s", exc,
+        )
+
     if as_json:
         print(json.dumps({
             "mode": "live",
@@ -31452,6 +31511,108 @@ def _cmd_approvals_quarantine(args) -> None:
             f"Cleared alert-pause on '{engine}' {scope_str}. "
             f"Alert-paused: {paused_serialised or '(none)'}"
         )
+        return
+
+    if getattr(args, "revenue_streaks", False):
+        # Read-only: show per-engine consecutive-cycle
+        # regression streaks. Operator-facing diagnostic for the
+        # Wave 21 bridge.
+        from engines._revenue_quarantine import (
+            compute_engine_streaks, threshold_cycles, is_enabled,
+        )
+        as_json = bool(getattr(args, "json", False))
+        streaks = compute_engine_streaks(limit=20)
+        threshold = threshold_cycles()
+        sorted_streaks = sorted(
+            streaks.items(), key=lambda kv: -kv[1],
+        )
+        if as_json:
+            print(json.dumps({
+                "streaks": [
+                    {
+                        "engine": e,
+                        "consecutive_cycles": n,
+                        "would_pause": n >= threshold,
+                    }
+                    for e, n in sorted_streaks
+                ],
+                "threshold_cycles": threshold,
+                "bridge_enabled": is_enabled(),
+            }, indent=2))
+            return
+        print(f"Revenue regression streaks (threshold={threshold})")
+        print(
+            f"  bridge: "
+            f"{'enabled' if is_enabled() else 'disabled'} "
+            f"(SHOPAI_AUTO_QUARANTINE_FROM_REVENUE)"
+        )
+        print()
+        if not sorted_streaks:
+            print(
+                "  (no engine has regressed in the recent "
+                "snapshot window)"
+            )
+            return
+        print(f"  {'engine':<28} {'cycles':>7}  would_pause")
+        for engine, n in sorted_streaks:
+            marker = "YES" if n >= threshold else "no"
+            print(
+                f"  {engine[:28]:<28} {n:>7}  {marker}"
+            )
+        return
+
+    if getattr(args, "apply_revenue_bridge", False):
+        # Manually trigger the revenue-regression bridge. Same
+        # shape as --apply-bridge but for the Wave 21 module.
+        from engines._revenue_quarantine import (
+            is_enabled, maybe_auto_quarantine_from_revenue,
+        )
+        as_json = bool(getattr(args, "json", False))
+        if not is_enabled():
+            msg = (
+                "bridge disabled "
+                "(SHOPAI_AUTO_QUARANTINE_FROM_REVENUE != 1); "
+                "no engines paused"
+            )
+            if as_json:
+                print(json.dumps({
+                    "status": "skipped",
+                    "reason": "bridge_disabled",
+                    "paused": [],
+                }, indent=2))
+            else:
+                print(f"Skipped: {msg}")
+            return
+        try:
+            paused = maybe_auto_quarantine_from_revenue()
+        except Exception as exc:  # noqa: BLE001
+            msg = f"bridge run failed: {exc}"
+            logger.debug(msg)
+            if as_json:
+                print(json.dumps({
+                    "status": "error", "error": msg,
+                }, indent=2, default=str))
+            else:
+                print(f"Error: {msg}")
+            sys.exit(1)
+            return
+        if as_json:
+            print(json.dumps({
+                "status": "success",
+                "newly_paused": paused,
+                "count": len(paused),
+            }, indent=2))
+            return
+        if paused:
+            print(
+                f"Revenue bridge run: paused {len(paused)} "
+                f"engine(s): {', '.join(paused)}"
+            )
+        else:
+            print(
+                "Revenue bridge run: no engines crossed the "
+                "streak threshold."
+            )
         return
 
     if getattr(args, "apply_bridge", False):
