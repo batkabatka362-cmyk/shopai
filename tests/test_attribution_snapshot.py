@@ -207,6 +207,65 @@ class TestTrend:
         assert attribution_trend() == []
 
 
+class TestPerStoreSnapshots:
+    """Wave 14: per-store snapshots co-exist with fleet-wide."""
+
+    def test_fleet_and_store_snapshots_coexist(
+        self, isolated_snapshots,
+    ):
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=_fake_report(),
+        ):
+            # Fleet-wide
+            record_snapshot(window_hours=168.0)
+            # Per-store
+            record_snapshot(window_hours=168.0, store_id="A")
+            record_snapshot(window_hours=168.0, store_id="B")
+        all_snaps = recent_snapshots(limit=10)
+        assert len(all_snaps) == 3
+        # Store filter only returns matching
+        a_snaps = recent_snapshots(store_id="A")
+        assert len(a_snaps) == 1
+        assert a_snaps[0].store_id == "A"
+
+    def test_per_store_delta_only_diffs_same_store(
+        self, isolated_snapshots,
+    ):
+        """Two snapshots for store A + one for store B should
+        diff A's pair, not cross-pollinate."""
+        from engines._attribution_delta import latest_delta
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=_fake_report(
+                attributed=100.0,
+                per_cluster=[
+                    {"cluster": "retention",
+                     "revenue": 100.0, "orders": 5},
+                ],
+            ),
+        ):
+            record_snapshot(window_hours=168.0, store_id="A")
+            record_snapshot(window_hours=168.0, store_id="B")
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=_fake_report(
+                attributed=50.0,
+                per_cluster=[
+                    {"cluster": "retention",
+                     "revenue": 50.0, "orders": 3},
+                ],
+            ),
+        ):
+            record_snapshot(window_hours=168.0, store_id="A")
+        # Store A has 2 snapshots, delta possible.
+        # Store B has 1, no delta.
+        delta_a = latest_delta(store_id="A")
+        delta_b = latest_delta(store_id="B")
+        assert delta_a is not None
+        assert delta_b is None
+
+
 class TestClear:
 
     def test_clear_snapshots_removes_file(self, isolated_snapshots):

@@ -17642,10 +17642,30 @@ def _cmd_cycle_run(args) -> None:
     # No-op under pytest (Pattern J guard inside the recorder).
     try:
         from engines._attribution_snapshot import record_snapshot
+        # Fleet-wide snapshot (legacy)
         record_snapshot(
             window_hours=168.0,
             cycle_run_id=cycle_run_id,
         )
+        # Per-store snapshots for multi-store empires. Each
+        # captures attribution scoped to that store so cycle
+        # status --store X has trend history. Failure on one
+        # store doesn't block others.
+        for sr in per_store_results:
+            store_id = sr.get("store_id")
+            if not store_id:
+                continue
+            try:
+                record_snapshot(
+                    window_hours=168.0,
+                    store_id=store_id,
+                    cycle_run_id=cycle_run_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "per-store snapshot failed for %s: %s",
+                    store_id, exc,
+                )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "attribution snapshot record failed: %s", exc,
@@ -17654,10 +17674,14 @@ def _cmd_cycle_run(args) -> None:
     # Propagate any regression alerts onto the cluster bus so
     # next cycle's captains can react. Substrate loop -- alerts
     # become decision-time signals, not just operator-facing.
+    # Both fleet-wide (store_id=None) AND per-store delta are
+    # checked so a regression on one store fires its store-
+    # scoped event without bleeding into other stores.
     try:
         from engines._attribution_delta import (
             latest_delta, propagate_alerts_to_bus,
         )
+        # Fleet-wide
         delta = latest_delta()
         if delta is not None and delta.has_alerts:
             n = propagate_alerts_to_bus(delta)
@@ -17665,6 +17689,28 @@ def _cmd_cycle_run(args) -> None:
                 "propagated %d revenue-regression alert(s) "
                 "to cluster bus", n,
             )
+        # Per-store propagation: each store's regression fires
+        # store-scoped events so per-store captains react.
+        for sr in per_store_results:
+            store_id = sr.get("store_id")
+            if not store_id:
+                continue
+            try:
+                store_delta = latest_delta(store_id=store_id)
+                if store_delta is not None and store_delta.has_alerts:
+                    n = propagate_alerts_to_bus(
+                        store_delta, store_id=store_id,
+                    )
+                    logger.info(
+                        "store=%s: propagated %d "
+                        "regression alert(s)",
+                        store_id, n,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "per-store delta propagation failed "
+                    "for %s: %s", store_id, exc,
+                )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "regression alert propagation failed: %s", exc,
