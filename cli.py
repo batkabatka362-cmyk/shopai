@@ -1828,6 +1828,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    cycle_attribution_delta_p = cycle_sub.add_parser(
+        "attribution-delta",
+        help=(
+            "Diff the two most-recent attribution snapshots. "
+            "Surfaces revenue regression alerts ('cluster X "
+            "dropped 30% in revenue') so operators can act "
+            "before a bad cycle compounds."
+        ),
+    )
+    cycle_attribution_delta_p.add_argument(
+        "--store", default=None,
+        help="Filter to one store",
+    )
+    cycle_attribution_delta_p.add_argument(
+        "--regression-pct", type=float, default=0.25,
+        help=(
+            "Trigger threshold (0.25 = 25% drop). Lower = more "
+            "alerts, higher = quieter"
+        ),
+    )
+    cycle_attribution_delta_p.add_argument(
+        "--min-orders", type=int, default=3,
+        help=(
+            "Both snapshots must have >= this many attributed "
+            "orders to alert (noise filter, default 3)"
+        ),
+    )
+    cycle_attribution_delta_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     cycle_attribution_history_p = cycle_sub.add_parser(
         "attribution-history",
         help=(
@@ -16325,6 +16357,31 @@ def _cmd_cycle_status(args) -> None:
     except Exception:  # noqa: BLE001
         attribution_block = None
 
+    # 7. Cycle-over-cycle revenue delta (Wave 12). Surfaces
+    # regression alerts inline so the empire dashboard catches
+    # bad trends without operator drill-down.
+    delta_block = None
+    try:
+        from engines._attribution_delta import latest_delta
+        ld = latest_delta(store_id=store_filter)
+        if ld is not None:
+            delta_block = {
+                "overall_revenue_delta": ld.overall_revenue_delta,
+                "overall_revenue_delta_pct": (
+                    ld.overall_revenue_delta_pct
+                ),
+                "alert_count": len(ld.alerts),
+                "top_alert": (
+                    ld.alerts[0].reason if ld.alerts else None
+                ),
+                "top_alert_scope": (
+                    f"{ld.alerts[0].scope}:{ld.alerts[0].name}"
+                    if ld.alerts else None
+                ),
+            }
+    except Exception:  # noqa: BLE001
+        delta_block = None
+
     if as_json:
         print(json.dumps({
             "last_run": last_block,
@@ -16333,6 +16390,7 @@ def _cmd_cycle_status(args) -> None:
             "audit_ok": audit_ok,
             "audit_violations": audit_violations,
             "attribution_168h": attribution_block,
+            "cycle_delta": delta_block,
             "ai_strategy": {
                 "mode": ai_mode,
                 "env_enabled": ai_enabled_env,
@@ -16405,6 +16463,36 @@ def _cmd_cycle_status(args) -> None:
         )
     print()
 
+    if delta_block is not None:
+        d_rev = delta_block["overall_revenue_delta"]
+        d_pct = delta_block["overall_revenue_delta_pct"]
+        alert_n = delta_block["alert_count"]
+        print("  Cycle-over-cycle delta:")
+        if d_pct is None:
+            pct_str = "(n/a)"
+        elif d_pct > 0:
+            pct_str = f"+{d_pct * 100:.1f}%"
+        else:
+            pct_str = f"{d_pct * 100:.1f}%"
+        marker = (
+            "[BAD]" if alert_n > 0
+            else ("[OK ]" if d_rev >= 0 else "[WRN]")
+        )
+        print(
+            f"    {marker} ${d_rev:+,.2f}   {pct_str}   "
+            f"alerts: {alert_n}"
+        )
+        if delta_block["top_alert_scope"]:
+            print(
+                f"    top alert: "
+                f"{delta_block['top_alert_scope']} -- "
+                f"{delta_block['top_alert']}"
+            )
+        print(
+            "    Drill: `shopai cycle attribution-delta`"
+        )
+        print()
+
     print("  Cluster health (10 clusters):")
     if not verdict_counts:
         print("    (no history yet)")
@@ -16468,6 +16556,161 @@ def _cmd_cycle_status(args) -> None:
     print("    shopai cycle history          -- past runs")
     print("    shopai cluster bus --stats    -- bus aggregate")
     print("    shopai cycle verify --store X -- preflight check")
+
+
+def _cmd_cycle_attribution_delta(args) -> None:
+    """Diff the two most-recent attribution snapshots.
+
+    Surfaces revenue regression alerts so operators can react
+    before a regression compounds.
+    """
+    from engines._attribution_delta import latest_delta
+
+    store_id = (getattr(args, "store", None) or "").strip() or None
+    regression_pct = float(
+        getattr(args, "regression_pct", 0.25) or 0.25,
+    )
+    min_orders = int(getattr(args, "min_orders", 3) or 3)
+    as_json = bool(getattr(args, "json", False))
+
+    delta = latest_delta(
+        store_id=store_id,
+        regression_pct=regression_pct,
+        min_orders=min_orders,
+    )
+
+    if delta is None:
+        if as_json:
+            print(json.dumps({
+                "status": "insufficient_snapshots",
+                "filter_store": store_id,
+            }, indent=2))
+        else:
+            print("Attribution delta")
+            if store_id:
+                print(f"  filter: store={store_id}")
+            print()
+            print(
+                "  (need at least 2 snapshots; run a few cycles "
+                "first)"
+            )
+            print()
+            print(
+                "  shopai cycle attribution-history  "
+                "-- see current snapshots"
+            )
+        return
+
+    if as_json:
+        payload = {
+            "filter_store": store_id,
+            "prior_snapshot_id": delta.prior_snapshot_id,
+            "latest_snapshot_id": delta.latest_snapshot_id,
+            "prior_attributed_revenue": delta.prior_attributed_revenue,
+            "latest_attributed_revenue": delta.latest_attributed_revenue,
+            "overall_revenue_delta": delta.overall_revenue_delta,
+            "overall_revenue_delta_pct": delta.overall_revenue_delta_pct,
+            "alerts": [
+                {
+                    "scope": a.scope, "name": a.name,
+                    "prior_revenue": a.prior_revenue,
+                    "latest_revenue": a.latest_revenue,
+                    "delta_pct": a.delta_pct,
+                    "reason": a.reason,
+                }
+                for a in delta.alerts
+            ],
+            "per_cluster": [
+                {
+                    "cluster": c.cluster,
+                    "prior_revenue": c.prior_revenue,
+                    "latest_revenue": c.latest_revenue,
+                    "revenue_delta": c.revenue_delta,
+                    "revenue_delta_pct": c.revenue_delta_pct,
+                    "direction": c.direction,
+                }
+                for c in delta.per_cluster
+            ],
+            "per_engine": [
+                {
+                    "engine": e.engine,
+                    "cluster": e.cluster,
+                    "prior_revenue": e.prior_revenue,
+                    "latest_revenue": e.latest_revenue,
+                    "revenue_delta": e.revenue_delta,
+                    "revenue_delta_pct": e.revenue_delta_pct,
+                    "direction": e.direction,
+                }
+                for e in delta.per_engine
+            ],
+        }
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
+    print("Attribution delta (cycle-over-cycle)")
+    if store_id:
+        print(f"  filter: store={store_id}")
+    print()
+    print(
+        f"  prior:   ${delta.prior_attributed_revenue:>10,.2f}   "
+        f"(snapshot {delta.prior_snapshot_id})"
+    )
+    print(
+        f"  latest:  ${delta.latest_attributed_revenue:>10,.2f}   "
+        f"(snapshot {delta.latest_snapshot_id})"
+    )
+    pct = delta.overall_revenue_delta_pct
+    if pct is None:
+        pct_str = "(n/a)"
+    elif pct > 0:
+        pct_str = f"+{pct * 100:.1f}%"
+    else:
+        pct_str = f"{pct * 100:.1f}%"
+    marker = "[OK ]" if delta.overall_revenue_delta >= 0 else "[WRN]"
+    print(
+        f"  delta:   {marker} ${delta.overall_revenue_delta:+,.2f}   "
+        f"{pct_str}"
+    )
+    print()
+
+    if delta.alerts:
+        print(
+            f"  ALERTS ({len(delta.alerts)} regression"
+            f"{'s' if len(delta.alerts) > 1 else ''}):"
+        )
+        for a in delta.alerts:
+            print(f"    [BAD] {a.scope}:{a.name}  -- {a.reason}")
+        print()
+    else:
+        print("  No regressions above threshold")
+        print()
+
+    # Show top 5 movers per cluster
+    print("  Top movers (cluster):")
+    if not delta.per_cluster:
+        print("    (no cluster data)")
+    else:
+        for c in delta.per_cluster[:5]:
+            arrow = {
+                "up": "+", "down": "-", "new": "*",
+                "dropped": "x", "flat": "=",
+            }.get(c.direction, "?")
+            print(
+                f"    [{arrow}] {c.cluster:<14} "
+                f"${c.prior_revenue:>8,.2f} -> "
+                f"${c.latest_revenue:>8,.2f}   "
+                f"({c.direction})"
+            )
+    print()
+    print("  Drill:")
+    print(
+        "    shopai cycle attribution-history  "
+        "-- full trend"
+    )
+    print(
+        "    shopai cycle attribution --by engine  "
+        "-- per-engine current"
+    )
 
 
 def _cmd_cycle_attribution_history(args) -> None:
@@ -34110,10 +34353,13 @@ def main(argv: list[str] | None = None) -> None:
         if action == "attribution-history":
             _cmd_cycle_attribution_history(args)
             return
+        if action == "attribution-delta":
+            _cmd_cycle_attribution_delta(args)
+            return
         print(
             "Usage: shopai cycle "
             "{run|schedule|verify|history|status|"
-            "attribution|attribution-history}"
+            "attribution|attribution-history|attribution-delta}"
         )
         return
 
