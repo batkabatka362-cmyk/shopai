@@ -8,6 +8,7 @@ import pytest
 from engines._attribution_snapshot import AttributionSnapshot
 from engines._revenue_quarantine import (
     compute_engine_streaks,
+    find_revenue_release_candidates,
     is_enabled,
     maybe_auto_quarantine_from_revenue,
     threshold_cycles,
@@ -267,3 +268,131 @@ class TestMaybeAutoQuarantine:
             paused = maybe_auto_quarantine_from_revenue()
         assert paused == []
         mock_add.assert_not_called()
+
+
+class TestFindReleaseCandidates:
+    """Wave 27: which paused engines are safe to release?"""
+
+    def _two_quiet_snaps(self):
+        """Two snapshots where loyalty's revenue is FLAT (no
+        regression alerts triggered)."""
+        return [
+            _snap(
+                sid="newer", captured_at=2.0,
+                per_engine=[
+                    {"engine": "loyalty",
+                     "cluster": "retention",
+                     "attributed_revenue": 100.0,
+                     "attributed_orders": 5},
+                ],
+            ),
+            _snap(
+                sid="older", captured_at=1.0,
+                per_engine=[
+                    {"engine": "loyalty",
+                     "cluster": "retention",
+                     "attributed_revenue": 100.0,
+                     "attributed_orders": 5},
+                ],
+            ),
+        ]
+
+    def test_empty_when_no_snapshots(self):
+        with patch(
+            "engines._attribution_snapshot.recent_snapshots",
+            return_value=[],
+        ):
+            assert find_revenue_release_candidates() == []
+
+    def test_empty_when_too_few_snapshots(self):
+        with patch(
+            "engines._attribution_snapshot.recent_snapshots",
+            return_value=[
+                _snap(sid="only", captured_at=1.0),
+            ],
+        ):
+            assert find_revenue_release_candidates() == []
+
+    def test_paused_engine_with_no_recent_alerts_is_candidate(self):
+        from core.approval import quarantine
+        from core.approval.quarantine import QuarantineState
+        state = QuarantineState(
+            exemptions=frozenset(),
+            released=frozenset(),
+            alert_paused=frozenset([("loyalty", None)]),
+        )
+        with patch(
+            "engines._attribution_snapshot.recent_snapshots",
+            return_value=self._two_quiet_snaps(),
+        ), patch.object(
+            quarantine, "load_state", return_value=state,
+        ):
+            candidates = find_revenue_release_candidates(
+                quiet_cycles_required=1,
+            )
+        # loyalty was paused and didn't alert in the recent
+        # cycle -> safe to release
+        assert len(candidates) == 1
+        assert candidates[0]["engine"] == "loyalty"
+        assert candidates[0]["store_id"] is None
+
+    def test_paused_engine_still_alerting_not_candidate(self):
+        from core.approval import quarantine
+        from core.approval.quarantine import QuarantineState
+        # Snapshots showing loyalty regressed
+        snaps = [
+            _snap(
+                sid="newer", captured_at=2.0,
+                per_engine=[
+                    {"engine": "loyalty",
+                     "cluster": "retention",
+                     "attributed_revenue": 10.0,
+                     "attributed_orders": 3},
+                ],
+            ),
+            _snap(
+                sid="older", captured_at=1.0,
+                per_engine=[
+                    {"engine": "loyalty",
+                     "cluster": "retention",
+                     "attributed_revenue": 100.0,
+                     "attributed_orders": 5},
+                ],
+            ),
+        ]
+        state = QuarantineState(
+            exemptions=frozenset(),
+            released=frozenset(),
+            alert_paused=frozenset([("loyalty", None)]),
+        )
+        with patch(
+            "engines._attribution_snapshot.recent_snapshots",
+            return_value=snaps,
+        ), patch.object(
+            quarantine, "load_state", return_value=state,
+        ):
+            candidates = find_revenue_release_candidates(
+                quiet_cycles_required=1,
+            )
+        # Still alerting -> not safe to release
+        assert candidates == []
+
+    def test_non_paused_engine_not_listed(self):
+        """Quiet but never paused engines don't show up."""
+        from core.approval import quarantine
+        from core.approval.quarantine import QuarantineState
+        empty_state = QuarantineState(
+            exemptions=frozenset(),
+            released=frozenset(),
+            alert_paused=frozenset(),
+        )
+        with patch(
+            "engines._attribution_snapshot.recent_snapshots",
+            return_value=self._two_quiet_snaps(),
+        ), patch.object(
+            quarantine, "load_state", return_value=empty_state,
+        ):
+            candidates = find_revenue_release_candidates(
+                quiet_cycles_required=1,
+            )
+        assert candidates == []

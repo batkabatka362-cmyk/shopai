@@ -4481,6 +4481,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     quarantine_action.add_argument(
+        "--revenue-release-candidates", action="store_true",
+        help=(
+            "List alert-paused engines whose revenue has been "
+            "quiet recently (safe to release). Read-only; "
+            "operator uses --release-alert ENGINE to actually "
+            "release."
+        ),
+    )
+    quarantine_action.add_argument(
         "--list", action="store_true",
         help=(
             "Show current exemptions + released + alert-paused "
@@ -31614,6 +31623,47 @@ def _cmd_approvals_quarantine(args) -> None:
         print(
             f"Cleared alert-pause on '{engine}' {scope_str}. "
             f"Alert-paused: {paused_serialised or '(none)'}"
+        )
+        return
+
+    if getattr(args, "revenue_release_candidates", False):
+        from engines._revenue_quarantine import (
+            find_revenue_release_candidates,
+        )
+        as_json = bool(getattr(args, "json", False))
+        candidates = find_revenue_release_candidates()
+        if as_json:
+            print(json.dumps({
+                "candidates": candidates,
+                "count": len(candidates),
+            }, indent=2, default=str))
+            return
+        print(
+            f"Revenue release candidates  "
+            f"({len(candidates)})"
+        )
+        if not candidates:
+            print()
+            print(
+                "  (no paused engines have been quiet long "
+                "enough)"
+            )
+            return
+        print()
+        print(
+            f"  {'engine':<28} {'store':<14} "
+            f"{'quiet_cycles':>13}"
+        )
+        for c in candidates:
+            store_str = (c["store_id"] or "(fleet)")[:14]
+            print(
+                f"  {c['engine'][:28]:<28} {store_str:<14} "
+                f"{c['quiet_cycles']:>13}"
+            )
+        print()
+        print(
+            "  To release: shopai approvals quarantine "
+            "--release-alert ENGINE"
         )
         return
 

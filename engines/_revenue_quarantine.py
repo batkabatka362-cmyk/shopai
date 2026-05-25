@@ -140,6 +140,89 @@ def compute_engine_streaks(
     return dict(streaks)
 
 
+def find_revenue_release_candidates(
+    *,
+    limit: int = 10,
+    store_id: str | None = None,
+    quiet_cycles_required: int = 2,
+) -> list[dict[str, str | int | None]]:
+    """Suggest revenue-paused engines safe to release.
+
+    An engine is a release candidate when:
+      - It's currently in quarantine.alert_paused (this method
+        doesn't know WHICH bridge paused it, but operators can
+        cross-reference with `--revenue-streaks`)
+      - It has NOT appeared in regression alerts for the most
+        recent ``quiet_cycles_required`` cycle-pair deltas
+      - Recent snapshots actually exist (at least
+        quiet_cycles_required + 1 snapshots so the determination
+        is meaningful)
+
+    Returns:
+        List of ``{"engine": ..., "store_id": ..., "quiet_cycles":
+        int}`` dicts. The store_id mirrors the alert-paused
+        entry (None = fleet-wide pause).
+    """
+    try:
+        from core.approval import quarantine
+        from engines._attribution_snapshot import recent_snapshots
+        from engines._attribution_delta import compute_delta
+    except Exception:  # noqa: BLE001
+        return []
+
+    snaps = recent_snapshots(limit=limit, store_id=store_id)
+    if len(snaps) < quiet_cycles_required + 1:
+        return []
+
+    # Collect engine alerts across the most-recent N deltas
+    # (newest first). An engine is "quiet" if it's absent from
+    # ALL of them.
+    alerted_recently: set[str] = set()
+    cycles_checked = 0
+    for i in range(min(quiet_cycles_required, len(snaps) - 1)):
+        latest = snaps[i]
+        prior = snaps[i + 1]
+        try:
+            delta = compute_delta(prior, latest)
+        except Exception:  # noqa: BLE001
+            continue
+        cycles_checked += 1
+        for a in delta.alerts:
+            if a.scope == "engine":
+                alerted_recently.add(a.name)
+    if cycles_checked < quiet_cycles_required:
+        return []
+
+    # Pull current alert-paused set
+    try:
+        state = quarantine.load_state()
+        paused = state.alert_paused or set()
+    except Exception:  # noqa: BLE001
+        return []
+
+    candidates: list[dict[str, str | int | None]] = []
+    for entry in paused:
+        # alert_paused is frozenset of (engine, store_id) tuples
+        if not isinstance(entry, tuple) or len(entry) != 2:
+            continue
+        engine, pause_store_id = entry
+        # Per-store query only sees matching pauses
+        if store_id is not None and pause_store_id not in (
+            None, store_id,
+        ):
+            continue
+        if engine in alerted_recently:
+            continue
+        candidates.append({
+            "engine": engine,
+            "store_id": pause_store_id,
+            "quiet_cycles": cycles_checked,
+        })
+
+    candidates.sort(key=lambda c: c["engine"])
+    return candidates
+
+
 def maybe_auto_quarantine_from_revenue(
     *,
     limit: int = 10,
