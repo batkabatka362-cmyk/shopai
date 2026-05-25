@@ -1828,6 +1828,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    cycle_attribution_history_p = cycle_sub.add_parser(
+        "attribution-history",
+        help=(
+            "Show attribution trend across recent cycle runs. "
+            "Persisted at cycle-run time so operators can see "
+            "'is the autonomous loop improving revenue over "
+            "time?' (not just current snapshot)."
+        ),
+    )
+    cycle_attribution_history_p.add_argument(
+        "--limit", type=int, default=20,
+        help="How many recent snapshots to show (default 20)",
+    )
+    cycle_attribution_history_p.add_argument(
+        "--store", default=None,
+        help="Filter to one store (default: all snapshots)",
+    )
+    cycle_attribution_history_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     cycle_attribution_p = cycle_sub.add_parser(
         "attribution",
         help=(
@@ -16448,6 +16470,81 @@ def _cmd_cycle_status(args) -> None:
     print("    shopai cycle verify --store X -- preflight check")
 
 
+def _cmd_cycle_attribution_history(args) -> None:
+    """Show attribution trend across recent cycle runs.
+
+    Sourced from data/attribution_snapshots.json, populated at
+    cycle-run time. Lets operators see whether the autonomous
+    loop is moving revenue (not just current snapshot).
+    """
+    import time as _time
+    from engines._attribution_snapshot import attribution_trend
+
+    limit = max(1, int(getattr(args, "limit", 20) or 20))
+    store_id = (getattr(args, "store", None) or "").strip() or None
+    as_json = bool(getattr(args, "json", False))
+
+    trend = attribution_trend(limit=limit, store_id=store_id)
+
+    if as_json:
+        print(json.dumps({
+            "filter_store": store_id,
+            "limit": limit,
+            "count": len(trend),
+            "trend": trend,
+        }, indent=2, default=str))
+        return
+
+    print(f"Attribution history  ({len(trend)} snapshots)")
+    if store_id:
+        print(f"  filter: store={store_id}")
+    print()
+    if not trend:
+        print("  (no snapshots recorded yet)")
+        print()
+        print(
+            "  Snapshots are captured at cycle-run time. Run a "
+            "live cycle:"
+        )
+        print(
+            "    SHOPAI_CYCLE_RUN_CONFIRM=1 shopai cycle run --yes"
+        )
+        return
+
+    print(
+        f"  {'when':<22} {'attributed':>12} "
+        f"{'orders':>7} {'rate':>6}  top_cluster   top_engine"
+    )
+    now = _time.time()
+    for row in trend:
+        age = now - row["captured_at"]
+        if age < 3600:
+            age_str = f"{int(age/60)}m ago"
+        elif age < 86400:
+            age_str = f"{age/3600:.1f}h ago"
+        else:
+            age_str = f"{age/86400:.1f}d ago"
+        rev = row["attributed_revenue"]
+        orders = row["total_orders_in_window"]
+        rate = row["attribution_rate"]
+        top_c = (row["top_cluster"] or "-")[:14]
+        top_e = (row["top_engine"] or "-")[:16]
+        print(
+            f"  {age_str:<22} ${rev:>10,.2f} "
+            f"{orders:>7} {rate*100:>5.1f}%  "
+            f"{top_c:<14} {top_e}"
+        )
+    print()
+    print(
+        "  Drill: `shopai cycle attribution` "
+        "(current snapshot)"
+    )
+    print(
+        "  Cycles: `shopai cycle history` "
+        "(invocation history)"
+    )
+
+
 def _cmd_cycle_attribution(args) -> None:
     """Show revenue attributed to each cluster from Shopify orders.
 
@@ -17278,9 +17375,10 @@ def _cmd_cycle_run(args) -> None:
 
     # Persist this run to history so operators can audit
     # "what fired this cycle?" later via `cycle history`.
+    cycle_run_id = None
     try:
         from engines._cycle_history import record_cycle_run
-        record_cycle_run(
+        cycle_run = record_cycle_run(
             cycle_label=fleet_plan.cycle_label,
             mode="live",
             total_stores=len(per_store_results),
@@ -17289,9 +17387,25 @@ def _cmd_cycle_run(args) -> None:
             total_errors=overall["errors"],
             per_store=per_store_results,
         )
+        cycle_run_id = cycle_run.run_id if cycle_run else None
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "cycle history record failed: %s", exc,
+        )
+
+    # Capture attribution-as-of-now snapshot linked to this
+    # cycle run. Closes the trend loop -- without persistence,
+    # every attribution query is a fresh point with no history.
+    # No-op under pytest (Pattern J guard inside the recorder).
+    try:
+        from engines._attribution_snapshot import record_snapshot
+        record_snapshot(
+            window_hours=168.0,
+            cycle_run_id=cycle_run_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "attribution snapshot record failed: %s", exc,
         )
 
     if as_json:
@@ -33993,9 +34107,13 @@ def main(argv: list[str] | None = None) -> None:
         if action == "attribution":
             _cmd_cycle_attribution(args)
             return
+        if action == "attribution-history":
+            _cmd_cycle_attribution_history(args)
+            return
         print(
             "Usage: shopai cycle "
-            "{run|schedule|verify|history|status|attribution}"
+            "{run|schedule|verify|history|status|"
+            "attribution|attribution-history}"
         )
         return
 
