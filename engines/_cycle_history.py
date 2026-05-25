@@ -146,9 +146,13 @@ def record_cycle_run(
     per_store: list[dict[str, Any]] | None = None,
 ) -> CycleRun:
     """Persist one cycle run's summary."""
+    # ns-precision started_at: time.time() at second granularity
+    # on Windows can produce identical timestamps for back-to-
+    # back record calls; ns-precision dodges that tie.
+    now_ns = time.time_ns()
     run = CycleRun(
-        run_id=f"cycle_{int(time.time() * 1000)}_{_short_id()}",
-        started_at=time.time(),
+        run_id=f"cycle_{now_ns // 1_000_000}_{_short_id()}",
+        started_at=now_ns / 1e9,
         cycle_label=cycle_label,
         mode=mode,
         total_stores=total_stores,
@@ -169,7 +173,13 @@ def record_cycle_run(
 def recent_runs(*, limit: int = 20) -> list[CycleRun]:
     """Most recent N runs, newest-first."""
     runs = _load()
-    runs.sort(key=lambda r: r.started_at, reverse=True)
+    # Tie-break on run_id (which carries ms-precision timestamp +
+    # short_id suffix). Without this, two records with identical
+    # started_at -- common on Windows clock granularity -- sort
+    # in load order, breaking last_run() determinism.
+    runs.sort(
+        key=lambda r: (r.started_at, r.run_id), reverse=True,
+    )
     return runs[:limit]
 
 

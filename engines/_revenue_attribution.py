@@ -72,12 +72,40 @@ class ClusterAttribution:
 
 
 @dataclass
+class EngineAttribution:
+    """Revenue + order count attributed to one engine.
+
+    Same shared-credit math as cluster level but joined via the
+    tag catalog's engine field (which engine wrote which tag).
+    Lets the operator answer "which engine in retention cluster
+    pulled the revenue?".
+    """
+    engine: str
+    cluster: str | None
+    window_hours: float
+    attributed_revenue: float = 0.0
+    attributed_orders: int = 0
+    tag_matches: list[str] = field(default_factory=list)
+
+    @property
+    def confidence(self) -> str:
+        if self.attributed_orders == 0:
+            return "none"
+        if self.attributed_orders >= 10:
+            return "high"
+        if self.attributed_orders >= 3:
+            return "medium"
+        return "low"
+
+
+@dataclass
 class AttributionReport:
     """Per-cluster attribution rollup over a time window."""
     window_hours: float
     total_orders_in_window: int = 0
     total_revenue_in_window: float = 0.0
     per_cluster: list[ClusterAttribution] = field(default_factory=list)
+    per_engine: list[EngineAttribution] = field(default_factory=list)
 
     @property
     def attributed_revenue(self) -> float:
@@ -252,6 +280,79 @@ def _build_tag_to_cluster_map() -> dict[str, str]:
     return out
 
 
+def _build_tag_to_engine_map() -> dict[str, str]:
+    """Inverted index from tag -> engine name.
+
+    Mirrors ``_build_tag_to_cluster_map`` but keeps the engine
+    granularity. The tag catalog already carries the engine
+    field per entry; this just flattens it.
+    """
+    out: dict[str, str] = {}
+    try:
+        from engines._tag_catalog import catalog_tags
+    except Exception:  # noqa: BLE001
+        return out
+    try:
+        catalog = catalog_tags("engines")
+    except Exception:  # noqa: BLE001
+        return out
+    for entry in catalog.entries:
+        out[entry.tag] = entry.engine
+    return out
+
+
+def _attribute_per_engine(
+    orders: list[dict[str, Any]],
+    tag_to_engine: dict[str, str],
+    strategy: "SharedCreditStrategy",
+) -> dict[str, EngineAttribution]:
+    """Per-engine version of the cluster attribution loop.
+
+    Re-uses the strategy's tag-gathering + dynamic-match logic
+    via _gather_tags + _match_dynamic on the engine map.
+    """
+    from engines._clusters import cluster_for_engine
+    out: dict[str, EngineAttribution] = {}
+    for order in orders:
+        try:
+            total = float(order.get("total_price", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            total = 0.0
+        tags = strategy._gather_tags(order)
+        matched_engines: set[str] = set()
+        tag_hits: list[str] = []
+        for tag in tags:
+            engine = tag_to_engine.get(tag)
+            if engine is None:
+                engine = strategy._match_dynamic(
+                    tag, tag_to_engine,
+                )
+            if engine is not None:
+                matched_engines.add(engine)
+                tag_hits.append(tag)
+        if not matched_engines:
+            continue
+        share = total / len(matched_engines)
+        for engine in matched_engines:
+            attr = out.setdefault(
+                engine,
+                EngineAttribution(
+                    engine=engine,
+                    cluster=(
+                        cluster_for_engine(engine).name
+                        if cluster_for_engine(engine) else None
+                    ),
+                    window_hours=0.0,
+                ),
+            )
+            attr.attributed_revenue += share
+            attr.attributed_orders += 1
+            for tag in tag_hits:
+                if tag not in attr.tag_matches:
+                    attr.tag_matches.append(tag)
+    return out
+
+
 def _fetch_recent_orders(
     *,
     window_hours: float,
@@ -319,6 +420,16 @@ def attribute_revenue(
     tag_to_cluster = _build_tag_to_cluster_map()
     per_cluster_dict = strategy.attribute(orders, tag_to_cluster)
 
+    # Per-engine attribution (separate from per-cluster). Only
+    # SharedCreditStrategy supports it -- custom strategies just
+    # opt out of the per-engine breakdown.
+    per_engine_dict: dict[str, EngineAttribution] = {}
+    if isinstance(strategy, SharedCreditStrategy):
+        tag_to_engine = _build_tag_to_engine_map()
+        per_engine_dict = _attribute_per_engine(
+            orders, tag_to_engine, strategy,
+        )
+
     report = AttributionReport(
         window_hours=window_hours,
         total_orders_in_window=len(orders),
@@ -335,8 +446,15 @@ def attribute_revenue(
         attr.window_hours = window_hours
         report.per_cluster.append(attr)
 
+    for engine, eattr in per_engine_dict.items():
+        eattr.window_hours = window_hours
+        report.per_engine.append(eattr)
+
     # Sort by attributed_revenue desc
     report.per_cluster.sort(
+        key=lambda a: a.attributed_revenue, reverse=True,
+    )
+    report.per_engine.sort(
         key=lambda a: a.attributed_revenue, reverse=True,
     )
     return report

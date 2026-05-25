@@ -1846,6 +1846,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter to one store (default: fleet-wide)",
     )
     cycle_attribution_p.add_argument(
+        "--by", choices=["cluster", "engine"], default="cluster",
+        help=(
+            "Aggregation level: cluster (default) shows the "
+            "10-cluster rollup; engine drills into which "
+            "specific engine within each cluster pulled the "
+            "revenue"
+        ),
+    )
+    cycle_attribution_p.add_argument(
+        "--top", type=int, default=20,
+        help="Limit rows shown when --by engine (default 20)",
+    )
+    cycle_attribution_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
     )
@@ -16432,6 +16445,8 @@ def _cmd_cycle_attribution(args) -> None:
         getattr(args, "window_hours", 168.0) or 168.0
     )
     store_id = (getattr(args, "store", None) or "").strip() or None
+    by = (getattr(args, "by", None) or "cluster").strip().lower()
+    top = int(getattr(args, "top", 20) or 20)
     as_json = bool(getattr(args, "json", False))
 
     try:
@@ -16450,6 +16465,7 @@ def _cmd_cycle_attribution(args) -> None:
         payload = {
             "window_hours": report.window_hours,
             "store_id": store_id,
+            "aggregation": by,
             "total_orders_in_window": report.total_orders_in_window,
             "total_revenue_in_window": round(
                 report.total_revenue_in_window, 2,
@@ -16470,11 +16486,25 @@ def _cmd_cycle_attribution(args) -> None:
                 }
                 for c in report.per_cluster
             ],
+            "per_engine": [
+                {
+                    "engine": e.engine,
+                    "cluster": e.cluster,
+                    "attributed_revenue": round(
+                        e.attributed_revenue, 2,
+                    ),
+                    "attributed_orders": e.attributed_orders,
+                    "confidence": e.confidence,
+                    "tag_matches": e.tag_matches,
+                }
+                for e in report.per_engine
+            ],
         }
         print(json.dumps(payload, indent=2, default=str))
         return
 
-    print("Revenue attribution by cluster")
+    label = "engine" if by == "engine" else "cluster"
+    print(f"Revenue attribution by {label}")
     scope = f"store={store_id}" if store_id else "fleet-wide"
     print(
         f"  scope:  {scope}   "
@@ -16489,6 +16519,44 @@ def _cmd_cycle_attribution(args) -> None:
         f"rate: {report.attribution_rate * 100:.1f}%"
     )
     print()
+
+    if by == "engine":
+        if not report.per_engine:
+            print("  (no orders matched any engine's tags)")
+            print()
+            print(
+                "  Tags get written by engine appliers. If you "
+                "have live orders but $0 attributed, check:"
+            )
+            print(
+                "    shopai engine try-wireup --all  "
+                "-- ensures appliers fire"
+            )
+            return
+        print(
+            f"  {'engine':<28} {'cluster':<14} "
+            f"{'revenue':>12} {'orders':>7} {'confidence':<10}"
+        )
+        for e in report.per_engine[:top]:
+            cluster_str = e.cluster or "-"
+            print(
+                f"  {e.engine[:28]:<28} {cluster_str[:14]:<14} "
+                f"${e.attributed_revenue:>10,.2f} "
+                f"{e.attributed_orders:>7} "
+                f"{e.confidence:<10}"
+            )
+        if len(report.per_engine) > top:
+            print(
+                f"  ... {len(report.per_engine) - top} "
+                "more engines (use --top N)"
+            )
+        print()
+        print("  Drill:")
+        print(
+            "    shopai cycle attribution      "
+            "-- cluster-level rollup"
+        )
+        return
 
     if not report.per_cluster:
         print("  (no orders matched any cluster's tags)")
@@ -16516,6 +16584,10 @@ def _cmd_cycle_attribution(args) -> None:
         )
     print()
     print("  Drill:")
+    print(
+        "    shopai cycle attribution --by engine  "
+        "-- per-engine breakdown"
+    )
     print(
         "    shopai cluster show <name>    "
         "-- per-cluster member detail"
