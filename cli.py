@@ -2585,6 +2585,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     engine_pulse_p.add_argument(
+        "--revenue-history", action="store_true",
+        help=(
+            "Single-engine: surface per-cycle attribution "
+            "trend (revenue, orders) drawn from snapshot "
+            "history. Independent of --history."
+        ),
+    )
+    engine_pulse_p.add_argument(
         "--json", action="store_true",
         help="Emit the raw health envelope(s) as JSON",
     )
@@ -12960,6 +12968,44 @@ def _cmd_engine_pulse(args) -> None:
                 "engine_pulse writeback probe raised: %s",
                 exc,
             )
+        # Wave 30: per-engine revenue history trend (opt-in
+        # via --revenue-history). Renders before the current
+        # snapshot line so operators see the trend first then
+        # the latest number.
+        if getattr(args, "revenue_history", False):
+            try:
+                from engines._attribution_snapshot import (
+                    engine_revenue_history,
+                )
+                rev_rows = engine_revenue_history(
+                    health.engine, limit=30,
+                )
+                if rev_rows:
+                    print(
+                        f"  Revenue history ({len(rev_rows)} "
+                        f"data point(s), oldest first):"
+                    )
+                    import time as _t
+                    now = _t.time()
+                    for row in rev_rows[-15:]:
+                        age = now - row["captured_at"]
+                        if age < 3600:
+                            age_str = f"{int(age/60)}m"
+                        elif age < 86400:
+                            age_str = f"{age/3600:.1f}h"
+                        else:
+                            age_str = f"{age/86400:.1f}d"
+                        print(
+                            f"    {age_str:<6} ago  "
+                            f"${row['attributed_revenue']:>8,.2f}  "
+                            f"orders={row['attributed_orders']:>3}  "
+                            f"({row['confidence']})"
+                        )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "engine_pulse revenue history "
+                    "probe raised: %s", exc,
+                )
         # Wave 20: revenue attribution probe -- has this engine
         # actually MADE money in the last 7 days? Cheap (uses
         # the cached attribution path; one Shopify call if no

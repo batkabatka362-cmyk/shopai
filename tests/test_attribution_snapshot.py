@@ -14,6 +14,7 @@ from engines._attribution_snapshot import (
     AttributionSnapshot,
     attribution_trend,
     clear_snapshots,
+    engine_revenue_history,
     fleet_attribution_rollup,
     last_snapshot,
     recent_snapshots,
@@ -324,6 +325,73 @@ class TestFleetRollup:
         assert rollup["stores"] == []
         assert rollup["total_attributed"] == 0.0
         assert rollup["store_count"] == 0
+
+
+class TestEngineRevenueHistory:
+    """Wave 30: per-engine attribution trend."""
+
+    def test_empty_when_no_snapshots(self, isolated_snapshots):
+        assert engine_revenue_history("loyalty") == []
+
+    def test_returns_only_rows_where_engine_present(
+        self, isolated_snapshots,
+    ):
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=_fake_report(
+                per_engine=[
+                    {"engine": "loyalty",
+                     "cluster": "retention",
+                     "revenue": 100.0},
+                ],
+            ),
+        ):
+            record_snapshot(window_hours=168.0)
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=_fake_report(
+                # loyalty absent in cycle 2 -> skipped
+                per_engine=[
+                    {"engine": "other_engine",
+                     "cluster": "retention",
+                     "revenue": 50.0},
+                ],
+            ),
+        ):
+            record_snapshot(window_hours=168.0)
+        rows = engine_revenue_history("loyalty")
+        # Only 1 cycle had loyalty -> 1 row
+        assert len(rows) == 1
+        assert rows[0]["attributed_revenue"] == 100.0
+        assert rows[0]["cluster"] == "retention"
+
+    def test_oldest_first_ordering(self, isolated_snapshots):
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=_fake_report(
+                per_engine=[
+                    {"engine": "loyalty",
+                     "cluster": "retention",
+                     "revenue": 100.0},
+                ],
+            ),
+        ):
+            record_snapshot(window_hours=168.0)
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=_fake_report(
+                per_engine=[
+                    {"engine": "loyalty",
+                     "cluster": "retention",
+                     "revenue": 500.0},
+                ],
+            ),
+        ):
+            record_snapshot(window_hours=168.0)
+        rows = engine_revenue_history("loyalty")
+        # Oldest snapshot first
+        assert rows[0]["attributed_revenue"] == 100.0
+        assert rows[1]["attributed_revenue"] == 500.0
 
 
 class TestClear:

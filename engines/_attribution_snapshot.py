@@ -285,6 +285,55 @@ def clear_snapshots() -> None:
             pass
 
 
+def engine_revenue_history(
+    engine_name: str,
+    *,
+    limit: int = 30,
+    store_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Per-snapshot attribution trend for a single engine.
+
+    Pulls recent snapshots (newest first by default; reverses
+    to oldest-first for trend rendering), filters each
+    snapshot's per_engine list to the named engine, and
+    returns one row per snapshot.
+
+    Args:
+        engine_name: Engine to filter on.
+        limit: Max snapshots to scan.
+        store_id: Optional per-store filter.
+
+    Returns:
+        Oldest-first list of
+        ``{snapshot_id, captured_at, cycle_run_id,
+        attributed_revenue, attributed_orders, confidence,
+        cluster}`` dicts. Snapshots where the engine has no
+        attribution row are SKIPPED (not rendered as zero
+        rows) so the history shows actual data points only.
+    """
+    snaps = recent_snapshots(limit=limit, store_id=store_id)
+    snaps.reverse()  # oldest first for trend
+    out: list[dict[str, Any]] = []
+    for s in snaps:
+        for e in s.per_engine:
+            if e.get("engine") == engine_name:
+                out.append({
+                    "snapshot_id": s.snapshot_id,
+                    "captured_at": s.captured_at,
+                    "cycle_run_id": s.cycle_run_id,
+                    "attributed_revenue": e.get(
+                        "attributed_revenue", 0.0,
+                    ),
+                    "attributed_orders": e.get(
+                        "attributed_orders", 0,
+                    ),
+                    "confidence": e.get("confidence"),
+                    "cluster": e.get("cluster"),
+                })
+                break
+    return out
+
+
 def stores_with_snapshots() -> list[str]:
     """Return unique store_ids that have at least one snapshot.
 
