@@ -36171,6 +36171,52 @@ def _validate_startup_config(command: str | None) -> None:
         sys.exit(2)
 
 
+def _maybe_bootstrap_secondary_adapters() -> None:
+    """Wave 51: best-effort registration of secondary adapter
+    categories (ads, email, search, shipping, image_cdn,
+    payment, scraper, etc).
+
+    Each category's bootstrap is idempotent + fail-soft. When
+    credentials are unset for a category, adapters register
+    but are skipped by the router via ``is_configured()``.
+
+    The Shopify bootstrap is separate (Wave 45) because it
+    needs explicit shop_url + access_token credentials, drawn
+    from env or StoreManager. Other categories use env-only
+    or per-category config aliases.
+    """
+    # Ads (Meta, Google)
+    try:
+        from core.adapters.ads.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
+    # Email (Brevo, Resend)
+    try:
+        from core.adapters.email.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
+    # Search (DDGS, etc)
+    try:
+        from core.adapters.search.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
+    # Shipping
+    try:
+        from core.adapters.shipping.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
+    # LLM (Ollama, etc)
+    try:
+        from core.adapters.llm.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _maybe_bootstrap_shopify_adapters() -> None:
     """Wave 45: ensure Shopify adapters are registered before
     any CLI command that needs them. The adapter package
@@ -36246,6 +36292,10 @@ def main(argv: list[str] | None = None) -> None:
     # adapters fails with "router: no adapter for ..." even
     # when the operator HAS configured credentials.
     _maybe_bootstrap_shopify_adapters()
+    # Wave 51: register secondary adapter categories (ads,
+    # email, search, shipping, LLM). Each is idempotent +
+    # fail-soft.
+    _maybe_bootstrap_secondary_adapters()
 
     if args.command == "store":
         dispatch = {
