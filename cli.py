@@ -8507,9 +8507,9 @@ def _cmd_daily_brief(args) -> None:
         for a in alerts:
             target = a.get("store_id") or a.get("engine") or "-"
             print(f"  [{a['kind']:<18s}] {target:<22s} {a['detail']}")
-        # Drill-down hint: pick the first sync-class alert
-        # and suggest the sync command. Engine-health alerts
-        # already drill via the engine_health section above.
+        # Drill-down hints: pick the FIRST actionable alert and
+        # suggest the matching fix command. Order matters --
+        # we prefer one strong hint over many weak ones.
         sync_alert = next(
             (
                 a for a in alerts
@@ -8520,12 +8520,34 @@ def _cmd_daily_brief(args) -> None:
             ),
             None,
         )
+        stale_cycle_alert = next(
+            (a for a in alerts if a.get("kind") == "stale_cycle"),
+            None,
+        )
         if sync_alert:
             print()
             print(
                 f"  Next: `shopai sync "
                 f"{sync_alert['store_id']}` to resolve the "
                 "first sync alert."
+            )
+        elif stale_cycle_alert:
+            # Wave 40: stale_cycle had no actionable hint
+            # before. Without one, operators see the warning
+            # and don't know whether to re-install cron, run
+            # cycle manually, or check for some other root
+            # cause.
+            print()
+            print(
+                "  Next: cron may have stopped firing. Either"
+            )
+            print(
+                "    `shopai cycle schedule` (re-emit the "
+                "cron / systemd / Task Scheduler config), or"
+            )
+            print(
+                "    `SHOPAI_CYCLE_RUN_CONFIRM=1 shopai cycle "
+                "run --yes` (manual one-shot)."
             )
     else:
         print("Alerts: (none)")
