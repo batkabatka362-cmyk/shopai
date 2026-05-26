@@ -26447,14 +26447,44 @@ def _cmd_post_launch(args) -> None:
 
     if not getattr(list_result, "ok", False):
         err = getattr(list_result, "error", "unknown")
+        # Wave 44: surface the actionable hint when the failure
+        # is the no-adapter-registered class. Without this,
+        # operators see the raw "router: no adapter for X" line
+        # and have no clue the root cause is missing bootstrap.
+        is_no_adapter = (
+            "no adapter for" in str(err)
+            or "no_adapter" in str(err)
+        )
         if as_json:
-            print(json.dumps({
+            payload = {
                 "ok": None,
                 "error": "products_fetch_failed",
                 "message": str(err),
-            }, indent=2))
+            }
+            if is_no_adapter:
+                payload["hint"] = (
+                    "Router has no Shopify adapter. Run "
+                    "`shopai store report <store_id>` to "
+                    "verify OAuth + token, then bootstrap "
+                    "the adapter."
+                )
+            print(json.dumps(payload, indent=2))
         else:
             print(f"Product fetch failed: {err}")
+            if is_no_adapter:
+                print()
+                print(
+                    "  Root cause: Shopify adapter not "
+                    "registered for this store. Either:"
+                )
+                print(
+                    f"    `shopai store report {store_id}`  "
+                    "(verify OAuth + token)"
+                )
+                print(
+                    f"    `shopai store auth-flow {store_id}` "
+                    "(re-install if token missing)"
+                )
         return
 
     data = getattr(list_result, "data", None) or {}
