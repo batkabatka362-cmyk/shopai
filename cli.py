@@ -17763,8 +17763,35 @@ def _cmd_cluster_plan(args) -> None:
         store_stats=_store_stats_for_captain(store_id),
     )
 
+    # Wave 81: surface niche bias for this cluster + store so
+    # operator sees WHY the captain is firing what it is. The
+    # orchestrator used the same merge_with_base call to pick
+    # this cluster's slot in the rotation.
+    niche_block: dict | None = None
+    if store_id:
+        try:
+            from engines._niche_priority import niche_cluster_focus
+            sm = _get_store_manager()
+            row = sm.get_store(store_id)
+            niche = ((row or {}).get("niche") or "").strip().lower()
+            if niche and niche != "general":
+                focus = niche_cluster_focus(niche)
+                rank = next(
+                    (i + 1 for i, name in enumerate(focus)
+                     if name == cluster_name),
+                    None,
+                )
+                niche_block = {
+                    "store_id": store_id,
+                    "niche": niche,
+                    "rank": rank,
+                    "in_bias": rank is not None,
+                }
+        except Exception:  # noqa: BLE001
+            niche_block = None
+
     if getattr(args, "json", False):
-        print(json.dumps({
+        payload = {
             "cluster": plan.cluster,
             "store_id": plan.store_id,
             "fire_count": plan.fire_count,
@@ -17773,10 +17800,27 @@ def _cmd_cluster_plan(args) -> None:
             "modifications_queued": plan.modifications_queued,
             "members_to_skip": plan.members_to_skip,
             "notes": plan.notes,
-        }, indent=2, default=str))
+        }
+        if niche_block:
+            payload["niche_bias"] = niche_block
+        print(json.dumps(payload, indent=2, default=str))
         return
 
     print(f"Captain plan: {plan.cluster}  (store={plan.store_id or 'all'})")
+    if niche_block:
+        n = niche_block.get("niche") or ""
+        rank = niche_block.get("rank")
+        if rank:
+            print(
+                f"  Niche bias: store -> {n}; this cluster is "
+                f"rank {rank} in the niche priority (Wave 73 "
+                f"orchestrator favours it)"
+            )
+        else:
+            print(
+                f"  Niche bias: store -> {n}; this cluster is "
+                f"NOT in the niche priority (base order applies)"
+            )
     print()
     print(
         f"  Auto-fire (additive):     "
