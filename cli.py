@@ -1374,6 +1374,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    # Wave 55: go-live pre-flight check
+    go_live_p = sub.add_parser(
+        "go-live",
+        help=(
+            "Pre-flight gate: 8 checks across shopify creds, "
+            "wired engines, audits, cycle history, spend caps, "
+            "revenue quarantine, notify webhook, AI strategy. "
+            "Returns ready / not-ready verdict + per-check fix "
+            "command. Run before flipping cron on for real-money "
+            "operation."
+        ),
+    )
+    go_live_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view",
+    )
+
     # Wave 53: external notification webhook fan-out
     notify_p = sub.add_parser(
         "notify",
@@ -6846,6 +6863,68 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
         print(
             "  Next: subsystem failed to load -- check "
             "logs / `data/` permissions."
+        )
+
+
+def _cmd_go_live(args) -> None:
+    """Wave 55: go-live readiness pre-flight."""
+    from engines._go_live_check import (
+        run_go_live_check, summarize,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    checks = run_go_live_check()
+    summary = summarize(checks)
+
+    if as_json:
+        print(json.dumps({
+            "summary": summary,
+            "checks": [
+                {
+                    "name": c.name, "status": c.status,
+                    "detail": c.detail, "fix": c.fix,
+                }
+                for c in checks
+            ],
+        }, indent=2, default=str))
+        return
+
+    print("Go-live readiness check")
+    print()
+    for c in checks:
+        marker = {
+            "pass": "[OK ]",
+            "warn": "[WRN]",
+            "fail": "[BAD]",
+        }.get(c.status, "[ ? ]")
+        print(
+            f"  {marker} {c.name:<26} {c.detail}"
+        )
+        if c.fix and c.status != "pass":
+            print(f"    fix: {c.fix}")
+    print()
+    verdict_marker = (
+        "[OK ]" if summary["verdict"] == "ready_to_go_live"
+        else "[BAD]"
+    )
+    print(
+        f"  {verdict_marker} VERDICT: "
+        f"{summary['verdict']}  "
+        f"(pass={summary['pass']} "
+        f"warn={summary['warn']} "
+        f"fail={summary['fail']})"
+    )
+    if summary["verdict"] == "ready_to_go_live":
+        print()
+        print(
+            "  Next: `shopai cycle schedule` and install "
+            "the emitted cron line."
+        )
+    else:
+        print()
+        print(
+            "  Resolve [BAD] items before scheduling live "
+            "cycles. [WRN] are advisory."
         )
 
 
@@ -36698,6 +36777,10 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_notify_check(args)
             return
         print("Usage: shopai notify {check}")
+        return
+
+    if args.command == "go-live":
+        _cmd_go_live(args)
         return
 
     if args.command == "transfer":
