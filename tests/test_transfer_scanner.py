@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 from engines._transfer_scanner import (
     TransferCandidate,
     TransferScanReport,
+    _classify_niche_compat,
     _score_candidate,
     scan_empire_transfers,
 )
@@ -178,3 +179,105 @@ class TestScanEmpire:
         )
         pair = report.top_pair
         assert pair == ("A", "B")
+
+
+class TestNicheCompatTaxonomy:
+    """Wave 82: _classify_niche_compat behaviour."""
+
+    def test_match_when_same_niche(self):
+        assert _classify_niche_compat("beauty", "beauty") == "match"
+
+    def test_match_case_insensitive(self):
+        assert _classify_niche_compat("Beauty", "BEAUTY") == "match"
+
+    def test_cross_when_different_niches(self):
+        assert _classify_niche_compat("beauty", "tech") == "cross"
+
+    def test_unknown_when_source_empty(self):
+        assert _classify_niche_compat("", "beauty") == "unknown"
+
+    def test_unknown_when_target_empty(self):
+        assert _classify_niche_compat("beauty", "") == "unknown"
+
+    def test_unknown_when_general(self):
+        # general reads as unset -- no real preference expressed
+        assert _classify_niche_compat("general", "beauty") == "unknown"
+        assert _classify_niche_compat("beauty", "general") == "unknown"
+
+
+class TestScanEmpireNicheAware:
+    """Wave 82: niche annotations + same_niche_only filter."""
+
+    def _winners_setup(self):
+        # 2 successful loyalty actions on A; B never tried it
+        actions = [
+            _action(action_id="a1", store_id="A"),
+            _action(action_id="a2", store_id="A"),
+        ]
+        outcomes_map = {
+            "a1": [_outcome(revenue=100)],
+            "a2": [_outcome(revenue=200)],
+        }
+        return actions, outcomes_map
+
+    def test_candidate_carries_niche_match_marker(self):
+        actions, outcomes_map = self._winners_setup()
+        q = _fake_queue(
+            executed=actions, outcomes_map=outcomes_map,
+        )
+        report = scan_empire_transfers(
+            queue=q,
+            stores=["A", "B"],
+            store_niches={"A": "beauty", "B": "beauty"},
+        )
+        assert report.total_candidates >= 1
+        top = report.candidates[0]
+        assert top.from_niche == "beauty"
+        assert top.to_niche == "beauty"
+        assert top.niche_compat == "match"
+
+    def test_candidate_carries_cross_marker_when_mixed_niches(self):
+        actions, outcomes_map = self._winners_setup()
+        q = _fake_queue(
+            executed=actions, outcomes_map=outcomes_map,
+        )
+        report = scan_empire_transfers(
+            queue=q,
+            stores=["A", "B"],
+            store_niches={"A": "beauty", "B": "tech"},
+        )
+        top = report.candidates[0]
+        assert top.niche_compat == "cross"
+
+    def test_same_niche_only_drops_cross_pairs(self):
+        # A is beauty, B is tech, C is beauty. Winner on A
+        # should only transfer to C, not B.
+        actions, outcomes_map = self._winners_setup()
+        q = _fake_queue(
+            executed=actions, outcomes_map=outcomes_map,
+        )
+        report = scan_empire_transfers(
+            queue=q,
+            stores=["A", "B", "C"],
+            store_niches={
+                "A": "beauty", "B": "tech", "C": "beauty",
+            },
+            same_niche_only=True,
+        )
+        # Every candidate must be A->C (same niche), not A->B
+        for c in report.candidates:
+            assert c.niche_compat == "match"
+            assert (c.from_store, c.to_store) == ("A", "C")
+
+    def test_unknown_compat_when_no_niches_supplied(self):
+        actions, outcomes_map = self._winners_setup()
+        q = _fake_queue(
+            executed=actions, outcomes_map=outcomes_map,
+        )
+        report = scan_empire_transfers(
+            queue=q,
+            stores=["A", "B"],
+            store_niches={},  # explicit empty -- no niches
+        )
+        top = report.candidates[0]
+        assert top.niche_compat == "unknown"

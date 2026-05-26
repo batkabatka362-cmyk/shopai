@@ -2357,6 +2357,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     transfer_scan_p.add_argument(
+        "--same-niche", action="store_true",
+        help=(
+            "Wave 82: filter to same-niche transfers only "
+            "(higher confidence). Cross-niche candidates are "
+            "dropped from the report."
+        ),
+    )
+    transfer_scan_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON",
     )
@@ -5520,10 +5528,12 @@ def _cmd_transfer_scan(args) -> None:
     min_pos = max(
         1, int(getattr(args, "min_positive", 2) or 2),
     )
+    same_niche = bool(getattr(args, "same_niche", False))
 
     report = scan_empire_transfers(
         top_k=top_k,
         min_positive_outcomes=min_pos,
+        same_niche_only=same_niche,
     )
 
     if as_json:
@@ -5531,6 +5541,7 @@ def _cmd_transfer_scan(args) -> None:
             "pairs_scanned": report.pairs_scanned,
             "total_candidates": report.total_candidates,
             "top_pair": list(report.top_pair) if report.top_pair else None,
+            "same_niche_only": same_niche,
             "candidates": [
                 {
                     "from_store": c.from_store,
@@ -5541,36 +5552,64 @@ def _cmd_transfer_scan(args) -> None:
                     "positive_outcomes": c.positive_outcomes,
                     "total_revenue": c.total_revenue,
                     "score": c.score,
+                    "from_niche": c.from_niche,
+                    "to_niche": c.to_niche,
+                    "niche_compat": c.niche_compat,
                 }
                 for c in report.candidates
             ],
         }, indent=2, default=str))
         return
 
+    suffix = " (same-niche only)" if same_niche else ""
     print(
         f"Transfer scan -- {report.pairs_scanned} pair(s) "
-        f"checked, {report.total_candidates} candidate(s)"
+        f"checked, {report.total_candidates} "
+        f"candidate(s){suffix}"
     )
     print()
     if not report.candidates:
-        print(
+        hint = (
+            "  (no same-niche transfers found; try without "
+            "--same-niche or lower --min-positive)"
+            if same_niche else
             "  (no transferable winners found; try lowering "
             "--min-positive)"
         )
+        print(hint)
         return
+    # Wave 82: niche-compat marker column.
     print(
         f"  {'from':<14} {'to':<14} {'engine':<24} "
-        f"{'pos':>4} {'$':>8}  score"
+        f"{'pos':>4} {'$':>8}  score  niche"
     )
+    compat_marker = {
+        "match": "[==]",
+        "cross": "[!=]",
+        "unknown": "[? ]",
+    }
     for c in report.candidates:
+        nm = compat_marker.get(c.niche_compat, "[? ]")
         print(
             f"  {c.from_store[:14]:<14} {c.to_store[:14]:<14} "
             f"{c.engine[:24]:<24} "
             f"{c.positive_outcomes:>4} "
             f"${c.total_revenue:>6,.0f}  "
-            f"{c.score:>6.1f}"
+            f"{c.score:>6.1f}  {nm}"
         )
     print()
+    if not same_niche:
+        # Only suggest the filter when it's still off.
+        cross_count = sum(
+            1 for c in report.candidates
+            if c.niche_compat == "cross"
+        )
+        if cross_count:
+            print(
+                f"  {cross_count} of {report.total_candidates} "
+                "are cross-niche -- run with `--same-niche` to "
+                "restrict to high-confidence transfers."
+            )
     print(
         "  Apply a single candidate: "
         "`shopai transfer apply --from X --to Y "
