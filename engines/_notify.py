@@ -315,12 +315,31 @@ def notify_check() -> dict[str, Any]:
         f"[{a.severity.upper()}] {a.message[:80]}"
         for a in fireable
     ]
-    payload = {
+    payload: dict[str, Any] = {
         "source": "shopai",
         "captured_at": now,
         "alerts": result["alerts"],
         "summary": " | ".join(summary_parts),
     }
+
+    # Wave 68: optionally include the empire summary paragraph
+    # alongside the alerts. Operator's Slack message becomes
+    # one-shot: alerts + 1-paragraph context.
+    if os.environ.get("SHOPAI_NOTIFY_INCLUDE_SUMMARY") == "1":
+        try:
+            from engines._empire_summarizer import (
+                summarize_empire,
+            )
+            empire = summarize_empire()
+            payload["empire_summary"] = {
+                "text": empire.text,
+                "used_llm": empire.used_llm,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "notify: empire summary inclusion failed: %s",
+                exc,
+            )
 
     if dry_run:
         result["payload"] = payload

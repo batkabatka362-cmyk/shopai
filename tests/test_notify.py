@@ -122,6 +122,69 @@ class TestNotifyCheck:
         assert "payload" in result
         assert result["payload"]["source"] == "shopai"
 
+    def test_empire_summary_included_when_env_set(
+        self, monkeypatch, tmp_path,
+    ):
+        """Wave 68: SHOPAI_NOTIFY_INCLUDE_SUMMARY=1 attaches
+        empire_summary block to payload."""
+        from unittest.mock import patch as _patch
+        from engines._empire_summarizer import EmpireSummary
+        monkeypatch.setenv(
+            "SHOPAI_NOTIFY_WEBHOOK_URL", "https://x",
+        )
+        monkeypatch.setenv("SHOPAI_NOTIFY_DRY_RUN", "1")
+        monkeypatch.setenv(
+            "SHOPAI_NOTIFY_INCLUDE_SUMMARY", "1",
+        )
+        monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+        fake_alerts = [NotifyAlert(
+            kind="stale_cycle", severity="warn",
+            message="test",
+        )]
+        fake_summary = EmpireSummary(
+            text="20 stores running smoothly.",
+            used_llm=False,
+        )
+        with _patch(
+            "engines._notify.collect_alerts",
+            return_value=fake_alerts,
+        ), _patch(
+            "engines._empire_summarizer.summarize_empire",
+            return_value=fake_summary,
+        ):
+            result = notify_check()
+        # Dry-run preserves the payload that would POST
+        assert "payload" in result
+        assert "empire_summary" in result["payload"]
+        assert (
+            result["payload"]["empire_summary"]["text"]
+            == "20 stores running smoothly."
+        )
+
+    def test_empire_summary_excluded_by_default(
+        self, monkeypatch, tmp_path,
+    ):
+        from unittest.mock import patch as _patch
+        monkeypatch.setenv(
+            "SHOPAI_NOTIFY_WEBHOOK_URL", "https://x",
+        )
+        monkeypatch.setenv("SHOPAI_NOTIFY_DRY_RUN", "1")
+        monkeypatch.delenv(
+            "SHOPAI_NOTIFY_INCLUDE_SUMMARY", raising=False,
+        )
+        monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+        fake_alerts = [NotifyAlert(
+            kind="stale_cycle", severity="warn",
+            message="t",
+        )]
+        with _patch(
+            "engines._notify.collect_alerts",
+            return_value=fake_alerts,
+        ):
+            result = notify_check()
+        assert "payload" in result
+        assert "empire_summary" not in result["payload"]
+
     def test_fireable_filtered_by_cooldown(
         self, monkeypatch, tmp_path,
     ):
