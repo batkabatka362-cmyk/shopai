@@ -1511,3 +1511,161 @@ undercut_detected   -> pricing:undercut_count
 Bus is observational + advisory. Captain CAN consume events
 via mapped signals, but doesn't HAVE to. Vertical authority
 unchanged.
+
+## Attribution AGI substrate (Waves 7-28, 2026-05-25 to 2026-05-26)
+
+Closes the autonomous loop's feedback cycle: Shopify orders
+-> per-cluster + per-engine revenue -> decision-time signal
+-> persistence -> regression detection -> bus feedback ->
+auto-quarantine -> release detection. 22 commits on top of
+the ant-colony foundation (a5559a0c -> c1cc42ae).
+
+### Substrate modules
+
+- ``engines/_revenue_attribution.py`` -- Wave 7+9. Joins
+  Shopify orders to clusters/engines via the tag catalog.
+  ``SharedCreditStrategy`` splits each order's revenue equally
+  across matched clusters/engines. ``AttributionReport``
+  carries per_cluster + per_engine. ``EngineAttribution``
+  + ``ClusterAttribution`` dataclasses with ``confidence``
+  buckets (none / low / medium / high based on
+  attributed_orders).
+
+- ``engines/_revenue_aware_orchestrator.py`` -- Wave 8.
+  ``RevenueAwareOrchestratorStrategy`` wraps any base strategy
+  and re-ranks cluster_focus by attributed revenue desc.
+  Threshold-gated ($10 default) to filter noise. Env-gated
+  via ``SHOPAI_REVENUE_AWARE_ORCHESTRATOR=1``.
+
+- ``engines/_revenue_aware_captain.py`` -- Wave 10. Same
+  pattern but for member selection within a cluster.
+  Optional drop-zero pruning when other members are earning
+  (with cold-start safety net). Env-gated via
+  ``SHOPAI_REVENUE_AWARE_CAPTAIN=1``.
+
+- ``engines/_attribution_snapshot.py`` -- Wave 11+14. JSON
+  persistence at ``data/attribution_snapshots.json`` (bounded
+  to 200 entries). Per-cycle + per-store. Pattern J guard for
+  tests. ``record_snapshot``, ``recent_snapshots``,
+  ``last_snapshot``, ``attribution_trend``,
+  ``stores_with_snapshots``, ``fleet_attribution_rollup``.
+
+- ``engines/_attribution_delta.py`` -- Wave 12+13. Diffs two
+  snapshots. ``ClusterDelta`` + ``EngineDelta`` with direction
+  property (up/down/new/dropped/flat). ``RegressionAlert``
+  fires when revenue drops >= 25% AND both sides had >= 3
+  attributed_orders. ``propagate_alerts_to_bus`` emits one
+  ``revenue_regression`` event per alert -- next cycle's
+  captain consumes via the bus's standard
+  ``cross_cluster_signals`` pipeline.
+
+- ``engines/_revenue_quarantine.py`` -- Wave 21+27. When an
+  engine appears in regression alerts across N consecutive
+  cycles, auto-add to ``quarantine.alert_paused`` (env-gated
+  ``SHOPAI_AUTO_QUARANTINE_FROM_REVENUE=1``). Symmetric
+  ``find_revenue_release_candidates()`` lists paused engines
+  that have been quiet long enough to safely release.
+
+### CLI surfaces added
+
+- ``shopai cycle attribution [--by cluster|engine]
+  [--window-hours N] [--store X]`` -- current snapshot view.
+- ``shopai cycle attribution-history [--store X] [--limit N]``
+  -- trend across recent cycles.
+- ``shopai cycle attribution-delta [--store X]
+  [--regression-pct N] [--min-orders N]`` -- cycle-over-
+  cycle diff with regression alerts.
+- ``shopai cycle revenue-fleet`` -- cross-store empire
+  rollup, sorted by attributed revenue desc.
+- ``shopai cluster list --with-attribution`` -- adds ATTR$
+  + revenue_verdict columns to the cluster overview.
+- ``shopai cluster show <name>`` -- now includes
+  ``Revenue (7d)`` section with top-5 earning engines.
+- ``shopai engine pulse <name>`` -- shows per-engine
+  attribution + cluster.
+- ``shopai approvals quarantine --revenue-streaks`` --
+  per-engine consecutive-cycle regression streaks.
+- ``shopai approvals quarantine --apply-revenue-bridge`` --
+  manually fire the auto-quarantine bridge.
+- ``shopai approvals quarantine --revenue-release-candidates``
+  -- engines safe to unpause.
+- ``shopai cycle status`` -- new ``Cycle-over-cycle delta``
+  block surfaces regressions inline.
+- ``shopai daily-brief`` -- new ``Revenue attribution (AGI,
+  7d)`` block surfaces the AGI-loop earnings rollup.
+- ``shopai world-model show <store>`` -- new
+  ``Revenue attribution:`` section per store.
+- ``shopai world-model fleet`` -- new ``ATTR$`` column.
+- ``shopai ai-strategy status`` -- surfaces revenue-aware
+  orchestrator + captain env state.
+
+### Wiring into ``cycle run --yes``
+
+Every live cycle now:
+
+  1. Fetches recent orders + builds attribution report.
+  2. Records a fleet-wide snapshot + one per active store.
+  3. Computes the latest delta (fleet + per-store).
+  4. Propagates regression alerts onto the cluster bus (fleet
+     + per-store).
+  5. Invokes ``maybe_auto_quarantine_from_revenue`` (fleet +
+     per-store).
+
+All steps best-effort -- failure logs at debug but does not
+break the cycle. Pattern J guards mean unit tests don't
+pollute snapshots / state.
+
+### AI strategy integration
+
+- ``AICaptainStrategy`` prompt context now includes per-engine
+  attribution scoped to wired_members (Wave 17).
+- ``AIOrchestratorStrategy`` prompt context includes per-store
+  top_clusters with attribution (Wave 24).
+
+Both fall back to deterministic behaviour when attribution
+data is unavailable -- LLM still works, just less informed.
+
+### New ClusterHealth signal (Wave 18)
+
+``ClusterHealth.revenue_verdict`` returns one of:
+  - ``earning`` -- attributed_revenue >= $10
+  - ``flat`` -- attributed but below threshold
+  - ``declining`` -- recent delta carries an alert against this
+    cluster (set via ``_force_declining`` flag from
+    ``enrich_with_attribution``)
+  - ``unknown`` -- no attribution_orders yet
+
+``MemoryAwareCaptainStrategy`` escalates verdict by one tier
+when ``revenue_verdict == "declining"`` (parallel to the
+``recent_regression_count`` bus signal path; never
+double-stacks).
+
+### Patterns introduced
+
+- **Pattern Z' (revenue substrate)**: every layer that
+  consumes attribution data falls back to deterministic
+  behaviour when snapshots/deltas are unavailable. Cold-start
+  empires don't crash; they just operate without the
+  revenue-driven heuristics until data accumulates.
+
+- **Pattern J extends to attribution snapshots**:
+  ``engines/_attribution_snapshot.record_snapshot`` and
+  ``engines/_revenue_quarantine.maybe_auto_quarantine_from_revenue``
+  short-circuit under pytest. Tests exercising the write
+  paths install ``_is_test_environment`` patches to lift the
+  guard.
+
+### Cycle-history determinism fix (Wave 19)
+
+``engines/_cycle_history.record_cycle_run`` adds a
+process-monotonic ``_next_seq()`` to ``run_id`` after the ns
+timestamp. On Windows ``time.time_ns()`` granularity is ~15ms
+so back-to-back records share timestamps; the sequence breaks
+the tie deterministically. Test ``test_last_run`` was flaky
+before this fix.
+
+### Tests
+
+355 tests across the attribution + ant-colony + AI + world-
+model + daily-brief suites. All deterministic on Windows
+(verified by running the full suite twice back-to-back).
