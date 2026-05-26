@@ -53,6 +53,79 @@ class LifetimeRollup:
         return round(self.total_added - self.total_lost, 2)
 
 
+def lifetime_per_cluster(
+    *,
+    limit: int = 200,
+    store_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Per-cluster lifetime contribution breakdown.
+
+    Walks cycle pairs (oldest first when reversed) and
+    aggregates per-cluster gain + loss from each delta's
+    per_cluster list. Returns one entry per cluster ranked by
+    net contribution desc.
+
+    Returns:
+        [{"cluster": str, "total_added": float,
+          "total_lost": float, "net": float,
+          "cycle_pairs_seen": int}, ...]
+    """
+    try:
+        from engines._attribution_snapshot import recent_snapshots
+        from engines._attribution_delta import compute_delta
+    except Exception:  # noqa: BLE001
+        return []
+
+    snaps = recent_snapshots(limit=limit, store_id=store_id)
+    if len(snaps) < 2:
+        return []
+
+    # Aggregate gain/loss per cluster across all cycle pairs
+    by_cluster: dict[str, dict[str, float | int]] = {}
+    for i in range(len(snaps) - 1):
+        latest = snaps[i]
+        prior = snaps[i + 1]
+        try:
+            delta = compute_delta(prior, latest)
+        except Exception:  # noqa: BLE001
+            continue
+        for cd in delta.per_cluster:
+            bucket = by_cluster.setdefault(
+                cd.cluster,
+                {
+                    "total_added": 0.0,
+                    "total_lost": 0.0,
+                    "cycle_pairs_seen": 0,
+                },
+            )
+            change = cd.revenue_delta
+            if change > 0:
+                bucket["total_added"] = round(
+                    float(bucket["total_added"]) + change, 2,
+                )
+            elif change < 0:
+                bucket["total_lost"] = round(
+                    float(bucket["total_lost"]) + abs(change), 2,
+                )
+            bucket["cycle_pairs_seen"] = (
+                int(bucket["cycle_pairs_seen"]) + 1
+            )
+
+    out: list[dict[str, Any]] = []
+    for cluster, bucket in by_cluster.items():
+        added = float(bucket["total_added"])
+        lost = float(bucket["total_lost"])
+        out.append({
+            "cluster": cluster,
+            "total_added": added,
+            "total_lost": lost,
+            "net": round(added - lost, 2),
+            "cycle_pairs_seen": bucket["cycle_pairs_seen"],
+        })
+    out.sort(key=lambda r: r["net"], reverse=True)
+    return out
+
+
 def lifetime_rollup(
     *,
     limit: int = 200,

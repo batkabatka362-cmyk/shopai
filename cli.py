@@ -1846,6 +1846,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max snapshots to scan (default 200 = full retention)",
     )
     cycle_attribution_lifetime_p.add_argument(
+        "--by", choices=["fleet", "cluster"], default="fleet",
+        help=(
+            "Aggregation: fleet (default, single rollup) OR "
+            "cluster (per-cluster breakdown sorted by net "
+            "contribution desc)"
+        ),
+    )
+    cycle_attribution_lifetime_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
     )
@@ -17015,11 +17023,58 @@ def _cmd_cycle_status(args) -> None:
 def _cmd_cycle_attribution_lifetime(args) -> None:
     """Cumulative AGI revenue contribution rollup."""
     import time as _time
-    from engines._attribution_lifetime import lifetime_rollup
+    from engines._attribution_lifetime import (
+        lifetime_per_cluster, lifetime_rollup,
+    )
 
     store_id = (getattr(args, "store", None) or "").strip() or None
     limit = max(2, int(getattr(args, "limit", 200) or 200))
+    by = (getattr(args, "by", None) or "fleet").strip().lower()
     as_json = bool(getattr(args, "json", False))
+
+    if by == "cluster":
+        rows = lifetime_per_cluster(
+            limit=limit, store_id=store_id,
+        )
+        if as_json:
+            print(json.dumps({
+                "by": "cluster",
+                "filter_store": store_id,
+                "count": len(rows),
+                "rows": rows,
+            }, indent=2, default=str))
+            return
+        scope = f"store={store_id}" if store_id else "fleet-wide"
+        print(
+            f"AGI lifetime revenue contribution by cluster  "
+            f"({scope})"
+        )
+        print()
+        if not rows:
+            print(
+                "  (need at least 2 snapshots; run a few cycles "
+                "first)"
+            )
+            return
+        print(
+            f"  {'cluster':<16} {'+gain':>12} {'-loss':>12} "
+            f"{'net':>12}  cycle_pairs"
+        )
+        for r in rows:
+            sign = "+" if r["net"] >= 0 else ""
+            print(
+                f"  {r['cluster']:<16} "
+                f"${r['total_added']:>10,.2f}  "
+                f"${r['total_lost']:>10,.2f}  "
+                f"{sign}${r['net']:>10,.2f}  "
+                f"{r['cycle_pairs_seen']}"
+            )
+        print()
+        print(
+            "  Note: 'lifetime' = snapshot retention window "
+            "(last 200 cycles)."
+        )
+        return
 
     rollup = lifetime_rollup(limit=limit, store_id=store_id)
 
