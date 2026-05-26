@@ -35455,6 +35455,61 @@ def _validate_startup_config(command: str | None) -> None:
         sys.exit(2)
 
 
+def _maybe_bootstrap_shopify_adapters() -> None:
+    """Wave 45: ensure Shopify adapters are registered before
+    any CLI command that needs them. The adapter package
+    intentionally does NOT auto-register on import (test
+    isolation). But every CLI invocation that touches Shopify
+    fails noisily when adapters are absent.
+
+    Best-effort credential resolution (in order):
+      1. Env vars (SHOPIFY_SHOP_URL / SHOPIFY_ACCESS_TOKEN +
+         legacy SHOPAI_SHOPIFY_URL / SHOPAI_SHOPIFY_TOKEN)
+      2. Active store's credentials via StoreManager
+    """
+    shop_url = ""
+    access_token = ""
+    # Path 1: env vars
+    shop_url = (
+        os.environ.get("SHOPIFY_SHOP_URL")
+        or os.environ.get("SHOPIFY_STORE_URL")
+        or os.environ.get("SHOPAI_SHOPIFY_URL")
+        or ""
+    )
+    access_token = (
+        os.environ.get("SHOPIFY_ACCESS_TOKEN")
+        or os.environ.get("SHOPIFY_TOKEN")
+        or os.environ.get("SHOPAI_SHOPIFY_TOKEN")
+        or ""
+    )
+    # Path 2: active store
+    if not (shop_url and access_token):
+        try:
+            from data_pipeline.store.store_manager import (
+                StoreManager,
+            )
+            sm = StoreManager()
+            creds = sm.get_credentials() or {}
+            shop_url = shop_url or creds.get("shop_url", "")
+            access_token = access_token or creds.get(
+                "api_key", "",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    if not (shop_url and access_token):
+        return
+    try:
+        from core.adapters.shopify.bootstrap import register_all
+        register_all(
+            shop_url=shop_url, access_token=access_token,
+        )
+    except Exception:  # noqa: BLE001
+        # Bootstrap failure is logged inside register_all;
+        # we don't want to crash the CLI startup.
+        pass
+
+
 def main(argv: list[str] | None = None) -> None:
     # Load .env if it exists
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -35469,6 +35524,12 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     _validate_startup_config(getattr(args, "command", None))
+
+    # Wave 45: register Shopify adapters if credentials are
+    # available in env. Without this, every command that needs
+    # adapters fails with "router: no adapter for ..." even
+    # when the operator HAS configured credentials.
+    _maybe_bootstrap_shopify_adapters()
 
     if args.command == "store":
         dispatch = {
