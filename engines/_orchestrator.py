@@ -143,9 +143,23 @@ class DeterministicOrchestratorStrategy:
         world_model: dict[str, Any],
     ) -> StorePriority:
         stats = (world_model or {}).get("stats", {}) or {}
+        store_info = (world_model or {}).get("store", {}) or {}
+        niche = store_info.get("niche") if isinstance(
+            store_info, dict,
+        ) else None
         products = int(stats.get("products", 0) or 0)
         orders = int(stats.get("orders", 0) or 0)
         revenue = float(stats.get("total_revenue", 0.0) or 0.0)
+
+        # Wave 73: niche-aware merge helper. When a store has
+        # a niche set, the cluster_focus list gets niche
+        # preferences prepended (preserving lifecycle base).
+        def _merge_niche(base_clusters: list[str]) -> list[str]:
+            try:
+                from engines._niche_priority import merge_with_base
+                return merge_with_base(base_clusters, niche)
+            except Exception:  # noqa: BLE001
+                return list(base_clusters)
 
         # LAUNCHING: store doesn't have products yet or
         # zero orders
@@ -153,14 +167,18 @@ class DeterministicOrchestratorStrategy:
             return StorePriority(
                 store_id=store_id,
                 priority="launching",
-                cluster_focus=_PRIORITY_CLUSTERS["launching"],
+                cluster_focus=_merge_niche(
+                    _PRIORITY_CLUSTERS["launching"],
+                ),
                 rationale=(
                     f"products={products} orders={orders} "
                     f"-- still in launch phase"
+                    + (f" (niche={niche})" if niche else "")
                 ),
                 signals={
                     "is_new_store": True,
                     "product_count": products,
+                    "niche": niche,
                 },
             )
 
@@ -173,12 +191,18 @@ class DeterministicOrchestratorStrategy:
             return StorePriority(
                 store_id=store_id,
                 priority="at_risk",
-                cluster_focus=_PRIORITY_CLUSTERS["at_risk"],
+                cluster_focus=_merge_niche(
+                    _PRIORITY_CLUSTERS["at_risk"],
+                ),
                 rationale=(
                     f"avg_order=${avg_order:.2f} -- "
                     f"suspiciously low; possible churn"
+                    + (f" (niche={niche})" if niche else "")
                 ),
-                signals={"avg_order_value": avg_order},
+                signals={
+                    "avg_order_value": avg_order,
+                    "niche": niche,
+                },
             )
 
         # MATURE: meaningful order count
@@ -186,14 +210,18 @@ class DeterministicOrchestratorStrategy:
             return StorePriority(
                 store_id=store_id,
                 priority="mature",
-                cluster_focus=_PRIORITY_CLUSTERS["mature"],
+                cluster_focus=_merge_niche(
+                    _PRIORITY_CLUSTERS["mature"],
+                ),
                 rationale=(
                     f"orders={orders} revenue=${revenue:.2f} "
                     f"-- established store"
+                    + (f" (niche={niche})" if niche else "")
                 ),
                 signals={
                     "is_mature": True,
                     "avg_order_value": avg_order,
+                    "niche": niche,
                 },
             )
 
@@ -201,11 +229,17 @@ class DeterministicOrchestratorStrategy:
         return StorePriority(
             store_id=store_id,
             priority="growing",
-            cluster_focus=_PRIORITY_CLUSTERS["growing"],
+            cluster_focus=_merge_niche(
+                _PRIORITY_CLUSTERS["growing"],
+            ),
             rationale=(
                 f"orders={orders} -- growth phase"
+                + (f" (niche={niche})" if niche else "")
             ),
-            signals={"growth_phase": True},
+            signals={
+                "growth_phase": True,
+                "niche": niche,
+            },
         )
 
 
