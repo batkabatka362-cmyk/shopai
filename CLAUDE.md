@@ -1881,3 +1881,125 @@ even as stores grow linearly.
 
 200+ tests across operational + empire-scale + attribution +
 ant-colony stacks. All deterministic on Windows.
+
+## Niche-aware substrate (Waves 71-77, 2026-05-27)
+
+Wave 47-70 shipped operational readiness + empire-scale
+throughput. Wave 71-77 makes the substrate AWARE: cross-store
+opportunities surface automatically + each store's orchestration
+adapts to its niche.
+
+### Wave 71 -- ``shopai transfer scan``
+
+- ``engines/_transfer_scanner.py``: walks every store pair,
+  finds (engine, action_type, capability) tuples that
+  succeeded on source AND haven't been tried on target.
+- Score: ``positive_outcomes * log10(revenue + 10)``. Min
+  positive threshold = 2 (configurable). Top-k limit.
+- ``shopai transfer scan [--top N] [--min-positive N]``.
+- Replaces 380 manual ``transfer suggest`` calls for 20-store
+  empire (n*(n-1) pairs at 20 stores).
+- Two-pass algorithm: aggregate per-tuple WITHOUT min filter
+  first, then filter on tuple totals. (Initial single-pass
+  bug filtered per-action; 3 actions of 1 outcome each had
+  tuple total = 3 but each failed min=2.)
+
+### Wave 72 -- transfer candidates in empire dashboard
+
+- ``shopai empire`` shows transfer candidate count inline +
+  drill hint. JSON envelope gains "transfers" key.
+- Empire summarizer's deterministic text appends
+  "N cross-store transfer candidate(s) (top: ENGINE) --
+  run shopai transfer scan to drill" when count > 0.
+
+### Wave 73 -- niche-aware orchestrator
+
+- ``engines/_niche_priority.py``: 5 niches (beauty / fashion
+  / home / tech / food) each map to ordered cluster
+  preference. ``merge_with_base(base_focus, niche)`` puts
+  niche clusters FIRST then base, dedupe-preserving.
+- ``DeterministicOrchestratorStrategy`` reads
+  ``world_model.store.niche`` + applies ``_merge_niche()``
+  to every lifecycle priority (launching / growing / mature
+  / at_risk). Signals carry ``"niche": niche`` for
+  downstream consumers.
+- Per-niche cluster preferences:
+  - beauty: merchandising -> content -> retention
+  - fashion: merchandising -> content -> acquisition
+  - home: quality -> merchandising -> retention
+  - tech: quality -> pricing -> merchandising
+  - food: fulfillment -> retention -> pricing
+  - general / empty: no preference (use base unchanged)
+
+### Wave 74 -- ``shopai niche`` discovery CLI
+
+- ``shopai niche`` -- list 5 supported niches + top-3 clusters
+- ``shopai niche --show beauty`` -- full priority for one
+- ``shopai niche --by-store`` -- which stores tagged with what
+
+### Wave 75 -- AI prompts include niche
+
+- ``AICaptainStrategy``: reads niche from ``signals["niche"]``
+  (orchestrator threads it). System prompt nudge: "Niche
+  affects engine preference -- beauty stores favour loyalty
+  over generic outreach; tech stores favour
+  review_management".
+- ``AIOrchestratorStrategy``: reads via
+  ``_store_niche(store_id)``. System prompt nudge: "Niche
+  affects pacing -- beauty/fashion stores ramp faster than
+  tech/home".
+
+### Wave 76 -- go-live warns on untagged niches
+
+- ``engines/_go_live_check._check_store_niches()`` flags
+  stores with empty or "general" niche. Warn (not fail) --
+  niche is optional but recommended.
+- Brings ``run_go_live_check()`` to 9 checks (was 8).
+- Operator sees ``[WRN] store_niches  2 store(s) untagged:
+  test, ts0efe-ih`` with fix hint inline.
+
+### Wave 77 -- ``shopai niche --set STORE NICHE`` in-place update
+
+- ``StoreManager.update_store_niche(store_id, niche)`` --
+  raw SQL UPDATE; preserves credentials + history. Previously
+  the operator had to remove + re-add, losing OAuth state.
+- CLI validates niche against the supported set + "general";
+  rejects with friendly error listing allowed values.
+- Confirms with new top-3 cluster priority preview.
+
+### Operator's niche-aware workflow
+
+```bash
+# Discovery + tagging
+shopai niche                       # see 5 niches
+shopai niche --show beauty         # drill one niche
+shopai niche --by-store            # current tags
+shopai niche --set store-7 beauty  # retag a store
+shopai go-live                     # warns if any untagged
+
+# Empire view (niche-aware downstream)
+shopai empire --summarize --store store-7
+shopai cycle run                   # orchestrator + captain
+                                    # AI prompts include niche
+shopai transfer scan               # cross-store winners
+```
+
+### Why this compounds with prior waves
+
+Wave 7-36 captured per-cluster + per-engine revenue. Wave 73
+makes the orchestrator USE niche-bias on top of revenue-bias
+(Wave 8): a beauty store's cluster_focus is ``[merchandising,
+content, retention, acquisition, pricing, quality]`` -- niche
+first, then base. Wave 8's revenue-aware wrapper can still
+re-rank within this list if attribution data exists. Same
+deterministic ant-colony substrate; smarter input.
+
+### Tests
+
+- ``test_niche_priority.py`` -- 14 tests covering
+  niche_cluster_focus + merge_with_base semantics
+- ``test_transfer_scanner.py`` -- 10 tests on scoring +
+  scan algorithm
+- ``test_go_live_check.py`` -- 2 new tests for niche check
+
+77 substrate waves total. 463 commits ahead of main.
