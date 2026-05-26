@@ -4101,6 +4101,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Page size (default: 20)",
     )
 
+    # Wave 49: AI pre-vet for pending actions
+    approvals_prevet = approvals_sub.add_parser(
+        "prevet",
+        help=(
+            "Wave 49: AI pre-vet of pending actions. For each "
+            "PENDING action, an LLM (or deterministic baseline) "
+            "recommends approve / reject / hold with rationale. "
+            "Read-only -- operator still decides."
+        ),
+    )
+    approvals_prevet.add_argument(
+        "--engine", default=None,
+        help="Filter to a single engine namespace",
+    )
+    approvals_prevet.add_argument(
+        "--limit", type=int, default=20,
+        help="Page size (default: 20)",
+    )
+    approvals_prevet.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text table",
+    )
+
     approvals_stats = approvals_sub.add_parser(
         "stats", help="Per-status counts in the approval queue",
     )
@@ -32125,6 +32148,9 @@ def _cmd_approvals(args) -> None:
     if verb == "pending":
         _cmd_approvals_pending(args)
         return
+    if verb == "prevet":
+        _cmd_approvals_prevet(args)
+        return
     if verb == "stats":
         _cmd_approvals_stats(args)
         return
@@ -34348,6 +34374,115 @@ def _cmd_approvals_history(args) -> None:
                 f"  Drill down: `shopai approvals show "
                 f"{top_id}`"
             )
+
+
+def _cmd_approvals_prevet(args) -> None:
+    """Wave 49: AI pre-vet recommendations for pending actions.
+
+    For each pending action, runs the deterministic heuristic
+    (always) + LLM consultation (when SHOPAI_AI_PREVET=1 and
+    LLM available). Surfaces recommendation + confidence +
+    rationale + flags. Read-only -- operator still decides.
+    """
+    from core.approval import get_approval_queue
+    from engines._approval_prevet import (
+        is_enabled, prevet_batch,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    queue = get_approval_queue()
+    actions = queue.list_pending(
+        engine=args.engine, limit=args.limit,
+    )
+
+    if not actions:
+        if as_json:
+            print(json.dumps({
+                "count": 0,
+                "recommendations": [],
+            }, indent=2))
+            return
+        if args.engine:
+            print(
+                f"No pending actions for engine "
+                f"{args.engine!r}."
+            )
+        else:
+            print("No pending actions.")
+        return
+
+    recs = prevet_batch(actions)
+
+    if as_json:
+        payload = {
+            "count": len(recs),
+            "ai_enabled": is_enabled(),
+            "recommendations": [
+                {
+                    "action_id": r.action_id,
+                    "engine": getattr(
+                        next(
+                            (a for a in actions
+                             if str(a.id) == r.action_id), None,
+                        ),
+                        "engine", "?",
+                    ),
+                    "recommendation": r.recommendation,
+                    "confidence": round(r.confidence, 2),
+                    "rationale": r.rationale,
+                    "flags": r.flags,
+                }
+                for r in recs
+            ],
+        }
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
+    print(
+        f"Pre-vet recommendations  "
+        f"({len(recs)} pending; AI="
+        f"{'on' if is_enabled() else 'off'})"
+    )
+    print()
+    print(
+        f"  {'action':<14} {'engine':<24} "
+        f"{'rec':<10} {'conf':>5}  rationale"
+    )
+    counts: dict[str, int] = {"approve": 0, "reject": 0, "hold": 0}
+    for r in recs:
+        engine = next(
+            (a for a in actions if str(a.id) == r.action_id),
+            None,
+        )
+        engine_name = (
+            getattr(engine, "engine", "?") if engine else "?"
+        )
+        marker = {
+            "approve": "[OK ]",
+            "reject": "[BAD]",
+            "hold": "[ - ]",
+        }.get(r.recommendation, "[ ? ]")
+        rationale = r.rationale[:60]
+        print(
+            f"  {r.action_id[:12]:<14} {engine_name[:24]:<24} "
+            f"{marker} {r.recommendation:<5} "
+            f"{r.confidence:>4.2f}  {rationale}"
+        )
+        counts[r.recommendation] = counts.get(
+            r.recommendation, 0,
+        ) + 1
+    print()
+    print(
+        f"  Summary:  approve={counts.get('approve', 0)}  "
+        f"reject={counts.get('reject', 0)}  "
+        f"hold={counts.get('hold', 0)}"
+    )
+    print()
+    if counts.get("approve", 0) > 0:
+        print(
+            "  Bulk approve high-confidence: "
+            "`shopai approvals approve-all --min-confidence 0.7`"
+        )
 
 
 def _cmd_approvals_pending(args) -> None:
