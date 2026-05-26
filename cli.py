@@ -1374,6 +1374,63 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    # Wave 52: webhook ingestion CLI receiver
+    webhook_p = sub.add_parser(
+        "webhook",
+        help=(
+            "Receive a Shopify (or similar) webhook event. "
+            "Routes the payload through the existing "
+            "WebhookFeedbackBridge so the autonomous loop "
+            "can tag the event to the engine that triggered "
+            "it. The CLI is the receive-side for an external "
+            "nginx / Cloud Run / Lambda webhook endpoint."
+        ),
+    )
+    webhook_sub = webhook_p.add_subparsers(dest="webhook_action")
+
+    webhook_receive_p = webhook_sub.add_parser(
+        "receive",
+        help=(
+            "Ingest one webhook event. Pass --topic + "
+            "--payload-json, OR --from-stdin to read JSON "
+            "from stdin."
+        ),
+    )
+    webhook_receive_p.add_argument(
+        "--topic", default=None,
+        help=(
+            "Webhook topic (e.g. orders/create, "
+            "customers/create, refunds/create)"
+        ),
+    )
+    webhook_receive_p.add_argument(
+        "--payload-json", default=None,
+        help="Payload JSON string",
+    )
+    webhook_receive_p.add_argument(
+        "--from-stdin", action="store_true",
+        help=(
+            "Read {topic, payload} JSON envelope from stdin "
+            "(pipeable from curl etc)"
+        ),
+    )
+    webhook_receive_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
+    webhook_stats_p = webhook_sub.add_parser(
+        "stats",
+        help=(
+            "Show webhook bridge stats: events seen, matched, "
+            "orphaned, errors."
+        ),
+    )
+    webhook_stats_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON",
+    )
+
     # Wave 50: per-engine ROAS report
     roas_p = sub.add_parser(
         "roas",
@@ -6766,6 +6823,151 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
             "  Next: subsystem failed to load -- check "
             "logs / `data/` permissions."
         )
+
+
+def _cmd_webhook_receive(args) -> None:
+    """Wave 52: ingest one webhook event.
+
+    Pipes the payload through WebhookFeedbackBridge so the
+    autonomous loop tags the event to the engine that
+    triggered it. Operator wires this to nginx / curl in an
+    external webhook receiver:
+
+        curl -X POST localhost:8080/webhook | \\
+            shopai webhook receive --from-stdin
+
+    Or pass --topic + --payload-json directly for testing.
+    """
+    from core.feedback.webhook_bridge import (
+        get_webhook_feedback_bridge,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    topic = (getattr(args, "topic", None) or "").strip() or None
+    payload_json = getattr(args, "payload_json", None)
+    from_stdin = bool(getattr(args, "from_stdin", False))
+
+    payload: dict | None = None
+
+    if from_stdin:
+        try:
+            raw = sys.stdin.read()
+            envelope = json.loads(raw) if raw else {}
+        except (json.JSONDecodeError, OSError) as exc:
+            msg = f"stdin parse failed: {exc}"
+            if as_json:
+                print(json.dumps(
+                    {"status": "error", "error": msg},
+                    indent=2,
+                ))
+            else:
+                print(f"Error: {msg}")
+            sys.exit(1)
+            return
+        if not isinstance(envelope, dict):
+            msg = "stdin must be a JSON object"
+            if as_json:
+                print(json.dumps(
+                    {"status": "error", "error": msg},
+                    indent=2,
+                ))
+            else:
+                print(f"Error: {msg}")
+            sys.exit(1)
+            return
+        topic = topic or envelope.get("topic")
+        payload = envelope.get("payload") or envelope.get(
+            "body",
+        )
+
+    if payload_json:
+        try:
+            payload = json.loads(payload_json)
+        except json.JSONDecodeError as exc:
+            msg = f"--payload-json invalid: {exc}"
+            if as_json:
+                print(json.dumps(
+                    {"status": "error", "error": msg},
+                    indent=2,
+                ))
+            else:
+                print(f"Error: {msg}")
+            sys.exit(1)
+            return
+
+    if not topic:
+        msg = "missing --topic (or topic field in stdin envelope)"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg}, indent=2,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+        return
+
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        msg = "payload must be a JSON object"
+        if as_json:
+            print(json.dumps(
+                {"status": "error", "error": msg}, indent=2,
+            ))
+        else:
+            print(f"Error: {msg}")
+        sys.exit(1)
+        return
+
+    bridge = get_webhook_feedback_bridge()
+    result = bridge.handle_event(topic, payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    status = result.get("status", "?")
+    marker = {
+        "matched": "[OK ]",
+        "orphan": "[ - ]",
+        "noop": "[ - ]",
+        "error": "[BAD]",
+    }.get(status, "[ ? ]")
+    print(f"Webhook event ingested  {marker} {status}")
+    print(f"  topic:        {topic}")
+    if result.get("reason"):
+        print(f"  reason:       {result['reason']}")
+    if result.get("engine"):
+        print(f"  matched_engine: {result['engine']}")
+    if result.get("polarity"):
+        print(f"  polarity:     {result['polarity']}")
+
+
+def _cmd_webhook_stats(args) -> None:
+    """Show WebhookFeedbackBridge stats."""
+    from core.feedback.webhook_bridge import (
+        get_webhook_feedback_bridge,
+    )
+    as_json = bool(getattr(args, "json", False))
+    bridge = get_webhook_feedback_bridge()
+    stats = bridge.get_stats() or {}
+    if as_json:
+        print(json.dumps(stats, indent=2, default=str))
+        return
+    print("Webhook bridge stats")
+    print()
+    print(
+        f"  events_seen:  {stats.get('events_seen', 0)}"
+    )
+    print(
+        f"  matched:      {stats.get('matched', 0)}"
+    )
+    print(
+        f"  orphaned:     {stats.get('orphaned', 0)}"
+    )
+    print(
+        f"  errors:       {stats.get('errors', 0)}"
+    )
 
 
 def _cmd_roas(args) -> None:
@@ -36338,6 +36540,17 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "roas":
         _cmd_roas(args)
+        return
+
+    if args.command == "webhook":
+        action = getattr(args, "webhook_action", None)
+        if action == "receive":
+            _cmd_webhook_receive(args)
+            return
+        if action == "stats":
+            _cmd_webhook_stats(args)
+            return
+        print("Usage: shopai webhook {receive|stats}")
         return
 
     if args.command == "transfer":
