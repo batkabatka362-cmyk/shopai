@@ -19046,6 +19046,58 @@ def _cmd_cycle_schedule(args) -> None:
         "  Test live, once:       "
         f"{cycle_cmd}"
     )
+    # Wave 54: also suggest notify-check companion line. Push
+    # alerts when cron dies or revenue regresses are no good
+    # if operator only sees them by running daily-brief.
+    notify_cmd = (
+        f"python {repo_root}/cli.py notify check"
+    )
+    if platform == "cron":
+        print()
+        print(
+            "  Optional notify-check companion (15-min "
+            "cadence; alerts to SHOPAI_NOTIFY_WEBHOOK_URL):"
+        )
+        print()
+        notify_line = f"*/15 * * * * {notify_cmd}"
+        if log_file:
+            notify_line += f" >> {log_file} 2>&1"
+        print(f"    {notify_line}")
+        print()
+        print(
+            "  Set webhook URL first:"
+        )
+        print(
+            '    export SHOPAI_NOTIFY_WEBHOOK_URL='
+            '"https://hooks.slack.com/..."'
+        )
+    elif platform == "windows-task":
+        print()
+        print(
+            "  Optional notify-check companion (15-min, "
+            "fires Slack/Pushbullet/etc):"
+        )
+        py = _os.path.join(
+            _os.path.dirname(sys.executable), "python.exe",
+        )
+        notify_ps = (
+            f'& "{py}" "{repo_root}\\cli.py" notify check'
+        )
+        print(
+            f'    schtasks /create /tn "ShopAI-Notify" '
+            f'/tr "powershell.exe -NoProfile -Command \"{notify_ps}\"" '
+            "/sc minute /mo 15 /f"
+        )
+    elif platform == "systemd":
+        print()
+        print(
+            "  Optional notify-check companion (15-min timer)"
+        )
+        print("  -- mirror the .service/.timer pattern above, ")
+        print(
+            "     swap ExecStart for "
+            f"`{notify_cmd}` and OnCalendar=*:0/15"
+        )
 
 
 def _freq_to_seconds(freq: str) -> int:
