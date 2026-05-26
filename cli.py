@@ -1422,6 +1422,25 @@ def build_parser() -> argparse.ArgumentParser:
             "home / tech / food / general)."
         ),
     )
+    # Wave 83: auto-suggest niche from product catalog
+    niche_p.add_argument(
+        "--suggest", metavar="STORE_ID", default=None,
+        help=(
+            "Auto-detect niche from the store's product "
+            "catalog (deterministic keyword classifier). "
+            "Read-only by default; combine with --apply to "
+            "write the suggestion via the Wave 77 in-place "
+            "update."
+        ),
+    )
+    niche_p.add_argument(
+        "--apply", action="store_true",
+        help=(
+            "With --suggest: commit the suggestion when "
+            "confidence is medium or high. Low / no_data "
+            "suggestions are refused."
+        ),
+    )
     niche_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON",
@@ -7204,7 +7223,8 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
 
 
 def _cmd_niche(args) -> None:
-    """Wave 74 + 77: niche operator discovery + update."""
+    """Wave 74 + 77 + 83: niche operator discovery + update +
+    auto-suggest."""
     from engines._niche_priority import (
         niche_cluster_focus, supported_niches,
     )
@@ -7213,6 +7233,115 @@ def _cmd_niche(args) -> None:
     show_one = (getattr(args, "show", None) or "").strip()
     by_store = bool(getattr(args, "by_store", False))
     set_pair = getattr(args, "set", None)
+    suggest_store = (
+        getattr(args, "suggest", None) or ""
+    ).strip()
+    apply_suggestion = bool(getattr(args, "apply", False))
+
+    # Wave 83: --suggest STORE_ID auto-detects from product
+    # catalog. Optional --apply commits via Wave 77 path.
+    if suggest_store:
+        from engines._niche_detector import suggest_niche_for_store
+        sm = _get_store_manager()
+        det = suggest_niche_for_store(
+            suggest_store, store_manager=sm,
+        )
+        if det is None:
+            msg = f"Store '{suggest_store}' not found"
+            if as_json:
+                print(json.dumps({
+                    "status": "error", "error": msg,
+                }, indent=2))
+            else:
+                print(f"Error: {msg}")
+            sys.exit(1)
+            return
+        applied = False
+        if apply_suggestion and det.is_actionable:
+            res = sm.update_store_niche(
+                suggest_store, det.suggested,
+            )
+            applied = not res.get("error")
+        payload = {
+            "store_id": suggest_store,
+            "suggested": det.suggested,
+            "confidence": det.confidence,
+            "products_analyzed": det.products_analyzed,
+            "total_matches": det.total_matches,
+            "top_score_ratio": det.top_score_ratio,
+            "scores": det.scores,
+            "actionable": det.is_actionable,
+            "applied": applied,
+        }
+        if as_json:
+            print(json.dumps(payload, indent=2, default=str))
+            return
+        print(
+            f"Niche suggestion for store '{suggest_store}':"
+        )
+        print()
+        print(
+            f"  Analyzed:    {det.products_analyzed} product(s)"
+        )
+        print(
+            f"  Top matches: {det.total_matches} keyword hit(s)"
+        )
+        if det.confidence == "no_data":
+            print()
+            print(
+                "  Verdict: NO DATA -- catalog empty or no "
+                "niche keywords matched. Seed products first "
+                "or set manually:"
+            )
+            print(
+                f"    shopai niche --set {suggest_store} "
+                "<beauty|fashion|home|tech|food>"
+            )
+            return
+        marker = {
+            "high": "[HI ]",
+            "medium": "[MED]",
+            "low": "[LOW]",
+        }.get(det.confidence, "[ ? ]")
+        print(
+            f"  Suggested:   {marker} {det.suggested} "
+            f"(confidence={det.confidence}, "
+            f"top_ratio={det.top_score_ratio:.0%})"
+        )
+        # Per-niche breakdown when there's something interesting
+        breakdown = sorted(
+            ((n, s) for n, s in det.scores.items() if s > 0),
+            key=lambda kv: -kv[1],
+        )
+        if breakdown:
+            print()
+            print("  Scores:")
+            for niche, score in breakdown:
+                print(f"    {niche:<10}  {score:>4}")
+        print()
+        if applied:
+            print(
+                f"  Applied: store '{suggest_store}' niche "
+                f"now set to '{det.suggested}'."
+            )
+        elif apply_suggestion and not det.is_actionable:
+            print(
+                "  --apply refused: confidence too low. "
+                "Seed more products or set manually."
+            )
+        elif det.is_actionable:
+            print(
+                f"  Apply: `shopai niche --suggest "
+                f"{suggest_store} --apply` (commits via "
+                "Wave 77 in-place update)"
+            )
+        else:
+            print(
+                "  Confidence too low to auto-apply. "
+                "Catalog is heterogeneous -- pick a niche "
+                "manually via `shopai niche --set`."
+            )
+        return
 
     # Wave 77: --set STORE NICHE updates an existing store
     if set_pair:
