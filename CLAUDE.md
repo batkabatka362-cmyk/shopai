@@ -1669,3 +1669,125 @@ before this fix.
 355 tests across the attribution + ant-colony + AI + world-
 model + daily-brief suites. All deterministic on Windows
 (verified by running the full suite twice back-to-back).
+
+## Operational readiness substrate (Waves 47-57, 2026-05-26+)
+
+After the attribution stack (Wave 7-36) and end-to-end
+validation (Wave 37-46), Wave 47-57 ships the layer ShopAI
+needs to actually go LIVE with real-money operation. 11 more
+substrate pieces:
+
+### Wave 47 -- per-store spend cap + auto-pause bridge
+- ``engines/_spend_cap.py``: SpendRollup aggregates
+  ``metrics.cost`` / ``metrics.ad_spend`` /
+  ``metrics.discount_value`` from approval-queue outcomes.
+  Per-store + fleet. Daily + weekly caps via env
+  (``SHOPAI_SPEND_CAP_DAILY_USD`` /
+  ``SHOPAI_SPEND_CAP_WEEKLY_USD``).
+- Auto-pause bridge (``SHOPAI_AUTO_PAUSE_ON_OVERSPEND=1``)
+  adds 13 spend-class engines to
+  ``quarantine.alert_paused`` when a cap is breached. Pattern
+  J guard preserved.
+- ``cycle run --yes`` fires the bridge post-cycle (alongside
+  the revenue-quarantine bridge from Wave 21+22).
+- CLI: ``shopai approvals quarantine --spend-status``.
+
+### Wave 48 -- ``shopai empire`` unified dashboard
+- One-screen aggregator: last cycle, revenue (7d + delta),
+  spend vs cap, approvals, cluster health, engine alerts.
+- Marker badges + drill-down hints. Operator goes from
+  ``daily-brief`` + ``cycle status`` + ``cycle revenue-fleet``
+  + ``cycle attribution-delta`` + ``approvals quarantine
+  --spend-status`` + ``engine pulse --fleet`` (6 commands)
+  to ``shopai empire`` (1 command).
+
+### Wave 49 -- AI approval pre-vet (LLM consultant)
+- ``engines/_approval_prevet.py``: deterministic heuristic
+  (always) + LLM consultation (opt-in via
+  ``SHOPAI_AI_PREVET=1``). Same consultant pattern as Wave
+  17+34+35 (deterministic baseline -> LLM may REFINE ->
+  fallback on invalid response).
+- Heuristic rules: destructive=hold; additive + >=80% pos
+  history (n>=3) -> approve; <=30% pos history -> reject.
+- CLI: ``shopai approvals prevet [--engine X]``. Pairs with
+  the existing ``approve-all --min-confidence``.
+
+### Wave 50 -- per-engine ROAS report
+- ``engines/_roas_report.py``: substrate join. Spend from
+  Wave 47 + per-engine attribution from Wave 9 ->
+  ``attributed_revenue / total_spend`` per engine. Verdict
+  bands: strong (>=2x), break_even (>=1x), negative,
+  no_data (spend exists but attribution lags).
+- CLI: ``shopai roas [--window-hours N] [--store X]``.
+- Honest scope note: full ad-spend write-optimizer needs
+  Meta/Google Ads adapter capability-wireup. Wave 50 ships
+  the READ side; Wave 51 fixes adapter registration.
+
+### Wave 51 -- ads adapter bootstrap (Meta Ads now routable)
+- ``core/adapters/ads/bootstrap.py``: was missing. Meta Ads
+  adapter had capability dispatch + HTTP plumbing, but no
+  bootstrap.py meant SmartRouter never registered it.
+- Generalized ``_maybe_bootstrap_secondary_adapters()`` in
+  cli.py main() calls ads / email / search / shipping / llm
+  bootstraps once at startup.
+- Defensive bug fix: ``registry or get_registry()`` falls
+  back to singleton when an empty registry is passed
+  (empty registry is falsy). Wave 51 fixed it in ads/
+  bootstrap.py; Wave 56 propagated to all 17 other
+  bootstrap files + router.py.
+
+### Wave 52 -- ``shopai webhook receive`` CLI surface
+- ``core/feedback/webhook_bridge.WebhookFeedbackBridge``
+  already existed. Wave 52 added the CLI receiver:
+  ``shopai webhook receive [--topic X --payload-json JSON]
+  [--from-stdin]``. Bridge consumes the event, tags it to
+  the engine that triggered it, feeds LearningLoop.
+
+### Wave 53 -- ``shopai notify check`` external fan-out
+- ``engines/_notify.py``: scans 4 alert classes (stale_cycle,
+  revenue_regression, spend_breach, engine_paused) + POSTs
+  to ``SHOPAI_NOTIFY_WEBHOOK_URL``. Per-kind cooldown
+  (default 1h). Dry-run mode for testing.
+
+### Wave 54 -- cycle schedule emits notify-check companion
+- ``shopai cycle schedule`` now prints a 15-min cron line
+  for ``notify check`` alongside the hourly cycle. Operator
+  scheduling cycle gets push alerts automatically.
+
+### Wave 55 -- ``shopai go-live`` pre-flight gate
+- ``engines/_go_live_check.py``: 8 checks
+  (shopify_credentials, wired_engines,
+  institutional_audits, cycle_history, spend_cap,
+  revenue_quarantine, notify_webhook, ai_strategy).
+- Returns ``ready_to_go_live`` verdict when no fails. Warns
+  are advisory.
+- Operator's single command for "am I ready to flip cron
+  on?".
+
+### Wave 56 -- registry-truthy bug fix (defensive cleanup)
+- 18 files: 17 bootstraps + router.py. ``registry or
+  get_registry()`` -> ``registry if registry is not None
+  else get_registry()``. Behaviour-equivalent in production
+  (callers pass None); test isolation now works correctly.
+
+### Wave 57 -- webhook HMAC verification (security gate)
+- ``core/feedback/webhook_security.py``: HMAC-SHA256 base64
+  verify with constant-time compare. Spoofed events get
+  rejected at the CLI layer.
+- ``shopai webhook receive --hmac-header X --require-hmac``
+  + ``SHOPAI_WEBHOOK_SECRET`` env. Production posture.
+
+### Going-live operator flow
+
+After Wave 47-57 the operator's path from "credentials
+configured" to "earning" is:
+
+```bash
+shopai go-live                          # see the punch list
+export SHOPAI_NOTIFY_WEBHOOK_URL=...    # close warns
+export SHOPAI_WEBHOOK_SECRET=...
+export SHOPAI_SPEND_CAP_DAILY_USD=50
+export SHOPAI_AUTO_PAUSE_ON_OVERSPEND=1
+shopai cycle schedule                    # install cron + notify-check
+                                          # AGI merchant runs
+```
