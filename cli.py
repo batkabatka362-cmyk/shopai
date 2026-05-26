@@ -17692,6 +17692,47 @@ def _cmd_cycle_history(args) -> None:
             f"{r.total_ok:>4d} {r.total_errors:>4d} "
             f"{r.verdict}"
         )
+    # Wave 38: surface error reasons inline when the
+    # most-recent run had failures. Without this, operators
+    # see "10 errors" and have no clue what to fix.
+    if runs and runs[0].total_errors > 0:
+        top_errors: dict[str, int] = {}
+        sample_lines: list[str] = []
+        for store_entry in runs[0].per_store or []:
+            for inv in store_entry.get("results", []) or []:
+                err = inv.get("error")
+                status = inv.get("status", "?")
+                if status in ("success", "ok"):
+                    continue
+                # Trim error to a hashable line
+                line = (
+                    str(err)[:80] if err
+                    else f"(no error captured, status={status})"
+                )
+                top_errors[line] = top_errors.get(line, 0) + 1
+                if len(sample_lines) < 3:
+                    sample_lines.append(
+                        f"  {inv.get('engine', '?'):<22} "
+                        f"{status:<10} {line}"
+                    )
+        if top_errors:
+            print()
+            print(
+                f"  Last-run failure reasons "
+                f"({sum(top_errors.values())} error(s)):"
+            )
+            for line in sample_lines:
+                print(line)
+            top_three = sorted(
+                top_errors.items(),
+                key=lambda kv: -kv[1],
+            )[:3]
+            if any(v > 1 for _, v in top_three):
+                print()
+                print("  Recurring (n>1):")
+                for line, n in top_three:
+                    if n > 1:
+                        print(f"    {n}x  {line}")
     print()
     print(
         "  Drill: `shopai cycle history --store <id>`  "
@@ -18256,10 +18297,40 @@ def _cmd_cycle_run(args) -> None:
                         store_results.append(entry)
                         continue
                     result = engine.run(data)
-                    entry["status"] = (
-                        result.get("status", "?")
-                        if isinstance(result, dict) else "?"
-                    )
+                    if isinstance(result, dict):
+                        entry["status"] = result.get("status", "?")
+                        # Wave 38: capture WHY when status != ok.
+                        # Per Pattern Q, engines return
+                        # {status, data, meta, error}; the error
+                        # field carries the diagnostic. Without
+                        # this, cycle history is "10 errors" with
+                        # no clue what failed.
+                        err = result.get("error")
+                        if err and entry["status"] != "success":
+                            entry["error"] = (
+                                str(err)[:500]
+                                if not isinstance(err, dict)
+                                else err
+                            )
+                        # Capture a slim meta for forensics:
+                        # which engine actually ran, what it
+                        # produced. Bound to 200 chars to keep
+                        # history file size manageable.
+                        meta = result.get("meta")
+                        if isinstance(meta, dict):
+                            entry["meta"] = {
+                                k: v for k, v in meta.items()
+                                if k in (
+                                    "engine", "version",
+                                    "duration_ms",
+                                )
+                            }
+                    else:
+                        entry["status"] = "?"
+                        entry["error"] = (
+                            f"engine returned non-dict: "
+                            f"{type(result).__name__}"
+                        )
                 except Exception as exc:  # noqa: BLE001
                     entry["status"] = "engine_raised"
                     entry["error"] = str(exc)
