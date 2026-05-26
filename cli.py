@@ -1392,6 +1392,31 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # Wave 74: niche operator discovery surface
+    niche_p = sub.add_parser(
+        "niche",
+        help=(
+            "List supported store niches + their cluster "
+            "priority biases. Operator discovery surface "
+            "for Wave 73's niche-aware orchestration."
+        ),
+    )
+    niche_p.add_argument(
+        "--show", default=None,
+        help="Show one niche's full preference list",
+    )
+    niche_p.add_argument(
+        "--by-store", action="store_true",
+        help=(
+            "Group output by store_id (which stores are "
+            "tagged with which niche)"
+        ),
+    )
+    niche_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON",
+    )
+
     # Wave 55: go-live pre-flight check
     go_live_p = sub.add_parser(
         "go-live",
@@ -7118,6 +7143,108 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
             "  Next: subsystem failed to load -- check "
             "logs / `data/` permissions."
         )
+
+
+def _cmd_niche(args) -> None:
+    """Wave 74: niche operator discovery surface."""
+    from engines._niche_priority import (
+        niche_cluster_focus, supported_niches,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    show_one = (getattr(args, "show", None) or "").strip()
+    by_store = bool(getattr(args, "by_store", False))
+
+    # --by-store mode: list stores grouped by niche
+    if by_store:
+        sm = _get_store_manager()
+        try:
+            stores = sm.list_stores() or []
+        except Exception:  # noqa: BLE001
+            stores = []
+        by_niche: dict[str, list[str]] = {}
+        unset: list[str] = []
+        for s in stores:
+            sid = s.get("store_id") or ""
+            n = (s.get("niche") or "").strip().lower()
+            if not n or n == "general":
+                unset.append(sid)
+            else:
+                by_niche.setdefault(n, []).append(sid)
+        if as_json:
+            print(json.dumps({
+                "by_niche": by_niche,
+                "unset_or_general": unset,
+            }, indent=2, default=str))
+            return
+        print("Stores by niche:")
+        print()
+        for niche in sorted(by_niche):
+            ids = ", ".join(sorted(by_niche[niche]))
+            print(f"  {niche:<10}  {ids}")
+        if unset:
+            print()
+            print(
+                f"  (unset / general): {', '.join(sorted(unset))}"
+            )
+            print()
+            print(
+                "  Hint: `shopai store add --niche beauty ...` "
+                "to bias future cycles."
+            )
+        return
+
+    # --show: drill one niche
+    if show_one:
+        focus = niche_cluster_focus(show_one)
+        if as_json:
+            print(json.dumps({
+                "niche": show_one.lower(),
+                "cluster_focus": focus,
+            }, indent=2))
+            return
+        if not focus:
+            print(
+                f"No preference defined for niche '{show_one}' "
+                "(uses base lifecycle priority)."
+            )
+            return
+        print(f"Niche '{show_one.lower()}' cluster priorities:")
+        print()
+        for i, cluster in enumerate(focus, 1):
+            print(f"  {i}. {cluster}")
+        return
+
+    # Default: list all supported
+    niches = supported_niches()
+    if as_json:
+        print(json.dumps({
+            "niches": [
+                {
+                    "name": n,
+                    "cluster_focus": niche_cluster_focus(n),
+                }
+                for n in niches
+            ],
+        }, indent=2))
+        return
+    print(
+        f"Supported niches ({len(niches)})  "
+        "-- Wave 73 niche-aware orchestrator"
+    )
+    print()
+    print(f"  {'niche':<10}  top 3 clusters")
+    for n in niches:
+        focus = niche_cluster_focus(n)
+        top3 = " -> ".join(focus[:3])
+        print(f"  {n:<10}  {top3}")
+    print()
+    print(
+        "  Drill: `shopai niche --show <name>` -- full list"
+    )
+    print(
+        "  Stores: `shopai niche --by-store` -- per-store tags"
+    )
 
 
 def _cmd_go_live(args) -> None:
@@ -37642,6 +37769,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "go-live":
         _cmd_go_live(args)
+        return
+
+    if args.command == "niche":
+        _cmd_niche(args)
         return
 
     if args.command == "transfer":
