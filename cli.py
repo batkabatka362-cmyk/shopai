@@ -1355,6 +1355,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the raw brief as JSON.",
     )
 
+    # ── Empire dashboard -- one-screen empire pulse ──────────
+    # Wave 48: unified view of every ShopAI substrate signal
+    # for the operator's morning glance. Combines cycle status,
+    # revenue-fleet, attribution-delta, approval queue,
+    # spend-cap state, alerts. Single command vs 5+ today.
+    empire_p = sub.add_parser(
+        "empire",
+        help=(
+            "One-screen empire dashboard: cycle health + "
+            "revenue + alerts + approvals + spend caps in "
+            "one command. Operator's daily 'how's the AGI "
+            "doing?' view."
+        ),
+    )
+    empire_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     # ── Autonomous cycle -- bundled operator workflow ───────
     autonomous_p = sub.add_parser(
         "autonomous-cycle",
@@ -6700,6 +6719,305 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
             "  Next: subsystem failed to load -- check "
             "logs / `data/` permissions."
         )
+
+
+def _cmd_empire(args) -> None:
+    """Wave 48: one-screen empire dashboard.
+
+    Operator's "how's the AGI doing right now?" view. Combines
+    every key substrate signal in one command so operators
+    don't have to chain 5+ commands every morning.
+    """
+    import time as _time
+    as_json = bool(getattr(args, "json", False))
+    sm = _get_store_manager()
+
+    # ─ Last cycle run
+    last_run_block = None
+    try:
+        from engines._cycle_history import last_run
+        lr = last_run()
+        if lr is not None:
+            age = _time.time() - lr.started_at
+            last_run_block = {
+                "verdict": lr.verdict,
+                "age_hours": round(age / 3600.0, 1),
+                "total_invoked": lr.total_invoked,
+                "total_ok": lr.total_ok,
+                "total_errors": lr.total_errors,
+                "mode": lr.mode,
+            }
+    except Exception:  # noqa: BLE001
+        pass
+
+    # ─ Fleet attribution rollup
+    revenue_block = None
+    try:
+        from engines._attribution_snapshot import (
+            fleet_attribution_rollup, last_snapshot,
+        )
+        from engines._attribution_delta import latest_delta
+        rollup = fleet_attribution_rollup()
+        fleet_snap = last_snapshot()
+        delta = latest_delta()
+        revenue_block = {
+            "fleet_attributed_7d": (
+                fleet_snap.attributed_revenue if fleet_snap
+                else 0.0
+            ),
+            "store_count_with_data": rollup.get(
+                "store_count", 0,
+            ),
+            "top_cluster": (
+                fleet_snap.per_cluster[0]["cluster"]
+                if fleet_snap and fleet_snap.per_cluster
+                else None
+            ),
+            "delta_revenue": (
+                delta.overall_revenue_delta if delta else None
+            ),
+            "delta_alerts": (
+                len(delta.alerts) if delta else 0
+            ),
+        }
+    except Exception:  # noqa: BLE001
+        pass
+
+    # ─ Approval queue state
+    approvals_block = None
+    try:
+        from core.approval.queue import get_approval_queue
+        queue = get_approval_queue()
+        approvals_block = {
+            "pending": len(queue.list_by_status("pending")),
+            "approved": len(queue.list_by_status("approved")),
+            "rejected": len(queue.list_by_status("rejected")),
+        }
+    except Exception:  # noqa: BLE001
+        pass
+
+    # ─ Spend cap state
+    spend_block = None
+    try:
+        from engines._spend_cap import (
+            check_caps, daily_cap_usd, daily_spend, is_enabled,
+            weekly_cap_usd, weekly_spend,
+        )
+        breaches = check_caps()
+        spend_block = {
+            "bridge_enabled": is_enabled(),
+            "daily_cap": daily_cap_usd(),
+            "weekly_cap": weekly_cap_usd(),
+            "daily_spend": daily_spend().total_spend,
+            "weekly_spend": weekly_spend().total_spend,
+            "breach_count": len(breaches),
+        }
+    except Exception:  # noqa: BLE001
+        pass
+
+    # ─ Cluster health verdicts
+    health_block = None
+    try:
+        from engines._cluster_memory import fleet_cluster_health
+        healths = fleet_cluster_health()
+        counts: dict[str, int] = {}
+        for h in healths:
+            counts[h.health_verdict] = counts.get(
+                h.health_verdict, 0,
+            ) + 1
+        health_block = counts
+    except Exception:  # noqa: BLE001
+        pass
+
+    # ─ Engine alerts (regressing / chronic / outcome)
+    alerts_block = None
+    try:
+        from core.approval.engine_health_history import (
+            find_regressions, find_chronic_warnings,
+        )
+        regr = find_regressions(
+            min_drop=3.0,
+            baseline_window_seconds=86400.0 * 7.0,
+            latest_window_seconds=86400.0 * 1.0,
+            min_baseline_samples=3,
+        )
+        chronic = find_chronic_warnings(
+            sample_window_seconds=86400.0 * 7.0,
+            min_samples=3,
+            healthy_score_floor=7,
+        )
+        alerts_block = {
+            "regressing_count": len(regr),
+            "chronic_count": len(chronic),
+            "top_regressing": (
+                regr[0].engine if regr else None
+            ),
+        }
+    except Exception:  # noqa: BLE001
+        pass
+
+    # ─ Stores
+    stores_list = []
+    try:
+        for s in sm.list_stores() or []:
+            stores_list.append({
+                "store_id": s.get("store_id"),
+                "shop_url": s.get("shop_url", ""),
+                "is_active": s.get("is_active", False),
+            })
+    except Exception:  # noqa: BLE001
+        pass
+
+    if as_json:
+        print(json.dumps({
+            "stores": stores_list,
+            "last_run": last_run_block,
+            "revenue": revenue_block,
+            "approvals": approvals_block,
+            "spend": spend_block,
+            "cluster_health": health_block,
+            "engine_alerts": alerts_block,
+        }, indent=2, default=str))
+        return
+
+    # ─── Text render ───────────────────────────────────────────
+    print("ShopAI empire dashboard")
+    print()
+
+    # Stores
+    print(f"  Stores:               {len(stores_list)}")
+    if stores_list:
+        active = sum(1 for s in stores_list if s["is_active"])
+        print(f"    active:             {active}")
+
+    # Last cycle
+    print()
+    if last_run_block:
+        marker = {
+            "clean": "[OK ]",
+            "mostly_ok": "[OK ]",
+            "dry_run": "[ - ]",
+            "empty": "[ - ]",
+            "degraded": "[WRN]",
+            "failed": "[BAD]",
+        }.get(last_run_block["verdict"], "[ ? ]")
+        age_h = last_run_block["age_hours"]
+        age_str = (
+            f"{int(age_h * 60)}m" if age_h < 1
+            else f"{age_h:.1f}h" if age_h < 24
+            else f"{age_h / 24:.1f}d"
+        )
+        print(
+            f"  Last cycle:           {marker} "
+            f"{last_run_block['verdict']:<10}  {age_str} ago "
+            f"({last_run_block['mode']}, "
+            f"{last_run_block['total_ok']}/"
+            f"{last_run_block['total_invoked']} ok)"
+        )
+    else:
+        print(
+            "  Last cycle:           (none recorded)"
+        )
+
+    # Revenue
+    if revenue_block:
+        attr = revenue_block["fleet_attributed_7d"]
+        d_rev = revenue_block.get("delta_revenue")
+        d_alerts = revenue_block["delta_alerts"]
+        if d_rev is not None:
+            sign = "+" if d_rev >= 0 else ""
+            marker = (
+                "[BAD]" if d_alerts > 0
+                else ("[OK ]" if d_rev >= 0 else "[WRN]")
+            )
+            print(
+                f"  Revenue (7d):         ${attr:,.2f}  "
+                f"{marker} delta {sign}${d_rev:,.2f}  "
+                f"alerts={d_alerts}"
+            )
+        else:
+            print(
+                f"  Revenue (7d):         ${attr:,.2f}  "
+                "(no delta yet)"
+            )
+        if revenue_block.get("top_cluster"):
+            print(
+                f"    top cluster:        "
+                f"{revenue_block['top_cluster']}"
+            )
+
+    # Spend
+    if spend_block:
+        bcount = spend_block["breach_count"]
+        marker = "[BAD]" if bcount > 0 else "[OK ]"
+        d_spend = spend_block["daily_spend"]
+        d_cap = spend_block.get("daily_cap")
+        cap_str = (
+            f"of ${d_cap:.0f}" if d_cap else "(no cap set)"
+        )
+        print(
+            f"  Spend (daily):        {marker} "
+            f"${d_spend:,.2f}  {cap_str}"
+        )
+        if not spend_block["bridge_enabled"]:
+            print(
+                "    auto-pause off (SHOPAI_AUTO_PAUSE_ON_OVERSPEND=0)"
+            )
+
+    # Approvals
+    if approvals_block:
+        p = approvals_block["pending"]
+        marker = (
+            "[WRN]" if p > 10 else "[OK ]"
+        )
+        print(
+            f"  Approvals:            {marker} "
+            f"{p} pending,  "
+            f"{approvals_block['approved']} approved,  "
+            f"{approvals_block['rejected']} rejected"
+        )
+
+    # Cluster health
+    if health_block:
+        h_str = "  ".join(
+            f"{v}:{n}" for v, n in sorted(health_block.items())
+        )
+        bad = (
+            health_block.get("unhealthy", 0)
+            + health_block.get("warning", 0)
+        )
+        marker = "[WRN]" if bad > 0 else "[OK ]"
+        print(
+            f"  Cluster health:       {marker} {h_str}"
+        )
+
+    # Engine alerts
+    if alerts_block:
+        regr = alerts_block["regressing_count"]
+        chr_ = alerts_block["chronic_count"]
+        marker = (
+            "[BAD]" if (regr + chr_) > 0 else "[OK ]"
+        )
+        top = alerts_block.get("top_regressing")
+        bits = [f"regr={regr}", f"chronic={chr_}"]
+        line = f"  Engine alerts:        {marker} " + " ".join(bits)
+        if top:
+            line += f"   top: {top}"
+        print(line)
+
+    print()
+    print("  Drill commands:")
+    print("    shopai cycle status                  -- detailed cycle")
+    print("    shopai cycle attribution             -- revenue breakdown")
+    print("    shopai approvals list                -- pending detail")
+    print(
+        "    shopai approvals quarantine --spend-status "
+        "-- cap status"
+    )
+    print(
+        "    shopai engine pulse <engine>         "
+        "-- single-engine drill"
+    )
 
 
 def _cmd_daily_brief(args) -> None:
@@ -35677,6 +35995,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "daily-brief":
         _cmd_daily_brief(args)
+        return
+
+    if args.command == "empire":
+        _cmd_empire(args)
         return
 
     if args.command == "transfer":
