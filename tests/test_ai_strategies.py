@@ -458,6 +458,84 @@ class TestOrchestratorAttributionContext:
         assert ctx["top_clusters"] == []
 
 
+class TestOrchestratorTrend:
+    """Wave 35: AI orchestrator prompt includes per-cluster trend."""
+
+    def _fake_report(self, cluster_revs):
+        from engines._revenue_attribution import (
+            AttributionReport, ClusterAttribution,
+        )
+        rpt = AttributionReport(window_hours=168.0)
+        for cluster, rev in cluster_revs.items():
+            rpt.per_cluster.append(
+                ClusterAttribution(
+                    cluster=cluster,
+                    window_hours=168.0,
+                    attributed_revenue=rev,
+                    attributed_orders=1 if rev > 0 else 0,
+                )
+            )
+        rpt.per_cluster.sort(
+            key=lambda c: c.attributed_revenue, reverse=True,
+        )
+        return rpt
+
+    def test_rising_cluster_trend(self):
+        strategy = AIOrchestratorStrategy()
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=self._fake_report(
+                {"retention": 500.0},
+            ),
+        ), patch(
+            "engines._attribution_snapshot.cluster_revenue_history",
+            return_value=[
+                {"attributed_revenue": 100.0},
+                {"attributed_revenue": 300.0},
+                {"attributed_revenue": 500.0},
+            ],
+        ):
+            ctx = strategy._store_attribution_context("store-x")
+        retention = ctx["top_clusters"][0]
+        assert retention["trend"] == "rising"
+        assert retention["recent_revenue"] == [
+            100.0, 300.0, 500.0,
+        ]
+
+    def test_falling_cluster_trend(self):
+        strategy = AIOrchestratorStrategy()
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=self._fake_report(
+                {"retention": 50.0},
+            ),
+        ), patch(
+            "engines._attribution_snapshot.cluster_revenue_history",
+            return_value=[
+                {"attributed_revenue": 1000.0},
+                {"attributed_revenue": 50.0},
+            ],
+        ):
+            ctx = strategy._store_attribution_context("store-x")
+        retention = ctx["top_clusters"][0]
+        assert retention["trend"] == "falling"
+
+    def test_new_trend_when_no_history(self):
+        strategy = AIOrchestratorStrategy()
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=self._fake_report(
+                {"retention": 100.0},
+            ),
+        ), patch(
+            "engines._attribution_snapshot.cluster_revenue_history",
+            return_value=[],
+        ):
+            ctx = strategy._store_attribution_context("store-x")
+        retention = ctx["top_clusters"][0]
+        assert retention["trend"] == "new"
+
+
 class TestLLMClientGate:
 
     def test_llm_unavailable_without_api_key(

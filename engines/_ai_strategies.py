@@ -354,15 +354,17 @@ class AIOrchestratorStrategy:
             "You are a Tier 1 orchestrator for ShopAI -- an "
             "autonomous Shopify merchant empire. Given a "
             "store's world-model + per-cluster revenue "
-            "attribution, classify the store's current "
-            "priority. Return JSON: "
+            "attribution with trend, classify the store's "
+            "current priority. Return JSON: "
             "{\"priority\": \"launching|growing|mature|"
             "at_risk|stagnant\", \"rationale\": \"...\"}. "
             "Deterministic baseline already gave one answer; "
             "you may agree or refine, but only pick from the "
             "five known classes. Stores earning meaningfully "
             "tend toward mature/growing; stores with $0 "
-            "attribution toward launching/at_risk."
+            "attribution toward launching/at_risk. Stores "
+            "with mostly trend='falling' clusters lean toward "
+            "at_risk/stagnant even if current revenue looks OK."
         )
         user = json.dumps({
             "store_id": store_id,
@@ -406,8 +408,12 @@ class AIOrchestratorStrategy:
               "total_orders_in_window": int,
               "attribution_rate": float,
               "top_clusters": [
-                {"cluster": ..., "revenue": float,
-                 "orders": int, "confidence": ...},
+                {
+                  "cluster": ..., "revenue": float,
+                  "orders": int, "confidence": ...,
+                  "trend": "rising"|"falling"|"flat"|"new",
+                  "recent_revenue": [...],
+                },
                 ...
               ],
             }
@@ -429,6 +435,15 @@ class AIOrchestratorStrategy:
         except Exception:  # noqa: BLE001
             return out
 
+        # Wave 35: per-cluster trend from snapshot history
+        # (symmetric to Wave 34 captain trend on engines).
+        try:
+            from engines._attribution_snapshot import (
+                cluster_revenue_history,
+            )
+        except Exception:  # noqa: BLE001
+            cluster_revenue_history = None
+
         out["attributed_revenue"] = round(
             report.attributed_revenue, 2,
         )
@@ -436,13 +451,38 @@ class AIOrchestratorStrategy:
             report.total_orders_in_window
         )
         out["attribution_rate"] = report.attribution_rate
-        out["top_clusters"] = [
-            {
+
+        top_clusters: list[dict[str, Any]] = []
+        for c in report.per_cluster[:5]:
+            entry: dict[str, Any] = {
                 "cluster": c.cluster,
                 "revenue": round(c.attributed_revenue, 2),
                 "orders": c.attributed_orders,
                 "confidence": c.confidence,
+                "trend": "new",
+                "recent_revenue": [],
             }
-            for c in report.per_cluster[:5]
-        ]
+            if cluster_revenue_history is not None:
+                try:
+                    history = cluster_revenue_history(
+                        c.cluster, limit=3, store_id=store_id,
+                    )
+                except Exception:  # noqa: BLE001
+                    history = []
+                if history:
+                    entry["recent_revenue"] = [
+                        round(h["attributed_revenue"], 2)
+                        for h in history
+                    ]
+                    if len(history) >= 2:
+                        old = history[0]["attributed_revenue"]
+                        new = history[-1]["attributed_revenue"]
+                        if new > old * 1.1:
+                            entry["trend"] = "rising"
+                        elif new < old * 0.9:
+                            entry["trend"] = "falling"
+                        else:
+                            entry["trend"] = "flat"
+            top_clusters.append(entry)
+        out["top_clusters"] = top_clusters
         return out
