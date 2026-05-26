@@ -1383,6 +1383,14 @@ def build_parser() -> argparse.ArgumentParser:
             "5-second morning glance."
         ),
     )
+    # Wave 69: per-store summary
+    empire_p.add_argument(
+        "--store", default=None,
+        help=(
+            "Scope to one store (Wave 69). Pair with "
+            "--summarize for a per-store paragraph."
+        ),
+    )
 
     # Wave 55: go-live pre-flight check
     go_live_p = sub.add_parser(
@@ -7491,16 +7499,24 @@ def _cmd_empire(args) -> None:
     # Wave 67: short-circuit for summary mode
     if summarize:
         from engines._empire_summarizer import summarize_empire
-        summary = summarize_empire()
+        store_id_filter = (
+            getattr(args, "store", None) or ""
+        ).strip() or None
+        summary = summarize_empire(store_id=store_id_filter)
         if as_json:
             print(json.dumps({
                 "text": summary.text,
                 "used_llm": summary.used_llm,
+                "store_id": store_id_filter,
                 "key_facts": summary.key_facts,
             }, indent=2, default=str))
             return
         marker = "[AI]" if summary.used_llm else "[ - ]"
-        print(f"Empire summary  {marker}")
+        scope = (
+            f"store={store_id_filter}" if store_id_filter
+            else "fleet-wide"
+        )
+        print(f"Empire summary  {marker}  ({scope})")
         print()
         print(f"  {summary.text}")
         return

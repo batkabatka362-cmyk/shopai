@@ -105,3 +105,23 @@ class TestEmpireSummaryShape:
         assert isinstance(summary.text, str)
         assert isinstance(summary.used_llm, bool)
         assert isinstance(summary.key_facts, dict)
+
+
+class TestPerStoreSummary:
+    """Wave 69: per-store summary via store_id filter."""
+
+    def test_store_filter_in_key_facts(self):
+        summary = summarize_empire(store_id="store-x")
+        assert summary.key_facts.get("scope_store_id") == "store-x"
+
+    def test_deterministic_mentions_store_name(self):
+        s = _deterministic_summary({
+            "scope_store_id": "store-7",
+        })
+        assert "store-7" in s
+
+    def test_fleet_default_when_no_store(self):
+        summary = summarize_empire()
+        assert (
+            summary.key_facts.get("scope_store_id") is None
+        )

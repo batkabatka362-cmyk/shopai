@@ -32,9 +32,17 @@ class EmpireSummary:
     key_facts: dict[str, Any] = field(default_factory=dict)
 
 
-def _collect_facts() -> dict[str, Any]:
-    """Gather every signal the summary needs in one pass."""
-    facts: dict[str, Any] = {}
+def _collect_facts(
+    store_id: str | None = None,
+) -> dict[str, Any]:
+    """Gather every signal the summary needs in one pass.
+
+    Wave 69: when store_id is provided, scope per-store. Cycle
+    history stays fleet-wide (cycle is fleet-level) but
+    attribution + spend + approval + quarantine all filter to
+    the store.
+    """
+    facts: dict[str, Any] = {"scope_store_id": store_id}
     # Stores
     try:
         from data_pipeline.store.store_manager import StoreManager
@@ -43,10 +51,17 @@ def _collect_facts() -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         facts["store_count"] = None
 
-    # Last cycle
+    # Last cycle (fleet-wide; per-store filter via runs_for_store
+    # would surface only cycles that touched this store)
     try:
-        from engines._cycle_history import last_run
-        lr = last_run()
+        from engines._cycle_history import (
+            last_run, runs_for_store,
+        )
+        if store_id:
+            store_runs = runs_for_store(store_id, limit=1)
+            lr = store_runs[0] if store_runs else None
+        else:
+            lr = last_run()
         if lr is not None:
             import time as _t
             facts["last_cycle_age_hours"] = round(
@@ -58,15 +73,15 @@ def _collect_facts() -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         pass
 
-    # Revenue attribution
+    # Revenue attribution (per-store when scoped)
     try:
         from engines._attribution_snapshot import (
             fleet_attribution_rollup, last_snapshot,
         )
         from engines._attribution_delta import latest_delta
         rollup = fleet_attribution_rollup()
-        snap = last_snapshot()
-        delta = latest_delta()
+        snap = last_snapshot(store_id=store_id)
+        delta = latest_delta(store_id=store_id)
         facts["attributed_revenue_7d"] = (
             snap.attributed_revenue if snap else 0.0
         )
@@ -83,10 +98,10 @@ def _collect_facts() -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         pass
 
-    # Spend
+    # Spend (per-store when scoped)
     try:
         from engines._spend_cap import check_caps
-        breaches = check_caps()
+        breaches = check_caps(store_id=store_id)
         facts["spend_breach_count"] = len(breaches)
     except Exception:  # noqa: BLE001
         pass
@@ -133,9 +148,13 @@ def _collect_facts() -> dict[str, Any]:
 def _deterministic_summary(facts: dict[str, Any]) -> str:
     """Template-based summary -- always works without LLM."""
     parts: list[str] = []
-    store_count = facts.get("store_count")
-    if store_count is not None:
-        parts.append(f"{store_count} store(s) registered.")
+    scope_store = facts.get("scope_store_id")
+    if scope_store:
+        parts.append(f"Store '{scope_store}' summary.")
+    else:
+        store_count = facts.get("store_count")
+        if store_count is not None:
+            parts.append(f"{store_count} store(s) registered.")
 
     age = facts.get("last_cycle_age_hours")
     verdict = facts.get("last_cycle_verdict")
@@ -250,13 +269,21 @@ def _ai_refine(
     return s.strip()
 
 
-def summarize_empire() -> EmpireSummary:
+def summarize_empire(
+    store_id: str | None = None,
+) -> EmpireSummary:
     """Produce a one-paragraph empire summary.
+
+    Args:
+        store_id: When provided (Wave 69), scope per-store
+            instead of fleet-wide. Per-store attribution,
+            spend, alerts; cycle history filtered to that
+            store's runs.
 
     Deterministic always; LLM-refined when SHOPAI_AI_STRATEGY=1
     + LLM available.
     """
-    facts = _collect_facts()
+    facts = _collect_facts(store_id=store_id)
     deterministic = _deterministic_summary(facts)
     refined = _ai_refine(facts, deterministic)
     if refined:
