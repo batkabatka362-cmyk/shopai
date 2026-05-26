@@ -2472,6 +2472,14 @@ def build_parser() -> argparse.ArgumentParser:
             "lookup, target duplicate-protection)."
         ),
     )
+    transfer_apply_p.add_argument(
+        "--allow-cross-niche", action="store_true",
+        help=(
+            "Wave 88: by default cross-niche transfers refuse "
+            "(beauty -> tech is risky). Pass this flag to "
+            "override; the narrative records the override."
+        ),
+    )
 
     transfer_sources_p = transfer_sub.add_parser(
         "sources",
@@ -5880,6 +5888,35 @@ def _cmd_transfer_apply(args) -> None:
         _emit_error("--from and --to must be different stores")
         return
 
+    # Wave 88: niche-compat gate. Resolve both stores' niches
+    # via StoreManager; classify via the Wave 82 helper.
+    # Cross-niche transfers refuse unless --allow-cross-niche.
+    niche_compat = "unknown"
+    from_niche = ""
+    to_niche = ""
+    allow_cross = bool(getattr(args, "allow_cross_niche", False))
+    try:
+        from engines._transfer_scanner import _classify_niche_compat
+        sm_for_niche = _get_store_manager()
+        from_row = sm_for_niche.get_store(from_store) or {}
+        to_row = sm_for_niche.get_store(to_store) or {}
+        from_niche = (from_row.get("niche") or "").strip().lower()
+        to_niche = (to_row.get("niche") or "").strip().lower()
+        niche_compat = _classify_niche_compat(
+            from_niche, to_niche,
+        )
+    except Exception:  # noqa: BLE001
+        niche_compat = "unknown"
+    if niche_compat == "cross" and not allow_cross:
+        _emit_error(
+            f"cross-niche transfer refused: "
+            f"{from_store}={from_niche} -> {to_store}={to_niche}. "
+            "Re-run with --allow-cross-niche to override; or "
+            "pick a same-niche source via "
+            "`shopai transfer scan --same-niche`."
+        )
+        return
+
     # Optional operator-supplied param overrides.
     override_params: dict | None = None
     raw = getattr(args, "params_json", "") or ""
@@ -5968,9 +6005,19 @@ def _cmd_transfer_apply(args) -> None:
     operator_note = (
         getattr(args, "narrative", "") or ""
     ).strip()
+    # Wave 88: encode niche-compat into the narrative so audit
+    # trail captures which transfers were cross-niche overrides.
+    compat_tag = ""
+    if niche_compat == "match":
+        compat_tag = f" niche=match({from_niche})"
+    elif niche_compat == "cross":
+        compat_tag = (
+            f" niche=cross({from_niche}->{to_niche},"
+            "override=allow-cross-niche)"
+        )
     narrative = (
         f"Transfer suggestion: {engine}/{action_type} "
-        f"from {from_store} to {to_store}. "
+        f"from {from_store} to {to_store}.{compat_tag} "
         f"Source had {len(matching)} prior successful run(s)."
     )
     if operator_note:
@@ -5992,6 +6039,9 @@ def _cmd_transfer_apply(args) -> None:
                 "source_run_count": len(matching),
                 "params": base_params,
                 "narrative": narrative,
+                "niche_compat": niche_compat,
+                "from_niche": from_niche,
+                "to_niche": to_niche,
             }, indent=2, default=str))
             return
         print(
@@ -6034,6 +6084,9 @@ def _cmd_transfer_apply(args) -> None:
             "to_store": to_store,
             "params": base_params,
             "narrative": narrative,
+            "niche_compat": niche_compat,
+            "from_niche": from_niche,
+            "to_niche": to_niche,
         }, indent=2, default=str))
         return
 
@@ -6042,6 +6095,12 @@ def _cmd_transfer_apply(args) -> None:
         f"{from_store} -> {to_store}"
     )
     print(f"  action_id: {action.id}")
+    if niche_compat != "unknown":
+        marker = "[==]" if niche_compat == "match" else "[!=]"
+        print(
+            f"  niche: {marker} "
+            f"{from_niche or '-'} -> {to_niche or '-'}"
+        )
     print(
         f"  source runs: {len(matching)}  "
         f"capability: {capability}"
