@@ -5055,7 +5055,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # ── System commands ──────────────────────────────────────
-    sub.add_parser("health", help="System health check")
+    health_p = sub.add_parser(
+        "health",
+        help=(
+            "System health check. Default: text view of "
+            "module-import status. --json: machine-readable "
+            "{healthy, components} for external uptime "
+            "monitoring (Pingdom / UptimeRobot)."
+        ),
+    )
+    health_p.add_argument(
+        "--json", action="store_true",
+        help="Emit machine-readable health report + exit 1 on unhealthy",
+    )
     status_p = sub.add_parser("status", help="Full system status")
     status_p.add_argument(
         "--json", action="store_true",
@@ -31461,7 +31473,19 @@ def _cmd_version(args) -> None:
             print(f"  Scopes:         {sc}  (hash {sh})")
 
 
-def _cmd_health() -> None:
+def _cmd_health(args=None) -> None:
+    # Wave 59: --json mode returns the rich health_report dict
+    # used by external monitoring. Default keeps the existing
+    # module-import text view.
+    as_json = bool(getattr(args, "json", False)) if args else False
+    if as_json:
+        from engines._health_endpoint import health_report
+        report = health_report()
+        print(json.dumps(report, indent=2, default=str))
+        if not report.get("healthy", False):
+            sys.exit(1)
+        return
+
     import importlib
     from engines.registry import engine_count
 
@@ -37256,7 +37280,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "health":
-        _cmd_health()
+        _cmd_health(args)
         return
 
     if args.command == "status":
