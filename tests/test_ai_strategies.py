@@ -278,6 +278,55 @@ class TestAIOrchestratorFallback:
         assert prio.priority == "at_risk"
         assert "[AI]" in prio.rationale
 
+    def test_wave89_ai_path_preserves_niche_merge(
+        self, monkeypatch,
+    ):
+        """Wave 89 regression: when AI picks a different
+        priority class, the niche-aware cluster_focus must
+        survive. Pre-Wave 89, the AI path reset cluster_focus
+        to _PRIORITY_CLUSTERS[ai_priority] which dropped the
+        niche merge."""
+        monkeypatch.setenv("SHOPAI_AI_STRATEGY", "1")
+
+        class FakeLLM:
+            available = True
+            def chat_json(self, system, user):
+                # LLM reclassifies to mature
+                return {
+                    "priority": "mature",
+                    "rationale": "ai sees maturity",
+                }
+
+        # Patch StoreManager so _store_niche returns "beauty"
+        # for this synthetic store.
+        from unittest.mock import patch
+        fake_sm = type("FakeSM", (), {})()
+        fake_sm.get_store = lambda sid: {
+            "store_id": sid, "niche": "beauty",
+        }
+        with patch(
+            "data_pipeline.store.store_manager.StoreManager",
+            return_value=fake_sm,
+        ):
+            strategy = AIOrchestratorStrategy(llm=FakeLLM())
+            prio = strategy.decide_priority(
+                "store-A",
+                {
+                    "stats": {
+                        "products": 50, "orders": 30,
+                        "total_revenue": 5000.0,
+                    },
+                    "store": {"niche": "beauty"},
+                },
+            )
+        assert prio.priority == "mature"
+        # Beauty's first cluster is merchandising -- niche
+        # merge must have re-applied.
+        assert prio.cluster_focus[0] == "merchandising"
+        # The base mature priority's clusters must still
+        # appear (just deduped after the niche prefix).
+        assert "merchandising" in prio.cluster_focus
+
 
 class TestCaptainTrend:
     """Wave 34: AI captain prompt context includes per-engine

@@ -403,13 +403,27 @@ class AIOrchestratorStrategy:
         if ai_priority not in self._VALID_PRIORITIES:
             return base
 
+        # Wave 89: re-apply the niche merge so AI's chosen
+        # priority class STILL respects the store's niche bias.
+        # Pre-Wave 89 the AI path overwrote cluster_focus with
+        # the bare _PRIORITY_CLUSTERS lookup, silently dropping
+        # the merge_with_base call the deterministic baseline
+        # had applied. Same merge helper, same semantics.
+        base_clusters = _PRIORITY_CLUSTERS.get(
+            ai_priority, _PRIORITY_CLUSTERS["default"],
+        )
+        try:
+            from engines._niche_priority import merge_with_base
+            cluster_focus = merge_with_base(
+                base_clusters, niche,
+            )
+        except Exception:  # noqa: BLE001
+            cluster_focus = list(base_clusters)
         # Re-build the StorePriority with the AI's class
         return StorePriority(
             store_id=store_id,
             priority=ai_priority,
-            cluster_focus=_PRIORITY_CLUSTERS.get(
-                ai_priority, _PRIORITY_CLUSTERS["default"],
-            ),
+            cluster_focus=cluster_focus,
             rationale=(
                 f"[AI] {resp.get('rationale', 'no rationale')} "
                 f"(deterministic baseline: {base.priority})"
