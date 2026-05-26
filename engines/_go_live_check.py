@@ -238,6 +238,54 @@ def _check_notify_webhook() -> CheckResult:
     )
 
 
+def _check_store_niches() -> CheckResult:
+    """Wave 76: warn when stores lack niche tags. Wave 73's
+    niche-aware orchestrator silently no-ops when niche is
+    unset -- operator should know."""
+    try:
+        from data_pipeline.store.store_manager import StoreManager
+        stores = StoreManager().list_stores() or []
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult(
+            name="store_niches",
+            status="warn",
+            detail=f"probe failed: {exc}",
+            fix="",
+        )
+    if not stores:
+        return CheckResult(
+            name="store_niches",
+            status="warn",
+            detail="No stores registered",
+            fix="shopai store add ...",
+        )
+    untagged = []
+    for s in stores:
+        niche = (s.get("niche") or "").strip().lower()
+        if not niche or niche == "general":
+            untagged.append(s.get("store_id", "?"))
+    if not untagged:
+        return CheckResult(
+            name="store_niches",
+            status="pass",
+            detail=f"all {len(stores)} store(s) tagged",
+        )
+    sample = ", ".join(untagged[:3])
+    suffix = f" +{len(untagged) - 3} more" if len(untagged) > 3 else ""
+    return CheckResult(
+        name="store_niches",
+        status="warn",
+        detail=(
+            f"{len(untagged)} store(s) untagged: "
+            f"{sample}{suffix}"
+        ),
+        fix=(
+            "Re-add with `--niche beauty|fashion|home|tech|"
+            "food` to bias orchestration."
+        ),
+    )
+
+
 def _check_ai_strategy() -> CheckResult:
     """Optional but recommended: AI gates."""
     bits = []
@@ -322,6 +370,7 @@ def run_go_live_check() -> list[CheckResult]:
         _check_revenue_quarantine(),
         _check_notify_webhook(),
         _check_ai_strategy(),
+        _check_store_niches(),  # Wave 76
     ]
 
 

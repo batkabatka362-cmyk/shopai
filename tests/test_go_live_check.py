@@ -63,6 +63,7 @@ class TestRunCheckShape:
         assert "revenue_quarantine" in names
         assert "notify_webhook" in names
         assert "ai_strategy" in names
+        assert "store_niches" in names  # Wave 76
 
     def test_each_check_has_valid_status(self):
         checks = run_go_live_check()
@@ -125,6 +126,44 @@ class TestNotifyWebhookCheck:
         from engines._go_live_check import _check_notify_webhook
         r = _check_notify_webhook()
         assert r.status == "pass"
+
+
+class TestStoreNichesCheck:
+
+    def test_pass_when_all_tagged(self):
+        from unittest.mock import patch
+        from engines._go_live_check import _check_store_niches
+        fake_stores = [
+            {"store_id": "a", "niche": "beauty"},
+            {"store_id": "b", "niche": "tech"},
+        ]
+        with patch(
+            "data_pipeline.store.store_manager.StoreManager"
+        ) as MockSM:
+            MockSM.return_value.list_stores.return_value = (
+                fake_stores
+            )
+            r = _check_store_niches()
+        assert r.status == "pass"
+
+    def test_warn_when_untagged_present(self):
+        from unittest.mock import patch
+        from engines._go_live_check import _check_store_niches
+        fake_stores = [
+            {"store_id": "a", "niche": "beauty"},
+            {"store_id": "b", "niche": ""},
+            {"store_id": "c", "niche": "general"},
+        ]
+        with patch(
+            "data_pipeline.store.store_manager.StoreManager"
+        ) as MockSM:
+            MockSM.return_value.list_stores.return_value = (
+                fake_stores
+            )
+            r = _check_store_niches()
+        assert r.status == "warn"
+        # b and c are untagged
+        assert "2" in r.detail
 
 
 class TestAIStrategyCheck:
