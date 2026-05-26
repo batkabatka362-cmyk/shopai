@@ -2301,6 +2301,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     transfer_sub = transfer_p.add_subparsers(dest="transfer_action")
 
+    # Wave 71: empire-wide scanner (no --from/--to required)
+    transfer_scan_p = transfer_sub.add_parser(
+        "scan",
+        help=(
+            "Empire-wide transfer scanner. Walks every store "
+            "pair, surfaces top transferable winners across "
+            "the fleet. The N-store version of 'suggest'."
+        ),
+    )
+    transfer_scan_p.add_argument(
+        "--top", type=int, default=20,
+        help="Maximum candidates to return (default 20)",
+    )
+    transfer_scan_p.add_argument(
+        "--min-positive", type=int, default=2,
+        help=(
+            "Minimum positive outcomes on source store for "
+            "a candidate to qualify (default 2)"
+        ),
+    )
+    transfer_scan_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON",
+    )
+
     transfer_suggest_p = transfer_sub.add_parser(
         "suggest",
         help=(
@@ -5410,6 +5435,9 @@ def _cmd_store_add(args) -> None:
 def _cmd_transfer(args) -> None:
     """Dispatcher for ``shopai transfer <verb>``."""
     verb = getattr(args, "transfer_action", None)
+    if verb == "scan":
+        _cmd_transfer_scan(args)
+        return
     if verb == "suggest":
         _cmd_transfer_suggest(args)
         return
@@ -5431,6 +5459,78 @@ def _cmd_transfer(args) -> None:
     print(
         "Usage: shopai transfer "
         "{suggest|apply|sources|history|outcomes|credit}"
+    )
+
+
+def _cmd_transfer_scan(args) -> None:
+    """Wave 71: empire-wide transfer scanner.
+
+    Walks every (source, target) store pair, identifies
+    transferable winners, ranks across the fleet. For 20-store
+    empires, replaces 380 manual `transfer suggest` calls.
+    """
+    from engines._transfer_scanner import scan_empire_transfers
+
+    as_json = bool(getattr(args, "json", False))
+    top_k = max(1, int(getattr(args, "top", 20) or 20))
+    min_pos = max(
+        1, int(getattr(args, "min_positive", 2) or 2),
+    )
+
+    report = scan_empire_transfers(
+        top_k=top_k,
+        min_positive_outcomes=min_pos,
+    )
+
+    if as_json:
+        print(json.dumps({
+            "pairs_scanned": report.pairs_scanned,
+            "total_candidates": report.total_candidates,
+            "top_pair": list(report.top_pair) if report.top_pair else None,
+            "candidates": [
+                {
+                    "from_store": c.from_store,
+                    "to_store": c.to_store,
+                    "engine": c.engine,
+                    "action_type": c.action_type,
+                    "capability": c.capability,
+                    "positive_outcomes": c.positive_outcomes,
+                    "total_revenue": c.total_revenue,
+                    "score": c.score,
+                }
+                for c in report.candidates
+            ],
+        }, indent=2, default=str))
+        return
+
+    print(
+        f"Transfer scan -- {report.pairs_scanned} pair(s) "
+        f"checked, {report.total_candidates} candidate(s)"
+    )
+    print()
+    if not report.candidates:
+        print(
+            "  (no transferable winners found; try lowering "
+            "--min-positive)"
+        )
+        return
+    print(
+        f"  {'from':<14} {'to':<14} {'engine':<24} "
+        f"{'pos':>4} {'$':>8}  score"
+    )
+    for c in report.candidates:
+        print(
+            f"  {c.from_store[:14]:<14} {c.to_store[:14]:<14} "
+            f"{c.engine[:24]:<24} "
+            f"{c.positive_outcomes:>4} "
+            f"${c.total_revenue:>6,.0f}  "
+            f"{c.score:>6.1f}"
+        )
+    print()
+    print(
+        "  Apply a single candidate: "
+        "`shopai transfer apply --from X --to Y "
+        "--engine Z --action-type ...`"
     )
 
 
