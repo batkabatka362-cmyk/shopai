@@ -1451,8 +1451,34 @@ def build_parser() -> argparse.ArgumentParser:
     webhook_receive_p.add_argument(
         "--from-stdin", action="store_true",
         help=(
-            "Read {topic, payload} JSON envelope from stdin "
-            "(pipeable from curl etc)"
+            "Read {topic, payload, raw_body, hmac_header} "
+            "JSON envelope from stdin (pipeable from curl etc)"
+        ),
+    )
+    # Wave 57: HMAC verification
+    webhook_receive_p.add_argument(
+        "--hmac-header", default=None,
+        help=(
+            "Expected HMAC-SHA256 base64 signature for "
+            "payload verification (typically the "
+            "X-Shopify-Hmac-Sha256 header value)"
+        ),
+    )
+    webhook_receive_p.add_argument(
+        "--secret-env", default="SHOPAI_WEBHOOK_SECRET",
+        help=(
+            "Env-var name holding the webhook signing secret "
+            "(default SHOPAI_WEBHOOK_SECRET). Required when "
+            "--hmac-header is set."
+        ),
+    )
+    webhook_receive_p.add_argument(
+        "--require-hmac", action="store_true",
+        help=(
+            "Reject events without a valid HMAC. Without "
+            "this flag, unverified events still process (back-"
+            "compat) -- use in production where the webhook "
+            "is internet-exposed."
         ),
     )
     webhook_receive_p.add_argument(
@@ -6992,28 +7018,33 @@ def _cmd_notify_check(args) -> None:
 
 
 def _cmd_webhook_receive(args) -> None:
-    """Wave 52: ingest one webhook event.
+    """Wave 52 + 57: ingest one webhook event with optional
+    HMAC verification.
 
     Pipes the payload through WebhookFeedbackBridge so the
     autonomous loop tags the event to the engine that
     triggered it. Operator wires this to nginx / curl in an
-    external webhook receiver:
-
-        curl -X POST localhost:8080/webhook | \\
-            shopai webhook receive --from-stdin
-
-    Or pass --topic + --payload-json directly for testing.
+    external webhook receiver. Wave 57 added HMAC verification
+    via --hmac-header + --secret-env.
     """
     from core.feedback.webhook_bridge import (
         get_webhook_feedback_bridge,
     )
+    from core.feedback.webhook_security import verify_hmac
 
     as_json = bool(getattr(args, "json", False))
     topic = (getattr(args, "topic", None) or "").strip() or None
     payload_json = getattr(args, "payload_json", None)
     from_stdin = bool(getattr(args, "from_stdin", False))
+    hmac_header_cli = getattr(args, "hmac_header", None)
+    secret_env = getattr(
+        args, "secret_env", "SHOPAI_WEBHOOK_SECRET",
+    )
+    require_hmac = bool(getattr(args, "require_hmac", False))
 
     payload: dict | None = None
+    raw_body_for_hmac: bytes | str | None = None
+    hmac_header: str | None = hmac_header_cli
 
     if from_stdin:
         try:
@@ -7045,6 +7076,13 @@ def _cmd_webhook_receive(args) -> None:
         payload = envelope.get("payload") or envelope.get(
             "body",
         )
+        # Wave 57: stdin envelope can carry raw_body +
+        # hmac_header for verification. raw_body is the
+        # untouched bytes before JSON parsing -- critical for
+        # HMAC because re-serialized payload won't match.
+        raw_body_for_hmac = envelope.get("raw_body")
+        if hmac_header is None:
+            hmac_header = envelope.get("hmac_header")
 
     if payload_json:
         try:
@@ -7085,8 +7123,62 @@ def _cmd_webhook_receive(args) -> None:
         sys.exit(1)
         return
 
+    # Wave 57: HMAC verification gate. When --hmac-header set
+    # OR --require-hmac in effect, fall through only on a valid
+    # signature. Use raw_body (from stdin envelope) when
+    # provided; otherwise re-serialize payload (BEST-EFFORT;
+    # for Shopify-exact match, raw_body MUST be supplied).
+    hmac_status: dict[str, Any] = {
+        "checked": False, "valid": None,
+    }
+    if hmac_header or require_hmac:
+        secret = os.environ.get(secret_env, "")
+        if not secret:
+            msg = (
+                f"HMAC verification requested but "
+                f"{secret_env} is not set"
+            )
+            if as_json:
+                print(json.dumps(
+                    {"status": "error", "error": msg},
+                    indent=2,
+                ))
+            else:
+                print(f"Error: {msg}")
+            sys.exit(1)
+            return
+        body_to_verify = (
+            raw_body_for_hmac
+            if raw_body_for_hmac is not None
+            else json.dumps(payload, separators=(",", ":"))
+        )
+        valid = verify_hmac(body_to_verify, hmac_header, secret)
+        hmac_status = {
+            "checked": True, "valid": valid,
+        }
+        if not valid:
+            msg = "HMAC signature verification failed"
+            if as_json:
+                print(json.dumps(
+                    {
+                        "status": "rejected",
+                        "reason": "invalid_hmac",
+                        "error": msg,
+                    }, indent=2,
+                ))
+            else:
+                print(f"Rejected: {msg}")
+            sys.exit(1)
+            return
+        if require_hmac and not hmac_header:
+            # Shouldn't reach here (above check fires) but
+            # defensive.
+            sys.exit(1)
+            return
+
     bridge = get_webhook_feedback_bridge()
     result = bridge.handle_event(topic, payload)
+    result["hmac"] = hmac_status
 
     if as_json:
         print(json.dumps(result, indent=2, default=str))

@@ -34,6 +34,11 @@ def _capture(fn, args):
 
 class _NS:
     def __init__(self, **kw):
+        # Provide Wave 57 defaults so older tests don't have to
+        # specify them.
+        kw.setdefault("hmac_header", None)
+        kw.setdefault("secret_env", "SHOPAI_WEBHOOK_SECRET")
+        kw.setdefault("require_hmac", False)
         for k, v in kw.items():
             setattr(self, k, v)
 
@@ -101,6 +106,66 @@ class TestWebhookReceive:
             out, code = _capture(cli._cmd_webhook_receive, args)
         assert code == 1
         assert "stdin parse failed" in out
+
+
+class TestWebhookHMAC:
+    """Wave 57: HMAC verification gate."""
+
+    def test_hmac_header_but_no_secret_errors(
+        self, cli, monkeypatch,
+    ):
+        monkeypatch.delenv(
+            "SHOPAI_WEBHOOK_SECRET", raising=False,
+        )
+        args = _NS(
+            topic="orders/create",
+            payload_json='{"id":"1"}',
+            from_stdin=False,
+            json=False,
+            hmac_header="somehmac",
+        )
+        out, code = _capture(cli._cmd_webhook_receive, args)
+        assert code == 1
+        assert "SHOPAI_WEBHOOK_SECRET" in out
+
+    def test_invalid_hmac_rejected(self, cli, monkeypatch):
+        monkeypatch.setenv(
+            "SHOPAI_WEBHOOK_SECRET", "mysecret",
+        )
+        args = _NS(
+            topic="orders/create",
+            payload_json='{"id":"1"}',
+            from_stdin=False,
+            json=False,
+            hmac_header="wrong_signature_value",
+        )
+        out, code = _capture(cli._cmd_webhook_receive, args)
+        assert code == 1
+        assert "verification failed" in out.lower()
+
+    def test_valid_hmac_passes(
+        self, cli, monkeypatch,
+    ):
+        from core.feedback.webhook_security import compute_hmac
+        secret = "mysecret"
+        monkeypatch.setenv("SHOPAI_WEBHOOK_SECRET", secret)
+        # The re-serialized payload (when raw_body absent) is
+        # `json.dumps(payload, separators=(",",":"))`. Compute
+        # against THAT shape.
+        payload_dict = {"id": "1"}
+        body = json.dumps(payload_dict, separators=(",", ":"))
+        sig = compute_hmac(body, secret)
+        args = _NS(
+            topic="orders/create",
+            payload_json=json.dumps(payload_dict),
+            from_stdin=False,
+            json=True,
+            hmac_header=sig,
+        )
+        out, code = _capture(cli._cmd_webhook_receive, args)
+        assert code == 0
+        data = json.loads(out)
+        assert data.get("hmac", {}).get("valid") is True
 
 
 class TestWebhookStats:
