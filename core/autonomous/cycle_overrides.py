@@ -105,8 +105,10 @@ def _atomic_write(data: dict[str, Any]) -> None:
         except Exception:
             try:
                 os.unlink(temp_path_str)
-            except OSError:
-                pass
+            except OSError as cleanup_exc:
+                logger.debug(
+                    "temp cleanup failed: %s", cleanup_exc,
+                )
             raise
     except OSError as exc:
         logger.debug(
@@ -189,14 +191,20 @@ def _resolve(
     if key in data:
         try:
             return coerce(data[key])
-        except (TypeError, ValueError):
-            pass
+        except (TypeError, ValueError) as exc:
+            logger.debug(
+                "cycle_overrides: %s coerce failed (%s)",
+                key, exc,
+            )
     raw = os.environ.get(env_var)
     if raw is not None:
         try:
             return coerce(raw)
-        except (TypeError, ValueError):
-            pass
+        except (TypeError, ValueError) as exc:
+            logger.debug(
+                "cycle_overrides: %s env coerce failed (%s)",
+                env_var, exc,
+            )
     return default
 
 

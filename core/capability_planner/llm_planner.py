@@ -187,9 +187,12 @@ class LLMPlanner:
             try:
                 if not self._backend.is_available():
                     return None
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 # Backend without is_available() -> trust it
-                pass
+                logger.debug(
+                    "backend.is_available() unsupported (%s)",
+                    exc,
+                )
             return self._backend
         try:
             from models.inference.ollama_backend import (

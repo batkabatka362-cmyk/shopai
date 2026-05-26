@@ -116,8 +116,10 @@ def _atomic_write(data: dict[str, Any]) -> None:
         except Exception:
             try:
                 os.unlink(temp_path_str)
-            except OSError:
-                pass
+            except OSError as cleanup_exc:
+                logger.debug(
+                    "temp cleanup failed: %s", cleanup_exc,
+                )
             raise
     except OSError as exc:
         logger.debug(
@@ -175,8 +177,10 @@ def _write_history(entries: list[dict[str, Any]]) -> None:
         except Exception:
             try:
                 os.unlink(temp_path_str)
-            except OSError:
-                pass
+            except OSError as cleanup_exc:
+                logger.debug(
+                    "temp cleanup failed: %s", cleanup_exc,
+                )
             raise
     except OSError as exc:
         logger.debug(

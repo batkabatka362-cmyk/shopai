@@ -291,8 +291,11 @@ def find_transfer_candidates(
                 if rev is not None:
                     try:
                         bucket["total_revenue"] += float(rev)
-                    except (TypeError, ValueError):
-                        pass
+                    except (TypeError, ValueError) as exc:
+                        logger.debug(
+                            "cycle_transfer: per-engine "
+                            "revenue coerce failed (%s)", exc,
+                        )
 
     # Filter by min_positive_outcomes, sort, take top-N
     qualifying = [
@@ -579,6 +582,9 @@ def compute_effectiveness(
                     r = float(rev)
                     out["total_revenue"] += r
                     bucket["revenue"] += r
-                except (TypeError, ValueError):
-                    pass
+                except (TypeError, ValueError) as exc:
+                    logger.debug(
+                        "cycle_transfer: revenue coerce "
+                        "failed (%s)", exc,
+                    )
     return out

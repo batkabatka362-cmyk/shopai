@@ -146,8 +146,10 @@ def _atomic_write_list(
         except Exception:
             try:
                 os.unlink(temp_path_str)
-            except OSError:
-                pass
+            except OSError as cleanup_exc:
+                logger.debug(
+                    "temp cleanup failed: %s", cleanup_exc,
+                )
             raise
     except OSError as exc:
         logger.debug(
@@ -249,8 +251,10 @@ def prune_all(
                     total_size * pruned_count
                     / max(1, entry["total"]),
                 )
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.debug(
+                    "history_cleanup: stat failed (%s)", exc,
+                )
 
             if pruned_count > 0 and apply_writes:
                 _atomic_write_list(path, kept)
