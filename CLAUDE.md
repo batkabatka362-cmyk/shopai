@@ -1791,3 +1791,93 @@ export SHOPAI_AUTO_PAUSE_ON_OVERSPEND=1
 shopai cycle schedule                    # install cron + notify-check
                                           # AGI merchant runs
 ```
+
+## Empire-scale throughput substrate (Waves 60-69, 2026-05-27)
+
+At 20 stores × 12 engines/cycle × 24 cycles/day = 5,760
+approvable actions/day. Operator drowns without
+prioritization. Wave 60-69 ships the throughput layer that
+makes empire scale tractable.
+
+### Wave 60 -- approval priority score
+- ``engines/_approval_priority.py``: PriorityScore with 5
+  weighted components: risk_class (30%), spend stake (25%),
+  inverse ROAS (20%), regression flag (15%), inverse
+  confidence (10%). Recommendation bands urgent (>=0.7) /
+  normal (0.4-0.7) / auto-ok (<0.4).
+
+### Wave 61 -- approvals pending --sort priority
+- ``shopai approvals pending --sort priority`` reorders the
+  list by score desc + renders marker badge + top-2
+  components inline.
+
+### Wave 62 -- approvals digest
+- ``shopai approvals digest [--top N]``: top-N priority
+  pending + AI pre-vet (Wave 49) inline. Replaces 5+
+  morning commands.
+
+### Wave 63 -- SLA tracking
+- ``engines/_approval_sla.py``: SLA bands (on_time / aging
+  / breached) configurable via SHOPAI_APPROVAL_SLA_*_HOURS.
+- ``shopai approvals sla`` operator view.
+
+### Wave 64 -- per-engine velocity
+- ``engines/_approval_velocity.py``: per-engine proposed /
+  approved / rejected / latency / rejection rate. Identifies
+  bottlenecks (one engine flooding queue) + distrust signals
+  (>= 30% rejection rate gets [BAD] marker).
+- ``shopai approvals velocity [--window-hours N]``.
+
+### Wave 65 -- batch-review with AI consensus
+- ``shopai approvals batch-review [--auto-approve-ok]
+  [--yes]``: top N + AI pre-vet, identifies actions where
+  priority=auto-ok AND AI rec=approve as auto-approve
+  candidates. --yes commits in bulk with
+  decided_by=batch_review. Cron-friendly.
+
+### Wave 66 -- consolidation + tests
+- 47 new tests across the 3 substrate modules. 139 tests
+  green across operational + empire-scale + attribution.
+
+### Wave 67 -- empire summarizer
+- ``engines/_empire_summarizer.py``: one-paragraph empire
+  summary. Deterministic baseline ALWAYS runs; LLM may
+  REFINE when SHOPAI_AI_STRATEGY=1. Same consultant pattern
+  as Wave 17/24/34/35/49.
+- ``shopai empire --summarize [--json]``.
+
+### Wave 68 -- notify includes summary
+- ``SHOPAI_NOTIFY_INCLUDE_SUMMARY=1`` attaches the empire
+  summary paragraph to the notify webhook payload. Slack
+  message becomes one-shot: alerts + 1-paragraph context.
+
+### Wave 69 -- per-store summary
+- ``summarize_empire(store_id=...)`` scopes per-store
+  attribution / spend / alerts / cycle history.
+- ``shopai empire --summarize --store X``.
+
+### Operator's empire-scale workflow
+
+```bash
+# Morning (5-min standup)
+shopai empire --summarize             # one paragraph, 5s scan
+# If "Issues needing attention" surfaces:
+shopai empire                          # full dashboard
+shopai approvals digest                # top-10 + AI pre-vet
+shopai approvals batch-review --auto-approve-ok --yes
+                                      # bulk approve consensus
+shopai approvals sla                   # aging/breached?
+shopai approvals velocity              # bottleneck engine?
+
+# Drill per-store
+shopai empire --summarize --store store-7
+shopai world-model show store-7
+```
+
+5 commands replace what was 15+. Linear operator effort
+even as stores grow linearly.
+
+### Tests
+
+200+ tests across operational + empire-scale + attribution +
+ant-colony stacks. All deterministic on Windows.
