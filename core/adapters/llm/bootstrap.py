@@ -51,7 +51,7 @@ def register_all(
     caller can log how many adapters are actually wired up
     (instead of merely registered).
     """
-    reg = registry or get_registry()
+    reg = registry if registry is not None else get_registry()
     status: dict[str, bool] = {}
 
     for cls in _LLM_ADAPTER_CLASSES:
@@ -82,7 +82,7 @@ def register_all(
 def configured_count(registry: AdapterRegistry | None = None) -> int:
     """Return how many LLM adapters currently have credentials
     set in the environment."""
-    reg = registry or get_registry()
+    reg = registry if registry is not None else get_registry()
     return sum(
         1 for a in reg.find_by_category("llm") if a.is_configured()
     )

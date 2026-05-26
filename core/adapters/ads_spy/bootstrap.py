@@ -37,7 +37,7 @@ def register_all(
     (typically ``core/adapters/bootstrap.py``) can log / report
     how many spy sources the process has active credentials for.
     """
-    reg = registry or get_registry()
+    reg = registry if registry is not None else get_registry()
     status: dict[str, bool] = {}
 
     for cls in _SPY_ADAPTER_CLASSES:

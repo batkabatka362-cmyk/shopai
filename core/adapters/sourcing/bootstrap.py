@@ -31,7 +31,7 @@ def register_all(
     can log / report how many supplier APIs the process has
     active credentials for.
     """
-    reg = registry or get_registry()
+    reg = registry if registry is not None else get_registry()
     status: dict[str, bool] = {}
 
     for cls in _SOURCING_ADAPTER_CLASSES:

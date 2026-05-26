@@ -126,8 +126,17 @@ class SmartRouter:
         registry: AdapterRegistry | None = None,
         metrics: MetricsCollector | None = None,
     ) -> None:
-        self._registry = registry or get_registry()
-        self._metrics = metrics or get_metrics()
+        # Wave 56: ``registry or get_registry()`` is buggy
+        # because an empty AdapterRegistry is falsy (__len__
+        # returns 0). Use explicit None-check so callers passing
+        # an empty registry actually use THAT registry, not the
+        # global singleton.
+        self._registry = (
+            registry if registry is not None else get_registry()
+        )
+        self._metrics = (
+            metrics if metrics is not None else get_metrics()
+        )
         self._lock = threading.RLock()
 
     # ── Public API ─────────────────────────────────────────────
