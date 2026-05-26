@@ -8132,13 +8132,32 @@ def _cmd_empire(args) -> None:
                 "store_id": s.get("store_id"),
                 "shop_url": s.get("shop_url", ""),
                 "is_active": s.get("is_active", False),
+                "niche": (s.get("niche") or "").strip().lower(),
             })
     except Exception:  # noqa: BLE001
         pass
 
+    # Wave 85: fleet niche distribution
+    niche_mix_block: dict | None = None
+    if stores_list:
+        mix: dict[str, int] = {}
+        untagged = 0
+        for s in stores_list:
+            n = s.get("niche") or ""
+            if not n or n == "general":
+                untagged += 1
+            else:
+                mix[n] = mix.get(n, 0) + 1
+        niche_mix_block = {
+            "by_niche": mix,
+            "untagged": untagged,
+            "total": len(stores_list),
+        }
+
     if as_json:
         print(json.dumps({
             "stores": stores_list,
+            "niche_mix": niche_mix_block,
             "last_run": last_run_block,
             "revenue": revenue_block,
             "approvals": approvals_block,
@@ -8158,6 +8177,25 @@ def _cmd_empire(args) -> None:
     if stores_list:
         active = sum(1 for s in stores_list if s["is_active"])
         print(f"    active:             {active}")
+    # Wave 85: niche-mix breakdown
+    if niche_mix_block and (
+        niche_mix_block["by_niche"] or niche_mix_block["untagged"]
+    ):
+        mix = niche_mix_block["by_niche"]
+        untagged = niche_mix_block["untagged"]
+        parts: list[str] = []
+        for niche in sorted(mix):
+            parts.append(f"{mix[niche]} {niche}")
+        if untagged:
+            parts.append(f"{untagged} untagged")
+        print(
+            f"    niche mix:          {', '.join(parts)}"
+        )
+        if untagged:
+            print(
+                f"    -> `shopai niche --suggest <store> "
+                "--apply` auto-tags from catalog"
+            )
 
     # Last cycle
     print()
