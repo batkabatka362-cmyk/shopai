@@ -285,6 +285,40 @@ def clear_snapshots() -> None:
             pass
 
 
+def cluster_revenue_history(
+    cluster_name: str,
+    *,
+    limit: int = 30,
+    store_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Per-snapshot attribution trend for a single cluster.
+
+    Mirror of ``engine_revenue_history`` at cluster scope.
+    Oldest first. Skips snapshots where the cluster has no
+    attribution row so the trend reflects real data points.
+    """
+    snaps = recent_snapshots(limit=limit, store_id=store_id)
+    snaps.reverse()
+    out: list[dict[str, Any]] = []
+    for s in snaps:
+        for c in s.per_cluster:
+            if c.get("cluster") == cluster_name:
+                out.append({
+                    "snapshot_id": s.snapshot_id,
+                    "captured_at": s.captured_at,
+                    "cycle_run_id": s.cycle_run_id,
+                    "attributed_revenue": c.get(
+                        "attributed_revenue", 0.0,
+                    ),
+                    "attributed_orders": c.get(
+                        "attributed_orders", 0,
+                    ),
+                    "confidence": c.get("confidence"),
+                })
+                break
+    return out
+
+
 def engine_revenue_history(
     engine_name: str,
     *,

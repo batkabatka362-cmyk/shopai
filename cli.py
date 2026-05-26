@@ -2911,6 +2911,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
     )
+    cluster_show_p.add_argument(
+        "--revenue-history", action="store_true",
+        help=(
+            "Surface per-cycle attribution trend (revenue, "
+            "orders) for this cluster, oldest first."
+        ),
+    )
 
     cluster_plan_p = cluster_sub.add_parser(
         "plan",
@@ -16058,6 +16065,39 @@ def _cmd_cluster_show(args) -> None:
         f"({h['advisory_members']} advisory)"
     )
     print(f"  Risk:        {h['risk_buckets']}")
+
+    # Wave 32: per-cluster revenue trend (oldest first).
+    # Opt-in to keep cluster show light by default.
+    if getattr(args, "revenue_history", False):
+        try:
+            from engines._attribution_snapshot import (
+                cluster_revenue_history,
+            )
+            rev_rows = cluster_revenue_history(cluster_name)
+            if rev_rows:
+                print()
+                print(
+                    f"  Revenue history ({len(rev_rows)} "
+                    f"data point(s), oldest first):"
+                )
+                import time as _t
+                now = _t.time()
+                for row in rev_rows[-15:]:
+                    age = now - row["captured_at"]
+                    if age < 3600:
+                        age_str = f"{int(age/60)}m"
+                    elif age < 86400:
+                        age_str = f"{age/3600:.1f}h"
+                    else:
+                        age_str = f"{age/86400:.1f}d"
+                    print(
+                        f"    {age_str:<6} ago  "
+                        f"${row['attributed_revenue']:>9,.2f}  "
+                        f"orders={row['attributed_orders']:>3}  "
+                        f"({row['confidence']})"
+                    )
+        except Exception:  # noqa: BLE001
+            pass
 
     if revenue_block is not None:
         print()

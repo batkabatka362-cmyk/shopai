@@ -13,6 +13,7 @@ import pytest
 from engines._attribution_snapshot import (
     AttributionSnapshot,
     attribution_trend,
+    cluster_revenue_history,
     clear_snapshots,
     engine_revenue_history,
     fleet_attribution_rollup,
@@ -392,6 +393,66 @@ class TestEngineRevenueHistory:
         # Oldest snapshot first
         assert rows[0]["attributed_revenue"] == 100.0
         assert rows[1]["attributed_revenue"] == 500.0
+
+
+class TestClusterRevenueHistory:
+    """Wave 32: per-cluster attribution trend."""
+
+    def test_empty_when_no_snapshots(self, isolated_snapshots):
+        assert cluster_revenue_history("retention") == []
+
+    def test_oldest_first_with_data(self, isolated_snapshots):
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=_fake_report(
+                per_cluster=[
+                    {"cluster": "retention",
+                     "revenue": 100.0, "orders": 1},
+                ],
+            ),
+        ):
+            record_snapshot(window_hours=168.0)
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=_fake_report(
+                per_cluster=[
+                    {"cluster": "retention",
+                     "revenue": 500.0, "orders": 5},
+                ],
+            ),
+        ):
+            record_snapshot(window_hours=168.0)
+        rows = cluster_revenue_history("retention")
+        # Oldest first
+        assert rows[0]["attributed_revenue"] == 100.0
+        assert rows[1]["attributed_revenue"] == 500.0
+
+    def test_skips_snapshots_without_cluster(
+        self, isolated_snapshots,
+    ):
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=_fake_report(
+                per_cluster=[
+                    {"cluster": "retention",
+                     "revenue": 100.0, "orders": 1},
+                ],
+            ),
+        ):
+            record_snapshot(window_hours=168.0)
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=_fake_report(
+                per_cluster=[
+                    {"cluster": "pricing",
+                     "revenue": 200.0, "orders": 1},
+                ],
+            ),
+        ):
+            record_snapshot(window_hours=168.0)
+        rows = cluster_revenue_history("retention")
+        # Only the first snapshot had retention -> 1 row
+        assert len(rows) == 1
 
 
 class TestClear:
