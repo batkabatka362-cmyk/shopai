@@ -331,6 +331,56 @@ class TestDesignSection:
         assert "engine down" in snap["design"]["error"]
 
 
+class TestNichePrioritySection:
+    """Wave 87: niche_priority section surfaces the merged
+    cluster_focus the orchestrator would use."""
+
+    def test_active_when_known_niche(self):
+        sm = _fake_sm(niche="beauty")
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        np = snap["niche_priority"]
+        assert np["checked"] is True
+        assert np["active"] is True
+        assert np["niche"] == "beauty"
+        # Beauty's first cluster is merchandising
+        assert np["cluster_focus"][0] == "merchandising"
+        # supported_niches list always shipped
+        assert "beauty" in np["supported_niches"]
+        assert "tech" in np["supported_niches"]
+
+    def test_inactive_when_general(self):
+        sm = _fake_sm(niche="general")
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        np = snap["niche_priority"]
+        assert np["checked"] is True
+        assert np["active"] is False
+        assert np["cluster_focus"] == []
+        assert "no niche set" in np["reason"]
+
+    def test_inactive_when_empty(self):
+        sm = _fake_sm(niche="")
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        np = snap["niche_priority"]
+        assert np["active"] is False
+        assert np["cluster_focus"] == []
+
+    def test_unknown_niche_inactive(self):
+        sm = _fake_sm(niche="xyzunknown")
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        np = snap["niche_priority"]
+        assert np["active"] is False
+        # reason mentions unknown
+        assert "unknown" in np["reason"].lower()
+
+
 class TestApprovalsSection:
 
     def test_populates_pending_counts(self):
@@ -644,7 +694,8 @@ class TestSnapshotEnvelope:
             snap = wm.snapshot("test-store", skip_live=True)
         for key in (
             "store_id", "fetched_at", "store", "stats", "sync",
-            "connection", "config", "design", "approvals", "decisions",
+            "connection", "config", "design", "niche_priority",
+            "approvals", "decisions",
             "transfers", "recent_outcomes", "quarantine",
         ):
             assert key in snap

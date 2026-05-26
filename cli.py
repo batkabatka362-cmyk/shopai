@@ -12442,6 +12442,27 @@ def _cmd_world_model_show(args) -> None:
     print(f"  URL:    {store.get('shop_url', '-')}")
     print(f"  Niche:  {store.get('niche') or '-'}")
     print(f"  Type:   {store.get('store_type') or '-'}")
+    # Wave 87: surface the merged cluster priority the
+    # orchestrator would use, so operator sees the niche
+    # bias materialize as ordered clusters (not just the
+    # niche label).
+    np_block = snap.get("niche_priority") or {}
+    if np_block.get("checked"):
+        if np_block.get("active"):
+            focus = np_block.get("cluster_focus") or []
+            top3 = " -> ".join(focus[:3])
+            extra = (
+                f" (+{len(focus) - 3} more)"
+                if len(focus) > 3 else ""
+            )
+            print(
+                f"  Niche priority: {top3}{extra}"
+            )
+        else:
+            print(
+                f"  Niche priority: (inactive -- "
+                f"{np_block.get('reason', 'no bias')})"
+            )
     # Prominent fleet-wide pause banner near the top so
     # operators using show on a paused fleet see it
     # immediately, not buried in Cycle health below.

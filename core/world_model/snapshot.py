@@ -167,6 +167,61 @@ class WorldModel:
             "feature_count": len(result.get("results") or {}),
         }
 
+    def _section_niche_priority(
+        self, *, niche: str | None,
+    ) -> dict:
+        """Wave 87: surface the cluster priority Wave 73's
+        orchestrator would use for this store. When niche is
+        unset / "general", the section reports the bare base
+        priority so the operator sees that no bias is active.
+
+        Best-effort: import failure or unknown niche returns
+        ``{"checked": False, "error": ...}``.
+        """
+        n = (niche or "").strip().lower()
+        try:
+            from engines._niche_priority import (
+                niche_cluster_focus, supported_niches,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model niche_priority import raised: %s", exc,
+            )
+            return {"checked": False, "error": str(exc)}
+        if not n or n == "general":
+            return {
+                "checked": True,
+                "niche": n or None,
+                "active": False,
+                "cluster_focus": [],
+                "supported_niches": supported_niches(),
+                "reason": (
+                    "no niche set; orchestrator uses base "
+                    "lifecycle priority unchanged"
+                ),
+            }
+        focus = niche_cluster_focus(n)
+        if not focus:
+            return {
+                "checked": True,
+                "niche": n,
+                "active": False,
+                "cluster_focus": [],
+                "supported_niches": supported_niches(),
+                "reason": f"unknown niche '{n}'",
+            }
+        return {
+            "checked": True,
+            "niche": n,
+            "active": True,
+            "cluster_focus": focus,
+            "supported_niches": supported_niches(),
+            "reason": (
+                f"orchestrator merges these clusters FIRST "
+                f"with the lifecycle base focus (Wave 73)"
+            ),
+        }
+
     def _section_design(self) -> dict:
         """Cheap probe: runs the store_design engine with empty
         input. Engine is Pattern Q compliant so this never throws
@@ -1448,6 +1503,9 @@ class WorldModel:
                 }
 
         design = self._section_design()
+        niche_priority = self._section_niche_priority(
+            niche=store.get("niche"),
+        )
         # Per-store scope for approvals + decisions when the
         # store_id maps to actual tagged rows. Sections fall back
         # to global if the queue layer or actions don't carry
@@ -1477,6 +1535,7 @@ class WorldModel:
             "connection": connection,
             "config": config,
             "design": design,
+            "niche_priority": niche_priority,
             "approvals": approvals,
             "decisions": decisions,
             "transfers": transfers,
