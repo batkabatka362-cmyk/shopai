@@ -185,8 +185,8 @@ class AICaptainStrategy:
             "You are a Tier 2b cluster captain for ShopAI -- "
             "an autonomous Shopify merchant. Given cluster "
             "definition + signals + recent memory + per-engine "
-            "revenue attribution, recommend which member "
-            "engines to fire THIS cycle. Return JSON: "
+            "revenue attribution (with trend), recommend which "
+            "member engines to fire THIS cycle. Return JSON: "
             "{\"fire\": [\"engine_name\", ...], "
             "\"rationale\": \"...\"}. Only return engines "
             "from the wired_members list. The deterministic "
@@ -194,8 +194,10 @@ class AICaptainStrategy:
             "may REFINE (drop / add / keep) but cannot pick "
             "engines outside wired_members. Engines with "
             "higher recent revenue attribution generally "
-            "deserve priority unless a signal explicitly "
-            "calls for an under-performer."
+            "deserve priority. Engines with trend='rising' "
+            "deserve continued investment; trend='falling' "
+            "deserves caution (maybe deprioritize unless a "
+            "signal explicitly calls for it)."
         )
         user = json.dumps({
             "cluster": cluster.name,
@@ -235,7 +237,11 @@ class AICaptainStrategy:
             {
               "cluster_attributed_revenue": float,
               "members": [
-                {"engine": ..., "revenue": float, "orders": int},
+                {
+                  "engine": ..., "revenue": float, "orders": int,
+                  "trend": "rising"|"falling"|"flat"|"new",
+                  "recent_revenue": [old -> new floats],
+                },
                 ...
               ],
               "top_engine": str | None,
@@ -265,17 +271,49 @@ class AICaptainStrategy:
                 )
                 break
 
-        # Per-engine revenue (only for this cluster's wired
-        # members)
+        # Per-engine revenue + Wave 34 trend (last 3 snapshots)
+        try:
+            from engines._attribution_snapshot import (
+                engine_revenue_history,
+            )
+        except Exception:  # noqa: BLE001
+            engine_revenue_history = None
+
         members: list[dict[str, Any]] = []
         for e in report.per_engine:
-            if e.engine in wired_set:
-                members.append({
-                    "engine": e.engine,
-                    "revenue": round(e.attributed_revenue, 2),
-                    "orders": e.attributed_orders,
-                })
-        # Already sorted desc by attribution at the report level
+            if e.engine not in wired_set:
+                continue
+            member = {
+                "engine": e.engine,
+                "revenue": round(e.attributed_revenue, 2),
+                "orders": e.attributed_orders,
+                "trend": "new",
+                "recent_revenue": [],
+            }
+            if engine_revenue_history is not None:
+                try:
+                    history = engine_revenue_history(
+                        e.engine, limit=3,
+                    )
+                except Exception:  # noqa: BLE001
+                    history = []
+                if history:
+                    member["recent_revenue"] = [
+                        round(h["attributed_revenue"], 2)
+                        for h in history
+                    ]
+                    if len(history) >= 2:
+                        old = history[0]["attributed_revenue"]
+                        new = history[-1]["attributed_revenue"]
+                        if new > old * 1.1:
+                            member["trend"] = "rising"
+                        elif new < old * 0.9:
+                            member["trend"] = "falling"
+                        else:
+                            member["trend"] = "flat"
+                    else:
+                        member["trend"] = "new"
+            members.append(member)
         out["members"] = members
         if members:
             out["top_engine"] = members[0]["engine"]

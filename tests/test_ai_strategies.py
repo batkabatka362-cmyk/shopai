@@ -279,6 +279,115 @@ class TestAIOrchestratorFallback:
         assert "[AI]" in prio.rationale
 
 
+class TestCaptainTrend:
+    """Wave 34: AI captain prompt context includes per-engine
+    trend (rising/falling/flat/new) from recent snapshots."""
+
+    def _fake_report(self, engine_revs):
+        from engines._revenue_attribution import (
+            AttributionReport, EngineAttribution,
+        )
+        rpt = AttributionReport(window_hours=168.0)
+        for engine, rev in engine_revs.items():
+            rpt.per_engine.append(
+                EngineAttribution(
+                    engine=engine,
+                    cluster="retention",
+                    window_hours=168.0,
+                    attributed_revenue=rev,
+                    attributed_orders=1 if rev > 0 else 0,
+                )
+            )
+        rpt.per_engine.sort(
+            key=lambda e: e.attributed_revenue, reverse=True,
+        )
+        return rpt
+
+    def test_rising_trend_detected(self):
+        strategy = AICaptainStrategy()
+        cluster = get_cluster("retention")
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=self._fake_report({"loyalty": 500.0}),
+        ), patch(
+            "engines._attribution_snapshot.engine_revenue_history",
+            return_value=[
+                {"attributed_revenue": 100.0},  # oldest
+                {"attributed_revenue": 300.0},
+                {"attributed_revenue": 500.0},  # newest
+            ],
+        ):
+            ctx = strategy._attribution_context(
+                cluster, ["loyalty"],
+            )
+        loyalty = next(
+            m for m in ctx["members"] if m["engine"] == "loyalty"
+        )
+        assert loyalty["trend"] == "rising"
+        assert loyalty["recent_revenue"] == [100.0, 300.0, 500.0]
+
+    def test_falling_trend_detected(self):
+        strategy = AICaptainStrategy()
+        cluster = get_cluster("retention")
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=self._fake_report({"loyalty": 100.0}),
+        ), patch(
+            "engines._attribution_snapshot.engine_revenue_history",
+            return_value=[
+                {"attributed_revenue": 1000.0},
+                {"attributed_revenue": 500.0},
+                {"attributed_revenue": 100.0},
+            ],
+        ):
+            ctx = strategy._attribution_context(
+                cluster, ["loyalty"],
+            )
+        loyalty = next(
+            m for m in ctx["members"] if m["engine"] == "loyalty"
+        )
+        assert loyalty["trend"] == "falling"
+
+    def test_flat_trend_within_10pct(self):
+        strategy = AICaptainStrategy()
+        cluster = get_cluster("retention")
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=self._fake_report({"loyalty": 105.0}),
+        ), patch(
+            "engines._attribution_snapshot.engine_revenue_history",
+            return_value=[
+                {"attributed_revenue": 100.0},
+                {"attributed_revenue": 105.0},
+            ],
+        ):
+            ctx = strategy._attribution_context(
+                cluster, ["loyalty"],
+            )
+        loyalty = next(
+            m for m in ctx["members"] if m["engine"] == "loyalty"
+        )
+        assert loyalty["trend"] == "flat"
+
+    def test_new_trend_when_no_history(self):
+        strategy = AICaptainStrategy()
+        cluster = get_cluster("retention")
+        with patch(
+            "engines._revenue_attribution.attribute_revenue",
+            return_value=self._fake_report({"loyalty": 100.0}),
+        ), patch(
+            "engines._attribution_snapshot.engine_revenue_history",
+            return_value=[],
+        ):
+            ctx = strategy._attribution_context(
+                cluster, ["loyalty"],
+            )
+        loyalty = next(
+            m for m in ctx["members"] if m["engine"] == "loyalty"
+        )
+        assert loyalty["trend"] == "new"
+
+
 class TestOrchestratorAttributionContext:
     """Wave 24: AI orchestrator prompt gets per-store cluster
     attribution context."""
