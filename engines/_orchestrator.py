@@ -101,7 +101,21 @@ class OrchestratorStrategy(Protocol):
 # ── Default priority rules (deterministic v1) ──────────────────
 
 _PRIORITY_CLUSTERS = {
-    "launching": ["setup", "acquisition", "content"],
+    # Wave 37: launching expanded. Old version was [setup,
+    # acquisition, content] but setup + content are both opt-in
+    # (skipped in supervisor's default activation), so launching
+    # stores effectively only fired acquisition. A store with
+    # products but no orders ALSO benefits from:
+    #   - merchandising: rank products, bundle, search-optimise
+    #   - pricing: set elasticity, profitability baseline
+    #   - quality: collect review signal from any first sales
+    # ...all of which help CONVERT the first orders. setup +
+    # content remain in the list as honourable mentions; they
+    # still get supervisor-skipped as opt_in_only.
+    "launching": [
+        "setup", "acquisition", "merchandising",
+        "pricing", "quality", "content",
+    ],
     "growing": ["acquisition", "merchandising", "quality"],
     "mature": ["retention", "pricing", "merchandising"],
     "at_risk": ["retention", "discovery"],
@@ -353,8 +367,16 @@ def _signals_for_priority(
     stats = world_model.get("stats", {}) or {}
 
     if priority == "launching":
+        # Wave 37: hints for the expanded cluster set so
+        # captain rule-tables fire useful default branches.
         out["setup"] = {"first_launch": True}
         out["acquisition"] = {"new_signups_count": 1}
+        # Empty dicts trigger the always-on default rule on
+        # signal-driven captains -- adequate for fresh stores
+        # that don't yet have specific signal data.
+        out["merchandising"] = {}
+        out["pricing"] = {}
+        out["quality"] = {}
         return out
 
     if priority == "at_risk":
