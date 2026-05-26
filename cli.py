@@ -1374,6 +1374,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    # Wave 53: external notification webhook fan-out
+    notify_p = sub.add_parser(
+        "notify",
+        help=(
+            "Fan-out empire alerts to an external webhook. "
+            "Operator wires SHOPAI_NOTIFY_WEBHOOK_URL to "
+            "Slack / Discord / Pushbullet / n8n / Zapier."
+        ),
+    )
+    notify_sub = notify_p.add_subparsers(dest="notify_action")
+
+    notify_check_p = notify_sub.add_parser(
+        "check",
+        help=(
+            "Scan for alerts (stale_cycle / revenue_regression "
+            "/ spend_breach / engine_paused), POST to webhook "
+            "if fireable. Cooldown-throttled per-kind."
+        ),
+    )
+    notify_check_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON result",
+    )
+
     # Wave 52: webhook ingestion CLI receiver
     webhook_p = sub.add_parser(
         "webhook",
@@ -6823,6 +6847,69 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
             "  Next: subsystem failed to load -- check "
             "logs / `data/` permissions."
         )
+
+
+def _cmd_notify_check(args) -> None:
+    """Wave 53: notify check + fan-out to external webhook."""
+    from engines._notify import notify_check
+
+    as_json = bool(getattr(args, "json", False))
+    result = notify_check()
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    print("Notify check")
+    print()
+    url_status = (
+        "configured" if result["url_configured"] else "unset"
+    )
+    print(
+        f"  webhook URL:        {url_status}  "
+        f"(SHOPAI_NOTIFY_WEBHOOK_URL)"
+    )
+    print(
+        f"  dry run:            "
+        f"{'yes' if result['dry_run'] else 'no'}  "
+        f"(SHOPAI_NOTIFY_DRY_RUN)"
+    )
+    print(
+        f"  cooldown:           "
+        f"{result['cooldown_seconds']}s"
+    )
+    print(
+        f"  total alerts:       {result['total_alerts']}"
+    )
+    print(
+        f"  fireable (cooldown-filtered): "
+        f"{result['fireable_alerts']}"
+    )
+    print(
+        f"  posted:             "
+        f"{'yes' if result['posted'] else 'no'}"
+    )
+    if result.get("alerts"):
+        print()
+        print("  Alerts to fire:")
+        for a in result["alerts"]:
+            marker = {
+                "critical": "[BAD]",
+                "warn": "[WRN]",
+                "info": "[ - ]",
+            }.get(a["severity"], "[ ? ]")
+            print(
+                f"    {marker} {a['kind']:<22} "
+                f"{a['message'][:80]}"
+            )
+    elif result["total_alerts"] > 0:
+        print()
+        print(
+            "  All alerts within cooldown -- no post this run."
+        )
+    else:
+        print()
+        print("  No alerts.")
 
 
 def _cmd_webhook_receive(args) -> None:
@@ -36551,6 +36638,14 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_webhook_stats(args)
             return
         print("Usage: shopai webhook {receive|stats}")
+        return
+
+    if args.command == "notify":
+        action = getattr(args, "notify_action", None)
+        if action == "check":
+            _cmd_notify_check(args)
+            return
+        print("Usage: shopai notify {check}")
         return
 
     if args.command == "transfer":
