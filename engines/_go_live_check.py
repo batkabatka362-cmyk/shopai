@@ -280,8 +280,9 @@ def _check_store_niches() -> CheckResult:
             f"{sample}{suffix}"
         ),
         fix=(
-            "Re-add with `--niche beauty|fashion|home|tech|"
-            "food` to bias orchestration."
+            "shopai niche --set <store> <beauty|fashion|home|"
+            "tech|food> (Wave 77 in-place update; preserves "
+            "credentials)"
         ),
     )
 
