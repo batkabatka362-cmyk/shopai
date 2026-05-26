@@ -16203,6 +16203,22 @@ def _cmd_cluster_show(args) -> None:
         )
 
 
+def _store_stats_for_captain(store_id: str | None) -> dict | None:
+    """Wave 43: pull world_model.stats for a single store so
+    cluster plan / cluster fire benefit from Wave 42's empty-
+    input skip filter. None when store_id is missing or the
+    snapshot raises."""
+    if not store_id:
+        return None
+    try:
+        from core.world_model import WorldModel
+        snap = WorldModel().snapshot(store_id, skip_live=True)
+        stats = snap.get("stats") if isinstance(snap, dict) else None
+        return stats if isinstance(stats, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _cmd_cluster_plan(args) -> None:
     """Generate + render a captain plan for one cluster."""
     from engines._cluster_captain import (
@@ -16243,6 +16259,7 @@ def _cmd_cluster_plan(args) -> None:
     plan = make_captain_plan(
         cluster_name, store_id=store_id,
         signals=signals, strategy=strategy,
+        store_stats=_store_stats_for_captain(store_id),
     )
 
     if getattr(args, "json", False):
@@ -19234,6 +19251,7 @@ def _cmd_cluster_fire(args) -> None:
     plan = make_captain_plan(
         cluster_name, store_id=store_id,
         signals=signals, strategy=strategy,
+        store_stats=_store_stats_for_captain(store_id),
     )
 
     if not yes:
