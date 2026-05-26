@@ -93,6 +93,43 @@ class StoreManager:
         logger.info("Store added: %s (%s)", store_id, shop_url)
         return result
 
+    def update_store_niche(
+        self, store_id: str, niche: str,
+    ) -> dict[str, Any]:
+        """Wave 77: update a store's niche without re-adding.
+
+        Operator wants to adjust a store's niche after
+        observing it; previously this meant `remove` + `add`
+        which loses credentials. This is a simple SQL UPDATE.
+        """
+        if not isinstance(store_id, str) or not store_id:
+            return {"error": "store_id required"}
+        if not isinstance(niche, str):
+            return {"error": "niche must be string"}
+        niche = niche.strip().lower()
+        store = self._db.get_store(store_id)
+        if not store:
+            return {"error": f"store '{store_id}' not found"}
+        import time as _t
+        conn = self._db._get_conn()
+        try:
+            conn.execute(
+                "UPDATE stores SET niche = ?, updated_at = ? "
+                "WHERE store_id = ?",
+                (niche, _t.time(), store_id),
+            )
+            conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"db update failed: {exc}"}
+        logger.info(
+            "Store niche updated: %s -> %s", store_id, niche,
+        )
+        return {
+            "store_id": store_id,
+            "niche": niche,
+            "status": "updated",
+        }
+
     def remove_store(self, store_id: str) -> dict[str, Any]:
         """Deactivate a store (soft delete)."""
         with self._lock:

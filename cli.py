@@ -1412,6 +1412,16 @@ def build_parser() -> argparse.ArgumentParser:
             "tagged with which niche)"
         ),
     )
+    # Wave 77: change a store's niche without re-adding
+    niche_p.add_argument(
+        "--set", nargs=2, metavar=("STORE_ID", "NICHE"),
+        default=None,
+        help=(
+            "Update an existing store's niche tag. Pass "
+            "store_id + niche (one of beauty / fashion / "
+            "home / tech / food / general)."
+        ),
+    )
     niche_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON",
@@ -7146,7 +7156,7 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
 
 
 def _cmd_niche(args) -> None:
-    """Wave 74: niche operator discovery surface."""
+    """Wave 74 + 77: niche operator discovery + update."""
     from engines._niche_priority import (
         niche_cluster_focus, supported_niches,
     )
@@ -7154,6 +7164,46 @@ def _cmd_niche(args) -> None:
     as_json = bool(getattr(args, "json", False))
     show_one = (getattr(args, "show", None) or "").strip()
     by_store = bool(getattr(args, "by_store", False))
+    set_pair = getattr(args, "set", None)
+
+    # Wave 77: --set STORE NICHE updates an existing store
+    if set_pair:
+        store_id, new_niche = set_pair[0], set_pair[1]
+        valid_niches = set(supported_niches()) | {"general"}
+        new_niche_norm = new_niche.strip().lower()
+        if new_niche_norm not in valid_niches:
+            msg = (
+                f"Invalid niche '{new_niche}'. "
+                f"Supported: {sorted(valid_niches)}"
+            )
+            if as_json:
+                print(json.dumps({
+                    "status": "error", "error": msg,
+                }, indent=2))
+            else:
+                print(f"Error: {msg}")
+            sys.exit(1)
+            return
+        sm = _get_store_manager()
+        result = sm.update_store_niche(
+            store_id, new_niche_norm,
+        )
+        if as_json:
+            print(json.dumps(result, indent=2, default=str))
+            return
+        if result.get("error"):
+            print(f"Error: {result['error']}")
+            sys.exit(1)
+            return
+        print(
+            f"Store '{store_id}' niche updated to "
+            f"'{new_niche_norm}'."
+        )
+        focus = niche_cluster_focus(new_niche_norm)
+        if focus:
+            top3 = " -> ".join(focus[:3])
+            print(f"  Cluster priority: {top3}")
+        return
 
     # --by-store mode: list stores grouped by niche
     if by_store:
