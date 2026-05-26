@@ -285,6 +285,70 @@ class TestSignalDrivenStrategy:
         assert "churn_prediction" not in fired
 
 
+class TestEmptyInputSkip:
+    """Wave 42: captain skips engines whose primary input class
+    is empty on the store."""
+
+    def test_zero_orders_skips_orders_needing_engines(self):
+        plan = make_captain_plan(
+            "pricing",
+            store_stats={
+                "products": 9, "orders": 0, "customers": 5,
+            },
+        )
+        skipped_engines = [
+            s["engine"] for s in plan.members_to_skip
+        ]
+        # dropshipping needs orders -> skipped
+        # price_elasticity needs products (9) -> NOT skipped
+        assert "dropshipping" in skipped_engines
+        # And reason format is consistent
+        drops = next(
+            s for s in plan.members_to_skip
+            if s["engine"] == "dropshipping"
+        )
+        assert "empty_input" in drops["reason"]
+        assert "orders=0" in drops["reason"]
+
+    def test_zero_customers_skips_customer_needing_engines(self):
+        plan = make_captain_plan(
+            "retention",
+            store_stats={
+                "products": 10, "orders": 5, "customers": 0,
+            },
+        )
+        skipped = {
+            s["engine"] for s in plan.members_to_skip
+        }
+        # retention cluster has many customers-needing engines
+        assert "loyalty" in skipped
+        assert "churn_prediction" in skipped
+        assert "subscription" in skipped
+
+    def test_no_store_stats_means_no_skip(self):
+        """Backward compat: when store_stats not passed,
+        the skip filter is off (existing callers unchanged)."""
+        plan_no_stats = make_captain_plan("pricing")
+        plan_with_stats = make_captain_plan(
+            "pricing",
+            store_stats={
+                "products": 9, "orders": 0, "customers": 5,
+            },
+        )
+        no_stats_skip = {
+            s["engine"] for s in plan_no_stats.members_to_skip
+            if "empty_input" in s["reason"]
+        }
+        with_stats_skip = {
+            s["engine"] for s in plan_with_stats.members_to_skip
+            if "empty_input" in s["reason"]
+        }
+        # Without stats, no empty_input skips
+        assert no_stats_skip == set()
+        # With stats, dropshipping skipped
+        assert "dropshipping" in with_stats_skip
+
+
 class TestMemoryAwareStrategy:
     """Captain reads cluster health, adjusts selection."""
 

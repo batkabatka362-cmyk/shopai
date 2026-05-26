@@ -499,12 +499,78 @@ def _emit_signal_events(
             pass
 
 
+# Wave 42: per-engine primary-input metadata. When the store
+# has zero records in this input class, the engine WILL fail
+# in cycle run with "X list is required" -- caught by
+# `cycle verify --invoke` on the dev store. Skipping these
+# engines at captain plan time turns "12 errors / 13 fired"
+# into "X engines fired, Y skipped (empty input)" -- accurate
+# instead of alarming.
+#
+# Maps engine_name -> world_model.stats key the engine needs.
+_PRIMARY_INPUT_REQUIREMENTS: dict[str, str] = {
+    # Orders-dependent
+    "dropshipping": "orders",
+    "fraud_detection": "orders",
+    "order_management": "orders",
+    "order_quality": "orders",
+    "shipping_optimization": "orders",
+    "supplier": "orders",
+    # Customers-dependent
+    "audience_targeting": "customers",
+    "customer_segmentation": "customers",
+    "email_marketing": "customers",
+    "affiliate": "customers",
+    "influencer": "customers",
+    "churn_prediction": "customers",
+    "cohort_analysis": "customers",
+    "customer_effort_score": "customers",
+    "customer_journey": "customers",
+    "nps_engine": "customers",
+    "subscription": "customers",
+    "browse_recovery": "customers",
+    "cart_recovery": "customers",
+    "loyalty": "customers",
+    "wholesale_b2b": "customers",
+    "wishlist": "customers",
+    # Products-dependent
+    "price_elasticity": "products",
+    "profitability_calculator": "products",
+    "profit_optimization": "products",
+    "discount_strategy": "products",
+    "pricing": "products",
+    "dynamic_pricing": "products",
+    "product_ranking": "products",
+    "product_scoring": "products",
+    "search_optimization": "products",
+    "selection_decision": "products",
+    "product_filter": "products",
+    "product_lifecycle": "products",
+    "product_optimization": "products",
+    "cross_sell": "products",
+    "upsell": "products",
+    "bundle": "products",
+    "catalog": "products",
+    "tag_management": "products",
+    "inventory": "products",
+    "stock_prediction": "products",
+    # Reviews + behavioral data don't have standard stats keys;
+    # these will skip via the missing-key path (treated as 0).
+    "review_management": "reviews",
+    "behavioral_data": "behavioral_signals",
+    "sentiment_analysis": "reviews",
+    "feedback_collection": "customers",
+    "feedback_processing": "customers",
+}
+
+
 def make_captain_plan(
     cluster_name: str,
     *,
     store_id: str | None = None,
     signals: dict[str, Any] | None = None,
     strategy: CaptainStrategy | None = None,
+    store_stats: dict[str, Any] | None = None,
 ) -> CaptainPlan:
     """Build a CaptainPlan for the given cluster.
 
@@ -517,6 +583,11 @@ def make_captain_plan(
             decide.
         strategy: Pluggable decision strategy. Defaults to
             DeterministicCaptainStrategy.
+        store_stats: Optional dict matching world_model.stats
+            shape (products/orders/customers counts). When
+            provided, engines whose primary input is empty get
+            pre-skipped with reason="empty_input" so they
+            don't fail downstream with "X list is required".
 
     Returns:
         A CaptainPlan dict the supervisor can dispatch.
@@ -621,6 +692,31 @@ def make_captain_plan(
                 "reason": "strategy_excluded",
             })
             continue
+
+        # Wave 42: skip engines whose primary input class is
+        # empty on this store. Without this, dropshipping
+        # fires on a 0-order store, fails with "Orders list
+        # is required", and gets counted as an error in
+        # cycle history. With this, captain pre-skips and the
+        # cycle plan reflects reality.
+        if store_stats is not None:
+            input_key = _PRIMARY_INPUT_REQUIREMENTS.get(engine)
+            if input_key is not None:
+                input_count = 0
+                try:
+                    input_count = int(
+                        store_stats.get(input_key, 0) or 0,
+                    )
+                except (TypeError, ValueError):
+                    input_count = 0
+                if input_count == 0:
+                    plan.members_to_skip.append({
+                        "engine": engine,
+                        "reason": (
+                            f"empty_input ({input_key}=0)"
+                        ),
+                    })
+                    continue
 
         if apply_flag is None:
             plan.members_to_skip.append({

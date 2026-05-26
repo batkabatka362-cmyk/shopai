@@ -342,10 +342,16 @@ def make_fleet_plan(
             merged.update(priority_hints.get(k, {}))
             signals_by_cluster[k] = merged
 
+        # Wave 42: pass world_model.stats through so captains
+        # can skip engines whose primary input is empty.
+        store_stats_for_captain = (
+            wm.get("stats", {}) if isinstance(wm, dict) else {}
+        )
         supervisor_plan = make_supervisor_plan(
             store_id=store_id,
             signals_by_cluster=signals_by_cluster,
             cluster_override=priority.cluster_focus,
+            store_stats=store_stats_for_captain,
         )
         plan.supervisor_plans.append(supervisor_plan)
 

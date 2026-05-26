@@ -122,6 +122,7 @@ def make_supervisor_plan(
     store_id: str | None = None,
     signals_by_cluster: dict[str, dict[str, Any]] | None = None,
     cluster_override: list[str] | None = None,
+    store_stats: dict[str, Any] | None = None,
 ) -> SupervisorPlan:
     """Build a supervisor plan for one store-cycle.
 
@@ -136,6 +137,10 @@ def make_supervisor_plan(
         cluster_override: If supplied, only these clusters
             activate (skip the rest). For Tier 1 priority-
             steering -- "this cycle: retention focus."
+        store_stats: Optional world_model.stats dict for the
+            store. Threaded through to captains so they can
+            skip engines whose primary input is empty
+            (Wave 42).
 
     Returns:
         Populated :class:`SupervisorPlan`.
@@ -205,6 +210,7 @@ def make_supervisor_plan(
             store_id=store_id,
             signals=signals,
             strategy=strategy,
+            store_stats=store_stats,
         )
         plan.active_clusters.append(cluster.name)
         plan.captain_plans.append(captain_plan)
