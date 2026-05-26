@@ -3179,6 +3179,15 @@ def build_parser() -> argparse.ArgumentParser:
             "--with-attribution is set (default 168 = 7d)"
         ),
     )
+    cluster_list_p.add_argument(
+        "--store", type=str, default="",
+        help=(
+            "When supplied, annotates each cluster row with "
+            "the store's niche bias rank (Wave 73). E.g. for "
+            "a beauty store, merchandising shows [N1] meaning "
+            "rank 1 in the niche priority."
+        ),
+    )
 
     cluster_show_p = cluster_sub.add_parser(
         "show",
@@ -17340,6 +17349,30 @@ def _cmd_cluster_list(args) -> None:
         getattr(args, "attribution_window_hours", 168.0) or 168.0
     )
 
+    # Wave 80: per-store niche bias annotation. Resolve the
+    # store's niche + map cluster name -> rank in the niche
+    # priority. Best-effort -- bare cluster list keeps working
+    # when --store is omitted or the lookup fails.
+    niche_rank_by_cluster: dict[str, int] = {}
+    niche_store: dict[str, str] = {}
+    store_arg = (getattr(args, "store", "") or "").strip()
+    if store_arg:
+        try:
+            from engines._niche_priority import niche_cluster_focus
+            sm = _get_store_manager()
+            row = sm.get_store(store_arg)
+            niche = ((row or {}).get("niche") or "").strip().lower()
+            niche_store = {
+                "store_id": store_arg, "niche": niche,
+            }
+            if niche and niche != "general":
+                focus = niche_cluster_focus(niche)
+                niche_rank_by_cluster = {
+                    name: i + 1 for i, name in enumerate(focus)
+                }
+        except Exception:  # noqa: BLE001
+            niche_rank_by_cluster = {}
+
     clusters = list_clusters()
     # Pull memory rollup ONCE for the fleet (single SQL hit)
     memory_by_cluster: dict = {}
@@ -17387,10 +17420,11 @@ def _cmd_cluster_list(args) -> None:
                 m.attribution_orders if m else 0
             ),
             "bus_emits_24h": bus_emits.get(c.name, 0),
+            "niche_rank": niche_rank_by_cluster.get(c.name),
         })
 
     if getattr(args, "json", False):
-        print(json.dumps({
+        payload = {
             "summary": {
                 "total_clusters": len(rows),
                 "total_engines_mapped": sum(
@@ -17401,7 +17435,10 @@ def _cmd_cluster_list(args) -> None:
                 ),
             },
             "clusters": rows,
-        }, indent=2, default=str))
+        }
+        if niche_store:
+            payload["niche_bias"] = niche_store
+        print(json.dumps(payload, indent=2, default=str))
         return
 
     print(
@@ -17409,6 +17446,21 @@ def _cmd_cluster_list(args) -> None:
         f"{sum(r['total_members'] for r in rows)} engines "
         f"({sum(r['wired_members'] for r in rows)} wired)"
     )
+    if niche_store:
+        n = niche_store.get("niche") or ""
+        sid = niche_store.get("store_id") or ""
+        if n and n != "general":
+            print(
+                f"  Niche bias: store {sid} -> {n} "
+                f"(clusters with [Nk] are rank k in the niche "
+                f"priority)"
+            )
+        else:
+            print(
+                f"  Niche bias: store {sid} has no niche set "
+                f"(use `shopai niche --set {sid} <niche>` to "
+                f"bias orchestration)"
+            )
     print()
     if with_attr:
         print(
@@ -17447,8 +17499,16 @@ def _cmd_cluster_list(args) -> None:
             str(r["bus_emits_24h"])
             if r["bus_emits_24h"] > 0 else "-"
         )
+        # Wave 80: prefix cluster name with [Nk] when this
+        # store's niche prefers this cluster (k = 1..len).
+        nrank = r.get("niche_rank")
+        name_str = (
+            f"[N{nrank}] {r['name']}" if nrank
+            else f"     {r['name']}"
+        ) if niche_rank_by_cluster else r["name"]
+        name_width = 19 if niche_rank_by_cluster else 14
         line = (
-            f"  {r['name']:<14} {r['wired_members']:>4d}/"
+            f"  {name_str:<{name_width}} {r['wired_members']:>4d}/"
             f"{r['total_members']:<2d}  "
             f"{risk_str:<10}  {verdict_marker} {r['verdict']:<9}  "
             f"{r['executed']:>5d}  {rev_str:<6} {bus_str}"
