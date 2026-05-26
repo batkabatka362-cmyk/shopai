@@ -152,7 +152,9 @@ def make_supervisor_plan(
     all_clusters = list_clusters()
     activation_set: set[str]
     if cluster_override is not None:
-        # Tier 1 priority override
+        # Tier 1 priority override -- operator-authoritative.
+        # Even opt-in clusters activate when explicitly listed
+        # (e.g. `cluster fire setup --yes`).
         activation_set = {
             c.name for c in all_clusters
             if c.name in cluster_override

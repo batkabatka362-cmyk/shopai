@@ -101,20 +101,19 @@ class OrchestratorStrategy(Protocol):
 # ── Default priority rules (deterministic v1) ──────────────────
 
 _PRIORITY_CLUSTERS = {
-    # Wave 37: launching expanded. Old version was [setup,
-    # acquisition, content] but setup + content are both opt-in
-    # (skipped in supervisor's default activation), so launching
-    # stores effectively only fired acquisition. A store with
-    # products but no orders ALSO benefits from:
-    #   - merchandising: rank products, bundle, search-optimise
-    #   - pricing: set elasticity, profitability baseline
-    #   - quality: collect review signal from any first sales
-    # ...all of which help CONVERT the first orders. setup +
-    # content remain in the list as honourable mentions; they
-    # still get supervisor-skipped as opt_in_only.
+    # Wave 37 + Wave 46: launching expanded. Old version was
+    # [setup, acquisition, content] but setup + content are
+    # both opt-in. Wave 37 added merchandising/pricing/quality
+    # to broaden auto-fire. Wave 46 dropped setup + content
+    # from the list entirely -- supervisor honours
+    # cluster_override authoritatively (Wave 37 incorrectly
+    # left them as 'honourable mentions' which caused content
+    # cluster engines to fire when operator hadn't explicitly
+    # asked). setup + content only fire via
+    # `cluster fire setup --yes` / `cluster fire content
+    # --yes` -- explicit operator intent.
     "launching": [
-        "setup", "acquisition", "merchandising",
-        "pricing", "quality", "content",
+        "acquisition", "merchandising", "pricing", "quality",
     ],
     "growing": ["acquisition", "merchandising", "quality"],
     "mature": ["retention", "pricing", "merchandising"],

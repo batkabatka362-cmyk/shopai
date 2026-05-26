@@ -20,7 +20,15 @@ class TestDeterministicPriorityRules:
             "store-A", {"stats": {"products": 0, "orders": 0}},
         )
         assert prio.priority == "launching"
-        assert "setup" in prio.cluster_focus
+        # Wave 46: setup + content are explicit-operator-only
+        # (cluster fire setup --yes). Auto-cycle's launching
+        # priority is the conversion-focused subset.
+        assert "acquisition" in prio.cluster_focus
+        assert "merchandising" in prio.cluster_focus
+        assert "pricing" in prio.cluster_focus
+        assert "quality" in prio.cluster_focus
+        # setup is OPT-IN -- not in auto-fire launching list
+        assert "setup" not in prio.cluster_focus
 
     def test_few_products_is_launching(self):
         prio = self._strat().decide_priority(
