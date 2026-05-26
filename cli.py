@@ -1373,6 +1373,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
     )
+    # Wave 67: one-paragraph LLM-refined summary
+    empire_p.add_argument(
+        "--summarize", action="store_true",
+        help=(
+            "Replace the dashboard with a one-paragraph "
+            "summary (deterministic baseline + LLM refine "
+            "when SHOPAI_AI_STRATEGY=1). The empire's "
+            "5-second morning glance."
+        ),
+    )
 
     # Wave 55: go-live pre-flight check
     go_live_p = sub.add_parser(
@@ -7470,9 +7480,31 @@ def _cmd_empire(args) -> None:
     Operator's "how's the AGI doing right now?" view. Combines
     every key substrate signal in one command so operators
     don't have to chain 5+ commands every morning.
+
+    Wave 67: --summarize replaces the dashboard with a single
+    LLM-refined paragraph.
     """
     import time as _time
     as_json = bool(getattr(args, "json", False))
+    summarize = bool(getattr(args, "summarize", False))
+
+    # Wave 67: short-circuit for summary mode
+    if summarize:
+        from engines._empire_summarizer import summarize_empire
+        summary = summarize_empire()
+        if as_json:
+            print(json.dumps({
+                "text": summary.text,
+                "used_llm": summary.used_llm,
+                "key_facts": summary.key_facts,
+            }, indent=2, default=str))
+            return
+        marker = "[AI]" if summary.used_llm else "[ - ]"
+        print(f"Empire summary  {marker}")
+        print()
+        print(f"  {summary.text}")
+        return
+
     sm = _get_store_manager()
 
     # ─ Last cycle run
