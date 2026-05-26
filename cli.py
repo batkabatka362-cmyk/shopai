@@ -4545,6 +4545,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     quarantine_action.add_argument(
+        "--spend-status", action="store_true",
+        help=(
+            "Wave 47: show per-store spend rollup vs caps. "
+            "Includes daily + weekly totals, top spending "
+            "engines, and breach status. Read-only."
+        ),
+    )
+    quarantine_action.add_argument(
         "--list", action="store_true",
         help=(
             "Show current exemptions + released + alert-paused "
@@ -18632,6 +18640,41 @@ def _cmd_cycle_run(args) -> None:
             "regression alert propagation failed: %s", exc,
         )
 
+    # Wave 47: per-store spend cap auto-pause. Fires after
+    # the cycle records outcomes so spend metrics are up-to-
+    # date. Pauses spend-class engines when daily/weekly cap
+    # is exceeded.
+    try:
+        from engines._spend_cap import (
+            maybe_auto_pause_on_overspend,
+        )
+        paused_spend = maybe_auto_pause_on_overspend()
+        if paused_spend:
+            logger.warning(
+                "spend-cap auto-paused (fleet): %s",
+                ", ".join(paused_spend),
+            )
+        for sr in per_store_results:
+            store_id = sr.get("store_id")
+            if not store_id:
+                continue
+            try:
+                paused_store = maybe_auto_pause_on_overspend(
+                    store_id=store_id,
+                )
+                if paused_store:
+                    logger.warning(
+                        "spend-cap auto-paused (store=%s): %s",
+                        store_id, ", ".join(paused_store),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "per-store spend-cap failed for %s: %s",
+                    store_id, exc,
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("spend-cap bridge failed: %s", exc)
+
     # Wave 21+22 closing chain: when an engine has fired
     # regression alerts across N consecutive cycles, auto-pause
     # it via the revenue-quarantine bridge. Env-gated default
@@ -32142,6 +32185,76 @@ def _cmd_approvals_quarantine(args) -> None:
             f"Cleared alert-pause on '{engine}' {scope_str}. "
             f"Alert-paused: {paused_serialised or '(none)'}"
         )
+        return
+
+    if getattr(args, "spend_status", False):
+        from engines._spend_cap import (
+            check_caps, daily_cap_usd, daily_spend, is_enabled,
+            weekly_cap_usd, weekly_spend,
+        )
+        as_json = bool(getattr(args, "json", False))
+        daily = daily_spend()
+        weekly = weekly_spend()
+        breaches = check_caps()
+        if as_json:
+            payload = {
+                "bridge_enabled": is_enabled(),
+                "daily_cap_usd": daily_cap_usd(),
+                "weekly_cap_usd": weekly_cap_usd(),
+                "daily_spend": daily.total_spend,
+                "weekly_spend": weekly.total_spend,
+                "daily_top_spender": daily.top_spender,
+                "weekly_top_spender": weekly.top_spender,
+                "breaches": [
+                    {
+                        "window": b.window_label,
+                        "cap_usd": b.cap_usd,
+                        "actual_spend": b.actual_spend,
+                        "over_by": b.over_by,
+                    }
+                    for b in breaches
+                ],
+            }
+            print(json.dumps(payload, indent=2, default=str))
+            return
+        print(
+            f"Spend status  "
+            f"(bridge: {'enabled' if is_enabled() else 'disabled'})"
+        )
+        print()
+        d_cap = daily_cap_usd()
+        w_cap = weekly_cap_usd()
+        d_str = (
+            f"${d_cap:,.2f}" if d_cap is not None else "unset"
+        )
+        w_str = (
+            f"${w_cap:,.2f}" if w_cap is not None else "unset"
+        )
+        print(
+            f"  daily cap:    {d_str:<14}  "
+            f"actual: ${daily.total_spend:,.2f}  "
+            f"top: {daily.top_spender or '-'}"
+        )
+        print(
+            f"  weekly cap:   {w_str:<14}  "
+            f"actual: ${weekly.total_spend:,.2f}  "
+            f"top: {weekly.top_spender or '-'}"
+        )
+        if breaches:
+            print()
+            print(
+                f"  BREACHES ({len(breaches)}):"
+            )
+            for b in breaches:
+                print(
+                    f"    [BAD] {b.window_label:<8} "
+                    f"${b.actual_spend:,.2f} > "
+                    f"${b.cap_usd:,.2f}  (over by "
+                    f"${b.over_by:,.2f})"
+                )
+        elif d_cap or w_cap:
+            print()
+            print("  Under cap.")
         return
 
     if getattr(args, "revenue_release_candidates", False):
