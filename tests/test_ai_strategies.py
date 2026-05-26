@@ -130,6 +130,80 @@ class TestAICaptainFallback:
         # Fell back to base
         assert len(result) > 0
 
+    def test_wave91_captain_prompt_includes_cluster_focus(
+        self, monkeypatch,
+    ):
+        """Wave 91: AI captain prompt must include the
+        orchestrator's resolved cluster_focus + the rank of
+        THIS cluster in that focus. Captures whether this
+        cluster is niche-favored without the captain having
+        to re-infer."""
+        monkeypatch.setenv("SHOPAI_AI_STRATEGY", "1")
+
+        captured: dict = {}
+
+        class CapturingLLM:
+            available = True
+            def chat_json(self, system, user):
+                import json as _json
+                captured["user"] = _json.loads(user)
+                captured["system"] = system
+                return {
+                    "fire": ["loyalty"],
+                    "rationale": "ok",
+                }
+
+        strategy = AICaptainStrategy(llm=CapturingLLM())
+        cluster = get_cluster("retention")
+        wired = sorted(cluster.members)
+        # Synthetic orchestrator-shape signals: beauty's
+        # priority puts retention at rank 3
+        signals = {
+            "at_risk_count": 5,
+            "niche": "beauty",
+            "cluster_focus": [
+                "merchandising", "content", "retention",
+                "acquisition", "quality",
+            ],
+        }
+        strategy.select_members(cluster, wired, signals)
+        u = captured["user"]
+        # Captain prompt user message carries the new keys
+        assert u["niche"] == "beauty"
+        assert u["orchestrator_cluster_focus"] == [
+            "merchandising", "content", "retention",
+            "acquisition", "quality",
+        ]
+        # retention is at index 2 -> rank 3
+        assert u["this_cluster_rank"] == 3
+        # System prompt mentions the new context
+        assert "this_cluster_rank" in captured["system"]
+
+    def test_wave91_rank_none_when_cluster_outside_focus(
+        self, monkeypatch,
+    ):
+        """When this cluster isn't in the priority's focus,
+        rank is None (captain reads it as off-priority)."""
+        monkeypatch.setenv("SHOPAI_AI_STRATEGY", "1")
+        captured: dict = {}
+
+        class CapturingLLM:
+            available = True
+            def chat_json(self, system, user):
+                import json as _json
+                captured["user"] = _json.loads(user)
+                return {"fire": [], "rationale": "ok"}
+
+        strategy = AICaptainStrategy(llm=CapturingLLM())
+        cluster = get_cluster("retention")
+        wired = sorted(cluster.members)
+        signals = {
+            "niche": "tech",
+            "cluster_focus": ["quality", "pricing"],
+        }
+        strategy.select_members(cluster, wired, signals)
+        assert captured["user"]["this_cluster_rank"] is None
+
 
 class TestAttributionContext:
     """Wave 17: AI captain prompt includes per-engine revenue."""

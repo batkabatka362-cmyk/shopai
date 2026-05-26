@@ -190,13 +190,28 @@ class AICaptainStrategy:
             niche = niche.strip().lower() or None
         else:
             niche = None
+        # Wave 91: also thread the orchestrator's resolved
+        # cluster_focus + whether THIS cluster sits in the
+        # niche-favored bucket. Captain previously only saw
+        # the niche label and had to re-infer ordering.
+        orch_focus = (signals or {}).get("cluster_focus") or []
+        if not isinstance(orch_focus, list):
+            orch_focus = []
+        try:
+            this_cluster_rank: int | None = (
+                orch_focus.index(cluster.name) + 1
+                if cluster.name in orch_focus else None
+            )
+        except Exception:  # noqa: BLE001
+            this_cluster_rank = None
 
         system = (
             "You are a Tier 2b cluster captain for ShopAI -- "
             "an autonomous Shopify merchant. Given cluster "
             "definition + signals + recent memory + per-engine "
-            "revenue attribution (with trend) + store niche, "
-            "recommend which member engines to fire THIS cycle. "
+            "revenue attribution (with trend) + store niche + "
+            "orchestrator cluster ordering, recommend which "
+            "member engines to fire THIS cycle. "
             "Return JSON: {\"fire\": [\"engine_name\", ...], "
             "\"rationale\": \"...\"}. Only return engines "
             "from the wired_members list. The deterministic "
@@ -210,11 +225,18 @@ class AICaptainStrategy:
             "signal explicitly calls for it). Niche affects "
             "engine preference -- e.g. beauty stores favour "
             "loyalty over generic outreach; tech stores favour "
-            "review_management."
+            "review_management. When this_cluster_rank is 1-3 "
+            "the orchestrator considers this cluster "
+            "niche-favoured -- lean toward firing MORE "
+            "members. When it's None or >5, this cluster is "
+            "off-priority for the store's niche -- be more "
+            "selective."
         )
         user = json.dumps({
             "cluster": cluster.name,
             "niche": niche,
+            "orchestrator_cluster_focus": orch_focus,
+            "this_cluster_rank": this_cluster_rank,
             "kpi": cluster.kpi,
             "description": cluster.description,
             "signals": signals,

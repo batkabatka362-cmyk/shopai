@@ -375,6 +375,34 @@ def make_fleet_plan(
             merged.update(priority_hints.get(k, {}))
             signals_by_cluster[k] = merged
 
+        # Wave 91: thread the resolved cluster_focus + niche
+        # label into EVERY cluster's signals slice so the AI
+        # captain can see whether THIS cluster sits in the
+        # niche-favored bucket. Captain reads
+        # signals["cluster_focus"] + signals["niche"].
+        priority_niche = (priority.signals or {}).get("niche")
+        for k in list(signals_by_cluster.keys()):
+            signals_by_cluster[k].setdefault(
+                "cluster_focus", list(priority.cluster_focus),
+            )
+            # Don't overwrite a niche the bus may have set.
+            if priority_niche is not None:
+                signals_by_cluster[k].setdefault(
+                    "niche", priority_niche,
+                )
+        # Some clusters may not yet have a signals slice (none
+        # of the bus / hint / collected paths populated them).
+        # Add a minimal slice carrying just the niche bias so
+        # the captain sees the same context for every cluster.
+        for c_name in priority.cluster_focus:
+            if c_name not in signals_by_cluster:
+                slice_ = {
+                    "cluster_focus": list(priority.cluster_focus),
+                }
+                if priority_niche is not None:
+                    slice_["niche"] = priority_niche
+                signals_by_cluster[c_name] = slice_
+
         # Wave 42: pass world_model.stats through so captains
         # can skip engines whose primary input is empty.
         store_stats_for_captain = (
