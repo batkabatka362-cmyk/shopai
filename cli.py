@@ -9428,11 +9428,26 @@ def _cmd_daily_brief(args) -> None:
         )
         totals["launchable_stores"] = ready_count
 
+    # ── Niche mix (Wave 86) ────────────────────────────────
+    # Same shape as Wave 85's empire-dashboard block. Pulled
+    # from store_rows so daily-brief stays a pure consumer.
+    niche_mix = {"by_niche": {}, "untagged": 0, "total": 0}
+    for r in store_rows:
+        niche_mix["total"] += 1
+        n = (r.get("niche") or "").strip().lower()
+        if not n or n == "general":
+            niche_mix["untagged"] += 1
+        else:
+            niche_mix["by_niche"][n] = (
+                niche_mix["by_niche"].get(n, 0) + 1
+            )
+
     # ── JSON envelope ──────────────────────────────────────
     if as_json:
         print(json.dumps({
             "window_hours": window_hours,
             "stores": store_rows,
+            "niche_mix": niche_mix,
             "engine_activity": activity_by_engine,
             "pending_by_engine": pending_by_engine,
             "transfer_activity": transfer_activity,
@@ -9523,6 +9538,24 @@ def _cmd_daily_brief(args) -> None:
             f"warning={vc['warning']}  "
             f"unhealthy={vc['unhealthy']}"
         )
+    # Wave 86: niche mix -- one-line fleet distribution +
+    # auto-tag drill hint when any store is untagged.
+    if niche_mix["total"] > 0 and (
+        niche_mix["by_niche"] or niche_mix["untagged"]
+    ):
+        parts: list[str] = []
+        for niche in sorted(niche_mix["by_niche"]):
+            parts.append(
+                f"{niche_mix['by_niche'][niche]} {niche}"
+            )
+        if niche_mix["untagged"]:
+            parts.append(f"{niche_mix['untagged']} untagged")
+        print(f"  Niche mix:    {', '.join(parts)}")
+        if niche_mix["untagged"]:
+            print(
+                "    -> `shopai niche --suggest <store> "
+                "--apply` auto-tags from catalog (Wave 83)"
+            )
         # Surface the sickest engines when ANY are unhealthy --
         # cheap operator nudge to drill in via ``engine pulse``.
         if vc["unhealthy"] > 0:
