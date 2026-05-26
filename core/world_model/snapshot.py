@@ -168,12 +168,23 @@ class WorldModel:
         }
 
     def _section_niche_priority(
-        self, *, niche: str | None,
+        self,
+        *,
+        niche: str | None,
+        sm: Any = None,
+        store_id: str = "",
     ) -> dict:
-        """Wave 87: surface the cluster priority Wave 73's
+        """Wave 87 + 90: surface the cluster priority Wave 73's
         orchestrator would use for this store. When niche is
         unset / "general", the section reports the bare base
         priority so the operator sees that no bias is active.
+
+        Wave 90: ALSO runs the Wave 83 detector when niche is
+        unset. If detection comes back high-confidence, surface
+        the suggested niche + the cluster_focus the orchestrator
+        WOULD use if the operator tagged the store. Doesn't
+        change orchestrator behaviour -- this is observational
+        substrate so the operator sees the latent bias.
 
         Best-effort: import failure or unknown niche returns
         ``{"checked": False, "error": ...}``.
@@ -188,13 +199,55 @@ class WorldModel:
                 "world_model niche_priority import raised: %s", exc,
             )
             return {"checked": False, "error": str(exc)}
+
         if not n or n == "general":
+            # Wave 90: detection fallback. Best-effort -- the
+            # detector itself catches store-not-found + DB
+            # raises and returns None, so we never propagate
+            # failure to the snapshot. Only HIGH confidence
+            # gets surfaced as a suggestion; medium / low
+            # would be misleading on a "we figured it out"
+            # display.
+            detection_block: dict | None = None
+            if sm is not None and store_id:
+                try:
+                    from engines._niche_detector import (
+                        suggest_niche_for_store,
+                    )
+                    det = suggest_niche_for_store(
+                        store_id, store_manager=sm,
+                    )
+                    if det is not None:
+                        detection_block = {
+                            "suggested": det.suggested,
+                            "confidence": det.confidence,
+                            "products_analyzed": (
+                                det.products_analyzed
+                            ),
+                            "top_score_ratio": (
+                                det.top_score_ratio
+                            ),
+                            "actionable": det.is_actionable,
+                            "cluster_focus_if_applied": (
+                                niche_cluster_focus(
+                                    det.suggested,
+                                )
+                                if det.is_actionable
+                                else []
+                            ),
+                        }
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "world_model niche detection raised: "
+                        "%s", exc,
+                    )
             return {
                 "checked": True,
                 "niche": n or None,
                 "active": False,
                 "cluster_focus": [],
                 "supported_niches": supported_niches(),
+                "detection": detection_block,
                 "reason": (
                     "no niche set; orchestrator uses base "
                     "lifecycle priority unchanged"
@@ -208,6 +261,7 @@ class WorldModel:
                 "active": False,
                 "cluster_focus": [],
                 "supported_niches": supported_niches(),
+                "detection": None,
                 "reason": f"unknown niche '{n}'",
             }
         return {
@@ -216,6 +270,7 @@ class WorldModel:
             "active": True,
             "cluster_focus": focus,
             "supported_niches": supported_niches(),
+            "detection": None,
             "reason": (
                 f"orchestrator merges these clusters FIRST "
                 f"with the lifecycle base focus (Wave 73)"
@@ -1505,6 +1560,8 @@ class WorldModel:
         design = self._section_design()
         niche_priority = self._section_niche_priority(
             niche=store.get("niche"),
+            sm=sm,
+            store_id=store_id,
         )
         # Per-store scope for approvals + decisions when the
         # store_id maps to actual tagged rows. Sections fall back

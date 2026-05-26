@@ -380,6 +380,60 @@ class TestNichePrioritySection:
         # reason mentions unknown
         assert "unknown" in np["reason"].lower()
 
+    def test_wave90_detection_block_when_unset_with_catalog(self):
+        """Wave 90: when niche is empty AND the catalog matches
+        a niche, the section carries a detection block with the
+        suggestion + what cluster_focus WOULD be."""
+        sm = _fake_sm(niche="")
+        # Inject a beauty-matching catalog via get_products
+        sm.get_products = lambda sid, limit=50: [
+            {"title": "Lipstick", "tags": ["makeup"]},
+            {"title": "Foundation", "tags": ["cosmetics"]},
+            {"title": "Serum", "tags": ["skincare"]},
+            {"title": "Moisturizer", "tags": ["beauty"]},
+        ]
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        np = snap["niche_priority"]
+        assert np["active"] is False  # not tagged -> inactive
+        det = np["detection"]
+        assert det is not None
+        assert det["suggested"] == "beauty"
+        assert det["confidence"] in ("high", "medium")
+        assert det["actionable"] is True
+        # cluster_focus_if_applied populated for actionable
+        assert (
+            det["cluster_focus_if_applied"][0] == "merchandising"
+        )
+
+    def test_wave90_no_detection_block_when_no_keywords(self):
+        """Catalog with no niche keywords -> no detection block
+        surfaced (low / no_data not actionable)."""
+        sm = _fake_sm(niche="")
+        sm.get_products = lambda sid, limit=50: [
+            {"title": "Generic Item"},
+            {"title": "Whatever Thing"},
+        ]
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        det = snap["niche_priority"]["detection"]
+        # Block IS present (we called detector) but not actionable
+        assert det is not None
+        assert det["actionable"] is False
+        assert det["cluster_focus_if_applied"] == []
+
+    def test_wave90_no_detection_when_tagged(self):
+        """When niche IS set, detection block is None (no need
+        to run the detector when the orchestrator already
+        has bias data)."""
+        sm = _fake_sm(niche="beauty")
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        assert snap["niche_priority"]["detection"] is None
+
 
 class TestApprovalsSection:
 

@@ -12522,6 +12522,27 @@ def _cmd_world_model_show(args) -> None:
                 f"  Niche priority: (inactive -- "
                 f"{np_block.get('reason', 'no bias')})"
             )
+            # Wave 90: detection fallback. When the orchestrator
+            # has no niche bias to apply but the catalog hints at
+            # one, surface the suggestion + what cluster_focus
+            # WOULD become if applied.
+            det = np_block.get("detection") or {}
+            if det.get("actionable"):
+                would = det.get("cluster_focus_if_applied") or []
+                top3 = " -> ".join(would[:3])
+                print(
+                    f"    Catalog suggests:  {det['suggested']} "
+                    f"(confidence={det['confidence']})"
+                )
+                if top3:
+                    print(
+                        f"    If applied:        "
+                        f"{top3}{' (+more)' if len(would) > 3 else ''}"
+                    )
+                print(
+                    f"    Apply: `shopai niche --suggest "
+                    f"{store_id} --apply`"
+                )
     # Prominent fleet-wide pause banner near the top so
     # operators using show on a paused fleet see it
     # immediately, not buried in Cycle health below.
