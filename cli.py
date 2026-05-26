@@ -1828,6 +1828,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    cycle_attribution_lifetime_p = cycle_sub.add_parser(
+        "attribution-lifetime",
+        help=(
+            "Cumulative AGI revenue contribution since the "
+            "snapshot retention window began. Sums positive "
+            "cycle-over-cycle deltas (gain) and negative "
+            "deltas (loss) separately. Net = gain - loss."
+        ),
+    )
+    cycle_attribution_lifetime_p.add_argument(
+        "--store", default=None,
+        help="Filter to one store",
+    )
+    cycle_attribution_lifetime_p.add_argument(
+        "--limit", type=int, default=200,
+        help="Max snapshots to scan (default 200 = full retention)",
+    )
+    cycle_attribution_lifetime_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     cycle_revenue_fleet_p = cycle_sub.add_parser(
         "revenue-fleet",
         help=(
@@ -16988,6 +17010,88 @@ def _cmd_cycle_status(args) -> None:
     print("    shopai cycle history          -- past runs")
     print("    shopai cluster bus --stats    -- bus aggregate")
     print("    shopai cycle verify --store X -- preflight check")
+
+
+def _cmd_cycle_attribution_lifetime(args) -> None:
+    """Cumulative AGI revenue contribution rollup."""
+    import time as _time
+    from engines._attribution_lifetime import lifetime_rollup
+
+    store_id = (getattr(args, "store", None) or "").strip() or None
+    limit = max(2, int(getattr(args, "limit", 200) or 200))
+    as_json = bool(getattr(args, "json", False))
+
+    rollup = lifetime_rollup(limit=limit, store_id=store_id)
+
+    if as_json:
+        payload = {
+            "cycle_pairs_seen": rollup.cycle_pairs_seen,
+            "total_added": rollup.total_added,
+            "total_lost": rollup.total_lost,
+            "net": rollup.net,
+            "largest_gain": rollup.largest_gain,
+            "largest_loss": rollup.largest_loss,
+            "filter_store": store_id,
+        }
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
+    scope = f"store={store_id}" if store_id else "fleet-wide"
+    print(f"AGI lifetime revenue contribution  ({scope})")
+    print()
+    print(
+        f"  cycle pairs scanned:  {rollup.cycle_pairs_seen}"
+    )
+    if rollup.cycle_pairs_seen == 0:
+        print()
+        print(
+            "  (need at least 2 snapshots; run a few cycles "
+            "first)"
+        )
+        return
+    print(
+        f"  total gained:         "
+        f"${rollup.total_added:>10,.2f}"
+    )
+    print(
+        f"  total lost:           "
+        f"${rollup.total_lost:>10,.2f}"
+    )
+    sign = "+" if rollup.net >= 0 else ""
+    print(
+        f"  net contribution:     "
+        f"{sign}${rollup.net:>9,.2f}"
+    )
+    print()
+    if rollup.largest_gain:
+        gain_ts = rollup.largest_gain.get("captured_at", 0)
+        age = _time.time() - gain_ts if gain_ts else 0
+        age_str = (
+            f"{int(age/3600)}h ago" if age < 86400
+            else f"{age/86400:.1f}d ago"
+        ) if gain_ts else "(unknown)"
+        print(
+            f"  largest gain:         "
+            f"+${rollup.largest_gain['amount']:,.2f}  "
+            f"{age_str}"
+        )
+    if rollup.largest_loss:
+        loss_ts = rollup.largest_loss.get("captured_at", 0)
+        age = _time.time() - loss_ts if loss_ts else 0
+        age_str = (
+            f"{int(age/3600)}h ago" if age < 86400
+            else f"{age/86400:.1f}d ago"
+        ) if loss_ts else "(unknown)"
+        print(
+            f"  largest loss:         "
+            f"-${rollup.largest_loss['amount']:,.2f}  "
+            f"{age_str}"
+        )
+    print()
+    print(
+        "  Note: 'lifetime' = snapshot retention window "
+        "(last 200 cycles)."
+    )
 
 
 def _cmd_cycle_revenue_fleet(args) -> None:
@@ -35125,11 +35229,14 @@ def main(argv: list[str] | None = None) -> None:
         if action == "revenue-fleet":
             _cmd_cycle_revenue_fleet(args)
             return
+        if action == "attribution-lifetime":
+            _cmd_cycle_attribution_lifetime(args)
+            return
         print(
             "Usage: shopai cycle "
             "{run|schedule|verify|history|status|"
             "attribution|attribution-history|attribution-delta|"
-            "revenue-fleet}"
+            "attribution-lifetime|revenue-fleet}"
         )
         return
 

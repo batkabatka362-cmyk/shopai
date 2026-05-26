@@ -151,6 +151,18 @@ def _is_test_environment() -> bool:
     return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 
+# Process-wide monotonic sequence so two record_snapshot calls
+# within the same time.time_ns() tick (Windows has ~15ms
+# granularity) still sort deterministically. Same pattern as
+# engines/_cycle_history.py.
+_SEQ = [0]
+
+
+def _next_seq() -> int:
+    _SEQ[0] += 1
+    return _SEQ[0]
+
+
 def record_snapshot(
     *,
     window_hours: float = 168.0,
@@ -173,8 +185,9 @@ def record_snapshot(
         return None
 
     now_ns = time.time_ns()
+    seq = _next_seq()
     snapshot = AttributionSnapshot(
-        snapshot_id=f"attr_{now_ns // 1_000_000}",
+        snapshot_id=f"attr_{now_ns // 1_000_000}_{seq:08d}",
         captured_at=now_ns / 1e9,
         window_hours=window_hours,
         store_id=store_id,
