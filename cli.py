@@ -4248,6 +4248,104 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit", type=int, default=20,
         help="Page size (default: 20)",
     )
+    # Wave 61: priority sort
+    approvals_pending.add_argument(
+        "--sort", choices=["age", "priority"], default="age",
+        help=(
+            "Sort order: age (default; FIFO) or priority "
+            "(Wave 60 score, highest-impact first)."
+        ),
+    )
+
+    # Wave 63: SLA tracking
+    approvals_sla = approvals_sub.add_parser(
+        "sla",
+        help=(
+            "Approval SLA report: how many pending actions "
+            "are aging / breached against the configured "
+            "thresholds. Empire-scale operator triage signal."
+        ),
+    )
+    approvals_sla.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON",
+    )
+
+    # Wave 64: per-engine velocity
+    approvals_velocity = approvals_sub.add_parser(
+        "velocity",
+        help=(
+            "Per-engine approval velocity: proposed / "
+            "approved / rejected / latency / rejection rate. "
+            "Find empire bottlenecks + distrust signals."
+        ),
+    )
+    approvals_velocity.add_argument(
+        "--window-hours", type=float, default=168.0,
+        help="Window (default 168 = 7d)",
+    )
+    approvals_velocity.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON",
+    )
+
+    # Wave 65: batch-review flow
+    approvals_batch = approvals_sub.add_parser(
+        "batch-review",
+        help=(
+            "Empire-scale batch review: top N priority "
+            "pending actions across the fleet + AI pre-vet, "
+            "operator scans + bulk-approves all 'approve' "
+            "recommendations in one keystroke."
+        ),
+    )
+    approvals_batch.add_argument(
+        "--top", type=int, default=10,
+        help="Top N to surface (default 10)",
+    )
+    approvals_batch.add_argument(
+        "--auto-approve-ok", action="store_true",
+        help=(
+            "Auto-approve every action where priority "
+            "rec == auto-ok AND AI prevet rec == approve. "
+            "Operator confirms before commit unless --yes."
+        ),
+    )
+    approvals_batch.add_argument(
+        "--yes", action="store_true",
+        help=(
+            "Skip the confirmation prompt for "
+            "--auto-approve-ok (cron-friendly)"
+        ),
+    )
+    approvals_batch.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON",
+    )
+
+    # Wave 62: empire-scale approval digest -- top-N highest
+    # priority pending actions + AI pre-vet recommendation
+    # inline. Pairs with bulk-approve for empire throughput.
+    approvals_digest = approvals_sub.add_parser(
+        "digest",
+        help=(
+            "Top-N highest-priority pending actions with AI "
+            "pre-vet recommendation inline. Operator's "
+            "morning triage view -- replaces 5+ commands."
+        ),
+    )
+    approvals_digest.add_argument(
+        "--top", type=int, default=10,
+        help="How many actions to surface (default 10)",
+    )
+    approvals_digest.add_argument(
+        "--engine", default=None,
+        help="Filter to a single engine namespace",
+    )
+    approvals_digest.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text table",
+    )
 
     # Wave 49: AI pre-vet for pending actions
     approvals_prevet = approvals_sub.add_parser(
@@ -32837,6 +32935,18 @@ def _cmd_approvals(args) -> None:
     if verb == "prevet":
         _cmd_approvals_prevet(args)
         return
+    if verb == "digest":
+        _cmd_approvals_digest(args)
+        return
+    if verb == "sla":
+        _cmd_approvals_sla(args)
+        return
+    if verb == "velocity":
+        _cmd_approvals_velocity(args)
+        return
+    if verb == "batch-review":
+        _cmd_approvals_batch_review(args)
+        return
     if verb == "stats":
         _cmd_approvals_stats(args)
         return
@@ -35062,6 +35172,405 @@ def _cmd_approvals_history(args) -> None:
             )
 
 
+def _cmd_approvals_sla(args) -> None:
+    """Wave 63: SLA report -- aging + breached pending actions."""
+    from engines._approval_sla import (
+        compute_sla_report, critical_threshold_hours,
+        warn_threshold_hours,
+    )
+    as_json = bool(getattr(args, "json", False))
+    report = compute_sla_report()
+    warn_h = warn_threshold_hours()
+    crit_h = critical_threshold_hours()
+    if as_json:
+        print(json.dumps({
+            "total_pending": report.total_pending,
+            "on_time": report.on_time,
+            "aging": report.aging,
+            "breached": report.breached,
+            "warn_threshold_hours": warn_h,
+            "critical_threshold_hours": crit_h,
+            "oldest_breach": (
+                {
+                    "action_id": (
+                        report.oldest_breach.action_id
+                    ),
+                    "engine": report.oldest_breach.engine,
+                    "age_hours": (
+                        report.oldest_breach.age_hours
+                    ),
+                } if report.oldest_breach else None
+            ),
+            "breached_actions": [
+                {
+                    "action_id": c.action_id,
+                    "engine": c.engine,
+                    "age_hours": c.age_hours,
+                }
+                for c in report.breached_actions[:20]
+            ],
+        }, indent=2, default=str))
+        return
+    print(
+        f"Approval SLA report  "
+        f"(warn>= {warn_h}h, critical>= {crit_h}h)"
+    )
+    print()
+    print(
+        f"  total pending:  {report.total_pending}"
+    )
+    print(
+        f"  [OK ] on_time:  {report.on_time}"
+    )
+    print(
+        f"  [WRN] aging:    {report.aging}"
+    )
+    breach_marker = "[BAD]" if report.has_breaches else "[OK ]"
+    print(
+        f"  {breach_marker} breached: {report.breached}"
+    )
+    if report.oldest_breach:
+        ob = report.oldest_breach
+        print()
+        print(
+            f"  Oldest breach: {ob.engine}/{ob.action_id} "
+            f"({ob.age_hours:.1f}h old)"
+        )
+    if report.breached_actions:
+        print()
+        print(f"  Breached actions (top 5):")
+        for c in report.breached_actions[:5]:
+            print(
+                f"    [{c.action_id[:14]}] "
+                f"{c.engine:<24} {c.age_hours:.1f}h"
+            )
+        print()
+        print(
+            "  Drill: `shopai approvals show <id>` to "
+            "review individually."
+        )
+
+
+def _cmd_approvals_velocity(args) -> None:
+    """Wave 64: per-engine approval velocity report."""
+    from engines._approval_velocity import compute_velocity_report
+    window_hours = float(
+        getattr(args, "window_hours", 168.0) or 168.0,
+    )
+    as_json = bool(getattr(args, "json", False))
+    report = compute_velocity_report(
+        window_hours=window_hours,
+    )
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "total_actions_in_window": (
+                report.total_actions_in_window
+            ),
+            "top_engine": report.top_engine,
+            "highest_rejection_engine": (
+                report.highest_rejection_engine
+            ),
+            "per_engine": [
+                {
+                    "engine": e.engine,
+                    "proposed_count": e.proposed_count,
+                    "approved_count": e.approved_count,
+                    "rejected_count": e.rejected_count,
+                    "pending_count": e.pending_count,
+                    "rejection_rate": e.rejection_rate,
+                    "avg_latency_hours": (
+                        e.avg_latency_hours
+                    ),
+                }
+                for e in report.per_engine
+            ],
+        }, indent=2, default=str))
+        return
+    print(
+        f"Approval velocity ({window_hours:g}h window, "
+        f"{report.total_actions_in_window} actions)"
+    )
+    print()
+    if not report.per_engine:
+        print("  (no activity in window)")
+        return
+    print(
+        f"  {'engine':<26} {'prop':>5} {'app':>4} "
+        f"{'rej':>4} {'pend':>4} {'rej%':>5}  avg_lat"
+    )
+    for e in report.per_engine:
+        lat = (
+            f"{e.avg_latency_hours:.1f}h"
+            if e.avg_latency_hours is not None else "-"
+        )
+        marker = (
+            "[BAD]" if e.rejection_rate >= 0.3
+            else ("[WRN]" if e.rejection_rate >= 0.2
+                  else "[OK ]")
+        )
+        print(
+            f"  {e.engine[:26]:<26} "
+            f"{e.proposed_count:>5} {e.approved_count:>4} "
+            f"{e.rejected_count:>4} {e.pending_count:>4} "
+            f"{e.rejection_rate*100:>4.0f}%  {lat:<6} {marker}"
+        )
+    if report.highest_rejection_engine:
+        print()
+        print(
+            f"  [WRN] Highest rejection rate: "
+            f"{report.highest_rejection_engine} -- "
+            "operator distrust signal."
+        )
+
+
+def _cmd_approvals_batch_review(args) -> None:
+    """Wave 65: empire-scale batch review + optional auto-
+    approve of safe candidates.
+    """
+    from core.approval import get_approval_queue
+    from engines._approval_priority import score_pending
+    from engines._approval_prevet import prevet_batch
+
+    as_json = bool(getattr(args, "json", False))
+    top_n = max(1, int(getattr(args, "top", 10) or 10))
+    auto_ok = bool(
+        getattr(args, "auto_approve_ok", False),
+    )
+    yes = bool(getattr(args, "yes", False))
+
+    queue = get_approval_queue()
+    actions = queue.list_pending(limit=10_000)
+    if not actions:
+        if as_json:
+            print(json.dumps({
+                "count": 0, "approved_count": 0, "rows": [],
+            }, indent=2))
+            return
+        print("No pending actions.")
+        return
+
+    scored = score_pending(actions=actions)[:top_n]
+    top_ids = {s.action_id for s in scored}
+    top_actions = [
+        a for a in actions if str(a.id) in top_ids
+    ]
+    prevet = prevet_batch(top_actions)
+    prevet_by_id = {p.action_id: p for p in prevet}
+
+    # Identify auto-approve candidates: priority=auto-ok AND
+    # ai-rec=approve
+    candidates: list = []
+    rows = []
+    for s in scored:
+        p = prevet_by_id.get(s.action_id)
+        is_candidate = (
+            s.recommendation == "auto-ok"
+            and p is not None
+            and p.recommendation == "approve"
+        )
+        rows.append({
+            "action_id": s.action_id,
+            "engine": s.engine,
+            "priority": s.score,
+            "priority_rec": s.recommendation,
+            "ai_rec": p.recommendation if p else None,
+            "auto_approve_candidate": is_candidate,
+        })
+        if is_candidate:
+            candidates.append(s.action_id)
+
+    approved_count = 0
+    if auto_ok and candidates:
+        if not yes:
+            if not as_json:
+                print(
+                    f"Would auto-approve {len(candidates)} "
+                    "action(s). Re-run with --yes to commit."
+                )
+        else:
+            for action_id in candidates:
+                try:
+                    queue.approve(
+                        action_id,
+                        decided_by="batch_review",
+                        reason="priority=auto-ok+ai_rec=approve",
+                    )
+                    approved_count += 1
+                except Exception:  # noqa: BLE001
+                    continue
+
+    if as_json:
+        print(json.dumps({
+            "count": len(rows),
+            "auto_approve_candidates": len(candidates),
+            "approved_count": approved_count,
+            "rows": rows,
+        }, indent=2, default=str))
+        return
+
+    print(
+        f"Batch review -- {len(rows)} top-priority actions"
+    )
+    print()
+    print(
+        f"  {'id':<14} {'engine':<24} {'prio':<6} "
+        f"{'pri-rec':<10} {'ai-rec':<10} auto?"
+    )
+    for r in rows:
+        marker = "Y" if r["auto_approve_candidate"] else "-"
+        print(
+            f"  {str(r['action_id'])[:12]:<14} "
+            f"{r['engine'][:24]:<24} "
+            f"{r['priority']:>5.2f} {r['priority_rec']:<10} "
+            f"{(r['ai_rec'] or '-'):<10} {marker}"
+        )
+    print()
+    print(
+        f"  Auto-approve candidates: {len(candidates)}"
+    )
+    if approved_count > 0:
+        print(
+            f"  APPROVED {approved_count} action(s) "
+            f"(decided_by=batch_review)"
+        )
+    elif auto_ok and candidates and not yes:
+        print(
+            "  Re-run with --auto-approve-ok --yes to commit."
+        )
+
+
+def _cmd_approvals_digest(args) -> None:
+    """Wave 62: empire-scale approval digest.
+
+    Combines Wave 60 priority scoring + Wave 49 AI pre-vet
+    into a single triage view. Operator opens this, scans top-N
+    actions with both priority AND AI recommendation visible,
+    decides batch-approve / batch-reject / hand-review.
+    """
+    from core.approval import get_approval_queue
+    from engines._approval_priority import score_pending
+    from engines._approval_prevet import (
+        prevet_batch, is_enabled as prevet_enabled,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    top_n = max(1, int(getattr(args, "top", 10) or 10))
+    engine = getattr(args, "engine", None)
+
+    queue = get_approval_queue()
+    actions = queue.list_pending(engine=engine, limit=10_000)
+    if not actions:
+        if as_json:
+            print(json.dumps({"count": 0, "rows": []}, indent=2))
+            return
+        print("No pending actions.")
+        return
+
+    # Score + sort by priority (Wave 60)
+    scored = score_pending(actions=actions)
+    # Take top-N
+    top_scored = scored[:top_n]
+    top_ids = {s.action_id for s in top_scored}
+    top_actions = [
+        a for a in actions if str(a.id) in top_ids
+    ]
+    # Pre-vet (Wave 49)
+    prevet = prevet_batch(top_actions)
+    prevet_by_id = {p.action_id: p for p in prevet}
+
+    rows = []
+    for s in top_scored:
+        action = next(
+            (a for a in actions if str(a.id) == s.action_id),
+            None,
+        )
+        if action is None:
+            continue
+        p = prevet_by_id.get(s.action_id)
+        rows.append({
+            "action_id": s.action_id,
+            "engine": s.engine,
+            "action_type": getattr(action, "action_type", ""),
+            "risk_class": s.risk_class,
+            "priority": s.score,
+            "priority_rec": s.recommendation,
+            "priority_reason": s.reason,
+            "ai_rec": p.recommendation if p else None,
+            "ai_conf": (
+                round(p.confidence, 2) if p else None
+            ),
+        })
+
+    if as_json:
+        print(json.dumps({
+            "count": len(rows),
+            "ai_prevet_enabled": prevet_enabled(),
+            "rows": rows,
+        }, indent=2, default=str))
+        return
+
+    print(
+        f"Approval digest -- top {len(rows)} of "
+        f"{len(actions)} pending  "
+        f"(AI prevet: "
+        f"{'on' if prevet_enabled() else 'off (heuristic only)'})"
+    )
+    print()
+    print(
+        f"  {'id':<14} {'engine':<24} "
+        f"{'prio':<6} {'pri-rec':<8} {'ai-rec':<8}  reason"
+    )
+    counts: dict[str, int] = {}
+    for r in rows:
+        marker = {
+            "urgent": "[!!!]",
+            "normal": "[ . ]",
+            "auto-ok": "[ok ]",
+        }.get(r["priority_rec"], "[ ? ]")
+        ai_rec = r["ai_rec"] or "-"
+        ai_str = (
+            f"{ai_rec}({r['ai_conf']:.1f})"
+            if r["ai_conf"] is not None else ai_rec
+        )
+        reason = (r["priority_reason"] or "")[:50]
+        print(
+            f"  {str(r['action_id'])[:12]:<14} "
+            f"{r['engine'][:24]:<24} "
+            f"{r['priority']:>5.2f} {marker:<8} "
+            f"{ai_str:<8}  {reason}"
+        )
+        counts[r["priority_rec"]] = counts.get(
+            r["priority_rec"], 0,
+        ) + 1
+    print()
+    print(
+        f"  Summary:  urgent={counts.get('urgent', 0)}  "
+        f"normal={counts.get('normal', 0)}  "
+        f"auto-ok={counts.get('auto-ok', 0)}"
+    )
+    print()
+    if counts.get("auto-ok", 0) > 0:
+        print(
+            "  Bulk approve auto-ok candidates: "
+            "`shopai approvals approve-all "
+            "--min-confidence 0.7`"
+        )
+    if counts.get("urgent", 0) > 0:
+        urgent_id = next(
+            (
+                r["action_id"] for r in rows
+                if r["priority_rec"] == "urgent"
+            ),
+            None,
+        )
+        if urgent_id:
+            print(
+                f"  Review urgent: `shopai approvals show "
+                f"{urgent_id} --with-context`"
+            )
+
+
 def _cmd_approvals_prevet(args) -> None:
     """Wave 49: AI pre-vet recommendations for pending actions.
 
@@ -35181,7 +35690,31 @@ def _cmd_approvals_pending(args) -> None:
         else:
             print("No pending actions.")
         return
-    print(f"Pending actions ({len(actions)}):")
+
+    # Wave 61: optional priority sort
+    sort_mode = getattr(args, "sort", "age")
+    priority_lookup: dict[str, "PriorityScore"] = {}
+    if sort_mode == "priority":
+        try:
+            from engines._approval_priority import score_pending
+            scored = score_pending(actions=actions)
+            priority_lookup = {s.action_id: s for s in scored}
+            # Re-order actions to match scored desc
+            id_order = [s.action_id for s in scored]
+            id_to_action = {str(a.id): a for a in actions}
+            actions = [
+                id_to_action[i] for i in id_order
+                if i in id_to_action
+            ]
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"Note: priority sort failed ({exc}); "
+                "falling back to age."
+            )
+
+    print(
+        f"Pending actions ({len(actions)}; sort={sort_mode}):"
+    )
     for a in actions:
         narrative = (a.narrative or "")[:80]
         conf = (
@@ -35189,7 +35722,24 @@ def _cmd_approvals_pending(args) -> None:
             if isinstance(a.confidence, (int, float))
             else ""
         )
-        print(f"  [{a.id}] {a.engine}/{a.action_type}{conf}")
+        # Wave 61: render priority badge when sorted by priority
+        prio_str = ""
+        if sort_mode == "priority":
+            p = priority_lookup.get(str(a.id))
+            if p is not None:
+                rec_marker = {
+                    "urgent": "[!!!]",
+                    "normal": "[ . ]",
+                    "auto-ok": "[ok ]",
+                }.get(p.recommendation, "[ ? ]")
+                prio_str = (
+                    f" {rec_marker} "
+                    f"prio={p.score:.2f} ({p.reason})"
+                )
+        print(
+            f"  [{a.id}] {a.engine}/{a.action_type}"
+            f"{conf}{prio_str}"
+        )
         if narrative:
             print(f"      {narrative}")
     # Drill-down hint: first pending action's full id +
