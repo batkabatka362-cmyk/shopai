@@ -1374,6 +1374,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    # Wave 50: per-engine ROAS report
+    roas_p = sub.add_parser(
+        "roas",
+        help=(
+            "Per-engine return on ad spend (ROAS) report. "
+            "Joins ad-spend metrics from action outcomes "
+            "with attributed revenue per engine. Answers "
+            "'for every $1 my AGI spends through engine X, "
+            "how many $ comes back?'"
+        ),
+    )
+    roas_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+        help="Window in hours (default 168 = 7d)",
+    )
+    roas_p.add_argument(
+        "--store", default=None,
+        help="Filter to one store",
+    )
+    roas_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of the text view",
+    )
+
     # ── Autonomous cycle -- bundled operator workflow ───────
     autonomous_p = sub.add_parser(
         "autonomous-cycle",
@@ -6742,6 +6766,132 @@ def _render_health_sections(envelope: dict[str, Any]) -> None:
             "  Next: subsystem failed to load -- check "
             "logs / `data/` permissions."
         )
+
+
+def _cmd_roas(args) -> None:
+    """Wave 50: per-engine ROAS report.
+
+    Joins spend metrics (from approval-queue outcomes) with
+    attributed revenue (from Shopify orders via tags) to
+    compute return-on-spend per engine.
+    """
+    from engines._roas_report import compute_roas_report
+
+    window_hours = float(
+        getattr(args, "window_hours", 168.0) or 168.0
+    )
+    store_id = (
+        getattr(args, "store", None) or ""
+    ).strip() or None
+    as_json = bool(getattr(args, "json", False))
+
+    report = compute_roas_report(
+        window_hours=window_hours, store_id=store_id,
+    )
+
+    if as_json:
+        payload = {
+            "window_hours": report.window_hours,
+            "store_id": store_id,
+            "total_spend": report.total_spend,
+            "total_attributed_revenue":
+                report.total_attributed_revenue,
+            "fleet_roas": report.fleet_roas,
+            "per_engine": [
+                {
+                    "engine": e.engine,
+                    "cluster": e.cluster,
+                    "total_spend": e.total_spend,
+                    "attributed_revenue": e.attributed_revenue,
+                    "attributed_orders": e.attributed_orders,
+                    "actions_counted": e.actions_counted,
+                    "roas": e.roas,
+                    "verdict": e.verdict,
+                }
+                for e in report.per_engine
+            ],
+        }
+        print(json.dumps(payload, indent=2, default=str))
+        return
+
+    scope = f"store={store_id}" if store_id else "fleet-wide"
+    print(
+        f"ROAS report  ({scope}, {window_hours:g}h window)"
+    )
+    print()
+    print(
+        f"  total spend:           "
+        f"${report.total_spend:,.2f}"
+    )
+    print(
+        f"  attributed revenue:    "
+        f"${report.total_attributed_revenue:,.2f}"
+    )
+    if report.fleet_roas is not None:
+        marker = (
+            "[OK ]" if report.fleet_roas >= 2.0
+            else ("[ - ]" if report.fleet_roas >= 1.0
+                  else "[BAD]")
+        )
+        print(
+            f"  fleet ROAS:            "
+            f"{marker} {report.fleet_roas:.2f}x"
+        )
+    else:
+        print(
+            "  fleet ROAS:            (no spend recorded)"
+        )
+    print()
+    if not report.per_engine:
+        print(
+            "  (no spend-class actions recorded in window)"
+        )
+        print()
+        print(
+            "  Spend metrics are recorded by writers calling "
+            "record_outcome with"
+        )
+        print(
+            "  metrics={cost|ad_spend|discount_value: N}. "
+            "Run a live cycle on a"
+        )
+        print(
+            "  store with active discount/ad engines to "
+            "populate."
+        )
+        return
+    print(
+        f"  {'engine':<28} {'spend':>10} {'revenue':>12} "
+        f"{'orders':>7} {'ROAS':>7}  verdict"
+    )
+    for e in report.per_engine:
+        verdict_marker = {
+            "strong": "[OK ]",
+            "break_even": "[ - ]",
+            "negative": "[BAD]",
+            "no_data": "[ ? ]",
+        }.get(e.verdict, "[ ? ]")
+        roas_str = (
+            f"{e.roas:.2f}x" if e.roas is not None else "-"
+        )
+        print(
+            f"  {e.engine[:28]:<28} "
+            f"${e.total_spend:>8,.2f}  "
+            f"${e.attributed_revenue:>10,.2f}  "
+            f"{e.attributed_orders:>7}  "
+            f"{roas_str:>7}  "
+            f"{verdict_marker} {e.verdict}"
+        )
+    print()
+    print("  Drill:")
+    print(
+        "    shopai approvals quarantine --spend-status "
+        "-- cap state"
+    )
+    print(
+        "    shopai cycle attribution --by engine       "
+        "-- per-engine revenue"
+    )
 
 
 def _cmd_empire(args) -> None:
@@ -36134,6 +36284,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "empire":
         _cmd_empire(args)
+        return
+
+    if args.command == "roas":
+        _cmd_roas(args)
         return
 
     if args.command == "transfer":
