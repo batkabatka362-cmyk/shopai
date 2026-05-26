@@ -181,13 +181,23 @@ class AICaptainStrategy:
             cluster, wired_members,
         )
 
+        # Wave 75: niche signal (orchestrator threads it
+        # through ``signals["niche"]``). Captain LLM uses it
+        # to bias selection (e.g. beauty store retention -->
+        # loyalty matters more than nps_engine).
+        niche = (signals or {}).get("niche")
+        if isinstance(niche, str):
+            niche = niche.strip().lower() or None
+        else:
+            niche = None
+
         system = (
             "You are a Tier 2b cluster captain for ShopAI -- "
             "an autonomous Shopify merchant. Given cluster "
             "definition + signals + recent memory + per-engine "
-            "revenue attribution (with trend), recommend which "
-            "member engines to fire THIS cycle. Return JSON: "
-            "{\"fire\": [\"engine_name\", ...], "
+            "revenue attribution (with trend) + store niche, "
+            "recommend which member engines to fire THIS cycle. "
+            "Return JSON: {\"fire\": [\"engine_name\", ...], "
             "\"rationale\": \"...\"}. Only return engines "
             "from the wired_members list. The deterministic "
             "baseline already selected some engines -- you "
@@ -197,10 +207,14 @@ class AICaptainStrategy:
             "deserve priority. Engines with trend='rising' "
             "deserve continued investment; trend='falling' "
             "deserves caution (maybe deprioritize unless a "
-            "signal explicitly calls for it)."
+            "signal explicitly calls for it). Niche affects "
+            "engine preference -- e.g. beauty stores favour "
+            "loyalty over generic outreach; tech stores favour "
+            "review_management."
         )
         user = json.dumps({
             "cluster": cluster.name,
+            "niche": niche,
             "kpi": cluster.kpi,
             "description": cluster.description,
             "signals": signals,
@@ -349,13 +363,16 @@ class AIOrchestratorStrategy:
         attribution_context = self._store_attribution_context(
             store_id,
         )
+        # Wave 75: niche signal -- LLM knows beauty vs tech
+        # context affects priority bucketing.
+        niche = self._store_niche(store_id)
 
         system = (
             "You are a Tier 1 orchestrator for ShopAI -- an "
             "autonomous Shopify merchant empire. Given a "
             "store's world-model + per-cluster revenue "
-            "attribution with trend, classify the store's "
-            "current priority. Return JSON: "
+            "attribution with trend + niche, classify the "
+            "store's current priority. Return JSON: "
             "{\"priority\": \"launching|growing|mature|"
             "at_risk|stagnant\", \"rationale\": \"...\"}. "
             "Deterministic baseline already gave one answer; "
@@ -364,10 +381,13 @@ class AIOrchestratorStrategy:
             "tend toward mature/growing; stores with $0 "
             "attribution toward launching/at_risk. Stores "
             "with mostly trend='falling' clusters lean toward "
-            "at_risk/stagnant even if current revenue looks OK."
+            "at_risk/stagnant even if current revenue looks OK. "
+            "Niche affects pacing -- beauty/fashion stores "
+            "ramp faster than tech/home (shorter sales cycle)."
         )
         user = json.dumps({
             "store_id": store_id,
+            "niche": niche,
             "world_model_stats": world_model.get("stats", {}),
             "attribution_7d": attribution_context,
             "deterministic_classification": {
@@ -396,6 +416,21 @@ class AIOrchestratorStrategy:
             ),
             signals=base.signals,
         )
+
+    def _store_niche(self, store_id: str) -> str | None:
+        """Wave 75: look up the store's niche from
+        StoreManager. Returns None for unset / general."""
+        try:
+            from data_pipeline.store.store_manager import (
+                StoreManager,
+            )
+            store = StoreManager().get_store(store_id) or {}
+            niche = (store.get("niche") or "").strip().lower()
+            if niche and niche != "general":
+                return niche
+        except Exception:  # noqa: BLE001
+            return None
+        return None
 
     def _store_attribution_context(
         self, store_id: str,
