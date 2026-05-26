@@ -7720,6 +7720,29 @@ def _cmd_empire(args) -> None:
     except Exception:  # noqa: BLE001
         pass
 
+    # ─ Transfer scan candidates (Wave 72)
+    transfers_block = None
+    try:
+        from engines._transfer_scanner import scan_empire_transfers
+        scan = scan_empire_transfers(top_k=3)
+        transfers_block = {
+            "candidate_count": scan.total_candidates,
+            "pairs_scanned": scan.pairs_scanned,
+            "top_pair": (
+                list(scan.top_pair) if scan.top_pair else None
+            ),
+            "top_score": (
+                scan.candidates[0].score
+                if scan.candidates else None
+            ),
+            "top_engine": (
+                scan.candidates[0].engine
+                if scan.candidates else None
+            ),
+        }
+    except Exception:  # noqa: BLE001
+        pass
+
     # ─ Engine alerts (regressing / chronic / outcome)
     alerts_block = None
     try:
@@ -7768,6 +7791,7 @@ def _cmd_empire(args) -> None:
             "spend": spend_block,
             "cluster_health": health_block,
             "engine_alerts": alerts_block,
+            "transfers": transfers_block,
         }, indent=2, default=str))
         return
 
@@ -7896,14 +7920,37 @@ def _cmd_empire(args) -> None:
             line += f"   top: {top}"
         print(line)
 
+    # Wave 72: transfer scan candidates inline
+    if (
+        transfers_block is not None
+        and transfers_block.get("candidate_count", 0) > 0
+    ):
+        n = transfers_block["candidate_count"]
+        top_pair = transfers_block.get("top_pair")
+        top_engine = transfers_block.get("top_engine")
+        line = (
+            f"  Transfer scan:        [WRN] "
+            f"{n} candidate(s)"
+        )
+        if top_pair and top_engine:
+            line += (
+                f"   top: {top_pair[0]}->{top_pair[1]} "
+                f"({top_engine})"
+            )
+        print(line)
+
     print()
     print("  Drill commands:")
     print("    shopai cycle status                  -- detailed cycle")
     print("    shopai cycle attribution             -- revenue breakdown")
-    print("    shopai approvals list                -- pending detail")
+    print("    shopai approvals digest              -- pending priority + AI pre-vet")
     print(
         "    shopai approvals quarantine --spend-status "
         "-- cap status"
+    )
+    print(
+        "    shopai transfer scan                "
+        "-- empire-wide transferable winners"
     )
     print(
         "    shopai engine pulse <engine>         "

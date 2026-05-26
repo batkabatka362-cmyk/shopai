@@ -142,6 +142,25 @@ def _collect_facts(
     except Exception:  # noqa: BLE001
         pass
 
+    # Wave 72: transfer scan candidates (fleet-wide only; per-
+    # store scope doesn't add value here since transfer is
+    # by definition cross-store)
+    if not store_id:
+        try:
+            from engines._transfer_scanner import (
+                scan_empire_transfers,
+            )
+            scan = scan_empire_transfers(top_k=3)
+            facts["transfer_candidate_count"] = (
+                scan.total_candidates
+            )
+            if scan.candidates:
+                facts["transfer_top_engine"] = (
+                    scan.candidates[0].engine
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
     return facts
 
 
@@ -225,6 +244,19 @@ def _deterministic_summary(facts: dict[str, Any]) -> str:
         parts.append(
             f"{pending} pending approval(s) -- run "
             "`shopai approvals digest` to triage."
+        )
+
+    # Wave 72: transfer candidate hint
+    transfer_count = facts.get("transfer_candidate_count", 0)
+    if transfer_count > 0:
+        top_engine = facts.get("transfer_top_engine", "")
+        engine_hint = (
+            f" (top: {top_engine})" if top_engine else ""
+        )
+        parts.append(
+            f"{transfer_count} cross-store transfer "
+            f"candidate(s){engine_hint} -- run "
+            "`shopai transfer scan` to drill."
         )
 
     return " ".join(parts) if parts else "No empire state available."

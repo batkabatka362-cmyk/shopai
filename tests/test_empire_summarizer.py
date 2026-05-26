@@ -58,6 +58,21 @@ class TestDeterministicSummary:
         assert "7" in s
         assert "approvals digest" in s
 
+    def test_transfer_candidates_surfaced(self):
+        s = _deterministic_summary({
+            "transfer_candidate_count": 5,
+            "transfer_top_engine": "loyalty",
+        })
+        assert "5" in s
+        assert "transfer" in s.lower()
+        assert "loyalty" in s
+
+    def test_zero_transfer_candidates_silent(self):
+        s = _deterministic_summary({
+            "transfer_candidate_count": 0,
+        })
+        assert "transfer" not in s.lower()
+
 
 class TestAIRefine:
 
