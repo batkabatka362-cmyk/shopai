@@ -1975,6 +1975,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Store to verify (default: active store)",
     )
     cycle_verify_p.add_argument(
+        "--invoke", action="store_true",
+        help=(
+            "Wave 41: also dry-run-invoke every engine in the "
+            "captain plan (apply_* NOT set; engines run in "
+            "advisory mode). Captures per-engine status + "
+            "error so operators see latent failures BEFORE "
+            "going live."
+        ),
+    )
+    cycle_verify_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
     )
@@ -17961,12 +17971,110 @@ def _cmd_cycle_verify(args) -> None:
     except Exception as exc:  # noqa: BLE001
         _check("institutional_audits", "fail", str(exc))
 
+    # 8. Wave 41: dry-run-invoke every engine in the captain
+    # plan (opt-in via --invoke). apply_* flags are NOT set
+    # so engines run in their advisory branch -- they read
+    # data, run their decision logic, return an envelope, but
+    # don't fire Shopify writes. Captures latent failures
+    # (engine raises, returns Pattern Q violation, returns
+    # status=error/fail) so operators see them BEFORE going
+    # live.
+    invoke_results: list[dict] = []
+    if getattr(args, "invoke", False) and store_id:
+        try:
+            from data_pipeline.store.data_provider import DataProvider
+            from engines.registry import get_engine
+        except Exception as exc:  # noqa: BLE001
+            _check(
+                "engine_invocations", "fail",
+                f"registry/provider unavailable: {exc}",
+            )
+        else:
+            provider = DataProvider(sm)
+            invoke_ok = 0
+            invoke_err = 0
+            invoke_skip = 0
+            # Iterate the captain plans we already computed
+            sp_for_store = (
+                fp.supervisor_plans[0]
+                if fp.supervisor_plans else None
+            )
+            if sp_for_store is not None:
+                for cp in sp_for_store.captain_plans:
+                    for m in (
+                        cp.members_to_fire
+                        + cp.modifications_queued
+                    ):
+                        engine_name = m["engine"]
+                        entry: dict = {
+                            "cluster": cp.cluster,
+                            "engine": engine_name,
+                        }
+                        try:
+                            data = provider.get_data_for_engine(
+                                engine_name, store_id,
+                            )
+                            if not isinstance(data, dict):
+                                data = {}
+                            # NOTE: apply_* NOT set -- advisory
+                            # mode. This is the safety guarantee
+                            # of cycle verify --invoke.
+                        except Exception as exc:  # noqa: BLE001
+                            entry["status"] = "data_error"
+                            entry["error"] = str(exc)[:200]
+                            invoke_err += 1
+                            invoke_results.append(entry)
+                            continue
+                        try:
+                            engine = get_engine(engine_name)
+                            if engine is None:
+                                entry["status"] = "not_registered"
+                                invoke_err += 1
+                                invoke_results.append(entry)
+                                continue
+                            result = engine.run(data)
+                            if isinstance(result, dict):
+                                status = result.get("status", "?")
+                                entry["status"] = status
+                                if status in ("success", "ok"):
+                                    invoke_ok += 1
+                                else:
+                                    invoke_err += 1
+                                    err = result.get("error")
+                                    if err:
+                                        entry["error"] = (
+                                            str(err)[:200]
+                                        )
+                            else:
+                                entry["status"] = "non_dict"
+                                invoke_err += 1
+                        except Exception as exc:  # noqa: BLE001
+                            entry["status"] = "engine_raised"
+                            entry["error"] = str(exc)[:200]
+                            invoke_err += 1
+                        invoke_results.append(entry)
+            else:
+                invoke_skip += 1
+            if invoke_err == 0:
+                _check(
+                    "engine_invocations", "ok",
+                    f"{invoke_ok} engines respond cleanly "
+                    "(advisory mode)",
+                )
+            else:
+                _check(
+                    "engine_invocations", "fail",
+                    f"{invoke_err}/{invoke_ok + invoke_err} "
+                    "engines fail in advisory mode",
+                )
+
     if as_json:
         print(json.dumps({
             "store_id": store_id,
             "overall_ok": overall_ok,
             "checks": checks,
             "captain_results": captain_results,
+            "invoke_results": invoke_results,
         }, indent=2, default=str))
         if not overall_ok:
             sys.exit(1)
@@ -17986,6 +18094,30 @@ def _cmd_cycle_verify(args) -> None:
         print(
             f"  {marker} {c['step']:<22} {c['detail']}"
         )
+    # Wave 41: when --invoke ran, surface per-engine failures
+    # so operators see WHICH engines failed + their reasons.
+    if invoke_results:
+        failed = [
+            r for r in invoke_results
+            if r.get("status") not in ("success", "ok")
+        ]
+        if failed:
+            print()
+            print(
+                f"  Engine failures ({len(failed)} of "
+                f"{len(invoke_results)}):"
+            )
+            for r in failed[:10]:
+                err = r.get("error", "(no error captured)")
+                print(
+                    f"    {r['cluster']:<14} "
+                    f"{r['engine']:<28} "
+                    f"{r.get('status', '?'):<14} {err[:100]}"
+                )
+            if len(failed) > 10:
+                print(
+                    f"    ... {len(failed) - 10} more"
+                )
     print()
     if overall_ok:
         print(
