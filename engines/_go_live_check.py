@@ -241,10 +241,16 @@ def _check_notify_webhook() -> CheckResult:
 def _check_store_niches() -> CheckResult:
     """Wave 76: warn when stores lack niche tags. Wave 73's
     niche-aware orchestrator silently no-ops when niche is
-    unset -- operator should know."""
+    unset -- operator should know.
+
+    Wave 84: when an untagged store HAS a product catalog, run
+    the deterministic detector (Wave 83) and surface the
+    suggestion inline. Converts the fix hint from "do this
+    manually" to "we figured it out -- just apply it"."""
     try:
         from data_pipeline.store.store_manager import StoreManager
-        stores = StoreManager().list_stores() or []
+        sm = StoreManager()
+        stores = sm.list_stores() or []
     except Exception as exc:  # noqa: BLE001
         return CheckResult(
             name="store_niches",
@@ -270,20 +276,47 @@ def _check_store_niches() -> CheckResult:
             status="pass",
             detail=f"all {len(stores)} store(s) tagged",
         )
+
+    # Wave 84: try to detect a niche for each untagged store.
+    # Best-effort -- detection failure does not change the
+    # check's outcome. Suggestions are only included when
+    # confidence is medium or high (actionable).
+    suggestions: list[str] = []
+    try:
+        from engines._niche_detector import suggest_niche_for_store
+        for sid in untagged[:5]:
+            det = suggest_niche_for_store(
+                sid, store_manager=sm,
+            )
+            if det is not None and det.is_actionable:
+                suggestions.append(
+                    f"{sid}->{det.suggested}({det.confidence})"
+                )
+    except Exception:  # noqa: BLE001
+        suggestions = []
+
     sample = ", ".join(untagged[:3])
     suffix = f" +{len(untagged) - 3} more" if len(untagged) > 3 else ""
-    return CheckResult(
-        name="store_niches",
-        status="warn",
-        detail=(
-            f"{len(untagged)} store(s) untagged: "
-            f"{sample}{suffix}"
-        ),
-        fix=(
+    detail = f"{len(untagged)} store(s) untagged: {sample}{suffix}"
+    if suggestions:
+        detail += (
+            f" [auto-suggest: {', '.join(suggestions)}]"
+        )
+        fix = (
+            "shopai niche --suggest <store> --apply "
+            "(commits the auto-detected niche, Wave 83+84)"
+        )
+    else:
+        fix = (
             "shopai niche --set <store> <beauty|fashion|home|"
             "tech|food> (Wave 77 in-place update; preserves "
             "credentials)"
-        ),
+        )
+    return CheckResult(
+        name="store_niches",
+        status="warn",
+        detail=detail,
+        fix=fix,
     )
 
 

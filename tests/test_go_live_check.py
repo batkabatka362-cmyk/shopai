@@ -160,10 +160,49 @@ class TestStoreNichesCheck:
             MockSM.return_value.list_stores.return_value = (
                 fake_stores
             )
+            # No product fetch -> detector returns no_data ->
+            # no suggestions surfaced. Detail stays the
+            # "manually fix" form.
+            MockSM.return_value.get_store.return_value = (
+                {"store_id": "b"}
+            )
+            MockSM.return_value.get_products.return_value = []
             r = _check_store_niches()
         assert r.status == "warn"
         # b and c are untagged
         assert "2" in r.detail
+
+    def test_wave84_auto_suggest_appended_when_detected(self):
+        """Wave 84: when an untagged store HAS catalog matching
+        a niche, the detail includes the auto-suggestion +
+        the fix hint switches to --suggest --apply."""
+        from unittest.mock import patch
+        from engines._go_live_check import _check_store_niches
+        fake_stores = [
+            {"store_id": "store_a", "niche": ""},
+        ]
+        # Catalog matches beauty pretty cleanly
+        fake_products = [
+            {"title": "Lipstick", "tags": ["makeup"]},
+            {"title": "Foundation", "tags": ["cosmetics"]},
+            {"title": "Skincare Serum", "tags": ["beauty"]},
+            {"title": "Moisturizer", "tags": ["skincare"]},
+        ]
+        with patch(
+            "data_pipeline.store.store_manager.StoreManager"
+        ) as MockSM:
+            inst = MockSM.return_value
+            inst.list_stores.return_value = fake_stores
+            inst.get_store.return_value = (
+                {"store_id": "store_a"}
+            )
+            inst.get_products.return_value = fake_products
+            r = _check_store_niches()
+        assert r.status == "warn"
+        assert "auto-suggest" in r.detail
+        assert "beauty" in r.detail
+        assert "--suggest" in r.fix
+        assert "--apply" in r.fix
 
 
 class TestAIStrategyCheck:
