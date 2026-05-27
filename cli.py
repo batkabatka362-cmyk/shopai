@@ -3732,6 +3732,77 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of the text view",
     )
 
+    # Wave 92: zero-to-earning autonomous wizard
+    onboard_p = sub.add_parser(
+        "onboard",
+        help=(
+            "Wave 92: single-command autonomous onboarding. "
+            "Chains store-register -> first-sync -> niche-"
+            "detect -> launch -> go-live -> schedule into "
+            "ONE invocation. The North Star wrapper."
+        ),
+    )
+    onboard_p.add_argument(
+        "store_id",
+        help="Stable identifier for the new store row.",
+    )
+    onboard_p.add_argument(
+        "shop_url",
+        help=(
+            "Shopify domain (e.g. shop.myshopify.com)."
+        ),
+    )
+    onboard_p.add_argument(
+        "--api-key", default="",
+        help=(
+            "Legacy admin API access token. Mutually "
+            "exclusive with --client-id + --client-secret."
+        ),
+    )
+    onboard_p.add_argument(
+        "--client-id", default="",
+        help="OAuth app client_id (auto-refresh flow)",
+    )
+    onboard_p.add_argument(
+        "--client-secret", default="",
+        help="OAuth app client_secret",
+    )
+    onboard_p.add_argument(
+        "--name", default="",
+        help=(
+            "Human-readable store name "
+            "(defaults to store_id)"
+        ),
+    )
+    onboard_p.add_argument(
+        "--niche", default="",
+        choices=[
+            "", "general", "beauty", "fashion", "home",
+            "tech", "food",
+        ],
+        help=(
+            "Operator-supplied niche. When empty, the "
+            "wizard runs the Wave 83 keyword classifier "
+            "and auto-applies a high-confidence match."
+        ),
+    )
+    onboard_p.add_argument(
+        "--store-type", default="dropshipping",
+        choices=["dropshipping", "brand", "niche", "general"],
+        help="Store type tag (default dropshipping)",
+    )
+    onboard_p.add_argument(
+        "--dry-run", action="store_true",
+        help=(
+            "Preview the onboarding plan without writing "
+            "to the DB or hitting Shopify."
+        ),
+    )
+    onboard_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the result envelope as JSON",
+    )
+
     launch_p = sub.add_parser(
         "launch",
         help=(
@@ -28015,6 +28086,102 @@ capability_overrides import load_overrides
     sys.exit(1)
 
 
+def _cmd_onboard(args) -> None:
+    """Wave 92: autonomous onboarding wizard.
+
+    Single-command chain: register -> sync -> niche-detect
+    -> launch -> go-live -> schedule. Each stage delegates
+    to existing substrate (Wave 73 niche, Wave 83 detector,
+    launch_orchestrator, Wave 55 go-live, Wave 54 cron).
+    """
+    from engines.store_setup.onboarding_wizard import (
+        onboard_store,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    api_key = getattr(args, "api_key", "") or ""
+    client_id = getattr(args, "client_id", "") or ""
+    client_secret = getattr(args, "client_secret", "") or ""
+    niche = (getattr(args, "niche", "") or "").strip()
+
+    result = onboard_store(
+        store_id=args.store_id,
+        shop_url=args.shop_url,
+        api_key=api_key,
+        client_id=client_id,
+        client_secret=client_secret,
+        name=getattr(args, "name", "") or "",
+        niche=niche,
+        store_type=getattr(args, "store_type", "dropshipping"),
+        dry_run=dry_run,
+    )
+
+    if as_json:
+        print(json.dumps({
+            "store_id": result.store_id,
+            "shop_url": result.shop_url,
+            "final_verdict": result.final_verdict,
+            "next_action": result.next_action,
+            "stages": [
+                {
+                    "name": s.name,
+                    "status": s.status,
+                    "detail": s.detail,
+                    "data": s.data,
+                }
+                for s in result.stages
+            ],
+        }, indent=2, default=str))
+        return
+
+    # Text render
+    title = (
+        "Onboarding DRY RUN" if dry_run
+        else "Onboarding wizard"
+    )
+    print(
+        f"{title}: {result.store_id} ({result.shop_url})"
+    )
+    print()
+    marker = {
+        "success": "[OK ]",
+        "warn":    "[WRN]",
+        "fail":    "[BAD]",
+        "skipped": "[ - ]",
+    }
+    for stage in result.stages:
+        mk = marker.get(stage.status, "[ ? ]")
+        print(
+            f"  {mk} {stage.name:<14} {stage.detail}"
+        )
+    print()
+    verdict_marker = {
+        "ready": "[OK ]",
+        "ready_with_warnings": "[WRN]",
+        "failed": "[BAD]",
+        "dry_run": "[ - ]",
+    }.get(result.final_verdict, "[ ? ]")
+    print(
+        f"  {verdict_marker} VERDICT: {result.final_verdict}"
+    )
+    if result.next_action:
+        print()
+        print(f"  Next: {result.next_action}")
+    # When a cron line was emitted, show it inline so the
+    # operator can copy-paste from the same surface.
+    sched = next(
+        (s for s in result.stages if s.name == "schedule"),
+        None,
+    )
+    if (
+        sched and sched.data.get("cron_line")
+        and not dry_run
+    ):
+        print()
+        print(f"  Cron: {sched.data['cron_line']}")
+
+
 def _cmd_launch(args) -> None:
     """Flagship: single-command store launch.
 
@@ -38583,6 +38750,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomous-cycle":
         _cmd_autonomous_cycle(args)
+        return
+
+    if args.command == "onboard":
+        _cmd_onboard(args)
         return
 
     if args.command == "launch":
