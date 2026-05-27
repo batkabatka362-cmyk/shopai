@@ -32,8 +32,15 @@ Stages (executed in order):
                        launch_closeable) so the operator knows
                        which gaps need their attention vs
                        which can be re-closed autonomously.
-  7. go_live       -- engines._go_live_check pre-flight
-  8. schedule      -- cron / systemd template emission
+  7. relaunch_retry -- Wave 95: when verify_launch reports
+                        non-empty launch_closeable_gaps, the
+                        wizard runs launch_store ONE more time
+                        + re-audits. Closed-loop autonomous
+                        gap-closing. Manual_admin gaps are
+                        operator-only so retry skips when only
+                        those remain.
+  8. go_live       -- engines._go_live_check pre-flight
+  9. schedule      -- cron / systemd template emission
 
 Each stage returns a structured OnboardingStage with:
   - name: str
@@ -517,7 +524,135 @@ def onboard_store(
                 detail=f"audit raised: {exc}",
             ))
 
-    # ── Stage 7: go-live ───────────────────────────────────
+    # ── Stage 7: relaunch_retry (Wave 95) ──────────────────
+    # Closed-loop: when verify_launch reported non-empty
+    # launch_closeable_gaps, re-run launch_store + re-audit
+    # ONCE. Bounded retry -- no infinite loop. Manual_admin
+    # gaps are operator-only, so retry skips when those are
+    # the only remaining gaps.
+    verify_launch_stage = next(
+        (s for s in result.stages
+         if s.name == "verify_launch"),
+        None,
+    )
+    needs_retry = bool(
+        verify_launch_stage
+        and verify_launch_stage.status == "warn"
+        and verify_launch_stage.data.get(
+            "launch_closeable_gaps",
+        )
+    )
+    if not creds_ok:
+        result.stages.append(OnboardingStage(
+            name="relaunch_retry",
+            status="skipped",
+            detail="skipped (credentials not verified)",
+        ))
+    elif not needs_retry:
+        # Either launch was clean (no gaps to close) OR only
+        # manual_admin gaps remain (operator-only).
+        result.stages.append(OnboardingStage(
+            name="relaunch_retry",
+            status="skipped",
+            detail=(
+                "no autonomously-closeable gaps remain"
+            ),
+        ))
+    else:
+        gaps_before = list(
+            verify_launch_stage.data.get(
+                "launch_closeable_gaps", [],
+            )
+        )
+        try:
+            from engines.store_setup.launch_orchestrator import (
+                launch_store,
+            )
+            from engines.store_setup.launch_audit import (
+                audit_store,
+            )
+            # Re-run launch (idempotent on already-applied
+            # writes; safe to re-invoke)
+            launch_store(
+                store_name=name or store_id,
+                niche=final_niche,
+                store_id=store_id,
+            )
+            # Re-audit
+            audit2 = audit_store(store_id=store_id)
+            gaps_after = list(
+                audit2.get("launch_closeable_gaps", []),
+            )
+            closed = [
+                g for g in gaps_before if g not in gaps_after
+            ]
+            if not gaps_after:
+                result.stages.append(OnboardingStage(
+                    name="relaunch_retry",
+                    status="success",
+                    detail=(
+                        f"closed all {len(closed)} "
+                        "auto-closeable gap(s)"
+                    ),
+                    data={
+                        "gaps_closed": closed,
+                        "completion_pct": audit2.get(
+                            "completion_pct",
+                        ),
+                    },
+                ))
+                # Upgrade the upstream verify_launch stage
+                # if the post-retry audit is fully clean.
+                if (
+                    audit2.get("ready_to_launch")
+                    and verify_launch_stage is not None
+                ):
+                    verify_launch_stage.status = "success"
+                    verify_launch_stage.detail = (
+                        f"all 11 gates green after retry "
+                        f"({audit2.get('completion_pct', 0)}%)"
+                    )
+                    verify_launch_stage.data[
+                        "completion_pct"
+                    ] = audit2.get("completion_pct")
+                    verify_launch_stage.data[
+                        "launch_closeable_gaps"
+                    ] = []
+            elif closed:
+                result.stages.append(OnboardingStage(
+                    name="relaunch_retry",
+                    status="warn",
+                    detail=(
+                        f"closed {len(closed)} of "
+                        f"{len(gaps_before)} gap(s); "
+                        f"{len(gaps_after)} still open"
+                    ),
+                    data={
+                        "gaps_closed": closed,
+                        "gaps_remaining": gaps_after,
+                    },
+                ))
+            else:
+                result.stages.append(OnboardingStage(
+                    name="relaunch_retry",
+                    status="warn",
+                    detail=(
+                        f"retry closed 0 of "
+                        f"{len(gaps_before)} gap(s); "
+                        "operator review needed"
+                    ),
+                    data={
+                        "gaps_remaining": gaps_after,
+                    },
+                ))
+        except Exception as exc:  # noqa: BLE001
+            result.stages.append(OnboardingStage(
+                name="relaunch_retry",
+                status="warn",
+                detail=f"retry raised: {exc}",
+            ))
+
+    # ── Stage 8: go-live ───────────────────────────────────
     try:
         from engines._go_live_check import (
             run_go_live_check, summarize,
@@ -557,7 +692,7 @@ def onboard_store(
             detail=f"go-live probe raised: {exc}",
         ))
 
-    # ── Stage 8: schedule ──────────────────────────────────
+    # ── Stage 9: schedule ──────────────────────────────────
     # Emit a generic POSIX cron line. Operator runs
     # ``shopai cycle schedule`` for the platform-specific
     # template (systemd / Task Scheduler / etc.).
@@ -630,6 +765,9 @@ _DRY_RUN_HINTS: list[tuple[str, str]] = [
     ("verify_launch",
      "engines.store_setup.launch_audit.audit_store -- "
      "read-only 11-gate audit; surfaces remaining gaps"),
+    ("relaunch_retry",
+     "auto-rerun launch_store + re-audit when "
+     "launch_closeable_gaps non-empty (Wave 95)"),
     ("go_live",
      "engines._go_live_check.run_go_live_check -- 9 gates"),
     ("schedule",

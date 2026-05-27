@@ -395,6 +395,238 @@ class TestVerifyLaunchStage:
         assert "credentials not verified" in vl.detail
 
 
+class TestRelaunchRetry:
+    """Wave 95: closed-loop retry of launch_store when
+    verify_launch reports auto-closeable gaps."""
+
+    def test_retry_skipped_when_no_closeable_gaps(self):
+        sm = _fake_sm(connected=True)
+        sm.get_products.return_value = []
+        with patch(
+            "engines.store_setup.launch_orchestrator.launch_store",
+            return_value={
+                "ready_to_launch": True, "checklist": [],
+            },
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value={
+                "ready_to_launch": True,
+                "completion_pct": 100,
+                "manual_admin_gaps": [],
+                "launch_closeable_gaps": [],
+                "next_action": "",
+                "checks": [],
+            },
+        ), patch(
+            "engines._go_live_check.run_go_live_check",
+            return_value=[],
+        ), patch(
+            "engines._go_live_check.summarize",
+            return_value={
+                "verdict": "ready_to_go_live",
+                "pass": 9, "warn": 0, "fail": 0, "total": 9,
+            },
+        ), patch(
+            "data_pipeline.store.sync_service.SyncService",
+        ) as sync_cls:
+            sync_cls.return_value.sync_store.return_value = {
+                "products": 0, "orders": 0,
+            }
+            r = onboard_store(
+                store_id="s1", shop_url="x.myshopify.com",
+                api_key="t", store_manager=sm,
+            )
+        retry = next(
+            s for s in r.stages
+            if s.name == "relaunch_retry"
+        )
+        assert retry.status == "skipped"
+        assert "no autonomously-closeable" in retry.detail
+
+    def test_retry_skipped_when_only_manual_admin_gaps(self):
+        """When verify_launch warned but ALL gaps are
+        manual_admin (operator-only), retry skips -- the
+        orchestrator can't close those even if it tries."""
+        sm = _fake_sm(connected=True)
+        sm.get_products.return_value = []
+        with patch(
+            "engines.store_setup.launch_orchestrator.launch_store",
+            return_value={
+                "ready_to_launch": True, "checklist": [],
+            },
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value={
+                "ready_to_launch": False,
+                "completion_pct": 80,
+                "manual_admin_gaps": [
+                    "shop_identity", "shipping_zones",
+                ],
+                "launch_closeable_gaps": [],  # KEY: empty
+                "next_action": "operator action required",
+                "checks": [],
+            },
+        ), patch(
+            "engines._go_live_check.run_go_live_check",
+            return_value=[],
+        ), patch(
+            "engines._go_live_check.summarize",
+            return_value={
+                "verdict": "ready_to_go_live",
+                "pass": 9, "warn": 0, "fail": 0, "total": 9,
+            },
+        ), patch(
+            "data_pipeline.store.sync_service.SyncService",
+        ) as sync_cls:
+            sync_cls.return_value.sync_store.return_value = {
+                "products": 0, "orders": 0,
+            }
+            r = onboard_store(
+                store_id="s1", shop_url="x.myshopify.com",
+                api_key="t", store_manager=sm,
+            )
+        retry = next(
+            s for s in r.stages
+            if s.name == "relaunch_retry"
+        )
+        assert retry.status == "skipped"
+
+    def test_retry_closes_all_gaps_upgrades_verify_launch(self):
+        """When the retry's audit comes back fully clean,
+        the upstream verify_launch stage gets upgraded from
+        warn -> success."""
+        sm = _fake_sm(connected=True)
+        sm.get_products.return_value = []
+        # First audit warns with gaps; second audit clean
+        audits = iter([
+            {
+                "ready_to_launch": False,
+                "completion_pct": 75,
+                "manual_admin_gaps": [],
+                "launch_closeable_gaps": [
+                    "active_discounts",
+                    "curated_collections",
+                ],
+                "next_action": "",
+                "checks": [],
+            },
+            {
+                "ready_to_launch": True,
+                "completion_pct": 100,
+                "manual_admin_gaps": [],
+                "launch_closeable_gaps": [],
+                "next_action": "",
+                "checks": [],
+            },
+        ])
+        with patch(
+            "engines.store_setup.launch_orchestrator.launch_store",
+            return_value={
+                "ready_to_launch": True, "checklist": [],
+            },
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            side_effect=lambda **kw: next(audits),
+        ), patch(
+            "engines._go_live_check.run_go_live_check",
+            return_value=[],
+        ), patch(
+            "engines._go_live_check.summarize",
+            return_value={
+                "verdict": "ready_to_go_live",
+                "pass": 9, "warn": 0, "fail": 0, "total": 9,
+            },
+        ), patch(
+            "data_pipeline.store.sync_service.SyncService",
+        ) as sync_cls:
+            sync_cls.return_value.sync_store.return_value = {
+                "products": 0, "orders": 0,
+            }
+            r = onboard_store(
+                store_id="s1", shop_url="x.myshopify.com",
+                api_key="t", store_manager=sm,
+            )
+        retry = next(
+            s for s in r.stages
+            if s.name == "relaunch_retry"
+        )
+        assert retry.status == "success"
+        assert set(retry.data["gaps_closed"]) == {
+            "active_discounts", "curated_collections",
+        }
+        # verify_launch upgraded to success after retry
+        vl = next(
+            s for s in r.stages if s.name == "verify_launch"
+        )
+        assert vl.status == "success"
+        assert "after retry" in vl.detail
+
+    def test_retry_partial_close_leaves_verify_launch_warn(self):
+        """When retry closes SOME but not all gaps, retry
+        stage is warn + verify_launch stays warn."""
+        sm = _fake_sm(connected=True)
+        sm.get_products.return_value = []
+        audits = iter([
+            {
+                "ready_to_launch": False,
+                "completion_pct": 60,
+                "manual_admin_gaps": [],
+                "launch_closeable_gaps": [
+                    "active_discounts",
+                    "curated_collections",
+                ],
+                "next_action": "",
+                "checks": [],
+            },
+            {
+                "ready_to_launch": False,
+                "completion_pct": 70,
+                "manual_admin_gaps": [],
+                "launch_closeable_gaps": [
+                    "curated_collections",  # still failing
+                ],
+                "next_action": "",
+                "checks": [],
+            },
+        ])
+        with patch(
+            "engines.store_setup.launch_orchestrator.launch_store",
+            return_value={
+                "ready_to_launch": True, "checklist": [],
+            },
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            side_effect=lambda **kw: next(audits),
+        ), patch(
+            "engines._go_live_check.run_go_live_check",
+            return_value=[],
+        ), patch(
+            "engines._go_live_check.summarize",
+            return_value={
+                "verdict": "ready_to_go_live",
+                "pass": 9, "warn": 0, "fail": 0, "total": 9,
+            },
+        ), patch(
+            "data_pipeline.store.sync_service.SyncService",
+        ) as sync_cls:
+            sync_cls.return_value.sync_store.return_value = {
+                "products": 0, "orders": 0,
+            }
+            r = onboard_store(
+                store_id="s1", shop_url="x.myshopify.com",
+                api_key="t", store_manager=sm,
+            )
+        retry = next(
+            s for s in r.stages
+            if s.name == "relaunch_retry"
+        )
+        assert retry.status == "warn"
+        assert retry.data["gaps_closed"] == ["active_discounts"]
+        assert retry.data["gaps_remaining"] == [
+            "curated_collections",
+        ]
+
+
 class TestFinalVerdict:
 
     def test_clean_chain_verdict_ready(self):
