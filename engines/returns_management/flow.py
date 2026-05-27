@@ -21,6 +21,7 @@ from .return_processor import process_returns
 from .reason_analyzer import analyze_reasons
 from .fraud_detector import detect_fraud
 from .cost_calculator import calculate_costs
+from .refund_applier import apply_refunds
 from .return_applier import (
     apply_return_tags,
     enqueue_return_tags_for_approval,
@@ -174,6 +175,24 @@ class ReturnsManagementEngine:
                     fraud_flags=fraud_flags,
                 )
 
+        # ---- Stage 7.6: Refund applier (Wave 101) ----
+        # Opt-in via data.apply_refunds=True. Default OFF -- this
+        # is real money out. Behind 5 safety gates:
+        #   1. status=approved
+        #   2. refund_amount > 0
+        #   3. refund_amount <= cap (env or data.max_refund_usd)
+        #   4. fraud_flags.risk_score < cap (env or
+        #      data.max_fraud_risk)
+        #   5. order has eligible parent transaction
+        refund_apply_results: list[dict[str, Any]] = []
+        if data.get("apply_refunds") is True:
+            refund_apply_results = apply_refunds(
+                processed=processed,
+                fraud_flags=fraud_flags,
+                max_amount=data.get("max_refund_usd"),
+                max_fraud_risk=data.get("max_fraud_risk"),
+            )
+
         # ---- Stage 8: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -188,6 +207,9 @@ class ReturnsManagementEngine:
                 # Stage 7.5 output — one entry per processed return
                 # when opt-in is on; empty list otherwise.
                 "tag_apply_results": tag_apply_results,
+                # Stage 7.6 (Wave 101) output -- per-return refund
+                # results when data.apply_refunds=True.
+                "refund_apply_results": refund_apply_results,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
