@@ -2106,3 +2106,85 @@ ONE entry point that exercises it all. The North Star
 mission ships.
 
 96 substrate waves total.
+
+## Customer support automation (Waves 101-105, 2026-05-27)
+
+Wave 47-100 covered launch + ops + niche + onboarding. Wave
+101-105 ships customer support autonomy: refund issuance +
+activity log + auto-pause bridge + ticket-tag applier +
+empire surface.
+
+### Wave 101: refund_applier
+``engines/returns_management/refund_applier.py``
+Autonomous ``SHOPIFY_CREATE_REFUND`` behind 5 safety gates:
+
+  1. status=approved (engine-approved)
+  2. refund_amount > 0
+  3. refund_amount <= SHOPAI_REFUND_MAX_AMOUNT_USD (default $500)
+  4. fraud_risk < SHOPAI_REFUND_MAX_FRAUD_RISK (default 0.5)
+  5. parent_transaction found (looks up via SHOPIFY_GET_ORDER)
+
+8 typed skip reasons + record_writeback on success/failure.
+Opt-in via ``data.apply_refunds=True``.
+
+### Wave 102: refund-status
+
+``engines/returns_management/refund_log.py`` -- JSON-backed
+append log at ``data/refund_log.json`` (bounded 1000 entries).
+Pattern J guard.
+
+``engines/returns_management/refund_status.py`` -- aggregator
+(by_status / by_store / sample_skips).
+
+CLI: ``shopai refund-status [--window-hours N] [--store ID]``.
+
+### Wave 103: refund auto-pause bridge
+
+``engines/returns_management/refund_state.py`` -- JSON state
+file with paused/reason/auto_resume_after.
+
+``engines/returns_management/refund_health.py`` -- analyzer +
+bridge. analyze_refund_health returns healthy/degraded/critical
+verdict based on adapter_failed ratio.
+
+Env: ``SHOPAI_AUTO_PAUSE_REFUNDS_ON_FAILURE=1`` enables the
+bridge. ``SHOPAI_REFUND_PAUSE_FAILURE_RATIO`` (default 0.30)
+sets the critical threshold.
+
+CLI: ``shopai refund-health [--apply-bridge]``,
+``shopai refund-pause``, ``shopai refund-resume``.
+
+### Wave 104: customer_support engine wireup
+
+``engines/customer_support/ticket_tag_applier.py`` -- pushes
+classification-derived tags via SHOPIFY_TAG_CUSTOMER. Tag
+taxonomy:
+
+  - Priority high/urgent -> shopai-support-priority-{class}
+  - Sentiment negative -> shopai-support-sentiment-negative
+  - Category billing/product -> shopai-support-{class}
+
+Multi-ticket merge per customer; deterministic-sorted tag
+sets. Opt-in via ``data.apply_ticket_tags=True``.
+
+customer_support engine: advisory -> WIRED.
+
+### Wave 105: shopai support-status
+
+``engines/customer_support/support_status.py`` -- empire-wide
+aggregator combining refund + ticket-tag activity into a
+single verdict (healthy / quiet / degraded / paused).
+
+CLI: ``shopai support-status [--window-hours N] [--store ID]``.
+
+### Phase 11.A: Production wiring (Waves 106-109)
+
+W106 cycle hook for refund_health bridge.
+W107 daily-brief support block (one-liner when active or
+paused).
+W108 notify webhook adds refund_paused + refund_health_critical
+alert kinds.
+W109 this docs entry.
+
+109 substrate waves total. Customer support autonomy is now
+production-wired.
