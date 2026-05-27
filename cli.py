@@ -3803,6 +3803,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the result envelope as JSON",
     )
 
+    # Wave 100: post-onboarding status surface
+    onboard_status_p = sub.add_parser(
+        "onboard-status",
+        help=(
+            "Wave 100: post-onboarding health for a recently-"
+            "onboarded store. Surfaces onboarding age, cycles "
+            "since register, engine activity, launch gaps, "
+            "revenue attribution, verdict."
+        ),
+    )
+    onboard_status_p.add_argument(
+        "store_id",
+        help="Stable identifier of the onboarded store.",
+    )
+    onboard_status_p.add_argument(
+        "--audit", action="store_true",
+        help=(
+            "Opt-in: run launch_audit.audit_store to populate "
+            "launch_gaps_*. Hits Shopify so default OFF."
+        ),
+    )
+    onboard_status_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON",
+    )
+
     # Wave 99: empire-scale bulk onboard from CSV
     onboard_bulk_p = sub.add_parser(
         "onboard-bulk",
@@ -28219,6 +28245,133 @@ def _cmd_onboard(args) -> None:
         print(f"  Cron: {sched.data['cron_line']}")
 
 
+def _cmd_onboard_status(args) -> None:
+    """Wave 100: post-onboarding health for one store."""
+    from engines.store_setup.onboard_status import (
+        get_onboard_status,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    include_audit = bool(getattr(args, "audit", False))
+
+    status = get_onboard_status(
+        args.store_id,
+        include_audit=include_audit,
+    )
+
+    if not status.found:
+        if as_json:
+            print(json.dumps({
+                "status": "error",
+                "error": status.error,
+            }, indent=2))
+        else:
+            print(f"Error: {status.error}")
+        sys.exit(1)
+        return
+
+    if as_json:
+        print(json.dumps({
+            "store_id": status.store_id,
+            "onboarded_at": status.onboarded_at,
+            "onboarded_age_hours": status.onboarded_age_hours,
+            "cycles_since_onboarding": (
+                status.cycles_since_onboarding
+            ),
+            "last_cycle_age_hours": status.last_cycle_age_hours,
+            "last_cycle_verdict": status.last_cycle_verdict,
+            "activity_executed": status.activity_executed,
+            "activity_failed": status.activity_failed,
+            "activity_pending": status.activity_pending,
+            "launch_gaps_total": status.launch_gaps_total,
+            "launch_gaps_manual": status.launch_gaps_manual,
+            "launch_gaps_closeable": (
+                status.launch_gaps_closeable
+            ),
+            "attributed_revenue": status.attributed_revenue,
+            "attributed_orders": status.attributed_orders,
+            "niche": status.niche,
+            "niche_active": status.niche_active,
+            "verdict": status.verdict,
+            "verdict_reasons": status.verdict_reasons,
+            "next_action": status.next_action,
+        }, indent=2, default=str))
+        return
+
+    # Text render
+    verdict_marker = {
+        "thriving": "[OK ]",
+        "quiet": "[ - ]",
+        "needs_attention": "[WRN]",
+        "just_onboarded": "[NEW]",
+        "unknown": "[ ? ]",
+    }.get(status.verdict, "[ ? ]")
+
+    print(f"Post-onboarding status: {status.store_id}")
+    print()
+    if status.onboarded_age_hours is not None:
+        age_h = status.onboarded_age_hours
+        if age_h < 1:
+            age_str = f"{int(age_h * 60)}m ago"
+        elif age_h < 24:
+            age_str = f"{age_h:.1f}h ago"
+        else:
+            age_str = f"{age_h / 24:.1f}d ago"
+        print(f"  Onboarded:    {age_str}")
+    else:
+        print("  Onboarded:    (no created_at on row)")
+
+    print(
+        f"  Niche:        {status.niche or '-'}"
+        f"{' (active)' if status.niche_active else ''}"
+    )
+    print()
+    # Cycles + activity
+    if status.last_cycle_age_hours is not None:
+        last_h = status.last_cycle_age_hours
+        last_str = (
+            f"{int(last_h * 60)}m ago" if last_h < 1
+            else f"{last_h:.1f}h ago"
+        )
+        print(
+            f"  Cycles since: {status.cycles_since_onboarding}  "
+            f"(last {last_str}, verdict="
+            f"{status.last_cycle_verdict or '-'})"
+        )
+    else:
+        print("  Cycles since: 0  (no cycle run yet)")
+    print(
+        f"  Activity:     "
+        f"executed={status.activity_executed}  "
+        f"failed={status.activity_failed}  "
+        f"pending={status.activity_pending}"
+    )
+    print(
+        f"  Revenue:      "
+        f"${status.attributed_revenue:,.2f}  "
+        f"orders={status.attributed_orders}"
+    )
+    if include_audit:
+        print(
+            f"  Launch gaps:  "
+            f"total={status.launch_gaps_total}  "
+            f"closeable={status.launch_gaps_closeable}  "
+            f"manual={status.launch_gaps_manual}"
+        )
+    elif status.launch_gaps_total == 0:
+        # Audit not run; show hint
+        print(
+            "  Launch gaps:  (run with --audit to check)"
+        )
+    print()
+    print(f"  {verdict_marker} VERDICT: {status.verdict}")
+    for reason in status.verdict_reasons:
+        print(f"    - {reason}")
+    if status.next_action:
+        print()
+        print(f"  Next: {status.next_action}")
+
+
 def _cmd_onboard_bulk(args) -> None:
     """Wave 99: bulk onboarding from CSV."""
     from engines.store_setup.bulk_onboard import bulk_onboard
@@ -38890,6 +39043,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "onboard-bulk":
         _cmd_onboard_bulk(args)
+        return
+
+    if args.command == "onboard-status":
+        _cmd_onboard_status(args)
         return
 
     if args.command == "launch":
