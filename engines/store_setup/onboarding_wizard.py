@@ -12,14 +12,21 @@ status so the operator sees what worked and what's left.
 Stages (executed in order):
 
   1. register      -- StoreManager.add_store
-  2. sync          -- first product / order pull from Shopify
-  3. niche_detect  -- Wave 83 keyword classifier; auto-applies
+  2. verify_creds  -- sm.test_connection (Wave 93): probe the
+                       Shopify token before downstream stages
+                       depend on it. Failure SKIPS sync /
+                       niche_detect / launch (they can't
+                       succeed without working creds) but the
+                       wizard still runs go_live + schedule so
+                       the operator gets a complete report.
+  3. sync          -- first product / order pull from Shopify
+  4. niche_detect  -- Wave 83 keyword classifier; auto-applies
                        only when confidence is high (operator can
                        override via niche param)
-  4. launch        -- engines.store_setup.launch_orchestrator
+  5. launch        -- engines.store_setup.launch_orchestrator
                        (policies + pages + discount + collections)
-  5. go_live       -- engines._go_live_check pre-flight
-  6. schedule      -- cron / systemd template emission
+  6. go_live       -- engines._go_live_check pre-flight
+  7. schedule      -- cron / systemd template emission
 
 Each stage returns a structured OnboardingStage with:
   - name: str
@@ -209,48 +216,99 @@ def onboard_store(
         result.final_verdict = "failed"
         return result
 
-    # ── Stage 2: first sync ────────────────────────────────
+    # ── Stage 2: verify_creds (Wave 93) ─────────────────────
+    # Probe the token before downstream stages depend on it.
+    # When test_connection fails, mark the subsequent
+    # network-dependent stages (sync / niche_detect / launch)
+    # as skipped with a clear reason. go_live + schedule
+    # still run so the operator gets a complete report.
+    creds_ok = False
+    try:
+        conn = sm.test_connection(store_id) or {}
+        if conn.get("connected"):
+            creds_ok = True
+            result.stages.append(OnboardingStage(
+                name="verify_creds",
+                status="success",
+                detail=(
+                    f"connected to {conn.get('shop') or shop_url}"
+                ),
+                data={"shop": conn.get("shop", "")},
+            ))
+        else:
+            result.stages.append(OnboardingStage(
+                name="verify_creds",
+                status="fail",
+                detail=(
+                    f"connection refused: "
+                    f"{conn.get('error', 'unknown')}"
+                ),
+            ))
+    except Exception as exc:  # noqa: BLE001
+        result.stages.append(OnboardingStage(
+            name="verify_creds",
+            status="fail",
+            detail=f"test_connection raised: {exc}",
+        ))
+
+    # ── Stage 3: first sync ────────────────────────────────
     # Best-effort -- a failed sync doesn't block onboarding;
     # operator can re-sync later. Wave 92 surfaces it as warn
     # so the wizard keeps progressing through niche-detect +
     # launch.
-    sync_status = "warn"
-    sync_detail = "sync not run (no SyncService available)"
-    try:
-        from data_pipeline.store.sync_service import SyncService
-        sync = SyncService(sm)
-        sync_result = sync.sync_store(store_id) or {}
-        if sync_result.get("error"):
+    if not creds_ok:
+        result.stages.append(OnboardingStage(
+            name="sync",
+            status="skipped",
+            detail="skipped (credentials not verified)",
+        ))
+    else:
+        sync_status = "warn"
+        sync_detail = "sync not run (no SyncService available)"
+        try:
+            from data_pipeline.store.sync_service import SyncService
+            sync = SyncService(sm)
+            sync_result = sync.sync_store(store_id) or {}
+            if sync_result.get("error"):
+                sync_status = "warn"
+                sync_detail = (
+                    f"sync error: {sync_result['error']} "
+                    "(can re-run via `shopai store sync`)"
+                )
+            else:
+                sync_status = "success"
+                sync_detail = (
+                    f"pulled {sync_result.get('products', 0)} "
+                    f"product(s), {sync_result.get('orders', 0)} "
+                    "order(s)"
+                )
+        except Exception as exc:  # noqa: BLE001
             sync_status = "warn"
             sync_detail = (
-                f"sync error: {sync_result['error']} "
-                "(can re-run via `shopai store sync`)"
+                f"sync raised: {exc} "
+                "(stub catalogue or no credentials; can retry)"
             )
-        else:
-            sync_status = "success"
-            sync_detail = (
-                f"pulled {sync_result.get('products', 0)} "
-                f"product(s), {sync_result.get('orders', 0)} "
-                "order(s)"
-            )
-    except Exception as exc:  # noqa: BLE001
-        sync_status = "warn"
-        sync_detail = (
-            f"sync raised: {exc} "
-            "(stub catalogue or no credentials; can retry)"
-        )
-    result.stages.append(OnboardingStage(
-        name="sync",
-        status=sync_status,
-        detail=sync_detail,
-    ))
+        result.stages.append(OnboardingStage(
+            name="sync",
+            status=sync_status,
+            detail=sync_detail,
+        ))
 
-    # ── Stage 3: niche detect ──────────────────────────────
+    # ── Stage 4: niche detect ──────────────────────────────
     # If operator supplied niche, skip detection. Otherwise
     # run the Wave 83 classifier. Only auto-apply when
     # confidence is HIGH -- medium / low / no_data leave the
     # store on "general" and the operator gets a warn.
-    if niche and niche != "general":
+    if not creds_ok and not (niche and niche != "general"):
+        # Catalog can't be pulled, detector would produce
+        # no_data -- skip the stage instead of warning.
+        result.stages.append(OnboardingStage(
+            name="niche_detect",
+            status="skipped",
+            detail="skipped (credentials not verified)",
+        ))
+        final_niche = niche or "general"
+    elif niche and niche != "general":
         result.stages.append(OnboardingStage(
             name="niche_detect",
             status="skipped",
@@ -325,48 +383,59 @@ def onboard_store(
                 },
             ))
 
-    # ── Stage 4: launch ────────────────────────────────────
-    try:
-        from engines.store_setup.launch_orchestrator import (
-            launch_store,
-        )
-        launch = launch_store(
-            store_name=name or store_id,
-            niche=final_niche,
-            store_id=store_id,
-        )
-        if launch.get("ready_to_launch"):
-            result.stages.append(OnboardingStage(
-                name="launch",
-                status="success",
-                detail=(
-                    f"{len(launch.get('checklist', []))} "
-                    "stage(s) completed"
-                ),
-                data={"checklist": launch.get("checklist")},
-            ))
-        else:
-            failed_stages = [
-                s for s in launch.get("checklist", [])
-                if not s.get("ok")
-            ]
-            result.stages.append(OnboardingStage(
-                name="launch",
-                status="warn",
-                detail=(
-                    f"{len(failed_stages)} stage(s) "
-                    "incomplete; see launch checklist"
-                ),
-                data={"checklist": launch.get("checklist")},
-            ))
-    except Exception as exc:  # noqa: BLE001
+    # ── Stage 5: launch ────────────────────────────────────
+    if not creds_ok:
         result.stages.append(OnboardingStage(
             name="launch",
-            status="fail",
-            detail=f"launch_store raised: {exc}",
+            status="skipped",
+            detail="skipped (credentials not verified)",
         ))
+    else:
+        try:
+            from engines.store_setup.launch_orchestrator import (
+                launch_store,
+            )
+            launch = launch_store(
+                store_name=name or store_id,
+                niche=final_niche,
+                store_id=store_id,
+            )
+            if launch.get("ready_to_launch"):
+                result.stages.append(OnboardingStage(
+                    name="launch",
+                    status="success",
+                    detail=(
+                        f"{len(launch.get('checklist', []))} "
+                        "stage(s) completed"
+                    ),
+                    data={
+                        "checklist": launch.get("checklist"),
+                    },
+                ))
+            else:
+                failed_stages = [
+                    s for s in launch.get("checklist", [])
+                    if not s.get("ok")
+                ]
+                result.stages.append(OnboardingStage(
+                    name="launch",
+                    status="warn",
+                    detail=(
+                        f"{len(failed_stages)} stage(s) "
+                        "incomplete; see launch checklist"
+                    ),
+                    data={
+                        "checklist": launch.get("checklist"),
+                    },
+                ))
+        except Exception as exc:  # noqa: BLE001
+            result.stages.append(OnboardingStage(
+                name="launch",
+                status="fail",
+                detail=f"launch_store raised: {exc}",
+            ))
 
-    # ── Stage 5: go-live ───────────────────────────────────
+    # ── Stage 6: go-live ───────────────────────────────────
     try:
         from engines._go_live_check import (
             run_go_live_check, summarize,
@@ -406,7 +475,7 @@ def onboard_store(
             detail=f"go-live probe raised: {exc}",
         ))
 
-    # ── Stage 6: schedule ──────────────────────────────────
+    # ── Stage 7: schedule ──────────────────────────────────
     # Emit a generic POSIX cron line. Operator runs
     # ``shopai cycle schedule`` for the platform-specific
     # template (systemd / Task Scheduler / etc.).
@@ -464,6 +533,9 @@ _DRY_RUN_HINTS: list[tuple[str, str]] = [
     ("register",
      "StoreManager.add_store(store_id, shop_url, "
      "creds, name, niche, store_type)"),
+    ("verify_creds",
+     "sm.test_connection(store_id) -- probe the token; "
+     "downstream stages skip on failure"),
     ("sync",
      "SyncService(sm).sync_store(store_id) -- pulls "
      "products + orders"),

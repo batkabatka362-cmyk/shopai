@@ -10,8 +10,13 @@ from engines.store_setup.onboarding_wizard import (
 )
 
 
-def _fake_sm():
-    """Minimal StoreManager stub that succeeds at every stage."""
+def _fake_sm(connected: bool = True):
+    """Minimal StoreManager stub that succeeds at every stage.
+
+    Wave 93: test_connection added so the verify_creds stage
+    has something to probe. Pass ``connected=False`` to
+    simulate bad credentials.
+    """
     sm = MagicMock()
     sm.add_store.return_value = {
         "store_id": "s1", "status": "added",
@@ -23,6 +28,11 @@ def _fake_sm():
         "store_id": "s1", "niche": "beauty",
     }
     sm.get_products.return_value = []
+    sm.test_connection.return_value = (
+        {"connected": True, "shop": "s1.myshopify.com"}
+        if connected
+        else {"connected": False, "error": "401 unauthorized"}
+    )
     return sm
 
 
@@ -182,6 +192,97 @@ class TestNicheStage:
         assert nd.status == "warn"
         # update_store_niche was NOT called for low confidence
         sm.update_store_niche.assert_not_called()
+
+
+class TestVerifyCredsStage:
+    """Wave 93: verify_creds gates downstream stages on a real
+    test_connection probe."""
+
+    def test_verify_creds_success_unlocks_chain(self):
+        sm = _fake_sm(connected=True)
+        with patch(
+            "engines.store_setup.launch_orchestrator.launch_store",
+            return_value={
+                "ready_to_launch": True, "checklist": [],
+            },
+        ), patch(
+            "engines._go_live_check.run_go_live_check",
+            return_value=[],
+        ), patch(
+            "engines._go_live_check.summarize",
+            return_value={
+                "verdict": "ready_to_go_live",
+                "pass": 9, "warn": 0, "fail": 0, "total": 9,
+            },
+        ), patch(
+            "data_pipeline.store.sync_service.SyncService",
+        ) as sync_cls:
+            sync_cls.return_value.sync_store.return_value = {
+                "products": 0, "orders": 0,
+            }
+            r = onboard_store(
+                store_id="s1", shop_url="x.myshopify.com",
+                api_key="t", store_manager=sm,
+            )
+        vc = next(
+            s for s in r.stages if s.name == "verify_creds"
+        )
+        assert vc.status == "success"
+        # Downstream stages all ran
+        launch = next(
+            s for s in r.stages if s.name == "launch"
+        )
+        assert launch.status != "skipped"
+
+    def test_verify_creds_failure_skips_downstream_network_stages(
+        self,
+    ):
+        sm = _fake_sm(connected=False)
+        r = onboard_store(
+            store_id="s1", shop_url="x.myshopify.com",
+            api_key="badtoken", store_manager=sm,
+        )
+        vc = next(
+            s for s in r.stages if s.name == "verify_creds"
+        )
+        assert vc.status == "fail"
+        # sync / niche_detect / launch ALL skipped
+        for stage_name in ("sync", "niche_detect", "launch"):
+            stage = next(
+                s for s in r.stages if s.name == stage_name
+            )
+            assert stage.status == "skipped"
+            assert "credentials not verified" in stage.detail
+        # go_live + schedule still run (not network-gated)
+        names_present = {s.name for s in r.stages}
+        assert "go_live" in names_present
+        assert "schedule" in names_present
+        # Verdict reflects the fail
+        assert r.has_failures
+        assert r.final_verdict == "failed"
+
+    def test_verify_creds_with_operator_niche_still_skips_launch(
+        self,
+    ):
+        """When operator passes --niche AND creds fail, niche
+        stage proceeds (no Shopify call needed) but launch
+        still gates on creds_ok."""
+        sm = _fake_sm(connected=False)
+        r = onboard_store(
+            store_id="s1", shop_url="x.myshopify.com",
+            api_key="bad", niche="beauty", store_manager=sm,
+        )
+        # niche_detect skipped with "operator-supplied" reason
+        nd = next(
+            s for s in r.stages if s.name == "niche_detect"
+        )
+        assert nd.status == "skipped"
+        assert "operator-supplied" in nd.detail
+        # launch still skipped due to creds failure
+        launch = next(
+            s for s in r.stages if s.name == "launch"
+        )
+        assert launch.status == "skipped"
 
 
 class TestFinalVerdict:
