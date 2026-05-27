@@ -283,6 +283,52 @@ def collect_alerts() -> list[NotifyAlert]:
     except Exception as exc:  # noqa: BLE001
         logger.debug("notify: refund probe raised: %s", exc)
 
+    # 6. Wave 115: budget auto-pause OR critical budget health.
+    # Same shape as refund alerts above.
+    try:
+        from engines.roas_guardrails.budget_state import (
+            get_state as _budget_state,
+        )
+        from engines.roas_guardrails.budget_health import (
+            analyze_budget_health as _budget_health,
+        )
+        bstate = _budget_state()
+        if bstate.paused:
+            alerts.append(NotifyAlert(
+                kind="budget_paused",
+                severity="critical",
+                message=(
+                    f"Budget auto-pause active: "
+                    f"{bstate.reason or '(no reason)'}"
+                ),
+                context={
+                    "reason": bstate.reason,
+                    "paused_at": bstate.paused_at,
+                    "auto_resume_after": (
+                        bstate.auto_resume_after
+                    ),
+                },
+            ))
+        else:
+            bhealth = _budget_health(window_hours=24.0)
+            if bhealth.verdict == "critical":
+                alerts.append(NotifyAlert(
+                    kind="budget_health_critical",
+                    severity="critical",
+                    message=(
+                        f"Budget failure ratio "
+                        f"{bhealth.failure_ratio:.0%} >= "
+                        "critical threshold "
+                        f"(n={bhealth.sample_size})"
+                    ),
+                    context={
+                        "failure_ratio": bhealth.failure_ratio,
+                        "sample_size": bhealth.sample_size,
+                    },
+                ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("notify: budget probe raised: %s", exc)
+
     return alerts
 
 

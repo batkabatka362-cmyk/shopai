@@ -2188,3 +2188,92 @@ W109 this docs entry.
 
 109 substrate waves total. Customer support autonomy is now
 production-wired.
+
+## Marketing automation (Waves 110-116, 2026-05-28)
+
+Phase 11.B mirrors the customer-support pattern for ad-budget
+autonomy. Substrate: ad_spend_log (110) + budget_state +
+budget_health (111) + budget_applier (112) + marketing_status
+(113) + cycle hook + notify (114-115) + docs (116).
+
+### Wave 110: ``engines/roas_guardrails/ad_spend_log.py``
+JSON log at ``data/ad_spend_log.json`` bounded 1000 entries.
+Records every autonomous budget mutation: campaign_id /
+store_id / action / prior_budget / new_budget / reason /
+applied / status / error. Pattern J guard.
+
+### Wave 111: budget_state + budget_health
+
+``budget_state.py`` mirrors refund_state.py: JSON pause flag
+at ``data/budget_state.json``. APIs: pause/resume/is_paused/
+get_state with auto_resume_after deadline support.
+
+``budget_health.py`` analyzer + bridge. Env knobs:
+
+  SHOPAI_AUTO_PAUSE_BUDGET_ON_FAILURE=1
+  SHOPAI_BUDGET_WARN_FAILURE_RATIO=0.15
+  SHOPAI_BUDGET_PAUSE_FAILURE_RATIO=0.30
+  SHOPAI_BUDGET_HEALTH_MIN_SAMPLE=5
+  SHOPAI_BUDGET_AUTO_RESUME_HOURS=1.0
+
+### Wave 112: ``budget_applier.py``
+
+Autonomous ``ADS_UPDATE_BUDGET`` (action=cut) +
+``ADS_PAUSE_CAMPAIGN`` (action=pause) behind:
+
+  - budget pause flag (Wave 111)
+  - SHOPAI_BUDGET_MAX_DELTA_USD (default $200 max delta per
+    mutation)
+  - actionable check (only cut / pause)
+
+Opt-in via ``data.apply_budget_changes=True``. Dual recording:
+record_writeback (Pattern Z) + record_ad_spend_event
+(Wave 110 log).
+
+### Wave 113: ``shopai marketing-status``
+
+``marketing_status.py`` aggregates 110 + 111 into one verdict
+(healthy / quiet / degraded / paused). Same shape as
+support-status.
+
+CLI: ``shopai marketing-status [--window-hours N] [--store ID]``.
+
+### Wave 114: cycle hook
+
+``cycle run --yes`` now also fires
+``maybe_auto_pause_budget(window_hours=24)`` post-cycle. Same
+env-gating + best-effort pattern as the refund bridge.
+
+### Wave 115: notify integration
+
+``_notify.collect_alerts`` adds:
+
+  - ``budget_paused`` (critical) when budget_state.paused
+  - ``budget_health_critical`` (critical) when verdict=critical
+    and not paused
+
+### CLI surfaces (Wave 113 family)
+
+  shopai marketing-status     # aggregator
+  shopai marketing-health     # verdict + --apply-bridge
+  shopai marketing-pause      # manual flag set
+  shopai marketing-resume     # clear flag
+
+### Pattern reusability
+
+Phase 11.A (refund) + Phase 11.B (budget) now share an
+identical substrate template:
+
+  *_log.py        -- bounded JSON activity log
+  *_state.py      -- JSON pause flag + auto_resume
+  *_health.py     -- analyzer (failure_ratio verdict) + bridge
+  *_applier.py    -- gated writer + dual recording
+  *_status.py     -- empire-wide aggregator + verdict + next_action
+
+Phase 11.C (Waves 117-120) will extract this into reusable
+``core/autonomy/*`` substrate so future autonomous loops
+(returns, fulfillment, customer outreach) don't re-implement
+the boilerplate.
+
+116 substrate waves total. Two autonomy domains
+(customer-support + marketing) production-wired in parallel.
