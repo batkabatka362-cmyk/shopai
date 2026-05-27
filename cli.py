@@ -3803,6 +3803,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the result envelope as JSON",
     )
 
+    # Wave 102: refund activity surface
+    refund_status_p = sub.add_parser(
+        "refund-status",
+        help=(
+            "Wave 102: refund activity report. Aggregates the "
+            "refund_log (Wave 101 applier writes) into "
+            "per-window + per-store metrics: count, total $, "
+            "status distribution, skip reasons."
+        ),
+    )
+    refund_status_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+        help="Window length in hours (default 168 = 7d)",
+    )
+    refund_status_p.add_argument(
+        "--store", type=str, default="",
+        help="Filter to one store_id",
+    )
+    refund_status_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON",
+    )
+
     # Wave 100: post-onboarding status surface
     onboard_status_p = sub.add_parser(
         "onboard-status",
@@ -28245,6 +28268,100 @@ def _cmd_onboard(args) -> None:
         print(f"  Cron: {sched.data['cron_line']}")
 
 
+def _cmd_refund_status(args) -> None:
+    """Wave 102: refund activity report."""
+    from engines.returns_management.refund_status import (
+        get_refund_status,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    window_h = float(
+        getattr(args, "window_hours", 168.0) or 168.0,
+    )
+    store_id = (getattr(args, "store", "") or "").strip()
+
+    report = get_refund_status(
+        window_hours=window_h,
+        store_id=store_id or None,
+    )
+
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "store_id": report.store_id,
+            "total_entries": report.total_entries,
+            "applied_count": report.applied_count,
+            "skipped_count": report.skipped_count,
+            "total_refunded": report.total_refunded,
+            "avg_refund_amount": report.avg_refund_amount,
+            "by_status": report.by_status,
+            "by_store": report.by_store,
+            "sample_skips": report.sample_skips,
+        }, indent=2, default=str))
+        return
+
+    # Text render
+    scope = (
+        f"store={report.store_id}" if report.store_id
+        else "fleet"
+    )
+    print(
+        f"Refund activity ({scope}, last "
+        f"{report.window_hours:.0f}h)"
+    )
+    print()
+    print(f"  Total entries:   {report.total_entries}")
+    if report.total_entries == 0:
+        print()
+        print(
+            "  (no refund activity yet -- "
+            "Wave 101 refund_applier writes here when "
+            "data.apply_refunds=True)"
+        )
+        return
+    print(
+        f"  Applied:         {report.applied_count}  "
+        f"(${report.total_refunded:,.2f} total, "
+        f"avg ${report.avg_refund_amount:,.2f})"
+    )
+    print(f"  Skipped:         {report.skipped_count}")
+    if report.by_status:
+        print()
+        print("  Status breakdown:")
+        for stat in sorted(
+            report.by_status,
+            key=lambda k: -report.by_status[k],
+        ):
+            print(
+                f"    {stat:<24} {report.by_status[stat]:>4}"
+            )
+    if report.by_store and len(report.by_store) > 1:
+        print()
+        print("  Per-store:")
+        for sid in sorted(
+            report.by_store,
+            key=lambda s: -report.by_store[s]["total_refunded"],
+        ):
+            b = report.by_store[sid]
+            print(
+                f"    {sid:<20} "
+                f"applied={b['applied']:>3}  "
+                f"skipped={b['skipped']:>3}  "
+                f"${b['total_refunded']:>8,.2f}"
+            )
+    if report.sample_skips:
+        print()
+        print("  Recent skips (sample):")
+        for sk in report.sample_skips:
+            err = sk.get("error", "") or sk.get("status", "")
+            print(
+                f"    [{sk.get('status', '?'):<22}] "
+                f"return={sk.get('return_id', '?'):<14} "
+                f"${sk.get('refund_amount', 0):<6.2f}  "
+                f"{err[:50]}"
+            )
+
+
 def _cmd_onboard_status(args) -> None:
     """Wave 100: post-onboarding health for one store."""
     from engines.store_setup.onboard_status import (
@@ -39047,6 +39164,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "onboard-status":
         _cmd_onboard_status(args)
+        return
+
+    if args.command == "refund-status":
+        _cmd_refund_status(args)
         return
 
     if args.command == "launch":

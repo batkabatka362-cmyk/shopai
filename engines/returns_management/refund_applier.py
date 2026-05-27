@@ -59,6 +59,10 @@ import os
 from typing import Any
 
 from engines._writeback_recorder import record_writeback
+from engines.returns_management.refund_log import (
+    RefundLogEntry,
+    record_refund,
+)
 from utils.logger import get_logger
 
 logger = get_logger("engines.returns_management.refund_applier")
@@ -321,12 +325,31 @@ def apply_refunds(
                     refund_amount=amount,
                 )
 
-        out.append({
+        result_row = {
             "return_id": rid,
             "order_id": oid,
             "applied": applied,
             "refund_amount": amount,
             "status": status_label,
             "error": error,
-        })
+        }
+        out.append(result_row)
+
+        # Wave 102: persist to refund_log so `shopai
+        # refund-status` can surface the decision later. We
+        # record EVERY decision (success OR skip) so operator
+        # sees the full picture, not just successful refunds.
+        try:
+            record_refund(RefundLogEntry(
+                return_id=rid,
+                order_id=oid,
+                store_id=str(row.get("store_id", "") or ""),
+                refund_amount=amount,
+                status=status_label,
+                applied=applied,
+                error=error or "",
+            ))
+        except Exception:  # noqa: BLE001
+            # Log persistence must never break the applier.
+            pass
     return out
