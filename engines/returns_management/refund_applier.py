@@ -63,6 +63,7 @@ from engines.returns_management.refund_log import (
     RefundLogEntry,
     record_refund,
 )
+from engines.returns_management.refund_state import is_paused
 from utils.logger import get_logger
 
 logger = get_logger("engines.returns_management.refund_applier")
@@ -231,6 +232,43 @@ def apply_refunds(
     if not isinstance(processed, list) or not processed:
         return []
 
+    # Wave 103: when the auto-pause bridge has set the pause
+    # flag, every row skips with status="paused". Operator
+    # clears via `shopai refund-resume`.
+    if is_paused():
+        out: list[dict[str, Any]] = []
+        for row in processed:
+            if not isinstance(row, dict):
+                continue
+            rid = str(row.get("return_id", "") or "")
+            oid = str(row.get("order_id", "") or "")
+            try:
+                amount = float(row.get("refund_amount", 0) or 0)
+            except (TypeError, ValueError):
+                amount = 0.0
+            result_row = {
+                "return_id": rid,
+                "order_id": oid,
+                "applied": False,
+                "refund_amount": amount,
+                "status": "paused",
+                "error": "refund auto-pause flag set",
+            }
+            out.append(result_row)
+            try:
+                record_refund(RefundLogEntry(
+                    return_id=rid,
+                    order_id=oid,
+                    store_id=str(row.get("store_id", "") or ""),
+                    refund_amount=amount,
+                    status="paused",
+                    applied=False,
+                    error="refund auto-pause flag set",
+                ))
+            except Exception:  # noqa: BLE001
+                pass
+        return out
+
     cap_amount = (
         max_amount if max_amount is not None else _max_amount()
     )
@@ -244,7 +282,9 @@ def apply_refunds(
     get_order_cap = _capability("SHOPIFY_GET_ORDER")
     create_refund_cap = _capability("SHOPIFY_CREATE_REFUND")
 
-    out: list[dict[str, Any]] = []
+    # Non-paused path. The pause-path return above declared
+    # `out`; re-assign here in the live execution branch.
+    out = []
     for row in processed:
         if not isinstance(row, dict):
             continue

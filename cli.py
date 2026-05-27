@@ -3803,6 +3803,70 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the result envelope as JSON",
     )
 
+    # Wave 103: refund health + pause/resume
+    refund_health_p = sub.add_parser(
+        "refund-health",
+        help=(
+            "Wave 103: analyze the autonomous refund loop's "
+            "health (adapter_failed ratio in window). Verdict "
+            "= healthy / degraded / critical. Read-only."
+        ),
+    )
+    refund_health_p.add_argument(
+        "--window-hours", type=float, default=24.0,
+        help="Analysis window in hours (default 24)",
+    )
+    refund_health_p.add_argument(
+        "--apply-bridge", action="store_true",
+        help=(
+            "Run the auto-pause bridge: when env-gated AND "
+            "verdict=critical, sets the refund pause flag. "
+            "Idempotent."
+        ),
+    )
+    refund_health_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON",
+    )
+
+    refund_pause_p = sub.add_parser(
+        "refund-pause",
+        help=(
+            "Wave 103: manually set the refund auto-pause flag. "
+            "Future refund_applier invocations skip every row "
+            "with status=paused until cleared via "
+            "`shopai refund-resume`."
+        ),
+    )
+    refund_pause_p.add_argument(
+        "--reason", type=str, default="manual operator pause",
+        help="Optional reason recorded with the pause state",
+    )
+    refund_pause_p.add_argument(
+        "--auto-resume-hours", type=float, default=0.0,
+        help=(
+            "Auto-resume the pause after this many hours. "
+            "0 (default) = operator must clear manually."
+        ),
+    )
+    refund_pause_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON",
+    )
+
+    refund_resume_p = sub.add_parser(
+        "refund-resume",
+        help=(
+            "Wave 103: clear the refund auto-pause flag. "
+            "Subsequent refund_applier invocations resume "
+            "normal gate evaluation."
+        ),
+    )
+    refund_resume_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON",
+    )
+
     # Wave 102: refund activity surface
     refund_status_p = sub.add_parser(
         "refund-status",
@@ -28268,6 +28332,144 @@ def _cmd_onboard(args) -> None:
         print(f"  Cron: {sched.data['cron_line']}")
 
 
+def _cmd_refund_health(args) -> None:
+    """Wave 103: refund health verdict + optional bridge."""
+    from engines.returns_management.refund_health import (
+        analyze_refund_health,
+        maybe_auto_pause_refunds,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    window_h = float(
+        getattr(args, "window_hours", 24.0) or 24.0,
+    )
+    apply_bridge = bool(getattr(args, "apply_bridge", False))
+
+    report = (
+        maybe_auto_pause_refunds(window_hours=window_h)
+        if apply_bridge
+        else analyze_refund_health(window_hours=window_h)
+    )
+
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "sample_size": report.sample_size,
+            "applied_count": report.applied_count,
+            "adapter_failed_count": (
+                report.adapter_failed_count
+            ),
+            "failure_ratio": report.failure_ratio,
+            "verdict": report.verdict,
+            "reasons": report.reasons,
+            "already_paused": report.already_paused,
+            "bridge_fired": report.bridge_fired,
+            "bridge_reason": report.bridge_reason,
+        }, indent=2, default=str))
+        return
+
+    marker = {
+        "healthy": "[OK ]",
+        "degraded": "[WRN]",
+        "critical": "[BAD]",
+    }.get(report.verdict, "[ ? ]")
+    print(
+        f"Refund health (last {report.window_hours:.0f}h)"
+    )
+    print()
+    print(f"  Sample size:        {report.sample_size}")
+    print(f"  Applied:            {report.applied_count}")
+    print(
+        f"  Adapter failed:     "
+        f"{report.adapter_failed_count}"
+    )
+    print(
+        f"  Failure ratio:      "
+        f"{report.failure_ratio:.0%}"
+    )
+    print()
+    print(f"  {marker} VERDICT: {report.verdict}")
+    for reason in report.reasons:
+        print(f"    - {reason}")
+    if report.already_paused:
+        print()
+        print("  *** REFUNDS ARE CURRENTLY PAUSED ***")
+        print(
+            "  Resume: `shopai refund-resume`"
+        )
+    if apply_bridge:
+        print()
+        if report.bridge_fired:
+            print(
+                f"  [AUTO-PAUSED] {report.bridge_reason}"
+            )
+        else:
+            print(f"  Bridge: {report.bridge_reason}")
+
+
+def _cmd_refund_pause(args) -> None:
+    """Wave 103: manually set the refund pause flag."""
+    from engines.returns_management.refund_state import pause
+    import time as _t
+
+    as_json = bool(getattr(args, "json", False))
+    reason = (
+        getattr(args, "reason", "manual operator pause")
+        or "manual operator pause"
+    )
+    auto_hours = float(
+        getattr(args, "auto_resume_hours", 0.0) or 0.0,
+    )
+    auto_resume_at = (
+        _t.time() + auto_hours * 3600.0
+        if auto_hours > 0 else 0.0
+    )
+    state = pause(
+        reason=reason,
+        auto_resume_after=auto_resume_at,
+    )
+    if as_json:
+        print(json.dumps({
+            "paused": state.paused,
+            "reason": state.reason,
+            "paused_at": state.paused_at,
+            "auto_resume_after": state.auto_resume_after,
+        }, indent=2, default=str))
+        return
+    print("Refund auto-pause flag SET")
+    print(f"  Reason: {state.reason}")
+    if state.auto_resume_after > 0:
+        import datetime as _dt
+        when = _dt.datetime.fromtimestamp(
+            state.auto_resume_after,
+        ).strftime("%Y-%m-%d %H:%M")
+        print(f"  Auto-resume: {when}")
+    else:
+        print(
+            "  Auto-resume: never (operator must clear "
+            "via `shopai refund-resume`)"
+        )
+
+
+def _cmd_refund_resume(args) -> None:
+    """Wave 103: clear the refund pause flag."""
+    from engines.returns_management.refund_state import resume
+
+    as_json = bool(getattr(args, "json", False))
+    state = resume()
+    if as_json:
+        print(json.dumps({
+            "paused": state.paused,
+            "reason": state.reason,
+        }, indent=2, default=str))
+        return
+    print("Refund auto-pause flag CLEARED")
+    print(
+        "  Subsequent refund_applier runs resume normal "
+        "gate evaluation."
+    )
+
+
 def _cmd_refund_status(args) -> None:
     """Wave 102: refund activity report."""
     from engines.returns_management.refund_status import (
@@ -39168,6 +39370,18 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "refund-status":
         _cmd_refund_status(args)
+        return
+
+    if args.command == "refund-health":
+        _cmd_refund_health(args)
+        return
+
+    if args.command == "refund-pause":
+        _cmd_refund_pause(args)
+        return
+
+    if args.command == "refund-resume":
+        _cmd_refund_resume(args)
         return
 
     if args.command == "launch":
