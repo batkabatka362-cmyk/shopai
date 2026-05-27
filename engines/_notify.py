@@ -235,6 +235,54 @@ def collect_alerts() -> list[NotifyAlert]:
     except Exception as exc:  # noqa: BLE001
         logger.debug("notify: quarantine probe raised: %s", exc)
 
+    # 5. Wave 108: refund auto-pause OR critical refund health.
+    # Operator wants to know when the autonomous refund loop
+    # has stopped (real money flow paused) or when failure rate
+    # is breaching the threshold.
+    try:
+        from engines.returns_management.refund_state import (
+            get_state as _refund_state,
+        )
+        from engines.returns_management.refund_health import (
+            analyze_refund_health as _refund_health,
+        )
+        rstate = _refund_state()
+        if rstate.paused:
+            alerts.append(NotifyAlert(
+                kind="refund_paused",
+                severity="critical",
+                message=(
+                    f"Refund auto-pause active: "
+                    f"{rstate.reason or '(no reason)'}"
+                ),
+                context={
+                    "reason": rstate.reason,
+                    "paused_at": rstate.paused_at,
+                    "auto_resume_after": (
+                        rstate.auto_resume_after
+                    ),
+                },
+            ))
+        else:
+            health = _refund_health(window_hours=24.0)
+            if health.verdict == "critical":
+                alerts.append(NotifyAlert(
+                    kind="refund_health_critical",
+                    severity="critical",
+                    message=(
+                        f"Refund failure ratio "
+                        f"{health.failure_ratio:.0%} >= "
+                        "critical threshold "
+                        f"(n={health.sample_size})"
+                    ),
+                    context={
+                        "failure_ratio": health.failure_ratio,
+                        "sample_size": health.sample_size,
+                    },
+                ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("notify: refund probe raised: %s", exc)
+
     return alerts
 
 

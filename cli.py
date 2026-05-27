@@ -9858,15 +9858,54 @@ def _cmd_daily_brief(args) -> None:
                 "    -> `shopai niche --suggest <store> "
                 "--apply` auto-tags from catalog (Wave 83)"
             )
-        # Surface the sickest engines when ANY are unhealthy --
-        # cheap operator nudge to drill in via ``engine pulse``.
-        if vc["unhealthy"] > 0:
-            sickest = fleet_health["sickest"][:3]
-            sickest_str = ", ".join(
-                f"{r['engine']}({r['score']}/10)"
-                for r in sickest
+    # Wave 107: support-status one-liner. Surfaces when any
+    # activity exists OR pause flag set. Quiet substrate stays
+    # quiet (no nag).
+    try:
+        from engines.customer_support.support_status import (
+            get_support_status,
+        )
+        support = get_support_status(window_hours=window_hours)
+        total_activity = (
+            support.refund_total_entries
+            + support.ticket_tag_total
+        )
+        if support.refund_paused or total_activity > 0:
+            verdict_mk = {
+                "healthy": "[OK ]",
+                "quiet": "[ - ]",
+                "degraded": "[WRN]",
+                "paused": "[BAD]",
+            }.get(support.verdict, "[ ? ]")
+            line = (
+                f"  Support:      {verdict_mk} "
+                f"{support.verdict}  "
+                f"refunds={support.refund_applied_count}/"
+                f"{support.refund_total_entries}  "
+                f"${support.refund_total_amount:,.0f}  "
+                f"ticket-tags={support.ticket_tag_applied}"
             )
-            print(f"    Sickest: {sickest_str}")
+            print(line)
+            if support.refund_paused:
+                print(
+                    f"    *** REFUNDS PAUSED *** "
+                    f"({support.refund_pause_reason})"
+                )
+            if support.verdict in ("degraded", "paused"):
+                print(f"    -> {support.next_action}")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("daily-brief support block raised: %s", exc)
+    # Surface the sickest engines when ANY are unhealthy --
+    # cheap operator nudge to drill in via ``engine pulse``.
+    if fleet_health["checked"] and (
+        fleet_health["verdict_counts"]["unhealthy"] > 0
+    ):
+        sickest = fleet_health["sickest"][:3]
+        sickest_str = ", ".join(
+            f"{r['engine']}({r['score']}/10)"
+            for r in sickest
+        )
+        print(f"    Sickest: {sickest_str}")
     # Health regressions -- 7d baseline drop. Surfaces only
     # when there's at least one regression so quiet days
     # stay quiet.
@@ -20888,6 +20927,26 @@ def _cmd_cycle_run(args) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "revenue-quarantine bridge failed: %s", exc,
+        )
+
+    # Wave 106: refund_health auto-pause bridge. Mirrors the
+    # revenue-quarantine block above. Env-gated -- default OFF
+    # so existing cycles don't change behaviour.
+    try:
+        from engines.returns_management.refund_health import (
+            maybe_auto_pause_refunds,
+        )
+        refund_report = maybe_auto_pause_refunds(
+            window_hours=24.0,
+        )
+        if refund_report.bridge_fired:
+            logger.info(
+                "refund auto-pause bridge fired: %s",
+                refund_report.bridge_reason,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "refund-quarantine bridge failed: %s", exc,
         )
 
     if as_json:

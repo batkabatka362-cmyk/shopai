@@ -89,6 +89,63 @@ class TestCollectAlerts:
         # Result is a list; exact contents depend on dev-state
         assert isinstance(alerts, list)
 
+    def test_wave108_refund_paused_alert(self):
+        """Wave 108: when refund_state.paused=True, a
+        refund_paused alert appears in the collected list."""
+        from unittest.mock import patch
+        from engines.returns_management.refund_state import (
+            RefundPauseState,
+        )
+        from engines.returns_management.refund_health import (
+            RefundHealthReport,
+        )
+        with patch(
+            "engines.returns_management.refund_state.get_state",
+            return_value=RefundPauseState(
+                paused=True,
+                reason="threshold breach",
+                paused_at=12345.0,
+            ),
+        ), patch(
+            "engines.returns_management.refund_health."
+            "analyze_refund_health",
+            return_value=RefundHealthReport(
+                window_hours=24.0, verdict="healthy",
+            ),
+        ):
+            alerts = collect_alerts()
+        kinds = {a.kind for a in alerts}
+        assert "refund_paused" in kinds
+
+    def test_wave108_refund_critical_alert_when_not_paused(self):
+        """When NOT paused but verdict=critical, fires the
+        refund_health_critical alert."""
+        from unittest.mock import patch
+        from engines.returns_management.refund_state import (
+            RefundPauseState,
+        )
+        from engines.returns_management.refund_health import (
+            RefundHealthReport,
+        )
+        with patch(
+            "engines.returns_management.refund_state.get_state",
+            return_value=RefundPauseState(),  # not paused
+        ), patch(
+            "engines.returns_management.refund_health."
+            "analyze_refund_health",
+            return_value=RefundHealthReport(
+                window_hours=24.0,
+                verdict="critical",
+                failure_ratio=0.5,
+                sample_size=10,
+            ),
+        ):
+            alerts = collect_alerts()
+        kinds = {a.kind for a in alerts}
+        assert "refund_health_critical" in kinds
+        # refund_paused should NOT appear when not paused
+        assert "refund_paused" not in kinds
+
 
 class TestNotifyCheck:
 
