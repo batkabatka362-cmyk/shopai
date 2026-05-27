@@ -18,6 +18,7 @@ from typing import Any
 
 from .ticket_classifier import classify_tickets
 from .resolution_finder import find_resolutions
+from .ticket_tag_applier import apply_ticket_tags
 from .workload_analyzer import analyze_workload
 from .satisfaction_tracker import track_satisfaction
 from .memory_reader import read_past_results
@@ -120,6 +121,21 @@ class CustomerSupportEngine:
                 "satisfaction_scores": satisfaction_tracker_data.get("satisfaction_scores", {}),
         }
         _write_result = write_result(output_data=output_data)
+
+        # ---- Wave 104: ticket-tag applier (opt-in) ----
+        # data.apply_ticket_tags=True -> push priority /
+        # sentiment / category tags to the addressable
+        # customer via SHOPIFY_TAG_CUSTOMER. Default OFF;
+        # advisory behaviour preserved for existing callers.
+        tag_apply_results: list[dict[str, Any]] = []
+        if data.get("apply_ticket_tags") is True:
+            tag_apply_results = apply_ticket_tags(
+                classified_tickets=output_data[
+                    "classified_tickets"
+                ],
+                raw_tickets=tickets,
+            )
+        output_data["tag_apply_results"] = tag_apply_results
 
         # ---- Assemble output ----
         elapsed = time.monotonic() - start
