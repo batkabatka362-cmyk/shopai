@@ -3803,6 +3803,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the result envelope as JSON",
     )
 
+    # Wave 122: Pattern O audit (wired engines have opt-in gate)
+    pattern_o_p = sub.add_parser(
+        "pattern-o-audit",
+        help=(
+            "Wave 122: verify every wired engine's writer "
+            "module has a data.get('apply_X') opt-in gate "
+            "(default-OFF safety contract)."
+        ),
+    )
+    pattern_o_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # Wave 121: Pattern N audit (niche merge preservation)
+    pattern_n_p = sub.add_parser(
+        "pattern-n-audit",
+        help=(
+            "Wave 121: probe every orchestrator strategy with "
+            "a niched store + verify the cluster_focus retains "
+            "niche bias in top-3. Prevents Wave-89-class bugs."
+        ),
+    )
+    pattern_n_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 110-115: marketing autonomy surfaces
     marketing_status_p = sub.add_parser(
         "marketing-status",
@@ -28494,6 +28520,94 @@ def _cmd_onboard(args) -> None:
         print(f"  Cron: {sched.data['cron_line']}")
 
 
+def _cmd_pattern_o_audit(args) -> None:
+    """Wave 122: opt-in gate audit."""
+    from engines._pattern_o_audit import run_pattern_o_audit
+
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_o_audit()
+    if as_json:
+        print(json.dumps({
+            "scanned_engines": report.scanned_engines,
+            "clean_engines": report.clean_engines,
+            "violations": [
+                {
+                    "engine": v.engine,
+                    "writer_module": v.writer_module,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+
+    if report.has_violations:
+        print(
+            f"Pattern O FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(
+                f"  [{v.engine}] {v.writer_module}"
+            )
+            print(f"    reason: {v.reason}")
+        sys.exit(1)
+    else:
+        scanned = len(report.scanned_engines)
+        clean = len(report.clean_engines)
+        print(
+            f"Pattern O OK -- {clean}/{scanned} wired "
+            f"engine(s) have a data.get('apply_X') opt-in gate."
+        )
+
+
+def _cmd_pattern_n_audit(args) -> None:
+    """Wave 121: niche-merge preservation audit."""
+    from engines._pattern_n_audit import run_pattern_n_audit
+
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_n_audit()
+    if as_json:
+        print(json.dumps({
+            "strategies_probed": report.strategies_probed,
+            "violations": [
+                {
+                    "strategy_class": v.strategy_class,
+                    "cluster_focus": v.cluster_focus,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "probe_errors": report.probe_errors,
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+
+    if report.has_violations:
+        print(
+            f"Pattern N FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(
+                f"  [{v.strategy_class}] "
+                f"cluster_focus={v.cluster_focus[:5]}"
+            )
+            print(f"    reason: {v.reason}")
+        sys.exit(1)
+    else:
+        probed = len(report.strategies_probed)
+        print(
+            f"Pattern N OK -- {probed} orchestrator "
+            f"strategy(ies) preserve niche merge."
+        )
+
+
 def _cmd_marketing_status(args) -> None:
     """Wave 113: empire-wide marketing autonomy status."""
     from engines.roas_guardrails.marketing_status import (
@@ -39834,6 +39948,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "support-status":
         _cmd_support_status(args)
+        return
+
+    if args.command == "pattern-n-audit":
+        _cmd_pattern_n_audit(args)
+        return
+
+    if args.command == "pattern-o-audit":
+        _cmd_pattern_o_audit(args)
         return
 
     if args.command == "marketing-status":
