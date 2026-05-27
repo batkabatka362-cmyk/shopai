@@ -25,8 +25,15 @@ Stages (executed in order):
                        override via niche param)
   5. launch        -- engines.store_setup.launch_orchestrator
                        (policies + pages + discount + collections)
-  6. go_live       -- engines._go_live_check pre-flight
-  7. schedule      -- cron / systemd template emission
+  6. verify_launch -- engines.store_setup.launch_audit (Wave 94):
+                       READ-ONLY audit of the 11 launch-readiness
+                       gates. Surfaces remaining gaps split by
+                       remediation bucket (manual_admin vs
+                       launch_closeable) so the operator knows
+                       which gaps need their attention vs
+                       which can be re-closed autonomously.
+  7. go_live       -- engines._go_live_check pre-flight
+  8. schedule      -- cron / systemd template emission
 
 Each stage returns a structured OnboardingStage with:
   - name: str
@@ -435,7 +442,82 @@ def onboard_store(
                 detail=f"launch_store raised: {exc}",
             ))
 
-    # ── Stage 6: go-live ───────────────────────────────────
+    # ── Stage 6: verify_launch (Wave 94) ───────────────────
+    # Read-only audit of the 11 launch-readiness gates. The
+    # launch stage above WROTE policies/pages/discounts/etc.;
+    # this stage VERIFIES they all landed + surfaces any gaps
+    # left for the operator. Skipped when creds_ok is False
+    # (audit hits Shopify for every gate).
+    if not creds_ok:
+        result.stages.append(OnboardingStage(
+            name="verify_launch",
+            status="skipped",
+            detail="skipped (credentials not verified)",
+        ))
+    else:
+        try:
+            from engines.store_setup.launch_audit import (
+                audit_store,
+            )
+            audit = audit_store(store_id=store_id)
+            if audit.get("ready_to_launch"):
+                result.stages.append(OnboardingStage(
+                    name="verify_launch",
+                    status="success",
+                    detail=(
+                        f"all 11 gates green "
+                        f"({audit.get('completion_pct', 0)}%)"
+                    ),
+                    data={
+                        "completion_pct": audit.get(
+                            "completion_pct"
+                        ),
+                        "ready_to_launch": True,
+                    },
+                ))
+            else:
+                manual_gaps = audit.get(
+                    "manual_admin_gaps", [],
+                ) or []
+                closeable_gaps = audit.get(
+                    "launch_closeable_gaps", [],
+                ) or []
+                detail = (
+                    f"completion="
+                    f"{audit.get('completion_pct', 0)}%; "
+                    f"manual_admin={len(manual_gaps)} "
+                    f"launch_closeable={len(closeable_gaps)}"
+                )
+                if closeable_gaps:
+                    detail += (
+                        " (re-run `shopai launch` to close "
+                        "the closeable ones)"
+                    )
+                result.stages.append(OnboardingStage(
+                    name="verify_launch",
+                    status="warn",
+                    detail=detail,
+                    data={
+                        "completion_pct": audit.get(
+                            "completion_pct"
+                        ),
+                        "manual_admin_gaps": manual_gaps,
+                        "launch_closeable_gaps": (
+                            closeable_gaps
+                        ),
+                        "next_action": audit.get(
+                            "next_action"
+                        ),
+                    },
+                ))
+        except Exception as exc:  # noqa: BLE001
+            result.stages.append(OnboardingStage(
+                name="verify_launch",
+                status="warn",
+                detail=f"audit raised: {exc}",
+            ))
+
+    # ── Stage 7: go-live ───────────────────────────────────
     try:
         from engines._go_live_check import (
             run_go_live_check, summarize,
@@ -475,7 +557,7 @@ def onboard_store(
             detail=f"go-live probe raised: {exc}",
         ))
 
-    # ── Stage 7: schedule ──────────────────────────────────
+    # ── Stage 8: schedule ──────────────────────────────────
     # Emit a generic POSIX cron line. Operator runs
     # ``shopai cycle schedule`` for the platform-specific
     # template (systemd / Task Scheduler / etc.).
@@ -545,6 +627,9 @@ _DRY_RUN_HINTS: list[tuple[str, str]] = [
     ("launch",
      "engines.store_setup.launch_orchestrator.launch_store "
      "-- policies + pages + discount + collections"),
+    ("verify_launch",
+     "engines.store_setup.launch_audit.audit_store -- "
+     "read-only 11-gate audit; surfaces remaining gaps"),
     ("go_live",
      "engines._go_live_check.run_go_live_check -- 9 gates"),
     ("schedule",

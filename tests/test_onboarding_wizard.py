@@ -285,6 +285,116 @@ class TestVerifyCredsStage:
         assert launch.status == "skipped"
 
 
+class TestVerifyLaunchStage:
+    """Wave 94: verify_launch surfaces remaining gaps after the
+    launch stage writes pages / policies / discounts."""
+
+    def test_verify_launch_success_when_audit_passes(self):
+        sm = _fake_sm(connected=True)
+        sm.get_products.return_value = []
+        with patch(
+            "engines.store_setup.launch_orchestrator.launch_store",
+            return_value={
+                "ready_to_launch": True, "checklist": [],
+            },
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value={
+                "ready_to_launch": True,
+                "completion_pct": 100,
+                "manual_admin_gaps": [],
+                "launch_closeable_gaps": [],
+                "next_action": "",
+                "checks": [],
+            },
+        ), patch(
+            "engines._go_live_check.run_go_live_check",
+            return_value=[],
+        ), patch(
+            "engines._go_live_check.summarize",
+            return_value={
+                "verdict": "ready_to_go_live",
+                "pass": 9, "warn": 0, "fail": 0, "total": 9,
+            },
+        ), patch(
+            "data_pipeline.store.sync_service.SyncService",
+        ) as sync_cls:
+            sync_cls.return_value.sync_store.return_value = {
+                "products": 0, "orders": 0,
+            }
+            r = onboard_store(
+                store_id="s1", shop_url="x.myshopify.com",
+                api_key="t", store_manager=sm,
+            )
+        vl = next(
+            s for s in r.stages if s.name == "verify_launch"
+        )
+        assert vl.status == "success"
+        assert vl.data["completion_pct"] == 100
+
+    def test_verify_launch_warn_with_gap_buckets(self):
+        sm = _fake_sm(connected=True)
+        sm.get_products.return_value = []
+        with patch(
+            "engines.store_setup.launch_orchestrator.launch_store",
+            return_value={
+                "ready_to_launch": True, "checklist": [],
+            },
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value={
+                "ready_to_launch": False,
+                "completion_pct": 63,
+                "manual_admin_gaps": ["shop_identity"],
+                "launch_closeable_gaps": [
+                    "active_discounts", "curated_collections",
+                ],
+                "next_action": "...",
+                "checks": [],
+            },
+        ), patch(
+            "engines._go_live_check.run_go_live_check",
+            return_value=[],
+        ), patch(
+            "engines._go_live_check.summarize",
+            return_value={
+                "verdict": "ready_to_go_live",
+                "pass": 9, "warn": 0, "fail": 0, "total": 9,
+            },
+        ), patch(
+            "data_pipeline.store.sync_service.SyncService",
+        ) as sync_cls:
+            sync_cls.return_value.sync_store.return_value = {
+                "products": 0, "orders": 0,
+            }
+            r = onboard_store(
+                store_id="s1", shop_url="x.myshopify.com",
+                api_key="t", store_manager=sm,
+            )
+        vl = next(
+            s for s in r.stages if s.name == "verify_launch"
+        )
+        assert vl.status == "warn"
+        assert vl.data["manual_admin_gaps"] == ["shop_identity"]
+        assert "active_discounts" in vl.data[
+            "launch_closeable_gaps"
+        ]
+        # Detail mentions re-run hint when closeable_gaps > 0
+        assert "shopai launch" in vl.detail
+
+    def test_verify_launch_skipped_when_creds_failed(self):
+        sm = _fake_sm(connected=False)
+        r = onboard_store(
+            store_id="s1", shop_url="x.myshopify.com",
+            api_key="bad", store_manager=sm,
+        )
+        vl = next(
+            s for s in r.stages if s.name == "verify_launch"
+        )
+        assert vl.status == "skipped"
+        assert "credentials not verified" in vl.detail
+
+
 class TestFinalVerdict:
 
     def test_clean_chain_verdict_ready(self):
@@ -304,6 +414,16 @@ class TestFinalVerdict:
                 "checklist": [
                     {"step": "policies", "ok": True},
                 ],
+            },
+        ), patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value={
+                "ready_to_launch": True,
+                "completion_pct": 100,
+                "manual_admin_gaps": [],
+                "launch_closeable_gaps": [],
+                "next_action": "",
+                "checks": [],
             },
         ), patch(
             "engines._go_live_check.run_go_live_check",
