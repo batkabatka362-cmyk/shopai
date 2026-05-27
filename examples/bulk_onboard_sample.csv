@@ -1,0 +1,9 @@
+store_id,shop_url,api_key,name,niche,store_type
+# Wave 99: empire-scale bulk onboard sample
+# Required: store_id + shop_url. Optional: api_key (or client_id+client_secret), name, niche, store_type
+beauty_a,beauty_a.myshopify.com,shpat_token_a,ACME Beauty US,beauty,brand
+beauty_b,beauty_b.myshopify.com,shpat_token_b,ACME Beauty UK,beauty,brand
+tech_c,tech_c.myshopify.com,shpat_token_c,GadgetCo,tech,dropshipping
+food_d,food_d.myshopify.com,shpat_token_d,Snack Daily,food,brand
+# fashion store -- no name, will default to store_id
+fashion_e,fashion_e.myshopify.com,shpat_token_e,,fashion,dropshipping

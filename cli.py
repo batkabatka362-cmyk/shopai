@@ -3803,6 +3803,43 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the result envelope as JSON",
     )
 
+    # Wave 99: empire-scale bulk onboard from CSV
+    onboard_bulk_p = sub.add_parser(
+        "onboard-bulk",
+        help=(
+            "Wave 99: empire-scale bulk onboard. Reads a CSV "
+            "of (store_id, shop_url, api_key|client_id+secret, "
+            "niche, ...) and runs the Wave 92 wizard on each "
+            "row. Aggregates the empire-wide report."
+        ),
+    )
+    onboard_bulk_p.add_argument(
+        "csv_path",
+        help=(
+            "Path to a CSV file. Required columns: store_id, "
+            "shop_url. Optional: api_key, client_id, "
+            "client_secret, name, niche, store_type."
+        ),
+    )
+    onboard_bulk_p.add_argument(
+        "--dry-run", action="store_true",
+        help=(
+            "Run each row through the wizard's --dry-run "
+            "preview path. No DB writes, no Shopify calls."
+        ),
+    )
+    onboard_bulk_p.add_argument(
+        "--max-failures", type=int, default=0,
+        help=(
+            "Stop processing after this many rows reach "
+            "verdict=failed. 0 (default) = process all rows."
+        ),
+    )
+    onboard_bulk_p.add_argument(
+        "--json", action="store_true",
+        help="Emit the bulk report envelope as JSON",
+    )
+
     launch_p = sub.add_parser(
         "launch",
         help=(
@@ -28182,6 +28219,101 @@ def _cmd_onboard(args) -> None:
         print(f"  Cron: {sched.data['cron_line']}")
 
 
+def _cmd_onboard_bulk(args) -> None:
+    """Wave 99: bulk onboarding from CSV."""
+    from engines.store_setup.bulk_onboard import bulk_onboard
+
+    as_json = bool(getattr(args, "json", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    max_failures = int(getattr(args, "max_failures", 0) or 0)
+
+    report = bulk_onboard(
+        args.csv_path,
+        dry_run=dry_run,
+        max_failures=max_failures,
+    )
+
+    if report.error:
+        msg = f"bulk onboard error: {report.error}"
+        if as_json:
+            print(json.dumps({
+                "status": "error",
+                "error": report.error,
+            }, indent=2, default=str))
+        else:
+            print(msg)
+        sys.exit(1)
+        return
+
+    if as_json:
+        print(json.dumps({
+            "csv_path": report.csv_path,
+            "total_rows": report.total_rows,
+            "status_counts": report.status_counts,
+            "ready_count": report.ready_count,
+            "failed_count": report.failed_count,
+            "stopped_early": report.stopped_early,
+            "rows": [
+                {
+                    "row_index": r.row_index,
+                    "store_id": r.store_id,
+                    "shop_url": r.shop_url,
+                    "status": r.status,
+                    "skip_reason": r.skip_reason,
+                    "final_verdict": (
+                        r.result.final_verdict
+                        if r.result else None
+                    ),
+                    "next_action": (
+                        r.result.next_action
+                        if r.result else ""
+                    ),
+                }
+                for r in report.rows
+            ],
+        }, indent=2, default=str))
+        return
+
+    # Text render
+    title = "Bulk onboard DRY RUN" if dry_run else "Bulk onboard"
+    print(
+        f"{title}: {report.csv_path}  "
+        f"({report.total_rows} row(s))"
+    )
+    print()
+    marker = {
+        "ready": "[OK ]",
+        "ready_with_warnings": "[WRN]",
+        "failed": "[BAD]",
+        "skipped": "[SKP]",
+        "dry_run": "[ - ]",
+    }
+    for r in report.rows:
+        mk = marker.get(r.status, "[ ? ]")
+        detail = r.skip_reason or (
+            r.result.next_action[:60] if r.result else ""
+        )
+        print(
+            f"  {mk} {r.row_index:>3}. "
+            f"{r.store_id:<20} {r.shop_url:<35} "
+            f"{r.status:<20} {detail}"
+        )
+    print()
+    counts = report.status_counts
+    parts = [f"{k}={counts[k]}" for k in sorted(counts)]
+    print(f"  Counts: {', '.join(parts)}")
+    if report.stopped_early:
+        print(
+            f"  *** STOPPED EARLY: hit "
+            f"max_failures={max_failures} ***"
+        )
+    if report.ready_count > 0:
+        print(
+            f"  Next: `shopai daily-brief` to monitor the "
+            f"{report.ready_count} newly-onboarded store(s)"
+        )
+
+
 def _cmd_launch(args) -> None:
     """Flagship: single-command store launch.
 
@@ -38754,6 +38886,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "onboard":
         _cmd_onboard(args)
+        return
+
+    if args.command == "onboard-bulk":
+        _cmd_onboard_bulk(args)
         return
 
     if args.command == "launch":
