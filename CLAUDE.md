@@ -2277,3 +2277,62 @@ the boilerplate.
 
 116 substrate waves total. Two autonomy domains
 (customer-support + marketing) production-wired in parallel.
+
+## Phase 11.C: Reusable autonomy substrate (Waves 117-120)
+
+Phase 11.A (refund) + Phase 11.B (budget) share an identical
+5-piece template. Phase 11.C extracts the boilerplate into
+``core/automation/*``:
+
+  - ``action_log.py`` (W117): generic JSON log
+  - ``pause_state.py`` (W118): generic pause flag + auto_resume
+  - ``health_analyzer.py`` (W119): generic analyzer + bridge
+    parameterized on env_prefix + DI'd recent_events_fn /
+    is_paused_fn / pause_fn
+
+W120: 19 tests prove the substrate behaves identically to
+the inlined refund/budget versions.
+
+Refund + budget modules NOT YET refactored. The generic
+pieces are the TEMPLATE for future domains (fulfillment /
+customer outreach / inventory restocking).
+
+## Phase 11.D: Defensive audits (Waves 121-122)
+
+Two new institutional audits join the roster (bringing it
+to 10):
+
+### Pattern N (W121) -- niche-merge preservation
+
+Wave 89 found AIOrchestratorStrategy dropped the niche merge
+silently. ``engines/_pattern_n_audit.py`` probes every
+OrchestratorStrategy with a beauty-niche store + asserts
+``cluster_focus[0:3]`` retains a beauty top cluster.
+
+CLI: ``shopai pattern-n-audit``.
+
+### Pattern O (W122) -- opt-in gate verification
+
+AST-scan asserting every wired engine's writer modules have
+a ``data.get("apply_X")`` reference in flow.py OR the writer
+itself. Caught a real Wave 112 gap (budget_applier ungated)
+which the W122 commit fixed.
+
+Exemption list for legitimate non-gated writers
+(launch_orchestrator family).
+
+CLI: ``shopai pattern-o-audit``.
+
+### Updated audit roster (10)
+
+K / OAuth / Y / I / J / Z / Q / Wireup-resolve / N / O
+
+### Phase 11 totals
+
+Substrate: 20 waves (W106-125)
+Tests: 134 new
+Commits: 472+ ahead of main
+Audits: 8 -> 10
+Autonomy domains: customer-support + marketing parallel
+
+125 substrate waves total. Phase 11 complete.
