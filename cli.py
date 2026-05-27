@@ -3803,6 +3803,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the result envelope as JSON",
     )
 
+    # Wave 105: empire-wide support status
+    support_status_p = sub.add_parser(
+        "support-status",
+        help=(
+            "Wave 105: empire-wide customer support metrics. "
+            "Aggregates refund activity + health + pause state "
+            "+ ticket-tag activity into a single verdict."
+        ),
+    )
+    support_status_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+        help="Window length in hours (default 168 = 7d)",
+    )
+    support_status_p.add_argument(
+        "--store", type=str, default="",
+        help="Filter to one store_id",
+    )
+    support_status_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON",
+    )
+
     # Wave 103: refund health + pause/resume
     refund_health_p = sub.add_parser(
         "refund-health",
@@ -28332,6 +28354,115 @@ def _cmd_onboard(args) -> None:
         print(f"  Cron: {sched.data['cron_line']}")
 
 
+def _cmd_support_status(args) -> None:
+    """Wave 105: empire-wide support status."""
+    from engines.customer_support.support_status import (
+        get_support_status,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    window_h = float(
+        getattr(args, "window_hours", 168.0) or 168.0,
+    )
+    store_id = (getattr(args, "store", "") or "").strip()
+
+    report = get_support_status(
+        window_hours=window_h,
+        store_id=store_id or None,
+    )
+
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "store_id": report.store_id,
+            "refund_total_entries": (
+                report.refund_total_entries
+            ),
+            "refund_applied_count": (
+                report.refund_applied_count
+            ),
+            "refund_skipped_count": (
+                report.refund_skipped_count
+            ),
+            "refund_total_amount": (
+                report.refund_total_amount
+            ),
+            "refund_avg_amount": report.refund_avg_amount,
+            "refund_verdict": report.refund_verdict,
+            "refund_failure_ratio": (
+                report.refund_failure_ratio
+            ),
+            "refund_paused": report.refund_paused,
+            "refund_pause_reason": (
+                report.refund_pause_reason
+            ),
+            "ticket_tag_total": report.ticket_tag_total,
+            "ticket_tag_applied": report.ticket_tag_applied,
+            "ticket_tag_failed": report.ticket_tag_failed,
+            "verdict": report.verdict,
+            "verdict_reasons": report.verdict_reasons,
+            "next_action": report.next_action,
+        }, indent=2, default=str))
+        return
+
+    # Text render
+    marker = {
+        "healthy": "[OK ]",
+        "quiet": "[ - ]",
+        "degraded": "[WRN]",
+        "paused": "[BAD]",
+    }.get(report.verdict, "[ ? ]")
+    scope = (
+        f"store={report.store_id}" if report.store_id
+        else "fleet"
+    )
+    print(
+        f"Support status ({scope}, last "
+        f"{report.window_hours:.0f}h)"
+    )
+    print()
+    # Refund stack
+    print("  Refund stack:")
+    print(
+        f"    Applied:       "
+        f"{report.refund_applied_count}  "
+        f"(${report.refund_total_amount:,.2f}, "
+        f"avg ${report.refund_avg_amount:,.2f})"
+    )
+    print(
+        f"    Skipped:       "
+        f"{report.refund_skipped_count}"
+    )
+    print(
+        f"    Health:        {report.refund_verdict}  "
+        f"(failure ratio "
+        f"{report.refund_failure_ratio:.0%})"
+    )
+    if report.refund_paused:
+        print(
+            f"    *** PAUSED ***  reason: "
+            f"{report.refund_pause_reason}"
+        )
+    print()
+    # Ticket-tag stack
+    print("  Ticket-tag stack:")
+    print(
+        f"    Applied:       "
+        f"{report.ticket_tag_applied}"
+    )
+    print(
+        f"    Failed:        "
+        f"{report.ticket_tag_failed}"
+    )
+    print()
+    print(f"  {marker} VERDICT: {report.verdict}")
+    for reason in report.verdict_reasons:
+        print(f"    - {reason}")
+    if report.next_action:
+        print()
+        print(f"  Next: {report.next_action}")
+
+
 def _cmd_refund_health(args) -> None:
     """Wave 103: refund health verdict + optional bridge."""
     from engines.returns_management.refund_health import (
@@ -39370,6 +39501,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "refund-status":
         _cmd_refund_status(args)
+        return
+
+    if args.command == "support-status":
+        _cmd_support_status(args)
         return
 
     if args.command == "refund-health":
