@@ -2003,3 +2003,106 @@ deterministic ant-colony substrate; smarter input.
 - ``test_go_live_check.py`` -- 2 new tests for niche check
 
 77 substrate waves total. 463 commits ahead of main.
+
+## Onboarding wizard (Waves 92-96, 2026-05-27)
+
+ShopAI's North Star: "single command from credentials
+configured to launchable + earning." Substrate had been in
+place for months (Wave 47-91: launch_orchestrator, niche
+detector, go-live, cycle schedule) but no SINGLE command
+chained them. Operator adding a new store still ran 6+
+commands manually. Wave 92-96 closes the gap.
+
+### Module
+
+``engines/store_setup/onboarding_wizard.py`` -- thin
+orchestrator that delegates each stage to existing
+substrate. Each stage carries
+``{name, status, detail, data}`` so the CLI text + JSON
+surfaces stay machine-readable.
+
+### 9-stage chain
+
+```text
+1. register        -- StoreManager.add_store
+2. verify_creds    -- sm.test_connection probe (Wave 93)
+3. sync            -- SyncService.sync_store first pull
+4. niche_detect    -- Wave 83 keyword classifier; auto-applies
+                       HIGH confidence only
+5. launch          -- launch_orchestrator.launch_store
+                       (policies + pages + discount + collections)
+6. verify_launch   -- launch_audit.audit_store (Wave 94)
+                       read-only 11-gate audit
+7. relaunch_retry  -- auto-rerun launch + re-audit when
+                       launch_closeable_gaps > 0 (Wave 95)
+8. go_live         -- _go_live_check.run_go_live_check
+9. schedule        -- platform-aware cron / schtasks (Wave 96)
+```
+
+### Failure semantics
+
+- ``register fail`` -> chain aborts, verdict=failed
+- ``verify_creds fail`` -> network-dependent stages SKIP
+  (sync / niche_detect / launch / verify_launch /
+  relaunch_retry); go_live + schedule still run; verdict=failed
+- everything else is best-effort -- stages mark warn, chain
+  continues to surface a complete punch list
+
+### Verdicts
+
+- ``ready``                -- every stage success
+- ``ready_with_warnings``  -- some warns; operator review
+- ``failed``               -- chain aborted on register
+- ``dry_run``              -- preview only (no writes)
+
+### Retry semantics (Wave 95)
+
+When verify_launch warned AND launch_closeable_gaps > 0,
+``relaunch_retry`` runs ``launch_store`` once + re-audits.
+On full closure, the upstream verify_launch stage is
+**upgraded** from warn -> success since post-retry state
+is clean. Bounded retry; no infinite loop. Manual_admin
+gaps are operator-only so retry skips when only those
+remain.
+
+### Platform schedule (Wave 96)
+
+``_platform_schedule_template()`` returns the right
+template per ``sys.platform``:
+
+  - ``win32``         -> windows-task (schtasks ONHOURLY)
+  - posix (linux/
+    darwin/bsd)       -> cron hourly line
+
+Schedule stage data carries both ``platform`` +
+``schedule_line``. ``cron_line`` retained as Wave 92
+backward-compat alias.
+
+### CLI
+
+```bash
+shopai onboard test_store test.myshopify.com --api-key X
+shopai onboard test_store test.myshopify.com --client-id A --client-secret B
+shopai onboard test_store test.myshopify.com --api-key X --niche beauty
+shopai onboard test_store test.myshopify.com --api-key X --dry-run
+shopai onboard test_store test.myshopify.com --api-key X --json
+```
+
+### Tests
+
+``tests/test_onboarding_wizard.py`` -- 29 tests covering
+validation / dry-run / per-stage success+failure paths +
+retry closure semantics + platform detection. Most tests
+mock downstream chain; a few exercise the real path which
+makes the suite ~2min.
+
+### Why this compounds
+
+The wizard is meta-substrate -- it doesn't add new
+capabilities, it CHAINS existing ones into a single user-
+facing flow. Every wave of substrate that came before
+(W7-91) becomes more valuable because the operator now has
+ONE entry point that exercises it all. The North Star
+mission ships.
+
+96 substrate waves total.

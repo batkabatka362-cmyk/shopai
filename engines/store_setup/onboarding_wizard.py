@@ -55,10 +55,45 @@ punch list, not just the first error.
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _platform_schedule_template() -> tuple[str, str]:
+    """Wave 96: emit an hourly schedule template appropriate
+    for the host platform.
+
+    Returns ``(template_line, platform_name)`` where
+    platform_name is one of:
+      - "windows-task" (schtasks ONHOURLY)
+      - "cron"         (POSIX hourly crontab line)
+
+    POSIX systems get the cron form (which works on macOS,
+    Linux, BSD). systemd-only environments can use
+    ``shopai cycle schedule --platform systemd`` for the
+    timer/unit block.
+    """
+    if sys.platform.startswith("win"):
+        # Windows Task Scheduler one-liner. Operator runs in
+        # elevated PowerShell.
+        line = (
+            'schtasks /create /tn "ShopAI-Cycle" '
+            '/tr "powershell.exe -NoProfile -Command '
+            '\\"$env:SHOPAI_CYCLE_RUN_CONFIRM=1; '
+            'py cli.py cycle run --yes\\"" '
+            '/sc HOURLY /f'
+        )
+        return line, "windows-task"
+    # POSIX (linux / darwin / bsd)
+    line = (
+        "0 * * * * cd /path/to/shopai && "
+        "SHOPAI_CYCLE_RUN_CONFIRM=1 shopai cycle run --yes "
+        ">> /var/log/shopai/cycle.log 2>&1"
+    )
+    return line, "cron"
 
 
 @dataclass
@@ -692,25 +727,34 @@ def onboard_store(
             detail=f"go-live probe raised: {exc}",
         ))
 
-    # ── Stage 9: schedule ──────────────────────────────────
-    # Emit a generic POSIX cron line. Operator runs
-    # ``shopai cycle schedule`` for the platform-specific
-    # template (systemd / Task Scheduler / etc.).
-    cron_line = (
-        "0 * * * * cd /path/to/shopai && "
-        "SHOPAI_CYCLE_RUN_CONFIRM=1 shopai cycle run --yes "
-        ">> /var/log/shopai/cycle.log 2>&1"
+    # ── Stage 9: schedule (Wave 96) ────────────────────────
+    # Platform-aware cron template. Detect via sys.platform
+    # so the emitted line matches what the operator's host
+    # can actually run.
+    schedule_template, schedule_platform = (
+        _platform_schedule_template()
     )
     result.stages.append(OnboardingStage(
         name="schedule",
         status="success",
-        detail="hourly cron template ready",
-        data={"cron_line": cron_line},
+        detail=(
+            f"hourly schedule template ready "
+            f"(platform={schedule_platform})"
+        ),
+        data={
+            "platform": schedule_platform,
+            "schedule_line": schedule_template,
+            # Wave 92 backward-compat key (some callers may
+            # still look for cron_line). Always equal to
+            # schedule_line for POSIX platforms; on windows
+            # this is the schtasks command.
+            "cron_line": schedule_template,
+        },
     ))
     result.next_action = (
-        "Install the emitted cron line "
+        "Install the emitted schedule template "
         "(or run `shopai cycle schedule` for the full "
-        "platform-specific template)"
+        "platform-specific block)"
     )
 
     # ── Final verdict ──────────────────────────────────────

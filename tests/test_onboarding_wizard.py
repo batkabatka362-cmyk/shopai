@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from engines.store_setup.onboarding_wizard import (
     OnboardingResult,
     OnboardingStage,
+    _platform_schedule_template,
     onboard_store,
 )
 
@@ -627,6 +628,59 @@ class TestRelaunchRetry:
         ]
 
 
+class TestPlatformScheduleTemplate:
+    """Wave 96: platform-detect template emission."""
+
+    def test_windows_returns_schtasks_command(self, monkeypatch):
+        monkeypatch.setattr("sys.platform", "win32")
+        line, platform = _platform_schedule_template()
+        assert platform == "windows-task"
+        assert "schtasks" in line
+        assert "ShopAI-Cycle" in line
+        assert "HOURLY" in line
+
+    def test_linux_returns_cron_line(self, monkeypatch):
+        monkeypatch.setattr("sys.platform", "linux")
+        line, platform = _platform_schedule_template()
+        assert platform == "cron"
+        assert line.startswith("0 * * * *")
+        assert "SHOPAI_CYCLE_RUN_CONFIRM" in line
+        assert "shopai cycle run --yes" in line
+
+    def test_darwin_returns_cron_line(self, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        line, platform = _platform_schedule_template()
+        # macOS uses POSIX cron form (launchd is a Wave 96+
+        # option for operators who prefer it)
+        assert platform == "cron"
+        assert "0 * * * *" in line
+
+    def test_schedule_stage_carries_platform_in_data(
+        self, monkeypatch,
+    ):
+        """The schedule stage's data dict must carry both
+        platform + schedule_line for JSON consumers."""
+        monkeypatch.setattr("sys.platform", "linux")
+        sm = _fake_sm(connected=True)
+        sm.get_products.return_value = []
+        r = onboard_store(
+            store_id="s1", shop_url="x.myshopify.com",
+            api_key="t", store_manager=sm,
+        )
+        sched = next(
+            s for s in r.stages if s.name == "schedule"
+        )
+        assert sched.status == "success"
+        assert sched.data["platform"] == "cron"
+        assert "0 * * * *" in sched.data["schedule_line"]
+        # Wave 92 backward-compat key
+        assert sched.data["cron_line"] == sched.data[
+            "schedule_line"
+        ]
+        # Detail mentions the platform name
+        assert "cron" in sched.detail
+
+
 class TestFinalVerdict:
 
     def test_clean_chain_verdict_ready(self):
@@ -707,7 +761,9 @@ class TestFinalVerdict:
         # Niche stage warns; verdict reflects that
         assert r.final_verdict == "ready_with_warnings"
 
-    def test_schedule_stage_always_emits_cron(self):
+    def test_schedule_stage_always_emits_template(self):
+        """Wave 96: template content varies by platform but
+        the cycle-run invocation always appears."""
         sm = _fake_sm()
         r = onboard_store(
             store_id="s1", shop_url="x.myshopify.com",
@@ -717,4 +773,8 @@ class TestFinalVerdict:
             s for s in r.stages if s.name == "schedule"
         )
         assert sched.status == "success"
-        assert "shopai cycle run" in sched.data["cron_line"]
+        line = sched.data["schedule_line"]
+        # Some form of the cycle-run command always present
+        assert "cycle run" in line
+        # Backward-compat alias mirrors schedule_line
+        assert sched.data["cron_line"] == line
