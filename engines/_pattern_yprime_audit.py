@@ -109,6 +109,16 @@ _DOMAIN_TEMPLATE: dict[
             "status": "seo_status.py",
         },
     ),
+    "customer_outreach": (
+        "engines/customer_outreach_autonomy",
+        {
+            "log": "outreach_log.py",
+            "state": "outreach_state.py",
+            "health": "outreach_health.py",
+            "applier": "outreach_applier.py",
+            "status": "outreach_status.py",
+        },
+    ),
 }
 
 

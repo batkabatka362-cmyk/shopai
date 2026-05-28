@@ -38,6 +38,8 @@ _DOMAIN_STATE_MODULES = [
      "followup_state"),
     ("product_seo", "product_seo_autonomy",
      "seo_state"),
+    ("customer_outreach", "customer_outreach_autonomy",
+     "outreach_state"),
 ]
 
 

@@ -52,6 +52,9 @@ _DOMAIN_STATE_MODULES: dict[str, tuple[str, str]] = {
     "product_seo": (
         "product_seo_autonomy", "seo_state",
     ),
+    "customer_outreach": (
+        "customer_outreach_autonomy", "outreach_state",
+    ),
 }
 
 

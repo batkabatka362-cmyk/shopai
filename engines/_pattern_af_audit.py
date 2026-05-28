@@ -69,6 +69,11 @@ _DOMAIN_LOG_EXPORTS: dict[
         "record_seo_event",
         "recent_events",
     ),
+    "customer_outreach": (
+        "engines/customer_outreach_autonomy/outreach_log.py",
+        "record_outreach_event",
+        "recent_events",
+    ),
 }
 
 

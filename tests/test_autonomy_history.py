@@ -12,12 +12,13 @@ from core.automation.autonomy_history import (
 
 class TestCatalog:
 
-    def test_7_domains(self):
-        assert len(_DOMAIN_LOGS) == 7
+    def test_8_domains(self):
+        assert len(_DOMAIN_LOGS) == 8
         names = {d[0] for d in _DOMAIN_LOGS}
         assert names == {
             "refund", "marketing", "fulfillment",
             "inventory", "cleanup", "followup", "seo",
+            "outreach",
         }
 
     def test_marketing_uses_ad_spend_log(self):
@@ -99,9 +100,9 @@ class TestRunAutonomyHistory:
         r = run_autonomy_history()
         assert isinstance(r, HistoryReport)
 
-    def test_per_domain_count_has_7_entries(self):
+    def test_per_domain_count_has_8_entries(self):
         r = run_autonomy_history()
-        assert len(r.per_domain_count) == 7
+        assert len(r.per_domain_count) == 8
 
     def test_idle_branch_returns_empty(self):
         r = run_autonomy_history()

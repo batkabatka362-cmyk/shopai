@@ -62,6 +62,10 @@ _DOMAIN_ENGINE_NAMES: dict[
         "engines/product_seo_autonomy/seo_applier.py",
         "product_seo",
     ),
+    "customer_outreach": (
+        "engines/customer_outreach_autonomy/outreach_applier.py",
+        "customer_outreach",
+    ),
 }
 
 

@@ -62,6 +62,10 @@ _DOMAIN_APPLY_EXPORTS: dict[
         "engines/product_seo_autonomy/seo_applier.py",
         "apply_seo_updates",
     ),
+    "customer_outreach": (
+        "engines/customer_outreach_autonomy/outreach_applier.py",
+        "apply_customer_outreach",
+    ),
 }
 
 

@@ -71,6 +71,12 @@ _DOMAIN_BRIDGES = [
         "seo_health",
         "maybe_auto_pause_seo",
     ),
+    (
+        "customer_outreach",
+        "customer_outreach_autonomy",
+        "outreach_health",
+        "maybe_auto_pause_outreach",
+    ),
 ]
 
 

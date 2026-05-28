@@ -25,8 +25,9 @@ from importlib import import_module
 logger = logging.getLogger(__name__)
 
 
-# Canonical autonomy domain count.
-_EXPECTED_DOMAIN_COUNT = 7
+# Canonical autonomy domain count. Bumped 7 -> 8 in W402-422
+# when customer_outreach_autonomy (8th domain) shipped.
+_EXPECTED_DOMAIN_COUNT = 8
 
 
 # Registered substrate catalogs. Each entry: (module path,

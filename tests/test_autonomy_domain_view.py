@@ -66,9 +66,9 @@ class TestResolveDomain:
 
 class TestListDomains:
 
-    def test_returns_7_canonical_keys(self):
+    def test_returns_8_canonical_keys(self):
         keys = list_domains()
-        assert len(keys) == 7
+        assert len(keys) == 8
         assert "customer_support_refund" in keys
         assert "product_seo" in keys
 

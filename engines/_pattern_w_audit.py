@@ -60,6 +60,10 @@ _DOMAIN_HEALTH_MODULES: dict[
         "engines/product_seo_autonomy/seo_health.py",
         "PRODUCT_SEO",
     ),
+    "customer_outreach": (
+        "engines/customer_outreach_autonomy/outreach_health.py",
+        "CUSTOMER_OUTREACH",
+    ),
 }
 
 

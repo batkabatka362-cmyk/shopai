@@ -71,6 +71,10 @@ _DOMAINS: dict[str, tuple[str, list[str]]] = {
         "PRODUCT_SEO",
         ["SHOPAI_PRODUCT_SEO_MAX_LENGTH"],
     ),
+    "customer_outreach": (
+        "CUSTOMER_OUTREACH",
+        ["SHOPAI_CUSTOMER_OUTREACH_MAX_PER_RUN"],
+    ),
 }
 
 

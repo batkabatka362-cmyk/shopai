@@ -68,6 +68,12 @@ _DOMAIN_LOGS = [
         "seo_log",
         "recent_events",
     ),
+    (
+        "outreach",
+        "customer_outreach_autonomy",
+        "outreach_log",
+        "recent_events",
+    ),
 ]
 
 

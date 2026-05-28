@@ -16,8 +16,8 @@ from core.automation.autonomy_bulk import (
 
 class TestCatalog:
 
-    def test_7_domains(self):
-        assert len(_DOMAIN_STATE_MODULES) == 7
+    def test_8_domains(self):
+        assert len(_DOMAIN_STATE_MODULES) == 8
         names = {tup[0] for tup in _DOMAIN_STATE_MODULES}
         assert names == {
             "customer_support_refund",
@@ -27,6 +27,7 @@ class TestCatalog:
             "discount_cleanup",
             "order_followup",
             "product_seo",
+            "customer_outreach",
         }
 
     def test_state_module_names_end_with_state(self):
@@ -71,7 +72,7 @@ class TestBulkPauseUnconfirmed:
         assert r.action == "pause"
         assert not r.confirm_set
         assert r.ok_count == 0
-        assert r.error_count == 7
+        assert r.error_count == 8
         for d in r.domains:
             assert d.action == "skipped"
             assert _BULK_CONFIRM_ENV in d.error
@@ -92,7 +93,7 @@ class TestBulkResumeUnconfirmed:
         )
         r = run_bulk_resume()
         assert r.action == "resume"
-        assert r.error_count == 7
+        assert r.error_count == 8
         for d in r.domains:
             assert d.action == "skipped"
 

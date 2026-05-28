@@ -36,6 +36,7 @@ _DOMAIN_BRIDGES: dict[str, str] = {
     "discount_cleanup": "maybe_auto_pause_cleanup",
     "order_followup": "maybe_auto_pause_followup",
     "product_seo": "maybe_auto_pause_seo",
+    "customer_outreach": "maybe_auto_pause_outreach",
 }
 
 

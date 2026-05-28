@@ -58,6 +58,10 @@ _DOMAIN_BRIDGE_EXPORTS: dict[str, tuple[str, str]] = {
         "engines/product_seo_autonomy/seo_health.py",
         "maybe_auto_pause_seo",
     ),
+    "customer_outreach": (
+        "engines/customer_outreach_autonomy/outreach_health.py",
+        "maybe_auto_pause_outreach",
+    ),
 }
 
 

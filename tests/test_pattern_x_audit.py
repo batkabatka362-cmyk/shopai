@@ -16,7 +16,7 @@ from engines._pattern_x_audit import (
 
 class TestDomainCatalog:
 
-    def test_all_7_domains_present(self):
+    def test_all_8_domains_present(self):
         assert set(_DOMAIN_SUMMARY_FUNCS.keys()) == {
             "customer_support_refund",
             "marketing_budget",
@@ -25,6 +25,7 @@ class TestDomainCatalog:
             "discount_cleanup",
             "order_followup",
             "product_seo",
+            "customer_outreach",
         }
 
     def test_summary_func_names_match_convention(self):
@@ -78,21 +79,21 @@ class TestRunPatternXAudit:
         report = run_pattern_x_audit()
         assert isinstance(report, PatternXReport)
 
-    def test_scans_all_7_domains(self):
+    def test_scans_all_8_domains(self):
         report = run_pattern_x_audit()
-        assert len(report.domains_scanned) == 7
+        assert len(report.domains_scanned) == 8
 
     def test_live_passes(self):
         report = run_pattern_x_audit()
         assert not report.has_violations, report.violations
-        assert len(report.clean_domains) == 7
+        assert len(report.clean_domains) == 8
 
     def test_missing_module_flags_every_domain(self, tmp_path):
         report = run_pattern_x_audit(
             autonomy_status_path=tmp_path / "missing.py",
         )
         assert report.has_violations
-        assert len(report.violations) == 7
+        assert len(report.violations) == 8
 
     def test_module_with_no_summary_funcs_flags_all(
         self, tmp_path,
@@ -103,7 +104,7 @@ class TestRunPatternXAudit:
             encoding="utf-8",
         )
         report = run_pattern_x_audit(autonomy_status_path=src)
-        assert len(report.violations) == 7
+        assert len(report.violations) == 8
         for v in report.violations:
             assert "not defined" in v.reason
 
@@ -120,7 +121,7 @@ class TestRunPatternXAudit:
             encoding="utf-8",
         )
         report = run_pattern_x_audit(autonomy_status_path=src)
-        assert len(report.violations) == 7
+        assert len(report.violations) == 8
         for v in report.violations:
             assert "not invoked" in v.reason
 

@@ -12,8 +12,8 @@ from core.automation.autonomy_bench import (
 
 class TestCatalog:
 
-    def test_7_domains(self):
-        assert len(_DOMAIN_BRIDGES) == 7
+    def test_8_domains(self):
+        assert len(_DOMAIN_BRIDGES) == 8
         names = {tup[0] for tup in _DOMAIN_BRIDGES}
         assert names == {
             "customer_support_refund",
@@ -23,6 +23,7 @@ class TestCatalog:
             "discount_cleanup",
             "order_followup",
             "product_seo",
+            "customer_outreach",
         }
 
     def test_bridge_names_use_maybe_auto_pause_prefix(self):
@@ -75,9 +76,9 @@ class TestRunAutonomyBench:
         r = run_autonomy_bench(runs_per_domain=1)
         assert isinstance(r, BenchReport)
 
-    def test_covers_7_domains(self):
+    def test_covers_8_domains(self):
         r = run_autonomy_bench(runs_per_domain=1)
-        assert r.domain_count == 7
+        assert r.domain_count == 8
 
     def test_runs_per_domain_preserved(self):
         r = run_autonomy_bench(runs_per_domain=2)

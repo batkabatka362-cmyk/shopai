@@ -12,7 +12,7 @@ from engines._pattern_am_audit import (
 
 class TestCatalog:
 
-    def test_all_7_domains(self):
+    def test_all_8_domains(self):
         assert set(_DOMAIN_TEST_KEYWORDS.keys()) == {
             "customer_support_refund",
             "marketing_budget",
@@ -21,6 +21,7 @@ class TestCatalog:
             "discount_cleanup",
             "order_followup",
             "product_seo",
+            "customer_outreach",
         }
 
     def test_every_domain_has_keywords(self):
@@ -78,14 +79,14 @@ class TestRunPatternAMAudit:
         r = run_pattern_am_audit()
         assert isinstance(r, PatternAMReport)
 
-    def test_scans_all_7_domains(self):
+    def test_scans_all_8_domains(self):
         r = run_pattern_am_audit()
-        assert len(r.domains_scanned) == 7
+        assert len(r.domains_scanned) == 8
 
     def test_live_passes(self):
         r = run_pattern_am_audit()
         assert not r.has_violations, r.violations
-        assert len(r.clean_domains) == 7
+        assert len(r.clean_domains) == 8
 
     def test_test_files_by_domain_populated(self):
         r = run_pattern_am_audit()
@@ -98,7 +99,7 @@ class TestRunPatternAMAudit:
         r = run_pattern_am_audit(
             tests_dir=tmp_path / "nope",
         )
-        assert len(r.violations) == 7
+        assert len(r.violations) == 8
 
 
 class TestViolationDataclass:

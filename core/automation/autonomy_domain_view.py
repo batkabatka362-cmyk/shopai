@@ -35,6 +35,7 @@ _DOMAIN_ALIASES: dict[str, str] = {
     "discount_cleanup": "discount_cleanup",
     "order_followup": "order_followup",
     "product_seo": "product_seo",
+    "customer_outreach": "customer_outreach",
     # short aliases
     "refund": "customer_support_refund",
     "support": "customer_support_refund",
@@ -44,6 +45,7 @@ _DOMAIN_ALIASES: dict[str, str] = {
     "cleanup": "discount_cleanup",
     "followup": "order_followup",
     "seo": "product_seo",
+    "outreach": "customer_outreach",
 }
 
 
@@ -59,6 +61,7 @@ _DOMAIN_META: dict[
     "discount_cleanup": ("discount_cleanup", "cleanup"),
     "order_followup": ("order_followup", "followup"),
     "product_seo": ("product_seo", "seo"),
+    "customer_outreach": ("customer_outreach", "outreach"),
 }
 
 

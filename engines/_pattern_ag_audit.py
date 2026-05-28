@@ -60,6 +60,10 @@ _DOMAIN_ANALYZE_EXPORTS: dict[
         "engines/product_seo_autonomy/seo_health.py",
         "analyze_seo_health",
     ),
+    "customer_outreach": (
+        "engines/customer_outreach_autonomy/outreach_health.py",
+        "analyze_customer_outreach_health",
+    ),
 }
 
 

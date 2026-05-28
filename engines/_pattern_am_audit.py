@@ -46,6 +46,9 @@ _DOMAIN_TEST_KEYWORDS: dict[str, tuple[str, ...]] = {
     "product_seo": (
         "product_seo_autonomy", "product_seo",
     ),
+    "customer_outreach": (
+        "customer_outreach_autonomy", "customer_outreach",
+    ),
 }
 
 

@@ -18,8 +18,8 @@ from core.automation.autonomy_smoke import (
 
 class TestCatalogs:
 
-    def test_7_domains(self):
-        assert len(_DOMAINS) == 7
+    def test_8_domains(self):
+        assert len(_DOMAINS) == 8
         names = {d[0] for d in _DOMAINS}
         assert names == {
             "customer_support_refund",
@@ -29,6 +29,7 @@ class TestCatalogs:
             "discount_cleanup",
             "order_followup",
             "product_seo",
+            "customer_outreach",
         }
 
     def test_apply_names_complete(self):
@@ -86,9 +87,9 @@ class TestRunAutonomySmoke:
         r = run_autonomy_smoke()
         assert isinstance(r, SmokeReport)
 
-    def test_covers_7_domains(self):
+    def test_covers_8_domains(self):
         r = run_autonomy_smoke()
-        assert len(r.domains) == 7
+        assert len(r.domains) == 8
 
     def test_live_all_ok(self):
         r = run_autonomy_smoke()
@@ -96,7 +97,7 @@ class TestRunAutonomySmoke:
             (d.domain, [s for s in d.steps if not s.ok])
             for d in r.domains if d.cls == "error"
         ]
-        assert r.ok_count == 7
+        assert r.ok_count == 8
         assert r.error_count == 0
 
     def test_each_domain_has_5_steps(self):

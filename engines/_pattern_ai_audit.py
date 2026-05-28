@@ -58,6 +58,10 @@ _DOMAIN_STATUS_EXPORTS: dict[
         "engines/product_seo_autonomy/seo_status.py",
         "get_seo_status",
     ),
+    "customer_outreach": (
+        "engines/customer_outreach_autonomy/outreach_status.py",
+        "get_customer_outreach_status",
+    ),
 }
 
 

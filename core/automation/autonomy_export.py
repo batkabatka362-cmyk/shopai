@@ -229,6 +229,8 @@ def _audits_section() -> dict[str, Any]:
          "run_pattern_aq_audit"),
         ("pattern_ar", "engines._pattern_ar_audit",
          "run_pattern_ar_audit"),
+        ("pattern_as", "engines._pattern_as_audit",
+         "run_pattern_as_audit"),
     ]
     out: dict[str, Any] = {}
     from importlib import import_module
