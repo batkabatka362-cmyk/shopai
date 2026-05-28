@@ -3984,6 +3984,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_an_p.add_argument("--json", action="store_true")
 
+    # Wave 338: Pattern AO audit (applier docstring gate doc)
+    pattern_ao_p = sub.add_parser(
+        "pattern-ao-audit",
+        help=(
+            "Wave 338: verify each domain's applier docstring "
+            "documents >=4 numbered safety gates "
+            "(architectural floor matching every existing "
+            "domain)."
+        ),
+    )
+    pattern_ao_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -29505,6 +29517,51 @@ def _cmd_pattern_v_audit(args) -> None:
         )
 
 
+def _cmd_pattern_ao_audit(args) -> None:
+    """Wave 338: applier docstring safety gate doc audit."""
+    from engines._pattern_ao_audit import run_pattern_ao_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_ao_audit()
+    if as_json:
+        print(json.dumps({
+            "domains_scanned": report.domains_scanned,
+            "clean_domains": report.clean_domains,
+            "gates_by_domain": report.gates_by_domain,
+            "violations": [
+                {
+                    "domain": v.domain,
+                    "applier_path": v.applier_path,
+                    "gates_found": v.gates_found,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern AO FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.domain}] {v.reason}")
+        sys.exit(1)
+    else:
+        scanned = len(report.domains_scanned)
+        clean = len(report.clean_domains)
+        gates = ", ".join(
+            f"{d}={n}"
+            for d, n in report.gates_by_domain.items()
+        )
+        print(
+            f"Pattern AO OK -- {clean}/{scanned} autonomy "
+            f"domain(s) document >=4 gates ({gates})."
+        )
+
+
 def _cmd_pattern_an_audit(args) -> None:
     """Wave 327: writer _ENGINE constant + usage audit."""
     from engines._pattern_an_audit import run_pattern_an_audit
@@ -34526,6 +34583,23 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_ao":
+            from engines._pattern_ao_audit import (
+                run_pattern_ao_audit,
+            )
+            r = run_pattern_ao_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_domains": list(r.clean_domains),
+                "gates_by_domain": dict(r.gates_by_domain),
+                "violations": [
+                    {
+                        "domain": v.domain,
+                        "gates_found": v.gates_found,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -34544,7 +34618,7 @@ _AUDIT_ORDER = (
     "pattern_yprime", "pattern_ac", "pattern_ad", "pattern_ae",
     "pattern_af", "pattern_ag", "pattern_ah", "pattern_ai",
     "pattern_aj", "pattern_ak", "pattern_al", "pattern_am",
-    "pattern_an",
+    "pattern_an", "pattern_ao",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -34582,6 +34656,7 @@ _AUDIT_LABELS = {
     "pattern_al": "Pattern AL (state path uniqueness)",
     "pattern_am": "Pattern AM (per-domain test coverage)",
     "pattern_an": "Pattern AN (writer _ENGINE constant)",
+    "pattern_ao": "Pattern AO (applier docstring gate doc)",
 }
 
 
@@ -43616,6 +43691,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-an-audit":
         _cmd_pattern_an_audit(args)
+        return
+
+    if args.command == "pattern-ao-audit":
+        _cmd_pattern_ao_audit(args)
         return
 
     if args.command == "autonomy-env":
