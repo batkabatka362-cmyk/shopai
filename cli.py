@@ -8717,6 +8717,39 @@ def _cmd_empire(args) -> None:
                 "--apply` auto-tags from catalog"
             )
 
+    # Wave 150: autonomy 4-domain rollup (one-liner). Surfaces
+    # only when degraded/paused OR has activity. Quiet
+    # substrate stays silent.
+    try:
+        from core.automation.autonomy_status import (
+            get_autonomy_status,
+        )
+        autonomy = get_autonomy_status(window_hours=168.0)
+        if autonomy.overall_verdict in (
+            "degraded", "paused",
+        ) or autonomy.total_applied > 0:
+            verdict_mk = {
+                "healthy": "[OK ]",
+                "quiet": "[ - ]",
+                "degraded": "[WRN]",
+                "paused": "[BAD]",
+            }.get(autonomy.overall_verdict, "[ ? ]")
+            print(
+                f"    autonomy:           {verdict_mk} "
+                f"{autonomy.overall_verdict}  "
+                f"applied={autonomy.total_applied}"
+            )
+            if autonomy.paused_domains:
+                print(
+                    f"    *** PAUSED: "
+                    f"{', '.join(autonomy.paused_domains)}"
+                    " ***"
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "empire autonomy block raised: %s", exc,
+        )
+
     # Last cycle
     print()
     if last_run_block:

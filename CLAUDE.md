@@ -2336,3 +2336,104 @@ Audits: 8 -> 10
 Autonomy domains: customer-support + marketing parallel
 
 125 substrate waves total. Phase 11 complete.
+
+## Phase 12: 4-domain autonomy parallel (Waves 126-155, 2026-05-28)
+
+Phase 11 extracted the autonomy template into
+``core/automation/*``. Phase 12 proves the template scales to 4
+parallel autonomy domains.
+
+### Phase 12.A: Fulfillment autonomy (W126-131)
+
+3rd autonomy domain. First to consume the W117-119 reusable
+substrate.
+
+``engines/fulfillment_autonomy/``:
+
+  - fulfillment_log.py (W126) -- wraps action_log
+  - fulfillment_state.py (W127) -- wraps pause_state
+  - fulfillment_health.py (W128) -- env_prefix=FULFILLMENT
+  - fulfillment_applier.py (W129) -- SHOPIFY_CREATE_FULFILLMENT
+    behind 5 safety gates
+  - fulfillment_status.py (W130) -- empire aggregator
+
+CLI: ``shopai fulfillment-{status,health,pause,resume}``.
+Cycle hook + notify integration (W130).
+
+### Phase 12.B: Inventory autonomy (W132-137)
+
+4th autonomy domain. Same template shape; 6 safety gates
+(adds exceeds_max_quantity + delta_too_small).
+
+``engines/inventory_autonomy/``: log + state + health +
+applier (SHOPIFY_SET_INVENTORY_QUANTITIES) + status.
+
+CLI: ``shopai inventory-{status,health,pause,resume}``.
+
+### Phase 12.D: Unified surface + Pattern P (W148-150)
+
+#### Wave 148: Pattern P -- substrate adoption audit
+
+``engines/_pattern_p_audit.py`` AST-scans every autonomy
+domain + asserts every ``_log.py / _state.py / _health.py``
+wrapper imports from ``core.automation.*``.
+
+Phase 11.A (returns_management) + Phase 11.B (roas_guardrails)
+are GRANDFATHERED -- they predate the template. New domains
+from W126+ must adopt.
+
+CLI: ``shopai pattern-p-audit``.
+
+Audit roster now 11: K / OAuth / Y / I / J / Z / Q /
+Wireup-resolve / N / O / P.
+
+#### Wave 149: ``shopai autonomy-status``
+
+``core/automation/autonomy_status.py`` rolls up the 4
+production autonomy domains into one verdict:
+
+  - customer_support (refund + ticket-tag)
+  - marketing (budget)
+  - fulfillment (route)
+  - inventory (reorder)
+
+Overall verdict = WORST domain
+(paused > degraded > quiet > healthy).
+overall_next_action prefixes the worst-domain's drill hint.
+
+CLI: ``shopai autonomy-status [--window-hours N] [--json]``.
+
+#### Wave 150: empire dashboard autonomy row
+
+``shopai empire`` now renders a one-line autonomy verdict +
+PAUSED-domain callout when any domain is degraded/paused or
+has activity. Quiet substrate stays quiet.
+
+### Template leverage
+
+Phase 11.A's refund stack: ~600 LOC inlined.
+Phase 12.A's fulfillment stack: ~420 LOC (using template).
+Phase 12.B's inventory stack: ~420 LOC.
+
+1/3 reduction per domain. Future domains (customer outreach,
+content_moderation, supplier_management, etc.) inherit ~30
+LOC per wrapper file instead of ~150.
+
+### Phase 12 test totals
+
+  Fulfillment: 10 tests
+  Inventory: 8 tests
+  Pattern P + autonomy_status: 6 tests
+  Total: 24 new tests
+
+### Phase 12 totals
+
+Substrate: 24 waves shipped (W126-149); W150-155 final
+consolidation pending.
+Commits ahead of main: 476+
+Audits: 10 -> 11 (added Pattern P)
+Production-wired autonomy domains: 4 parallel
+Lines saved vs inlined: ~360 LOC across the two new domains
+
+149 substrate waves total. 4-domain autonomy parallel,
+template-validated.
