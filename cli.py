@@ -3904,6 +3904,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_ag_p.add_argument("--json", action="store_true")
 
+    # Wave 277: Pattern AH audit (applier entry-point export)
+    pattern_ah_p = sub.add_parser(
+        "pattern-ah-audit",
+        help=(
+            "Wave 277: verify each domain's applier exports "
+            "its apply_* entry point as a top-level "
+            "FunctionDef (called from engine flow.py)."
+        ),
+    )
+    pattern_ah_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -29348,6 +29359,46 @@ def _cmd_pattern_v_audit(args) -> None:
         )
 
 
+def _cmd_pattern_ah_audit(args) -> None:
+    """Wave 277: applier entry-point export audit."""
+    from engines._pattern_ah_audit import run_pattern_ah_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_ah_audit()
+    if as_json:
+        print(json.dumps({
+            "domains_scanned": report.domains_scanned,
+            "clean_domains": report.clean_domains,
+            "violations": [
+                {
+                    "domain": v.domain,
+                    "module_path": v.module_path,
+                    "expected_function": v.expected_function,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern AH FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.domain}] {v.reason}")
+        sys.exit(1)
+    else:
+        scanned = len(report.domains_scanned)
+        clean = len(report.clean_domains)
+        print(
+            f"Pattern AH OK -- {clean}/{scanned} autonomy "
+            f"domain(s) export their applier entry point."
+        )
+
+
 def _cmd_pattern_ag_audit(args) -> None:
     """Wave 273: health analyze fn export audit."""
     from engines._pattern_ag_audit import run_pattern_ag_audit
@@ -33709,6 +33760,22 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_ah":
+            from engines._pattern_ah_audit import (
+                run_pattern_ah_audit,
+            )
+            r = run_pattern_ah_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_domains": list(r.clean_domains),
+                "violations": [
+                    {
+                        "domain": v.domain,
+                        "expected_function": v.expected_function,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -33725,7 +33792,7 @@ _AUDIT_ORDER = (
     "pattern_r", "pattern_s", "pattern_t",
     "pattern_u", "pattern_v", "pattern_w", "pattern_x",
     "pattern_yprime", "pattern_ac", "pattern_ad", "pattern_ae",
-    "pattern_af", "pattern_ag",
+    "pattern_af", "pattern_ag", "pattern_ah",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -33756,6 +33823,7 @@ _AUDIT_LABELS = {
     "pattern_ae": "Pattern AE (state is_paused export)",
     "pattern_af": "Pattern AF (log module exports)",
     "pattern_ag": "Pattern AG (health analyze fn export)",
+    "pattern_ah": "Pattern AH (applier entry-point export)",
 }
 
 
@@ -42762,6 +42830,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-ag-audit":
         _cmd_pattern_ag_audit(args)
+        return
+
+    if args.command == "pattern-ah-audit":
+        _cmd_pattern_ah_audit(args)
         return
 
     if args.command == "autonomy-env":
