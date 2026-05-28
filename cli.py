@@ -4276,6 +4276,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 369: single-shot full-substrate JSON export
+    autonomy_export_p = sub.add_parser(
+        "autonomy-export",
+        help=(
+            "Wave 369: dump full autonomy substrate state in "
+            "ONE JSON envelope (status + doctor + smoke + "
+            "bench + env + events + audits) for ops handoff "
+            "/ postmortem / LLM ingestion."
+        ),
+    )
+    autonomy_export_p.add_argument(
+        "--window-hours", type=float, default=24.0,
+    )
+    autonomy_export_p.add_argument(
+        "--store", type=str, default="",
+    )
+    autonomy_export_p.add_argument(
+        "--events-limit", type=int, default=50,
+    )
+    autonomy_export_p.add_argument(
+        "--skip-bench", action="store_true",
+        help="omit the bench section (faster export)",
+    )
+    autonomy_export_p.add_argument(
+        "--skip-audits", action="store_true",
+        help="omit the audits section (faster export)",
+    )
+
     # Wave 122: Pattern O audit (wired engines have opt-in gate)
     pattern_o_p = sub.add_parser(
         "pattern-o-audit",
@@ -30696,6 +30724,35 @@ def _cmd_autonomy_bulk_resume(args) -> None:
     _render_bulk_report(report, as_json)
 
 
+def _cmd_autonomy_export(args) -> None:
+    """Wave 369: full-substrate JSON dump."""
+    from core.automation.autonomy_export import (
+        run_autonomy_export,
+    )
+    window_hours = float(getattr(args, "window_hours", 24.0))
+    store = (getattr(args, "store", "") or "").strip() or None
+    events_limit = int(getattr(args, "events_limit", 50))
+    skip_bench = bool(getattr(args, "skip_bench", False))
+    skip_audits = bool(getattr(args, "skip_audits", False))
+    export = run_autonomy_export(
+        window_hours=window_hours,
+        store_id=store,
+        events_limit=events_limit,
+        skip_bench=skip_bench,
+        skip_audits=skip_audits,
+    )
+    print(json.dumps({
+        "meta": export.meta,
+        "status": export.status,
+        "doctor": export.doctor,
+        "smoke": export.smoke,
+        "bench": export.bench,
+        "env": export.env,
+        "recent_events": export.recent_events,
+        "audits": export.audits,
+    }, indent=2, default=str))
+
+
 def _cmd_autonomy_bench(args) -> None:
     """Wave 341: per-domain bridge latency benchmark."""
     from core.automation.autonomy_bench import (
@@ -44133,6 +44190,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomy-bulk-resume":
         _cmd_autonomy_bulk_resume(args)
+        return
+
+    if args.command == "autonomy-export":
+        _cmd_autonomy_export(args)
         return
 
     if args.command == "autonomy-status":
