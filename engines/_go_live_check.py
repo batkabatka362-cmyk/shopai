@@ -405,7 +405,79 @@ def run_go_live_check() -> list[CheckResult]:
         _check_notify_webhook(),
         _check_ai_strategy(),
         _check_store_niches(),  # Wave 76
+        _check_autonomy_substrate(),  # Wave 245
     ]
+
+
+def _check_autonomy_substrate() -> CheckResult:
+    """Wave 245: the autonomy-doctor verdict gates go-live.
+
+    A mis-wired autonomy substrate (missing cycle hook, missing
+    notify alert kinds, missing template piece) won't block
+    operator-driven engine fires but it WILL silently break the
+    autonomous safety loop (auto-pause won't fire, notify
+    webhook won't escalate, status rollup is wrong).
+
+    Catch it BEFORE the operator flips cron on.
+    """
+    try:
+        from core.automation.autonomy_doctor import (
+            run_autonomy_doctor,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult(
+            name="autonomy_substrate",
+            status="warn",
+            detail=f"doctor module unavailable: {exc}",
+            fix="shopai autonomy-doctor",
+        )
+    try:
+        report = run_autonomy_doctor()
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult(
+            name="autonomy_substrate",
+            status="warn",
+            detail=f"doctor crashed: {exc}",
+            fix="shopai autonomy-doctor --json",
+        )
+    if report.fail_count > 0:
+        broken = [
+            d.name for d in report.domains if d.cls == "fail"
+        ]
+        return CheckResult(
+            name="autonomy_substrate",
+            status="fail",
+            detail=(
+                f"{report.fail_count} domain(s) "
+                f"mis-wired: {broken}"
+            ),
+            fix="shopai autonomy-doctor + drill the [BAD] rows",
+        )
+    if report.warn_count > 0:
+        flagged = [
+            d.name for d in report.domains if d.cls == "warn"
+        ]
+        return CheckResult(
+            name="autonomy_substrate",
+            status="warn",
+            detail=(
+                f"{report.warn_count} domain(s) warn: "
+                f"{flagged}"
+            ),
+            fix=(
+                f"shopai autonomy-doctor + drill the "
+                f"[WRN] rows -- often resolvable via "
+                f"-resume or -health --apply-bridge"
+            ),
+        )
+    return CheckResult(
+        name="autonomy_substrate",
+        status="pass",
+        detail=(
+            f"{len(report.domains)} domain(s) "
+            "wired + nominal"
+        ),
+    )
 
 
 def summarize(checks: list[CheckResult]) -> dict[str, Any]:

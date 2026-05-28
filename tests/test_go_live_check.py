@@ -45,7 +45,7 @@ class TestSummarize:
 
 
 class TestRunCheckShape:
-    """The aggregate returns 8 CheckResult objects with the
+    """The aggregate returns CheckResult objects with the
     expected name set."""
 
     def test_returns_check_results(self):
@@ -64,6 +64,7 @@ class TestRunCheckShape:
         assert "notify_webhook" in names
         assert "ai_strategy" in names
         assert "store_niches" in names  # Wave 76
+        assert "autonomy_substrate" in names  # Wave 245
 
     def test_each_check_has_valid_status(self):
         checks = run_go_live_check()
