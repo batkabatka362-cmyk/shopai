@@ -4158,6 +4158,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 332: per-domain drill view
+    autonomy_domain_p = sub.add_parser(
+        "autonomy-domain",
+        help=(
+            "Wave 332: drill into ONE autonomy domain "
+            "(verdict + paused + recent events + env knobs "
+            "+ wiring). Accepts canonical keys or aliases."
+        ),
+    )
+    autonomy_domain_p.add_argument(
+        "name",
+        help=(
+            "domain key (e.g. customer_support_refund) or "
+            "alias (refund, marketing, budget, fulfillment, "
+            "inventory, cleanup, followup, seo)"
+        ),
+    )
+    autonomy_domain_p.add_argument(
+        "--window-hours", type=float, default=24.0,
+    )
+    autonomy_domain_p.add_argument(
+        "--store", type=str, default="",
+    )
+    autonomy_domain_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 122: Pattern O audit (wired engines have opt-in gate)
     pattern_o_p = sub.add_parser(
         "pattern-o-audit",
@@ -30339,6 +30366,109 @@ def _cmd_pattern_p_audit(args) -> None:
         )
 
 
+def _cmd_autonomy_domain(args) -> None:
+    """Wave 332: per-domain drill view."""
+    from core.automation.autonomy_domain_view import (
+        list_domains, run_autonomy_domain_view,
+    )
+    name = getattr(args, "name", "") or ""
+    window_hours = float(getattr(args, "window_hours", 24.0))
+    store = (getattr(args, "store", "") or "").strip() or None
+    as_json = bool(getattr(args, "json", False))
+    view = run_autonomy_domain_view(
+        name, window_hours=window_hours, store_id=store,
+    )
+    if not view.found:
+        msg = (
+            f"Unknown autonomy domain: {name!r}. "
+            f"Valid keys: {list_domains()}"
+        )
+        if as_json:
+            print(json.dumps(
+                {"found": False, "error": msg},
+                indent=2, default=str,
+            ))
+        else:
+            print(msg)
+        sys.exit(1)
+    if as_json:
+        print(json.dumps({
+            "domain": view.domain,
+            "found": view.found,
+            "verdict": view.verdict,
+            "paused": view.paused,
+            "applied_count": view.applied_count,
+            "next_action": view.next_action,
+            "health_failure_ratio": (
+                view.health_failure_ratio
+            ),
+            "wiring_cls": view.wiring_cls,
+            "env_knobs_set": view.env_knobs_set,
+            "env_knobs_total": view.env_knobs_total,
+            "env_knobs": view.env_knobs,
+            "recent_events_count": view.recent_events_count,
+            "sample_events": view.sample_events,
+        }, indent=2, default=str))
+        return
+    print(f"Autonomy domain: {view.domain}")
+    print()
+    paused_str = "YES" if view.paused else "no"
+    wiring_mark = {
+        "ok": "[OK ]",
+        "warn": "[WRN]",
+        "fail": "[BAD]",
+    }.get(view.wiring_cls, "[ ? ]")
+    print(
+        f"  verdict:           {view.verdict:<14}  "
+        f"paused: {paused_str}  "
+        f"wiring: {wiring_mark}"
+    )
+    print(f"  applied (window):  {view.applied_count}")
+    if view.health_failure_ratio is not None:
+        print(
+            f"  failure ratio:     "
+            f"{view.health_failure_ratio:.0%}"
+        )
+    print(
+        f"  env knobs:         "
+        f"{view.env_knobs_set} of "
+        f"{view.env_knobs_total} set"
+    )
+    if view.env_knobs_set > 0:
+        set_knobs = [
+            k for k in view.env_knobs
+            if k.get("value") is not None
+        ]
+        for k in set_knobs[:5]:
+            print(f"    {k['name']} = {k['value']}")
+    if view.recent_events_count > 0:
+        print()
+        print(
+            f"  Recent events ({view.recent_events_count} in "
+            f"{int(window_hours)}h):"
+        )
+        for e in view.sample_events:
+            ts = e.get("timestamp", "")[:24] or "(no ts)"
+            print(
+                f"    {ts:<25} "
+                f"{e.get('action', ''):<22} "
+                f"{e.get('status', ''):<12} "
+                f"{e.get('detail', '')[:50]}"
+            )
+        if view.recent_events_count > 5:
+            print(
+                f"    ... {view.recent_events_count - 5} more"
+            )
+    else:
+        print(
+            f"  recent events:     0 in last "
+            f"{int(window_hours)}h"
+        )
+    if view.next_action and view.verdict != "quiet":
+        print()
+        print(f"  Next: {view.next_action}")
+
+
 def _cmd_autonomy_history(args) -> None:
     """Wave 313: unified autonomy event timeline."""
     from core.automation.autonomy_history import (
@@ -43506,6 +43636,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomy-history":
         _cmd_autonomy_history(args)
+        return
+
+    if args.command == "autonomy-domain":
+        _cmd_autonomy_domain(args)
         return
 
     if args.command == "autonomy-status":
