@@ -40,6 +40,7 @@ class DomainSummary:
 @dataclass
 class AutonomyStatusReport:
     window_hours: float
+    store_id: str | None = None
     domains: list[DomainSummary] = field(default_factory=list)
     overall_verdict: str = "healthy"
     overall_next_action: str = ""
@@ -47,12 +48,16 @@ class AutonomyStatusReport:
     paused_domains: list[str] = field(default_factory=list)
 
 
-def _customer_support_summary(window_hours: float) -> DomainSummary:
+def _customer_support_summary(
+    window_hours: float, store_id: str | None = None,
+) -> DomainSummary:
     try:
         from engines.customer_support.support_status import (
             get_support_status,
         )
-        r = get_support_status(window_hours=window_hours)
+        r = get_support_status(
+            window_hours=window_hours, store_id=store_id,
+        )
         return DomainSummary(
             name="customer_support",
             verdict=r.verdict,
@@ -70,12 +75,16 @@ def _customer_support_summary(window_hours: float) -> DomainSummary:
         )
 
 
-def _marketing_summary(window_hours: float) -> DomainSummary:
+def _marketing_summary(
+    window_hours: float, store_id: str | None = None,
+) -> DomainSummary:
     try:
         from engines.roas_guardrails.marketing_status import (
             get_marketing_status,
         )
-        r = get_marketing_status(window_hours=window_hours)
+        r = get_marketing_status(
+            window_hours=window_hours, store_id=store_id,
+        )
         return DomainSummary(
             name="marketing",
             verdict=r.verdict,
@@ -93,12 +102,16 @@ def _marketing_summary(window_hours: float) -> DomainSummary:
         )
 
 
-def _fulfillment_summary(window_hours: float) -> DomainSummary:
+def _fulfillment_summary(
+    window_hours: float, store_id: str | None = None,
+) -> DomainSummary:
     try:
         from engines.fulfillment_autonomy.fulfillment_status import (
             get_fulfillment_status,
         )
-        r = get_fulfillment_status(window_hours=window_hours)
+        r = get_fulfillment_status(
+            window_hours=window_hours, store_id=store_id,
+        )
         return DomainSummary(
             name="fulfillment",
             verdict=r.verdict,
@@ -116,12 +129,16 @@ def _fulfillment_summary(window_hours: float) -> DomainSummary:
         )
 
 
-def _inventory_summary(window_hours: float) -> DomainSummary:
+def _inventory_summary(
+    window_hours: float, store_id: str | None = None,
+) -> DomainSummary:
     try:
         from engines.inventory_autonomy.inventory_status import (
             get_inventory_status,
         )
-        r = get_inventory_status(window_hours=window_hours)
+        r = get_inventory_status(
+            window_hours=window_hours, store_id=store_id,
+        )
         return DomainSummary(
             name="inventory",
             verdict=r.verdict,
@@ -142,14 +159,29 @@ def _inventory_summary(window_hours: float) -> DomainSummary:
 def get_autonomy_status(
     *,
     window_hours: float = 168.0,
+    store_id: str | None = None,
 ) -> AutonomyStatusReport:
-    """Roll up all 4 autonomy domains into one report."""
+    """Roll up all 4 autonomy domains into one report.
+
+    Wave 151: when ``store_id`` is supplied, each domain
+    aggregator scopes to that store. None means fleet-wide
+    (default behaviour preserved).
+    """
     report = AutonomyStatusReport(window_hours=window_hours)
+    report.store_id = store_id
     report.domains = [
-        _customer_support_summary(window_hours),
-        _marketing_summary(window_hours),
-        _fulfillment_summary(window_hours),
-        _inventory_summary(window_hours),
+        _customer_support_summary(
+            window_hours, store_id=store_id,
+        ),
+        _marketing_summary(
+            window_hours, store_id=store_id,
+        ),
+        _fulfillment_summary(
+            window_hours, store_id=store_id,
+        ),
+        _inventory_summary(
+            window_hours, store_id=store_id,
+        ),
     ]
 
     # Aggregate

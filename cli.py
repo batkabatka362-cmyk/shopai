@@ -3827,6 +3827,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--window-hours", type=float, default=168.0,
     )
     autonomy_status_p.add_argument(
+        "--store", type=str, default="",
+        help="Wave 151: filter all 4 domains to one store_id",
+    )
+    autonomy_status_p.add_argument(
         "--json", action="store_true",
     )
 
@@ -10146,6 +10150,42 @@ def _cmd_daily_brief(args) -> None:
                 print(f"    -> {support.next_action}")
     except Exception as exc:  # noqa: BLE001
         logger.debug("daily-brief support block raised: %s", exc)
+    # Wave 152: empire-wide autonomy 4-domain rollup. Mirrors
+    # Wave 107's support block. Surfaces when degraded/paused
+    # OR has activity. Quiet stays silent.
+    try:
+        from core.automation.autonomy_status import (
+            get_autonomy_status,
+        )
+        auto = get_autonomy_status(window_hours=window_hours)
+        if auto.overall_verdict in (
+            "degraded", "paused",
+        ) or auto.total_applied > 0:
+            mk = {
+                "healthy": "[OK ]",
+                "quiet": "[ - ]",
+                "degraded": "[WRN]",
+                "paused": "[BAD]",
+            }.get(auto.overall_verdict, "[ ? ]")
+            print(
+                f"  Autonomy:     {mk} {auto.overall_verdict}"
+                f"  applied={auto.total_applied}"
+                f"  domains=4 "
+                f"({'/'.join(d.verdict for d in auto.domains)})"
+            )
+            if auto.paused_domains:
+                print(
+                    f"    *** PAUSED: "
+                    f"{', '.join(auto.paused_domains)} ***"
+                )
+            if auto.overall_verdict in (
+                "degraded", "paused",
+            ):
+                print(f"    -> {auto.overall_next_action}")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief autonomy block raised: %s", exc,
+        )
     # Surface the sickest engines when ANY are unhealthy --
     # cheap operator nudge to drill in via ``engine pulse``.
     if fleet_health["checked"] and (
@@ -28764,7 +28804,7 @@ def _cmd_pattern_p_audit(args) -> None:
 
 
 def _cmd_autonomy_status(args) -> None:
-    """Wave 149: unified autonomy status."""
+    """Wave 149 + 151: unified autonomy status."""
     from core.automation.autonomy_status import (
         get_autonomy_status,
     )
@@ -28772,10 +28812,15 @@ def _cmd_autonomy_status(args) -> None:
     window_h = float(
         getattr(args, "window_hours", 168.0) or 168.0,
     )
-    report = get_autonomy_status(window_hours=window_h)
+    store_id = (getattr(args, "store", "") or "").strip()
+    report = get_autonomy_status(
+        window_hours=window_h,
+        store_id=store_id or None,
+    )
     if as_json:
         print(json.dumps({
             "window_hours": report.window_hours,
+            "store_id": report.store_id,
             "overall_verdict": report.overall_verdict,
             "overall_next_action": report.overall_next_action,
             "total_applied": report.total_applied,
@@ -28800,8 +28845,12 @@ def _cmd_autonomy_status(args) -> None:
         "healthy": "[OK ]", "quiet": "[ - ]",
         "degraded": "[WRN]", "paused": "[BAD]",
     }.get(report.overall_verdict, "[ ? ]")
+    scope = (
+        f"store={report.store_id}" if report.store_id
+        else "fleet"
+    )
     print(
-        f"Empire autonomy status (last "
+        f"Empire autonomy status ({scope}, last "
         f"{report.window_hours:.0f}h)"
     )
     print()
