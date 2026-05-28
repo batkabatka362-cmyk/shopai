@@ -3962,6 +3962,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_al_p.add_argument("--json", action="store_true")
 
+    # Wave 322: Pattern AM audit (per-domain test coverage)
+    pattern_am_p = sub.add_parser(
+        "pattern-am-audit",
+        help=(
+            "Wave 322: verify every autonomy domain has at "
+            "least one test_*.py file in tests/ matching its "
+            "keyword set (catches 'shipped without tests')."
+        ),
+    )
+    pattern_am_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -29456,6 +29467,53 @@ def _cmd_pattern_v_audit(args) -> None:
         )
 
 
+def _cmd_pattern_am_audit(args) -> None:
+    """Wave 322: per-domain test coverage audit."""
+    from engines._pattern_am_audit import run_pattern_am_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_am_audit()
+    if as_json:
+        print(json.dumps({
+            "domains_scanned": report.domains_scanned,
+            "clean_domains": report.clean_domains,
+            "test_files_by_domain": (
+                report.test_files_by_domain
+            ),
+            "violations": [
+                {
+                    "domain": v.domain,
+                    "keywords": list(v.keywords),
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern AM FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.domain}] {v.reason}")
+        sys.exit(1)
+    else:
+        scanned = len(report.domains_scanned)
+        clean = len(report.clean_domains)
+        total_tests = sum(
+            len(v) for v in
+            report.test_files_by_domain.values()
+        )
+        print(
+            f"Pattern AM OK -- {clean}/{scanned} autonomy "
+            f"domain(s) have test files "
+            f"({total_tests} total test files)."
+        )
+
+
 def _cmd_pattern_al_audit(args) -> None:
     """Wave 319: state path uniqueness audit."""
     from engines._pattern_al_audit import run_pattern_al_audit
@@ -34251,6 +34309,25 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_am":
+            from engines._pattern_am_audit import (
+                run_pattern_am_audit,
+            )
+            r = run_pattern_am_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_domains": list(r.clean_domains),
+                "test_files_by_domain": dict(
+                    r.test_files_by_domain,
+                ),
+                "violations": [
+                    {
+                        "domain": v.domain,
+                        "keywords": list(v.keywords),
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -34268,7 +34345,7 @@ _AUDIT_ORDER = (
     "pattern_u", "pattern_v", "pattern_w", "pattern_x",
     "pattern_yprime", "pattern_ac", "pattern_ad", "pattern_ae",
     "pattern_af", "pattern_ag", "pattern_ah", "pattern_ai",
-    "pattern_aj", "pattern_ak", "pattern_al",
+    "pattern_aj", "pattern_ak", "pattern_al", "pattern_am",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -34304,6 +34381,7 @@ _AUDIT_LABELS = {
     "pattern_aj": "Pattern AJ (CLI dispatch parity)",
     "pattern_ak": "Pattern AK (bridge ast.Call invocation)",
     "pattern_al": "Pattern AL (state path uniqueness)",
+    "pattern_am": "Pattern AM (per-domain test coverage)",
 }
 
 
@@ -43330,6 +43408,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-al-audit":
         _cmd_pattern_al_audit(args)
+        return
+
+    if args.command == "pattern-am-audit":
+        _cmd_pattern_am_audit(args)
         return
 
     if args.command == "autonomy-env":
