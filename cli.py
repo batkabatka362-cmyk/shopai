@@ -3846,6 +3846,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_yp_p.add_argument("--json", action="store_true")
 
+    # Wave 232: Pattern AC audit (autonomy CLI command parity)
+    pattern_ac_p = sub.add_parser(
+        "pattern-ac-audit",
+        help=(
+            "Wave 232: verify every autonomy domain has all "
+            "4 standard CLI subcommands "
+            "({prefix}-status/-health/-pause/-resume) "
+            "registered."
+        ),
+    )
+    pattern_ac_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -29186,6 +29198,49 @@ def _cmd_pattern_v_audit(args) -> None:
         )
 
 
+def _cmd_pattern_ac_audit(args) -> None:
+    """Wave 232: autonomy CLI command parity audit."""
+    from engines._pattern_ac_audit import run_pattern_ac_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_ac_audit()
+    if as_json:
+        print(json.dumps({
+            "domains_scanned": report.domains_scanned,
+            "clean_domains": report.clean_domains,
+            "violations": [
+                {
+                    "domain": v.domain,
+                    "prefix": v.prefix,
+                    "missing_commands": v.missing_commands,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern AC FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(
+                f"  [{v.domain}] missing: "
+                f"{v.missing_commands}"
+            )
+        sys.exit(1)
+    else:
+        scanned = len(report.domains_scanned)
+        clean = len(report.clean_domains)
+        print(
+            f"Pattern AC OK -- {clean}/{scanned} autonomy "
+            f"domain(s) have all 4 CLI subcommands registered."
+        )
+
+
 def _cmd_pattern_yprime_audit(args) -> None:
     """Wave 229: 5-piece template completeness audit."""
     from engines._pattern_yprime_audit import (
@@ -33189,6 +33244,22 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_ac":
+            from engines._pattern_ac_audit import (
+                run_pattern_ac_audit,
+            )
+            r = run_pattern_ac_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_domains": list(r.clean_domains),
+                "violations": [
+                    {
+                        "domain": v.domain,
+                        "missing_commands": v.missing_commands,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -33204,7 +33275,7 @@ _AUDIT_ORDER = (
     "pattern_n", "pattern_o", "pattern_p", "pattern_qprime",
     "pattern_r", "pattern_s", "pattern_t",
     "pattern_u", "pattern_v", "pattern_w", "pattern_x",
-    "pattern_yprime",
+    "pattern_yprime", "pattern_ac",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -33230,6 +33301,7 @@ _AUDIT_LABELS = {
     "pattern_yprime": (
         "Pattern Y' (5-piece template completeness)"
     ),
+    "pattern_ac": "Pattern AC (CLI command parity)",
 }
 
 
@@ -42216,6 +42288,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-yprime-audit":
         _cmd_pattern_yprime_audit(args)
+        return
+
+    if args.command == "pattern-ac-audit":
+        _cmd_pattern_ac_audit(args)
         return
 
     if args.command == "autonomy-env":
