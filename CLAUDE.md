@@ -2625,3 +2625,64 @@ Phase 11-17 work.
 
 194 substrate waves total. North Star
 (credentials configured -> earning) shipped end-to-end.
+
+## Phase 18: 7th domain + Pattern U/V (Waves 195-210, 2026-05-28)
+
+### Phase 18.A: Product SEO autonomy (W195-202)
+
+7th autonomy domain. `engines/product_seo_autonomy/` uses
+the 5-piece template. SHOPIFY_UPDATE_PRODUCT with `seo.title`
+/ `seo.description` subfields behind 6 safety gates:
+
+  1. action='update_seo'
+  2. product_id + field + new_value present
+  3. is_paused() False
+  4. field in {meta_description, meta_title} (whitelist)
+  5. len(new_value) <= SHOPAI_PRODUCT_SEO_MAX_LENGTH (320)
+  6. router + capability resolution
+
+CLI: `shopai product-seo-{status,health,pause,resume}`.
+
+Bug fix during development: `field: str` attribute collided
+with `dataclasses.field` import; renamed to `seo_field`.
+
+### Phase 18.B: Pattern U + V audits (W203-210)
+
+Two new institutional audits round out wireup coverage:
+
+#### Pattern U (W203) -- cycle hook coverage
+
+AST-parses cli.py, extracts `_cmd_cycle_run` body, verifies
+every domain's `maybe_auto_pause_X` bridge symbol is
+referenced. Catches "forgot to wire Nth domain into cycle"
+class bug -- invisible at unit-test level (each domain's
+tests mock the bridge).
+
+CLI: `shopai pattern-u-audit`. Live: 7/7 clean.
+
+#### Pattern V (W207) -- notify alert registration
+
+AST-parses _notify.py, extracts `collect_alerts`, verifies
+every domain's 2 alert kinds ({domain}_paused +
+{domain}_health_critical) are referenced.
+
+CLI: `shopai pattern-v-audit`. Live: 7/7 domains, 14 kinds clean.
+
+### Audit roster: 18 institutional audits
+
+K / OAuth / Y / I / J / Z / Q / Wireup-resolve /
+cluster_topology / N / O / P / Q' / R / S / T / U / V
+
+`shopai audit` runs all 18. Live: 17/18 pass (1 pre-existing
+cluster_topology fail).
+
+### Phase 18 totals
+
+  Autonomy domains: 7 production-wired parallel
+  Audits: 16 -> 18 (+ U, V)
+  Tests: 16 new across Phase 18
+  Pattern T env knobs: 37 -> 43 (product_seo adds 6)
+  Commits ahead of main: 488+
+
+210 substrate waves total. 7 parallel autonomy domains
+production-wired. 18 institutional audits unified.
