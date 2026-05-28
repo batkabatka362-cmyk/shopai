@@ -43,6 +43,7 @@ _DOMAIN_CLI_PREFIXES: dict[str, str] = {
     "order_followup": "order-followup",
     "product_seo": "product-seo",
     "customer_outreach": "customer-outreach",
+    "catalog_quality": "catalog-quality",
 }
 
 

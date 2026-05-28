@@ -66,6 +66,10 @@ _DOMAIN_ENGINE_NAMES: dict[
         "engines/customer_outreach_autonomy/outreach_applier.py",
         "customer_outreach",
     ),
+    "catalog_quality": (
+        "engines/catalog_quality_autonomy/quality_applier.py",
+        "catalog_quality",
+    ),
 }
 
 

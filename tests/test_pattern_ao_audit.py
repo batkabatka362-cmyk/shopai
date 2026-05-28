@@ -13,7 +13,7 @@ from engines._pattern_ao_audit import (
 
 class TestCatalog:
 
-    def test_all_8_domains(self):
+    def test_all_9_domains(self):
         assert set(_DOMAIN_APPLIERS.keys()) == {
             "customer_support_refund",
             "marketing_budget",
@@ -23,6 +23,7 @@ class TestCatalog:
             "order_followup",
             "product_seo",
             "customer_outreach",
+            "catalog_quality",
         }
 
     def test_floor_is_4(self):
@@ -94,7 +95,7 @@ class TestRunPatternAOAudit:
         r = run_pattern_ao_audit()
         assert isinstance(r, PatternAOReport)
 
-    def test_scans_all_8_domains(self):
+    def test_scans_all_9_domains(self):
         r = run_pattern_ao_audit()
         assert len(r.domains_scanned) == 8
 

@@ -64,6 +64,10 @@ _DOMAIN_ANALYZE_EXPORTS: dict[
         "engines/customer_outreach_autonomy/outreach_health.py",
         "analyze_customer_outreach_health",
     ),
+    "catalog_quality": (
+        "engines/catalog_quality_autonomy/quality_health.py",
+        "analyze_catalog_quality_health",
+    ),
 }
 
 

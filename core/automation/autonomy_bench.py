@@ -77,6 +77,12 @@ _DOMAIN_BRIDGES = [
         "outreach_health",
         "maybe_auto_pause_outreach",
     ),
+    (
+        "catalog_quality",
+        "catalog_quality_autonomy",
+        "quality_health",
+        "maybe_auto_pause_quality",
+    ),
 ]
 
 

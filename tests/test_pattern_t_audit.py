@@ -34,13 +34,13 @@ class TestExpandKnobs:
 
 class TestRegistry:
 
-    def test_all_8_domains_scanned(self):
+    def test_all_9_domains_scanned(self):
         report = build_autonomy_env_registry()
-        assert len(report.domains_scanned) == 8
+        assert len(report.domains_scanned) == 9
 
     def test_total_knob_count(self):
         report = build_autonomy_env_registry()
-        # 8 domains × 5 standard + extras:
+        # 9 domains × 5 standard + extras:
         # customer_support_refund: 5 + 2 = 7
         # marketing_budget: 5 + 1 = 6
         # fulfillment: 5
@@ -48,9 +48,10 @@ class TestRegistry:
         # discount_cleanup: 5 + 2 = 7
         # order_followup: 5
         # product_seo: 5 + 1 = 6
-        # customer_outreach: 5 + 1 = 6  (W402-422)
-        # Total: 49
-        assert report.total_knobs == 49
+        # customer_outreach: 5 + 1 = 6
+        # catalog_quality: 5 + 1 = 6  (W458-475)
+        # Total: 55
+        assert report.total_knobs == 55
 
     def test_unset_knob_records_none_value(self, monkeypatch):
         monkeypatch.delenv(
@@ -89,6 +90,7 @@ class TestDomainCatalog:
             "order_followup",
             "product_seo",
             "customer_outreach",
+            "catalog_quality",
         }
 
 

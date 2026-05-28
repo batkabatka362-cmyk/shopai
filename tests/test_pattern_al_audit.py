@@ -12,7 +12,7 @@ from engines._pattern_al_audit import (
 
 class TestCatalog:
 
-    def test_all_8_domains(self):
+    def test_all_9_domains(self):
         assert set(_DOMAIN_STATE_MODULES.keys()) == {
             "customer_support_refund",
             "marketing_budget",
@@ -22,6 +22,7 @@ class TestCatalog:
             "order_followup",
             "product_seo",
             "customer_outreach",
+            "catalog_quality",
         }
 
     def test_state_modules_end_with_state(self):
@@ -53,7 +54,7 @@ class TestRunPatternALAudit:
         r = run_pattern_al_audit()
         assert isinstance(r, PatternALReport)
 
-    def test_scans_all_8_domains(self):
+    def test_scans_all_9_domains(self):
         r = run_pattern_al_audit()
         assert len(r.domains_scanned) == 8
 

@@ -74,6 +74,12 @@ _DOMAIN_LOGS = [
         "outreach_log",
         "recent_events",
     ),
+    (
+        "quality",
+        "catalog_quality_autonomy",
+        "quality_log",
+        "recent_events",
+    ),
 ]
 
 

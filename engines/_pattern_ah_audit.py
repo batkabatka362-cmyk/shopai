@@ -66,6 +66,10 @@ _DOMAIN_APPLY_EXPORTS: dict[
         "engines/customer_outreach_autonomy/outreach_applier.py",
         "apply_customer_outreach",
     ),
+    "catalog_quality": (
+        "engines/catalog_quality_autonomy/quality_applier.py",
+        "apply_catalog_quality",
+    ),
 }
 
 

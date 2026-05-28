@@ -163,9 +163,9 @@ class TestTemplateImportability:
 
 class TestSummaryBoundary:
 
-    def test_status_returns_8_domain_summaries(self):
+    def test_status_returns_9_domain_summaries(self):
         report = get_autonomy_status()
-        assert len(report.domains) == 8
+        assert len(report.domains) == 9
 
     @pytest.mark.parametrize(
         "summary_name", [d[0] for d in _DOMAINS],
@@ -224,9 +224,9 @@ class TestStoreScope:
         # store filter shouldn't crash regardless of data
         report = get_autonomy_status(store_id="store-xyz")
         assert report.store_id == "store-xyz"
-        assert len(report.domains) == 8
+        assert len(report.domains) == 9
 
     def test_doctor_with_store_scopes(self):
         r = run_autonomy_doctor(store_id="store-xyz")
         assert r.store_id == "store-xyz"
-        assert len(r.domains) == 8
+        assert len(r.domains) == 9

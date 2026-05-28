@@ -40,6 +40,8 @@ _DOMAIN_STATE_MODULES = [
      "seo_state"),
     ("customer_outreach", "customer_outreach_autonomy",
      "outreach_state"),
+    ("catalog_quality", "catalog_quality_autonomy",
+     "quality_state"),
 ]
 
 

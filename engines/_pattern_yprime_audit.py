@@ -119,6 +119,16 @@ _DOMAIN_TEMPLATE: dict[
             "status": "outreach_status.py",
         },
     ),
+    "catalog_quality": (
+        "engines/catalog_quality_autonomy",
+        {
+            "log": "quality_log.py",
+            "state": "quality_state.py",
+            "health": "quality_health.py",
+            "applier": "quality_applier.py",
+            "status": "quality_status.py",
+        },
+    ),
 }
 
 

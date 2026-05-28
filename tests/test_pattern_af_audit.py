@@ -13,7 +13,7 @@ from engines._pattern_af_audit import (
 
 class TestCatalog:
 
-    def test_all_8_domains(self):
+    def test_all_9_domains(self):
         assert set(_DOMAIN_LOG_EXPORTS.keys()) == {
             "customer_support_refund",
             "marketing_budget",
@@ -23,6 +23,7 @@ class TestCatalog:
             "order_followup",
             "product_seo",
             "customer_outreach",
+            "catalog_quality",
         }
 
     def test_universal_export_is_log_size(self):
@@ -84,7 +85,7 @@ class TestRunPatternAFAudit:
         r = run_pattern_af_audit()
         assert isinstance(r, PatternAFReport)
 
-    def test_scans_all_8_domains(self):
+    def test_scans_all_9_domains(self):
         r = run_pattern_af_audit()
         assert len(r.domains_scanned) == 8
 

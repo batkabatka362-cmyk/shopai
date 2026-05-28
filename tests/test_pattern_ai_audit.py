@@ -12,7 +12,7 @@ from engines._pattern_ai_audit import (
 
 class TestCatalog:
 
-    def test_all_8_domains(self):
+    def test_all_9_domains(self):
         assert set(_DOMAIN_STATUS_EXPORTS.keys()) == {
             "customer_support_refund",
             "marketing_budget",
@@ -22,6 +22,7 @@ class TestCatalog:
             "order_followup",
             "product_seo",
             "customer_outreach",
+            "catalog_quality",
         }
 
     def test_status_fn_names_follow_convention(self):
@@ -86,7 +87,7 @@ class TestRunPatternAIAudit:
         r = run_pattern_ai_audit()
         assert isinstance(r, PatternAIReport)
 
-    def test_scans_all_8_domains(self):
+    def test_scans_all_9_domains(self):
         r = run_pattern_ai_audit()
         assert len(r.domains_scanned) == 8
 

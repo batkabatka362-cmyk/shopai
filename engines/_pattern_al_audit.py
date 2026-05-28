@@ -55,6 +55,9 @@ _DOMAIN_STATE_MODULES: dict[str, tuple[str, str]] = {
     "customer_outreach": (
         "customer_outreach_autonomy", "outreach_state",
     ),
+    "catalog_quality": (
+        "catalog_quality_autonomy", "quality_state",
+    ),
 }
 
 

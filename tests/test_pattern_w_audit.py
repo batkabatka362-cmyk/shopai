@@ -14,7 +14,7 @@ from engines._pattern_w_audit import (
 
 class TestDomainCatalog:
 
-    def test_all_8_domains_present(self):
+    def test_all_9_domains_present(self):
         assert set(_DOMAIN_HEALTH_MODULES.keys()) == {
             "customer_support_refund",
             "marketing_budget",
@@ -24,6 +24,7 @@ class TestDomainCatalog:
             "order_followup",
             "product_seo",
             "customer_outreach",
+            "catalog_quality",
         }
 
     def test_every_domain_has_module_path_and_prefix(self):
@@ -83,7 +84,7 @@ class TestRunPatternWAudit:
         report = run_pattern_w_audit()
         assert isinstance(report, PatternWReport)
 
-    def test_scans_all_8_domains(self):
+    def test_scans_all_9_domains(self):
         report = run_pattern_w_audit()
         assert len(report.domains_scanned) == 8
 

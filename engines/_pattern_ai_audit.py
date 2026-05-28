@@ -62,6 +62,10 @@ _DOMAIN_STATUS_EXPORTS: dict[
         "engines/customer_outreach_autonomy/outreach_status.py",
         "get_customer_outreach_status",
     ),
+    "catalog_quality": (
+        "engines/catalog_quality_autonomy/quality_status.py",
+        "get_catalog_quality_status",
+    ),
 }
 
 

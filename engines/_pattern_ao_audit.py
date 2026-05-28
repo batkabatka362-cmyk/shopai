@@ -58,6 +58,9 @@ _DOMAIN_APPLIERS: dict[str, str] = {
     "customer_outreach": (
         "engines/customer_outreach_autonomy/outreach_applier.py"
     ),
+    "catalog_quality": (
+        "engines/catalog_quality_autonomy/quality_applier.py"
+    ),
 }
 
 

@@ -83,6 +83,12 @@ _DOMAINS = [
         "outreach",
         "get_customer_outreach_status",
     ),
+    (
+        "catalog_quality",
+        "catalog_quality_autonomy",
+        "quality",
+        "get_catalog_quality_status",
+    ),
 ]
 
 
@@ -96,6 +102,7 @@ _APPLY_NAMES: dict[str, str] = {
     "followup": "apply_order_followups",
     "seo": "apply_seo_updates",
     "outreach": "apply_customer_outreach",
+    "quality": "apply_catalog_quality",
 }
 
 
@@ -111,6 +118,7 @@ _APPLY_EMPTY_PAYLOAD: dict[str, tuple] = {
     "followup": ([],),
     "seo": ([],),
     "outreach": ([],),
+    "quality": ([],),
 }
 
 
@@ -124,6 +132,7 @@ _LOG_MODULE_NAMES: dict[str, str] = {
     "followup": "followup_log",
     "seo": "seo_log",
     "outreach": "outreach_log",
+    "quality": "quality_log",
 }
 
 
@@ -138,6 +147,7 @@ _STATUS_MODULE_NAMES: dict[str, str] = {
     "followup": "followup_status",
     "seo": "seo_status",
     "outreach": "outreach_status",
+    "quality": "quality_status",
 }
 
 
@@ -151,6 +161,7 @@ _ANALYZE_NAMES: dict[str, str] = {
     "followup": "analyze_followup_health",
     "seo": "analyze_seo_health",
     "outreach": "analyze_customer_outreach_health",
+    "quality": "analyze_catalog_quality_health",
 }
 
 

@@ -74,6 +74,11 @@ _DOMAIN_LOG_EXPORTS: dict[
         "record_outreach_event",
         "recent_events",
     ),
+    "catalog_quality": (
+        "engines/catalog_quality_autonomy/quality_log.py",
+        "record_quality_event",
+        "recent_events",
+    ),
 }
 
 

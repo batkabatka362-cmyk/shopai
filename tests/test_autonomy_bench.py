@@ -24,6 +24,7 @@ class TestCatalog:
             "order_followup",
             "product_seo",
             "customer_outreach",
+            "catalog_quality",
         }
 
     def test_bridge_names_use_maybe_auto_pause_prefix(self):
@@ -76,7 +77,7 @@ class TestRunAutonomyBench:
         r = run_autonomy_bench(runs_per_domain=1)
         assert isinstance(r, BenchReport)
 
-    def test_covers_8_domains(self):
+    def test_covers_9_domains(self):
         r = run_autonomy_bench(runs_per_domain=1)
         assert r.domain_count == 8
 

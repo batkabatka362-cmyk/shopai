@@ -13,7 +13,7 @@ from engines._pattern_ac_audit import (
 
 class TestDomainCatalog:
 
-    def test_all_8_domains_present(self):
+    def test_all_9_domains_present(self):
         assert set(_DOMAIN_CLI_PREFIXES.keys()) == {
             "customer_support_refund",
             "marketing_budget",
@@ -23,6 +23,7 @@ class TestDomainCatalog:
             "order_followup",
             "product_seo",
             "customer_outreach",
+            "catalog_quality",
         }
 
     def test_required_suffixes_are_4(self):
@@ -79,7 +80,7 @@ class TestRunPatternACAudit:
         report = run_pattern_ac_audit()
         assert isinstance(report, PatternACReport)
 
-    def test_scans_all_8_domains(self):
+    def test_scans_all_9_domains(self):
         report = run_pattern_ac_audit()
         assert len(report.domains_scanned) == 8
 

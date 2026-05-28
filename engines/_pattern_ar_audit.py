@@ -26,8 +26,10 @@ logger = logging.getLogger(__name__)
 
 
 # Canonical autonomy domain count. Bumped 7 -> 8 in W402-422
-# when customer_outreach_autonomy (8th domain) shipped.
-_EXPECTED_DOMAIN_COUNT = 8
+# when customer_outreach_autonomy (8th domain) shipped. Bumped
+# 8 -> 9 in W458-475 when catalog_quality_autonomy (9th
+# domain) shipped.
+_EXPECTED_DOMAIN_COUNT = 9
 
 
 # Registered substrate catalogs. Each entry: (module path,

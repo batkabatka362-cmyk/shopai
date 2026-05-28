@@ -40,6 +40,7 @@ _DOMAIN_SUMMARY_FUNCS: dict[str, str] = {
     "order_followup": "_order_followup_summary",
     "product_seo": "_product_seo_summary",
     "customer_outreach": "_customer_outreach_summary",
+    "catalog_quality": "_catalog_quality_summary",
 }
 
 

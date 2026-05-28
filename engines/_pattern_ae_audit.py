@@ -52,6 +52,9 @@ _DOMAIN_STATE_MODULES: dict[str, str] = {
     "customer_outreach": (
         "engines/customer_outreach_autonomy/outreach_state.py"
     ),
+    "catalog_quality": (
+        "engines/catalog_quality_autonomy/quality_state.py"
+    ),
 }
 
 

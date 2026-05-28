@@ -12,7 +12,7 @@ from engines._pattern_ad_audit import (
 
 class TestCatalog:
 
-    def test_all_8_domains_present(self):
+    def test_all_9_domains_present(self):
         assert set(_DOMAIN_BRIDGE_EXPORTS.keys()) == {
             "customer_support_refund",
             "marketing_budget",
@@ -22,6 +22,7 @@ class TestCatalog:
             "order_followup",
             "product_seo",
             "customer_outreach",
+            "catalog_quality",
         }
 
     def test_bridge_fn_names_use_maybe_auto_pause_prefix(self):
@@ -85,7 +86,7 @@ class TestRunPatternADAudit:
         r = run_pattern_ad_audit()
         assert isinstance(r, PatternADReport)
 
-    def test_scans_all_8_domains(self):
+    def test_scans_all_9_domains(self):
         r = run_pattern_ad_audit()
         assert len(r.domains_scanned) == 8
 

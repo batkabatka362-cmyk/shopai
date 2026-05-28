@@ -66,7 +66,7 @@ class TestResolveDomain:
 
 class TestListDomains:
 
-    def test_returns_8_canonical_keys(self):
+    def test_returns_9_canonical_keys(self):
         keys = list_domains()
         assert len(keys) == 8
         assert "customer_support_refund" in keys

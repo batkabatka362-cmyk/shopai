@@ -13,7 +13,7 @@ from engines._pattern_ak_audit import (
 
 class TestCatalog:
 
-    def test_all_8_domains(self):
+    def test_all_9_domains(self):
         assert set(_DOMAIN_BRIDGES.keys()) == {
             "customer_support_refund",
             "marketing_budget",
@@ -23,6 +23,7 @@ class TestCatalog:
             "order_followup",
             "product_seo",
             "customer_outreach",
+            "catalog_quality",
         }
 
     def test_bridge_names_use_maybe_auto_pause_prefix(self):
@@ -116,7 +117,7 @@ class TestRunPatternAKAudit:
         r = run_pattern_ak_audit()
         assert isinstance(r, PatternAKReport)
 
-    def test_scans_all_8_domains(self):
+    def test_scans_all_9_domains(self):
         r = run_pattern_ak_audit()
         assert len(r.domains_scanned) == 8
 

@@ -64,6 +64,10 @@ _DOMAIN_HEALTH_MODULES: dict[
         "engines/customer_outreach_autonomy/outreach_health.py",
         "CUSTOMER_OUTREACH",
     ),
+    "catalog_quality": (
+        "engines/catalog_quality_autonomy/quality_health.py",
+        "CATALOG_QUALITY",
+    ),
 }
 
 

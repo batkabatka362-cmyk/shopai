@@ -28,6 +28,7 @@ class TestCatalog:
             "order_followup",
             "product_seo",
             "customer_outreach",
+            "catalog_quality",
         }
 
     def test_state_module_names_end_with_state(self):
@@ -72,7 +73,7 @@ class TestBulkPauseUnconfirmed:
         assert r.action == "pause"
         assert not r.confirm_set
         assert r.ok_count == 0
-        assert r.error_count == 8
+        assert r.error_count == 9
         for d in r.domains:
             assert d.action == "skipped"
             assert _BULK_CONFIRM_ENV in d.error
@@ -93,7 +94,7 @@ class TestBulkResumeUnconfirmed:
         )
         r = run_bulk_resume()
         assert r.action == "resume"
-        assert r.error_count == 8
+        assert r.error_count == 9
         for d in r.domains:
             assert d.action == "skipped"
 

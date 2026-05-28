@@ -157,9 +157,9 @@ class TestAutonomyStatusIntegration:
         names = {d.name for d in rollup.domains}
         assert "customer_outreach" in names
 
-    def test_8_domains_total(self):
+    def test_9_domains_total(self):
         from core.automation.autonomy_status import (
             get_autonomy_status,
         )
         rollup = get_autonomy_status()
-        assert len(rollup.domains) == 8
+        assert len(rollup.domains) == 9
