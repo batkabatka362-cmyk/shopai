@@ -2581,3 +2581,47 @@ adoption) / Q' (autonomy DomainSummary shape).
 
 160 substrate waves total. 5 production autonomy domains.
 12 institutional audits.
+
+## Phase 15-17: 200-wave milestone (Waves 174-194)
+
+### Phase 15: 6th autonomy domain order_followup (W174-180)
+
+`engines/order_followup_autonomy/` follows the 5-piece
+template. SHOPIFY_TAG_ORDER with CURATED 5-tag taxonomy
+(shopai-followup-{pending-review, thank-you-sent,
+needs-attention, delivery-confirmed, survey-sent}) prevents
+typos polluting Shopify admin.
+
+CLI: `shopai order-followup-{status,health,pause,resume}`.
+
+### Phase 16.A: Pattern S (W181-184)
+
+14th audit. Verifies every autonomy CLI command
+({domain}-status / -health / -pause / -resume) accepts
+--json via argparse introspection. Live: 26/26 commands clean.
+
+### Phase 16.B: Pattern T + autonomy-env (W185-188)
+
+15th audit + discovery surface.
+`engines/_pattern_t_audit.py` catalogs 37 env knobs across
+6 domains. `shopai autonomy-env [--set-only] [--domain X]`
+lists every knob.
+
+### Phase 17: Unified audit roster (W189-194)
+
+Extended pre-existing `_AUDIT_ORDER` + `_AUDIT_LABELS` +
+`_run_one_audit` to include the 7 Phase 11+ audits. `shopai
+audit` now runs all 16 gates in one command. Live: 15/16
+pass; 1 pre-existing cluster_topology fail unrelated to
+Phase 11-17 work.
+
+### Phase 11-17 substrate totals
+
+  Autonomy domains: 6 production-wired parallel
+  Institutional audits: 16 (was 9; +7 in Phase 11+)
+  Tests: 197 new across Phase 11-17
+  Template LOC saved: ~720 across 4 new domains
+  Commits ahead of main: 485+
+
+194 substrate waves total. North Star
+(credentials configured -> earning) shipped end-to-end.
