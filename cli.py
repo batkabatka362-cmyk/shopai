@@ -4214,6 +4214,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 347: bulk pause/resume across all 7 domains
+    autonomy_bulk_pause_p = sub.add_parser(
+        "autonomy-bulk-pause",
+        help=(
+            "Wave 347: pause every autonomy domain in one "
+            "command (maintenance window halt). Requires "
+            "SHOPAI_AUTONOMY_BULK_PAUSE_CONFIRM=1."
+        ),
+    )
+    autonomy_bulk_pause_p.add_argument(
+        "--reason", type=str, default="operator bulk pause",
+    )
+    autonomy_bulk_pause_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    autonomy_bulk_resume_p = sub.add_parser(
+        "autonomy-bulk-resume",
+        help=(
+            "Wave 347: resume every autonomy domain in one "
+            "command. Requires SHOPAI_AUTONOMY_BULK_PAUSE_"
+            "CONFIRM=1."
+        ),
+    )
+    autonomy_bulk_resume_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 122: Pattern O audit (wired engines have opt-in gate)
     pattern_o_p = sub.add_parser(
         "pattern-o-audit",
@@ -30440,6 +30468,78 @@ def _cmd_pattern_p_audit(args) -> None:
         )
 
 
+def _render_bulk_report(report, as_json: bool) -> None:
+    """Shared text/json renderer for bulk pause/resume."""
+    if as_json:
+        print(json.dumps({
+            "action": report.action,
+            "confirm_set": report.confirm_set,
+            "reason": report.reason,
+            "ok": report.ok_count,
+            "error": report.error_count,
+            "total": report.total,
+            "domains": [
+                {
+                    "name": d.domain,
+                    "ok": d.ok,
+                    "action": d.action,
+                    "error": d.error,
+                }
+                for d in report.domains
+            ],
+        }, indent=2, default=str))
+        if report.error_count > 0:
+            sys.exit(1)
+        return
+    print(f"Autonomy bulk-{report.action}:")
+    if not report.confirm_set:
+        print(
+            "  ABORTED -- "
+            "SHOPAI_AUTONOMY_BULK_PAUSE_CONFIRM=1 required."
+        )
+        print(
+            "  Set the env var then re-run; the gate prevents "
+            "accidental empire-wide halts."
+        )
+        sys.exit(1)
+    for d in report.domains:
+        mk = "[OK ]" if d.ok else "[BAD]"
+        if d.ok:
+            print(f"  {mk} {d.domain:<24} {d.action}")
+        else:
+            print(
+                f"  {mk} {d.domain:<24} {d.action}  "
+                f"({d.error})"
+            )
+    print()
+    print(
+        f"Result: {report.ok_count} ok / "
+        f"{report.error_count} error"
+    )
+    if report.error_count > 0:
+        sys.exit(1)
+
+
+def _cmd_autonomy_bulk_pause(args) -> None:
+    """Wave 347: pause every autonomy domain."""
+    from core.automation.autonomy_bulk import run_bulk_pause
+    reason = (
+        getattr(args, "reason", None)
+        or "operator bulk pause"
+    )
+    as_json = bool(getattr(args, "json", False))
+    report = run_bulk_pause(reason=reason)
+    _render_bulk_report(report, as_json)
+
+
+def _cmd_autonomy_bulk_resume(args) -> None:
+    """Wave 347: resume every autonomy domain."""
+    from core.automation.autonomy_bulk import run_bulk_resume
+    as_json = bool(getattr(args, "json", False))
+    report = run_bulk_resume()
+    _render_bulk_report(report, as_json)
+
+
 def _cmd_autonomy_bench(args) -> None:
     """Wave 341: per-domain bridge latency benchmark."""
     from core.automation.autonomy_bench import (
@@ -43801,6 +43901,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomy-bench":
         _cmd_autonomy_bench(args)
+        return
+
+    if args.command == "autonomy-bulk-pause":
+        _cmd_autonomy_bulk_pause(args)
+        return
+
+    if args.command == "autonomy-bulk-resume":
+        _cmd_autonomy_bulk_resume(args)
         return
 
     if args.command == "autonomy-status":
