@@ -56,6 +56,8 @@ _EXEMPT_WRITERS: frozenset[str] = frozenset({
     "product_seo_autonomy/seo_applier.py",
     # Wave 379-385: 8th autonomy domain
     "customer_outreach_autonomy/outreach_applier.py",
+    # Wave 436-442: 9th autonomy domain
+    "catalog_quality_autonomy/quality_applier.py",
 })
 
 
