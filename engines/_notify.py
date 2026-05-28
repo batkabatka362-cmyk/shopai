@@ -511,10 +511,56 @@ def collect_alerts() -> list[NotifyAlert]:
             "notify: order_followup probe raised: %s", exc,
         )
 
-    # 11. Wave 153: autonomy coalesce. Opt-in via
+    # 11. Wave 200: product SEO auto-pause / critical.
+    try:
+        from engines.product_seo_autonomy.seo_state import (
+            get_state as _seo_state,
+        )
+        from engines.product_seo_autonomy.seo_health import (
+            analyze_seo_health as _seo_health,
+        )
+        seostate = _seo_state()
+        if seostate.paused:
+            alerts.append(NotifyAlert(
+                kind="product_seo_paused",
+                severity="critical",
+                message=(
+                    f"Product SEO auto-pause active: "
+                    f"{seostate.reason or '(no reason)'}"
+                ),
+                context={
+                    "reason": seostate.reason,
+                    "paused_at": seostate.paused_at,
+                    "auto_resume_after": (
+                        seostate.auto_resume_after
+                    ),
+                },
+            ))
+        else:
+            seoh = _seo_health(window_hours=24.0)
+            if seoh.verdict == "critical":
+                alerts.append(NotifyAlert(
+                    kind="product_seo_health_critical",
+                    severity="critical",
+                    message=(
+                        f"Product SEO failure ratio "
+                        f"{seoh.failure_ratio:.0%} >= critical"
+                        f" (n={seoh.sample_size})"
+                    ),
+                    context={
+                        "failure_ratio": seoh.failure_ratio,
+                        "sample_size": seoh.sample_size,
+                    },
+                ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "notify: product_seo probe raised: %s", exc,
+        )
+
+    # 12. Wave 153: autonomy coalesce. Opt-in via
     # SHOPAI_NOTIFY_AUTONOMY_COALESCE=1. When set, replace
     # per-domain {refund,budget,fulfillment,inventory,
-    # discount_cleanup,order_followup}_paused /
+    # discount_cleanup,order_followup,product_seo}_paused /
     # _health_critical alerts with a single rolled-up
     # autonomy_degraded alert.
     if os.environ.get("SHOPAI_NOTIFY_AUTONOMY_COALESCE", "") in (
@@ -530,6 +576,8 @@ def collect_alerts() -> list[NotifyAlert]:
             "discount_cleanup_health_critical",
             "order_followup_paused",
             "order_followup_health_critical",
+            "product_seo_paused",
+            "product_seo_health_critical",
         }
         autonomy_alerts = [
             a for a in alerts if a.kind in autonomy_kinds

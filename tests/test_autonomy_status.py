@@ -79,6 +79,13 @@ class TestAutonomyStatusAggregation:
                 name="order_followup",
                 verdict="healthy",
             ),
+        ), patch(
+            "core.automation.autonomy_status."
+            "_product_seo_summary",
+            return_value=DomainSummary(
+                name="product_seo",
+                verdict="healthy",
+            ),
         ):
             report = get_autonomy_status()
         assert report.overall_verdict == "healthy"
@@ -123,6 +130,12 @@ class TestAutonomyStatusAggregation:
             return_value=DomainSummary(
                 name="order_followup", verdict="healthy",
             ),
+        ), patch(
+            "core.automation.autonomy_status."
+            "_product_seo_summary",
+            return_value=DomainSummary(
+                name="product_seo", verdict="healthy",
+            ),
         ):
             report = get_autonomy_status()
         assert report.overall_verdict == "paused"
@@ -164,6 +177,12 @@ class TestAutonomyStatusAggregation:
             "_order_followup_summary",
             return_value=DomainSummary(
                 name="order_followup", verdict="quiet",
+            ),
+        ), patch(
+            "core.automation.autonomy_status."
+            "_product_seo_summary",
+            return_value=DomainSummary(
+                name="product_seo", verdict="quiet",
             ),
         ):
             report = get_autonomy_status()

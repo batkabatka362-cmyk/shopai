@@ -53,6 +53,7 @@ def _domain_probes():
         ("inventory", "_inventory_summary"),
         ("discount_cleanup", "_discount_cleanup_summary"),
         ("order_followup", "_order_followup_summary"),
+        ("product_seo", "_product_seo_summary"),
     )
     out = []
     for domain, fn_name in probes:

@@ -156,6 +156,33 @@ def _discount_cleanup_summary(
         )
 
 
+def _product_seo_summary(
+    window_hours: float, store_id: str | None = None,
+) -> DomainSummary:
+    try:
+        from engines.product_seo_autonomy.seo_status import (
+            get_seo_status,
+        )
+        r = get_seo_status(
+            window_hours=window_hours, store_id=store_id,
+        )
+        return DomainSummary(
+            name="product_seo",
+            verdict=r.verdict,
+            paused=r.paused,
+            applied_count=r.applied_count,
+            health_failure_ratio=r.health_failure_ratio,
+            next_action=r.next_action,
+            reasons=list(r.verdict_reasons),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return DomainSummary(
+            name="product_seo",
+            verdict="quiet",
+            reasons=[f"probe raised: {exc}"],
+        )
+
+
 def _order_followup_summary(
     window_hours: float, store_id: str | None = None,
 ) -> DomainSummary:
@@ -240,6 +267,9 @@ def get_autonomy_status(
             window_hours, store_id=store_id,
         ),
         _order_followup_summary(
+            window_hours, store_id=store_id,
+        ),
+        _product_seo_summary(
             window_hours, store_id=store_id,
         ),
     ]

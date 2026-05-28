@@ -15,12 +15,13 @@ class TestPatternRLive:
         assert isinstance(report, PatternRReport)
         assert report.has_violations is False
 
-    def test_probes_all_6_domains(self):
+    def test_probes_all_7_domains(self):
         report = run_pattern_r_audit()
         assert set(report.domains_probed) == {
             "customer_support", "marketing",
             "fulfillment", "inventory",
             "discount_cleanup", "order_followup",
+            "product_seo",
         }
 
 
