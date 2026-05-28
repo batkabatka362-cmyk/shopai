@@ -3824,6 +3824,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_w_p.add_argument("--json", action="store_true")
 
+    # Wave 226: Pattern X audit (autonomy_status rollup coverage)
+    pattern_x_p = sub.add_parser(
+        "pattern-x-audit",
+        help=(
+            "Wave 226: verify every autonomy domain has a "
+            "_<domain>_summary defined + invoked from "
+            "get_autonomy_status."
+        ),
+    )
+    pattern_x_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -29164,6 +29175,45 @@ def _cmd_pattern_v_audit(args) -> None:
         )
 
 
+def _cmd_pattern_x_audit(args) -> None:
+    """Wave 226: autonomy_status rollup coverage audit."""
+    from engines._pattern_x_audit import run_pattern_x_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_x_audit()
+    if as_json:
+        print(json.dumps({
+            "domains_scanned": report.domains_scanned,
+            "clean_domains": report.clean_domains,
+            "violations": [
+                {
+                    "domain": v.domain,
+                    "expected_func": v.expected_func,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern X FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.domain}] {v.reason}")
+        sys.exit(1)
+    else:
+        scanned = len(report.domains_scanned)
+        clean = len(report.clean_domains)
+        print(
+            f"Pattern X OK -- {clean}/{scanned} autonomy "
+            f"domain(s) wired into autonomy_status rollup."
+        )
+
+
 def _cmd_pattern_w_audit(args) -> None:
     """Wave 223: bridge env-gate enforcement audit."""
     from engines._pattern_w_audit import run_pattern_w_audit
@@ -33051,6 +33101,22 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_x":
+            from engines._pattern_x_audit import (
+                run_pattern_x_audit,
+            )
+            r = run_pattern_x_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_domains": list(r.clean_domains),
+                "violations": [
+                    {
+                        "domain": v.domain,
+                        "expected_func": v.expected_func,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -33065,7 +33131,7 @@ _AUDIT_ORDER = (
     # Phase 16.A-B / Phase 18.B
     "pattern_n", "pattern_o", "pattern_p", "pattern_qprime",
     "pattern_r", "pattern_s", "pattern_t",
-    "pattern_u", "pattern_v", "pattern_w",
+    "pattern_u", "pattern_v", "pattern_w", "pattern_x",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -33087,6 +33153,7 @@ _AUDIT_LABELS = {
     "pattern_u": "Pattern U (cycle hook coverage)",
     "pattern_v": "Pattern V (notify alert registration)",
     "pattern_w": "Pattern W (env-gate enforcement)",
+    "pattern_x": "Pattern X (autonomy_status rollup coverage)",
 }
 
 
@@ -42065,6 +42132,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-w-audit":
         _cmd_pattern_w_audit(args)
+        return
+
+    if args.command == "pattern-x-audit":
+        _cmd_pattern_x_audit(args)
         return
 
     if args.command == "autonomy-env":
