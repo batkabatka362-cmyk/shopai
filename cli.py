@@ -3882,6 +3882,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_ae_p.add_argument("--json", action="store_true")
 
+    # Wave 269: Pattern AF audit (log module exports)
+    pattern_af_p = sub.add_parser(
+        "pattern-af-audit",
+        help=(
+            "Wave 269: verify each domain's log module "
+            "exports record_X + recent_X + universal "
+            "log_size at module level."
+        ),
+    )
+    pattern_af_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -29326,6 +29337,49 @@ def _cmd_pattern_v_audit(args) -> None:
         )
 
 
+def _cmd_pattern_af_audit(args) -> None:
+    """Wave 269: log module export interface audit."""
+    from engines._pattern_af_audit import run_pattern_af_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_af_audit()
+    if as_json:
+        print(json.dumps({
+            "domains_scanned": report.domains_scanned,
+            "clean_domains": report.clean_domains,
+            "violations": [
+                {
+                    "domain": v.domain,
+                    "module_path": v.module_path,
+                    "missing_exports": v.missing_exports,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern AF FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(
+                f"  [{v.domain}] missing: "
+                f"{v.missing_exports}"
+            )
+        sys.exit(1)
+    else:
+        scanned = len(report.domains_scanned)
+        clean = len(report.clean_domains)
+        print(
+            f"Pattern AF OK -- {clean}/{scanned} autonomy "
+            f"domain(s) export the log-module interface."
+        )
+
+
 def _cmd_pattern_ae_audit(args) -> None:
     """Wave 261: state module is_paused export audit."""
     from engines._pattern_ae_audit import run_pattern_ae_audit
@@ -33572,6 +33626,22 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_af":
+            from engines._pattern_af_audit import (
+                run_pattern_af_audit,
+            )
+            r = run_pattern_af_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_domains": list(r.clean_domains),
+                "violations": [
+                    {
+                        "domain": v.domain,
+                        "missing_exports": v.missing_exports,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -33588,6 +33658,7 @@ _AUDIT_ORDER = (
     "pattern_r", "pattern_s", "pattern_t",
     "pattern_u", "pattern_v", "pattern_w", "pattern_x",
     "pattern_yprime", "pattern_ac", "pattern_ad", "pattern_ae",
+    "pattern_af",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -33616,6 +33687,7 @@ _AUDIT_LABELS = {
     "pattern_ac": "Pattern AC (CLI command parity)",
     "pattern_ad": "Pattern AD (health bridge function export)",
     "pattern_ae": "Pattern AE (state is_paused export)",
+    "pattern_af": "Pattern AF (log module exports)",
 }
 
 
@@ -42614,6 +42686,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-ae-audit":
         _cmd_pattern_ae_audit(args)
+        return
+
+    if args.command == "pattern-af-audit":
+        _cmd_pattern_af_audit(args)
         return
 
     if args.command == "autonomy-env":
