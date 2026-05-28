@@ -4030,6 +4030,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_ar_p.add_argument("--json", action="store_true")
 
+    # Wave 375: Pattern AS audit (env knob uniqueness)
+    pattern_as_p = sub.add_parser(
+        "pattern-as-audit",
+        help=(
+            "Wave 375: verify every env knob name maps to "
+            "exactly one autonomy domain (catches copy-paste "
+            "contamination in a new domain's health module)."
+        ),
+    )
+    pattern_as_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -29624,6 +29635,45 @@ def _cmd_pattern_v_audit(args) -> None:
         )
 
 
+def _cmd_pattern_as_audit(args) -> None:
+    """Wave 375: env knob name uniqueness audit."""
+    from engines._pattern_as_audit import run_pattern_as_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_as_audit()
+    if as_json:
+        print(json.dumps({
+            "total_knobs": report.total_knobs,
+            "unique_knobs": report.unique_knobs,
+            "duplicate_knobs": report.duplicate_knobs,
+            "violations": [
+                {
+                    "knob": v.knob,
+                    "domains": v.domains,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern AS FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.knob}] {v.reason}")
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern AS OK -- {report.unique_knobs} of "
+            f"{report.total_knobs} env knob(s) uniquely "
+            "owned by one domain each."
+        )
+
+
 def _cmd_pattern_ar_audit(args) -> None:
     """Wave 363: cross-catalog parity audit."""
     from engines._pattern_ar_audit import run_pattern_ar_audit
@@ -35043,6 +35093,23 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_as":
+            from engines._pattern_as_audit import (
+                run_pattern_as_audit,
+            )
+            r = run_pattern_as_audit()
+            return {
+                "ok": not r.has_violations,
+                "total_knobs": r.total_knobs,
+                "unique_knobs": r.unique_knobs,
+                "violations": [
+                    {
+                        "knob": v.knob,
+                        "domains": list(v.domains),
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -35062,7 +35129,7 @@ _AUDIT_ORDER = (
     "pattern_af", "pattern_ag", "pattern_ah", "pattern_ai",
     "pattern_aj", "pattern_ak", "pattern_al", "pattern_am",
     "pattern_an", "pattern_ao", "pattern_ap", "pattern_aq",
-    "pattern_ar",
+    "pattern_ar", "pattern_as",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -35104,6 +35171,7 @@ _AUDIT_LABELS = {
     "pattern_ap": "Pattern AP (bridge cascade isolation)",
     "pattern_aq": "Pattern AQ (verdict literal validation)",
     "pattern_ar": "Pattern AR (cross-catalog parity)",
+    "pattern_as": "Pattern AS (env knob name uniqueness)",
 }
 
 
@@ -44154,6 +44222,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-ar-audit":
         _cmd_pattern_ar_audit(args)
+        return
+
+    if args.command == "pattern-as-audit":
+        _cmd_pattern_as_audit(args)
         return
 
     if args.command == "autonomy-env":
