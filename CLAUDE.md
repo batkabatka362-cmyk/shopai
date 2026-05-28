@@ -2686,3 +2686,104 @@ cluster_topology fail).
 
 210 substrate waves total. 7 parallel autonomy domains
 production-wired. 18 institutional audits unified.
+
+## Phase 20-22: interface-contract audits + runtime smoke (W223-292)
+
+40+ wave consolidation that hardens the autonomy-domain template
+against silent breakage. After Phase 12-18 shipped 7 domains via
+the 5-piece template, Phase 20-22 locks down the canonical
+exports + adds a 360° operator surface + a runtime smoke.
+
+### Audit family (18 → 28 gates)
+
+| Audit | Wave | Verifies |
+|---|---|---|
+| Pattern W | W223 | env-prefix literal appears in each domain's health module |
+| Pattern X | W226 | `_<X>_summary` defined + invoked in autonomy_status.py |
+| Pattern Y' | W229 | all 5 template files exist per domain |
+| Pattern AC | W232 | `{prefix}-status/-health/-pause/-resume` registered in cli.py |
+| Pattern AD | W256 | `maybe_auto_pause_X` is a top-level FunctionDef in health |
+| Pattern AE | W261 | `is_paused` exported by state (FunctionDef/Assign/AnnAssign) |
+| Pattern AF | W269 | log exports `record_X` + `recent_X` + `log_size` |
+| Pattern AG | W273 | `analyze_X_health` exported by health module |
+| Pattern AH | W277 | `apply_X` is a top-level FunctionDef in applier |
+| Pattern AI | W286 | `get_X_status` is a top-level FunctionDef in status |
+
+AD/AH/AI are **strict** (only FunctionDef counts) because their
+callers do `from X import Y` -- assign-aliases don't survive that
+import shape reliably. AE/AF/AG are **lenient** (FunctionDef OR
+Assign OR AnnAssign) because the W117-119 template re-exports
+via Assign are intended.
+
+### Operator surfaces
+
+  - `shopai autonomy-doctor [--json]` -- W235 static 360 check
+    (verdict + env-knob coverage + wiring via U/V/W/Y')
+  - `shopai autonomy-smoke [--json]` -- W289 runtime exerciser
+    (imports + calls each domain's 5 entry points with empty
+    synthetic input)
+  - `shopai go-live` -- W245 `autonomy_substrate` check; FAIL
+    blocks go-live, WARN advisory
+  - `shopai daily-brief` / `shopai empire` -- W248 one-line
+    wiring block, silent in clean case
+  - `shopai cycle run --yes` -- W251 post-cycle wiring snapshot
+    inline + in JSON envelope
+
+### Adding domain 8: checklist
+
+When the next autonomy domain ships, the 5-piece template +
+audit catalog updates are:
+
+  1. Create `engines/<domain>_autonomy/`:
+     - `<prefix>_log.py` (wrap `core.automation.action_log`)
+     - `<prefix>_state.py` (wrap `core.automation.pause_state`)
+     - `<prefix>_health.py` (define `analyze_<prefix>_health` +
+       `maybe_auto_pause_<prefix>`)
+     - `<prefix>_applier.py` (define `apply_<prefix>`, gate on
+       `is_paused()`, call `record_writeback`)
+     - `<prefix>_status.py` (define `get_<prefix>_status`
+       returning a DomainSummary-compatible report)
+  2. Add `_<domain>_summary` function to
+     `core/automation/autonomy_status.py` + invoke it in
+     `get_autonomy_status()`'s domain list
+  3. Register `<prefix>-status/-health/-pause/-resume` subparsers
+     in cli.py + dispatch handlers
+  4. Wire `maybe_auto_pause_<prefix>` into `_cmd_cycle_run`
+     (Pattern U gate)
+  5. Add 2 alert kinds (`<prefix>_paused` +
+     `<prefix>_health_critical`) to `engines/_notify.py`
+     `collect_alerts` (Pattern V gate)
+  6. Update audit catalogs in 10 files:
+     - `_pattern_w_audit.py` -- add domain + prefix
+     - `_pattern_x_audit.py` -- add summary fn name
+     - `_pattern_yprime_audit.py` -- add 5 module paths
+     - `_pattern_ac_audit.py` -- add CLI prefix
+     - `_pattern_ad_audit.py` -- add bridge fn name
+     - `_pattern_ae_audit.py` -- add state module path
+     - `_pattern_af_audit.py` -- add log + record_X + recent_X
+     - `_pattern_ag_audit.py` -- add analyze fn name
+     - `_pattern_ah_audit.py` -- add apply fn name
+     - `_pattern_ai_audit.py` -- add status fn name
+  7. Update `core/automation/autonomy_smoke.py`'s `_DOMAINS`,
+     `_APPLY_NAMES`, `_APPLY_EMPTY_PAYLOAD`, `_LOG_MODULE_NAMES`,
+     `_STATUS_MODULE_NAMES`, `_ANALYZE_NAMES`
+  8. Update `core/automation/autonomy_doctor.py`'s
+     `_DOMAIN_NAME_ALIASES` if the autonomy_status name differs
+     from the substrate catalog key
+  9. Tests: each audit's test suite has a `test_all_7_domains`
+     -- bump to 8
+
+Running `shopai audit` should show all 28 gates pass after the
+wireup. `shopai autonomy-smoke` should show 8/8 ok. If anything
+breaks, the audit that caught it points at the exact missing
+hookup.
+
+### Phase 20-22 deliverables
+
+  Audit gates: 18 -> 28
+  Tests added: 200+ across new audits + doctor + smoke +
+                integration
+  Operator surfaces: 2 new (autonomy-doctor + autonomy-smoke)
+                     + 4 enriched (go-live, daily-brief, empire,
+                     cycle run)
+  Commits ahead of main: 506+
