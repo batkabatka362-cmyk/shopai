@@ -4505,6 +4505,63 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 436-452: catalog quality autonomy (9th domain)
+    quality_status_p = sub.add_parser(
+        "catalog-quality-status",
+        help=(
+            "Wave 440: empire-wide catalog quality "
+            "tagging report."
+        ),
+    )
+    quality_status_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+    )
+    quality_status_p.add_argument(
+        "--store", type=str, default="",
+    )
+    quality_status_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    quality_health_p = sub.add_parser(
+        "catalog-quality-health",
+        help="Wave 438: analyze catalog quality loop health.",
+    )
+    quality_health_p.add_argument(
+        "--window-hours", type=float, default=24.0,
+    )
+    quality_health_p.add_argument(
+        "--apply-bridge", action="store_true",
+    )
+    quality_health_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    quality_pause_p = sub.add_parser(
+        "catalog-quality-pause",
+        help=(
+            "Wave 437: manually set catalog quality pause flag."
+        ),
+    )
+    quality_pause_p.add_argument(
+        "--reason", type=str,
+        default="manual operator pause",
+    )
+    quality_pause_p.add_argument(
+        "--auto-resume-hours", type=float, default=0.0,
+    )
+    quality_pause_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    quality_resume_p = sub.add_parser(
+        "catalog-quality-resume",
+        help="Wave 437: clear catalog quality pause flag.",
+    )
+    quality_resume_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 154-159: discount cleanup autonomy surfaces
     cleanup_status_p = sub.add_parser(
         "discount-cleanup-status",
@@ -22135,6 +22192,24 @@ def _cmd_cycle_run(args) -> None:
             "customer-outreach bridge failed: %s", exc,
         )
 
+    # Wave 453: catalog quality auto-pause bridge
+    try:
+        from engines.catalog_quality_autonomy.quality_health import (  # noqa: E501
+            maybe_auto_pause_quality,
+        )
+        cq_report = maybe_auto_pause_quality(
+            window_hours=24.0,
+        )
+        if cq_report.bridge_fired:
+            logger.info(
+                "catalog quality auto-pause bridge fired: %s",
+                cq_report.bridge_reason,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "catalog-quality bridge failed: %s", exc,
+        )
+
     # Wave 251: post-cycle autonomy-doctor snapshot. Cheap
     # (cached AST audits + per-domain summary calls); catches
     # substrate breakage that bridge fire alone wouldn't expose.
@@ -32015,6 +32090,212 @@ def _cmd_customer_outreach_resume(args) -> None:
         }, indent=2))
         return
     print("Customer outreach auto-pause flag CLEARED")
+
+
+def _cmd_catalog_quality_status(args) -> None:
+    """Wave 440: empire-wide catalog quality status."""
+    from engines.catalog_quality_autonomy.quality_status import (  # noqa: E501
+        get_catalog_quality_status,
+    )
+    as_json = bool(getattr(args, "json", False))
+    window_h = float(
+        getattr(args, "window_hours", 168.0) or 168.0,
+    )
+    store_id = (getattr(args, "store", "") or "").strip()
+    report = get_catalog_quality_status(
+        window_hours=window_h,
+        store_id=store_id or None,
+    )
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "store_id": report.store_id,
+            "total_events": report.total_events,
+            "applied_count": report.applied_count,
+            "skipped_count": report.skipped_count,
+            "by_tag": report.by_tag,
+            "by_status": report.by_status,
+            "by_signal_source": report.by_signal_source,
+            "health_verdict": report.health_verdict,
+            "health_failure_ratio": (
+                report.health_failure_ratio
+            ),
+            "paused": report.paused,
+            "pause_reason": report.pause_reason,
+            "verdict": report.verdict,
+            "verdict_reasons": report.verdict_reasons,
+            "next_action": report.next_action,
+        }, indent=2, default=str))
+        return
+    marker = {
+        "healthy": "[OK ]", "quiet": "[ - ]",
+        "degraded": "[WRN]", "paused": "[BAD]",
+    }.get(report.verdict, "[ ? ]")
+    scope = (
+        f"store={report.store_id}" if report.store_id
+        else "fleet"
+    )
+    print(
+        f"Catalog quality ({scope}, last "
+        f"{report.window_hours:.0f}h)"
+    )
+    print()
+    print(f"  Total events:     {report.total_events}")
+    print(f"  Tagged:           {report.applied_count}")
+    print(f"  Skipped:          {report.skipped_count}")
+    if report.by_tag:
+        print()
+        print("  Tags applied:")
+        for tag in sorted(
+            report.by_tag,
+            key=lambda t: -report.by_tag[t],
+        ):
+            print(
+                f"    {tag:<40} "
+                f"{report.by_tag[tag]:>4}"
+            )
+    if report.by_signal_source:
+        print()
+        print("  Signal sources:")
+        for src in sorted(
+            report.by_signal_source,
+            key=lambda s: -report.by_signal_source[s],
+        ):
+            print(
+                f"    {src:<30} "
+                f"{report.by_signal_source[src]:>4}"
+            )
+    print(
+        f"  Health:           {report.health_verdict}  "
+        f"(failure ratio "
+        f"{report.health_failure_ratio:.0%})"
+    )
+    if report.paused:
+        print(
+            f"  *** PAUSED ***  reason: "
+            f"{report.pause_reason}"
+        )
+    print()
+    print(f"  {marker} VERDICT: {report.verdict}")
+    for reason in report.verdict_reasons:
+        print(f"    - {reason}")
+    if report.next_action:
+        print()
+        print(f"  Next: {report.next_action}")
+
+
+def _cmd_catalog_quality_health(args) -> None:
+    """Wave 438: catalog quality health analyzer."""
+    from engines.catalog_quality_autonomy.quality_health import (  # noqa: E501
+        analyze_catalog_quality_health,
+        maybe_auto_pause_quality,
+    )
+    as_json = bool(getattr(args, "json", False))
+    window_h = float(
+        getattr(args, "window_hours", 24.0) or 24.0,
+    )
+    apply_bridge = bool(getattr(args, "apply_bridge", False))
+    report = (
+        maybe_auto_pause_quality(window_hours=window_h)
+        if apply_bridge
+        else analyze_catalog_quality_health(
+            window_hours=window_h,
+        )
+    )
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "sample_size": report.sample_size,
+            "applied_count": report.applied_count,
+            "adapter_failed_count": (
+                report.adapter_failed_count
+            ),
+            "failure_ratio": report.failure_ratio,
+            "verdict": report.verdict,
+            "reasons": report.reasons,
+            "already_paused": report.already_paused,
+            "bridge_fired": report.bridge_fired,
+            "bridge_reason": report.bridge_reason,
+        }, indent=2, default=str))
+        return
+    marker = {
+        "healthy": "[OK ]", "degraded": "[WRN]",
+        "critical": "[BAD]",
+    }.get(report.verdict, "[ ? ]")
+    print(
+        f"Catalog quality health (last "
+        f"{report.window_hours:.0f}h)"
+    )
+    print()
+    print(f"  Sample size:        {report.sample_size}")
+    print(f"  Applied:            {report.applied_count}")
+    print(
+        f"  Adapter failed:     "
+        f"{report.adapter_failed_count}"
+    )
+    print(
+        f"  Failure ratio:      "
+        f"{report.failure_ratio:.0%}"
+    )
+    print()
+    print(f"  {marker} VERDICT: {report.verdict}")
+    for reason in report.reasons:
+        print(f"    - {reason}")
+    if report.already_paused:
+        print()
+        print("  *** QUALITY MUTATIONS PAUSED ***")
+    if apply_bridge:
+        print()
+        if report.bridge_fired:
+            print(
+                f"  [AUTO-PAUSED] {report.bridge_reason}"
+            )
+        else:
+            print(f"  Bridge: {report.bridge_reason}")
+
+
+def _cmd_catalog_quality_pause(args) -> None:
+    from engines.catalog_quality_autonomy.quality_state import (  # noqa: E501
+        pause,
+    )
+    import time as _t
+    as_json = bool(getattr(args, "json", False))
+    reason = (
+        getattr(args, "reason", "manual operator pause")
+        or "manual operator pause"
+    )
+    auto_h = float(
+        getattr(args, "auto_resume_hours", 0.0) or 0.0,
+    )
+    auto_resume_at = (
+        _t.time() + auto_h * 3600.0 if auto_h > 0 else 0.0
+    )
+    state = pause(
+        reason=reason, auto_resume_after=auto_resume_at,
+    )
+    if as_json:
+        print(json.dumps({
+            "paused": state.paused, "reason": state.reason,
+            "paused_at": state.paused_at,
+            "auto_resume_after": state.auto_resume_after,
+        }, indent=2, default=str))
+        return
+    print("Catalog quality auto-pause flag SET")
+    print(f"  Reason: {state.reason}")
+
+
+def _cmd_catalog_quality_resume(args) -> None:
+    from engines.catalog_quality_autonomy.quality_state import (  # noqa: E501
+        resume,
+    )
+    as_json = bool(getattr(args, "json", False))
+    state = resume()
+    if as_json:
+        print(json.dumps({
+            "paused": state.paused, "reason": state.reason,
+        }, indent=2))
+        return
+    print("Catalog quality auto-pause flag CLEARED")
 
 
 def _cmd_cleanup_status(args) -> None:
@@ -44595,6 +44876,19 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "customer-outreach-resume":
         _cmd_customer_outreach_resume(args)
+        return
+
+    if args.command == "catalog-quality-status":
+        _cmd_catalog_quality_status(args)
+        return
+    if args.command == "catalog-quality-health":
+        _cmd_catalog_quality_health(args)
+        return
+    if args.command == "catalog-quality-pause":
+        _cmd_catalog_quality_pause(args)
+        return
+    if args.command == "catalog-quality-resume":
+        _cmd_catalog_quality_resume(args)
         return
 
     if args.command == "discount-cleanup-status":

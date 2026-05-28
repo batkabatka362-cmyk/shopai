@@ -606,7 +606,53 @@ def collect_alerts() -> list[NotifyAlert]:
             exc,
         )
 
-    # 13. Wave 153: autonomy coalesce. Opt-in via
+    # 13. Wave 453: catalog quality auto-pause / critical.
+    try:
+        from engines.catalog_quality_autonomy.quality_state import (  # noqa: E501
+            get_state as _cq_state,
+        )
+        from engines.catalog_quality_autonomy.quality_health import (  # noqa: E501
+            analyze_catalog_quality_health as _cq_health,
+        )
+        cqstate = _cq_state()
+        if cqstate.paused:
+            alerts.append(NotifyAlert(
+                kind="catalog_quality_paused",
+                severity="critical",
+                message=(
+                    f"Catalog quality auto-pause active: "
+                    f"{cqstate.reason or '(no reason)'}"
+                ),
+                context={
+                    "reason": cqstate.reason,
+                    "paused_at": cqstate.paused_at,
+                    "auto_resume_after": (
+                        cqstate.auto_resume_after
+                    ),
+                },
+            ))
+        else:
+            cqh = _cq_health(window_hours=24.0)
+            if cqh.verdict == "critical":
+                alerts.append(NotifyAlert(
+                    kind="catalog_quality_health_critical",
+                    severity="critical",
+                    message=(
+                        f"Catalog quality failure ratio "
+                        f"{cqh.failure_ratio:.0%} >= critical"
+                        f" (n={cqh.sample_size})"
+                    ),
+                    context={
+                        "failure_ratio": cqh.failure_ratio,
+                        "sample_size": cqh.sample_size,
+                    },
+                ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "notify: catalog_quality probe raised: %s", exc,
+        )
+
+    # 14. Wave 153: autonomy coalesce. Opt-in via
     # SHOPAI_NOTIFY_AUTONOMY_COALESCE=1. When set, replace
     # per-domain {refund,budget,fulfillment,inventory,
     # discount_cleanup,order_followup,product_seo}_paused /
@@ -629,6 +675,8 @@ def collect_alerts() -> list[NotifyAlert]:
             "product_seo_health_critical",
             "customer_outreach_paused",
             "customer_outreach_health_critical",
+            "catalog_quality_paused",
+            "catalog_quality_health_critical",
         }
         autonomy_alerts = [
             a for a in alerts if a.kind in autonomy_kinds
