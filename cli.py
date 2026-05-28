@@ -3803,6 +3803,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the result envelope as JSON",
     )
 
+    # Wave 185-186: Pattern T audit + autonomy-env registry
+    pattern_t_p = sub.add_parser(
+        "pattern-t-audit",
+        help=(
+            "Wave 185: registry of every autonomy domain's "
+            "env knobs."
+        ),
+    )
+    pattern_t_p.add_argument("--json", action="store_true")
+
+    autonomy_env_p = sub.add_parser(
+        "autonomy-env",
+        help=(
+            "Wave 186: list every autonomy env knob + its "
+            "current value. Discovery surface for env config."
+        ),
+    )
+    autonomy_env_p.add_argument(
+        "--set-only", action="store_true",
+        help="Show only knobs with non-empty values",
+    )
+    autonomy_env_p.add_argument(
+        "--domain", type=str, default="",
+        help="Filter to one domain",
+    )
+    autonomy_env_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 181: Pattern S audit (CLI --json consistency)
     pattern_s_p = sub.add_parser(
         "pattern-s-audit",
@@ -28956,6 +28985,91 @@ def _cmd_onboard(args) -> None:
         print(f"  Cron: {sched.data['cron_line']}")
 
 
+def _cmd_pattern_t_audit(args) -> None:
+    """Wave 185: autonomy env knob registry audit."""
+    from engines._pattern_t_audit import run_pattern_t_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_t_audit()
+    if as_json:
+        print(json.dumps({
+            "domains_scanned": report.domains_scanned,
+            "total_knobs": report.total_knobs,
+            "set_count": report.set_count,
+            "knobs": [
+                {
+                    "name": k.name,
+                    "domain": k.domain,
+                    "is_set": k.current_value is not None,
+                }
+                for k in report.knobs
+            ],
+        }, indent=2, default=str))
+        return
+    print(
+        f"Pattern T -- {report.total_knobs} env knob(s) "
+        f"registered across {len(report.domains_scanned)} "
+        f"autonomy domain(s); {report.set_count} set in env."
+    )
+
+
+def _cmd_autonomy_env(args) -> None:
+    """Wave 186: autonomy env knob discovery surface."""
+    from engines._pattern_t_audit import (
+        build_autonomy_env_registry,
+    )
+    as_json = bool(getattr(args, "json", False))
+    set_only = bool(getattr(args, "set_only", False))
+    domain_filter = (
+        getattr(args, "domain", "") or ""
+    ).strip()
+    report = build_autonomy_env_registry()
+
+    rows = report.knobs
+    if domain_filter:
+        rows = [k for k in rows if k.domain == domain_filter]
+    if set_only:
+        rows = [k for k in rows if k.current_value is not None]
+
+    if as_json:
+        print(json.dumps({
+            "domain_filter": domain_filter or None,
+            "set_only": set_only,
+            "count": len(rows),
+            "knobs": [
+                {
+                    "name": k.name,
+                    "domain": k.domain,
+                    "current_value": k.current_value,
+                }
+                for k in rows
+            ],
+        }, indent=2, default=str))
+        return
+    # Text view
+    print(
+        f"Autonomy env knobs ({len(rows)} shown"
+        + (
+            f"; filter={domain_filter}" if domain_filter
+            else ""
+        )
+        + (", set-only" if set_only else "")
+        + ")"
+    )
+    print()
+    # Group by domain
+    current_domain = None
+    for k in rows:
+        if k.domain != current_domain:
+            print(f"  [{k.domain}]")
+            current_domain = k.domain
+        marker = "[SET]" if k.current_value else "[   ]"
+        val_display = (
+            f"  = {k.current_value}"
+            if k.current_value else ""
+        )
+        print(f"    {marker} {k.name}{val_display}")
+
+
 def _cmd_pattern_s_audit(args) -> None:
     """Wave 181: CLI --json consistency audit."""
     from engines._pattern_s_audit import run_pattern_s_audit
@@ -41371,6 +41485,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-s-audit":
         _cmd_pattern_s_audit(args)
+        return
+
+    if args.command == "pattern-t-audit":
+        _cmd_pattern_t_audit(args)
+        return
+
+    if args.command == "autonomy-env":
+        _cmd_autonomy_env(args)
         return
 
     if args.command == "autonomy-status":
