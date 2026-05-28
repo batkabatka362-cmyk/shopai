@@ -3803,6 +3803,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the result envelope as JSON",
     )
 
+    # Wave 160: Pattern Q' audit (autonomy DomainSummary)
+    pattern_qprime_p = sub.add_parser(
+        "pattern-qprime-audit",
+        help=(
+            "Wave 160: verify every autonomy domain's summary "
+            "function returns a DomainSummary with all 7 "
+            "canonical fields."
+        ),
+    )
+    pattern_qprime_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 148: Pattern P audit (autonomy substrate adoption)
     pattern_p_p = sub.add_parser(
         "pattern-p-audit",
@@ -28830,6 +28843,53 @@ def _cmd_onboard(args) -> None:
         print(f"  Cron: {sched.data['cron_line']}")
 
 
+def _cmd_pattern_qprime_audit(args) -> None:
+    """Wave 160: autonomy DomainSummary shape audit."""
+    from engines._pattern_qprime_audit import (
+        run_pattern_qprime_audit,
+    )
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_qprime_audit()
+    if as_json:
+        print(json.dumps({
+            "domains_probed": report.domains_probed,
+            "clean_domains": report.clean_domains,
+            "violations": [
+                {
+                    "domain": v.domain,
+                    "missing_fields": v.missing_fields,
+                    "error": v.error,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern Q' FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            if v.missing_fields:
+                print(
+                    f"  [{v.domain}] missing fields: "
+                    f"{v.missing_fields}"
+                )
+            else:
+                print(f"  [{v.domain}] {v.error}")
+        sys.exit(1)
+    else:
+        probed = len(report.domains_probed)
+        clean = len(report.clean_domains)
+        print(
+            f"Pattern Q' OK -- {clean}/{probed} autonomy "
+            f"domain(s) return canonical DomainSummary."
+        )
+
+
 def _cmd_pattern_p_audit(args) -> None:
     """Wave 148: autonomy substrate adoption audit."""
     from engines._pattern_p_audit import run_pattern_p_audit
@@ -40928,6 +40988,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-p-audit":
         _cmd_pattern_p_audit(args)
+        return
+
+    if args.command == "pattern-qprime-audit":
+        _cmd_pattern_qprime_audit(args)
         return
 
     if args.command == "autonomy-status":

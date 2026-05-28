@@ -2510,3 +2510,74 @@ candidates:
 153 substrate waves total. Phase 13.A complete; 4 autonomy
 domains now have per-store filter + unified daily-brief
 visibility + opt-in alert coalescing.
+
+## Phase 14: 5th autonomy domain + Pattern Q' (Waves 154-160, 2026-05-28)
+
+### Phase 14.A: Discount cleanup autonomy (W154-159)
+
+5th autonomy domain. Closes real operator pain: discount codes
+(Wave 6+ minters + one-off promos + recovery codes) accumulate
+into 1000+ inactive codes over months.
+
+``engines/discount_cleanup_autonomy/``:
+
+  - cleanup_log.py (W154)
+  - cleanup_state.py (W155)
+  - cleanup_health.py (W156) env_prefix=DISCOUNT_CLEANUP
+  - cleanup_applier.py (W157) SHOPIFY_DEACTIVATE_CODE_DISCOUNT
+    behind 6 safety gates
+  - cleanup_status.py (W158) empire aggregator
+
+6 safety gates:
+
+  1. action='deactivate'
+  2. discount_id + code present
+  3. is_paused() False (W155 flag)
+  4. age_days >= SHOPAI_DISCOUNT_CLEANUP_MIN_AGE_DAYS (30)
+  5. deactivated_so_far < SHOPAI_DISCOUNT_CLEANUP_MAX_PER_RUN (50)
+  6. router + capability resolution
+
+Per-run cap prevents accidentally nuking 1000s of codes.
+
+CLI (W158):
+  shopai discount-cleanup-status / -health / -pause / -resume
+
+Production wiring (W159):
+  - cycle run --yes fires maybe_auto_pause_cleanup()
+  - notify check adds 2 new alert kinds
+  - autonomy-status rolls up 5 domains (was 4)
+
+### Phase 14.B: Pattern Q' (Wave 160)
+
+``engines/_pattern_qprime_audit.py`` -- runtime audit that
+each autonomy domain's per-domain ``_<domain>_summary()``
+function in ``core/automation/autonomy_status.py`` returns a
+canonical ``DomainSummary`` with all 7 fields:
+
+  name / verdict / paused / applied_count /
+  health_failure_ratio / next_action / reasons
+
+The per-domain CLI surfaces still use domain-specific report
+shapes (SupportStatusReport has refund_applied_count;
+MarketingStatusReport has applied_count). Pattern Q' verifies
+the BOUNDARY contract -- the autonomy-status rollup gets
+uniform DomainSummary instances regardless.
+
+CLI: ``shopai pattern-qprime-audit``.
+Live: 5/5 autonomy domains clean.
+
+### Institutional audit roster (12)
+
+K / OAuth / Y / I / J / Z / Q / Wireup-resolve /
+N (niche-merge) / O (opt-in gate) / P (autonomy substrate
+adoption) / Q' (autonomy DomainSummary shape).
+
+### Phase 14 test totals
+
+  Discount cleanup: 7 tests
+  Pattern Q': 5 tests
+  Plus 2 updates to test_autonomy_status (5-domain fixtures)
+  Total: 14 new tests
+
+160 substrate waves total. 5 production autonomy domains.
+12 institutional audits.
