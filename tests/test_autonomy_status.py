@@ -86,6 +86,13 @@ class TestAutonomyStatusAggregation:
                 name="product_seo",
                 verdict="healthy",
             ),
+        ), patch(
+            "core.automation.autonomy_status."
+            "_customer_outreach_summary",
+            return_value=DomainSummary(
+                name="customer_outreach",
+                verdict="healthy",
+            ),
         ):
             report = get_autonomy_status()
         assert report.overall_verdict == "healthy"

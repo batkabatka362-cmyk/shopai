@@ -210,6 +210,33 @@ def _order_followup_summary(
         )
 
 
+def _customer_outreach_summary(
+    window_hours: float, store_id: str | None = None,
+) -> DomainSummary:
+    try:
+        from engines.customer_outreach_autonomy.outreach_status import (  # noqa: E501
+            get_customer_outreach_status,
+        )
+        r = get_customer_outreach_status(
+            window_hours=window_hours, store_id=store_id,
+        )
+        return DomainSummary(
+            name="customer_outreach",
+            verdict=r.verdict,
+            paused=r.paused,
+            applied_count=r.applied_count,
+            health_failure_ratio=r.health_failure_ratio,
+            next_action=r.next_action,
+            reasons=list(r.verdict_reasons),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return DomainSummary(
+            name="customer_outreach",
+            verdict="quiet",
+            reasons=[f"probe raised: {exc}"],
+        )
+
+
 def _inventory_summary(
     window_hours: float, store_id: str | None = None,
 ) -> DomainSummary:
@@ -270,6 +297,9 @@ def get_autonomy_status(
             window_hours, store_id=store_id,
         ),
         _product_seo_summary(
+            window_hours, store_id=store_id,
+        ),
+        _customer_outreach_summary(
             window_hours, store_id=store_id,
         ),
     ]
