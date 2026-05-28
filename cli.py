@@ -9078,6 +9078,32 @@ def _cmd_empire(args) -> None:
             "empire autonomy block raised: %s", exc,
         )
 
+    # Wave 249: autonomy substrate wiring health. Distinct
+    # from the verdict block above -- surfaces ONLY when
+    # wiring is broken or degraded.
+    try:
+        from core.automation.autonomy_doctor import (
+            run_autonomy_doctor,
+        )
+        wiring = run_autonomy_doctor(window_hours=168.0)
+        if wiring.fail_count > 0 or wiring.warn_count > 0:
+            wmark = (
+                "[BAD]" if wiring.fail_count > 0 else "[WRN]"
+            )
+            print(
+                f"    wiring:             {wmark} "
+                f"{wiring.fail_count} fail / "
+                f"{wiring.warn_count} warn / "
+                f"{wiring.ok_count} ok"
+            )
+            print(
+                "    -> shopai autonomy-doctor"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "empire wiring block raised: %s", exc,
+        )
+
     # Last cycle
     print()
     if last_run_block:
@@ -10509,6 +10535,29 @@ def _cmd_daily_brief(args) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "daily-brief autonomy block raised: %s", exc,
+        )
+    # Wave 248: autonomy substrate wiring health. Distinct from
+    # the verdict block above -- only surfaces when wiring is
+    # broken or degraded. Silent in the clean case.
+    try:
+        from core.automation.autonomy_doctor import (
+            run_autonomy_doctor,
+        )
+        doc = run_autonomy_doctor(window_hours=window_hours)
+        if doc.fail_count > 0 or doc.warn_count > 0:
+            mk = "[BAD]" if doc.fail_count > 0 else "[WRN]"
+            print(
+                f"  Wiring:       {mk} "
+                f"{doc.fail_count} fail / "
+                f"{doc.warn_count} warn / "
+                f"{doc.ok_count} ok"
+            )
+            print(
+                f"    -> drill: shopai autonomy-doctor"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief wiring block raised: %s", exc,
         )
     # Surface the sickest engines when ANY are unhealthy --
     # cheap operator nudge to drill in via ``engine pulse``.
