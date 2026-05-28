@@ -4019,6 +4019,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_aq_p.add_argument("--json", action="store_true")
 
+    # Wave 363: Pattern AR audit (cross-catalog parity)
+    pattern_ar_p = sub.add_parser(
+        "pattern-ar-audit",
+        help=(
+            "Wave 363: verify every registered substrate "
+            "catalog has the canonical domain count -- "
+            "catches drift when adding domain N+1."
+        ),
+    )
+    pattern_ar_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -29585,6 +29596,47 @@ def _cmd_pattern_v_audit(args) -> None:
         )
 
 
+def _cmd_pattern_ar_audit(args) -> None:
+    """Wave 363: cross-catalog parity audit."""
+    from engines._pattern_ar_audit import run_pattern_ar_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_ar_audit()
+    if as_json:
+        print(json.dumps({
+            "catalogs_scanned": report.catalogs_scanned,
+            "clean_catalogs": report.clean_catalogs,
+            "sizes_by_catalog": report.sizes_by_catalog,
+            "violations": [
+                {
+                    "catalog": v.catalog,
+                    "expected_count": v.expected_count,
+                    "actual_count": v.actual_count,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern AR FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.catalog}] {v.reason}")
+        sys.exit(1)
+    else:
+        scanned = len(report.catalogs_scanned)
+        clean = len(report.clean_catalogs)
+        print(
+            f"Pattern AR OK -- {clean}/{scanned} substrate "
+            f"catalog(s) have the canonical domain count."
+        )
+
+
 def _cmd_pattern_aq_audit(args) -> None:
     """Wave 358: DomainSummary verdict literal audit."""
     from engines._pattern_aq_audit import run_pattern_aq_audit
@@ -34917,6 +34969,23 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_ar":
+            from engines._pattern_ar_audit import (
+                run_pattern_ar_audit,
+            )
+            r = run_pattern_ar_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_catalogs": list(r.clean_catalogs),
+                "sizes_by_catalog": dict(r.sizes_by_catalog),
+                "violations": [
+                    {
+                        "catalog": v.catalog,
+                        "actual_count": v.actual_count,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -34936,6 +35005,7 @@ _AUDIT_ORDER = (
     "pattern_af", "pattern_ag", "pattern_ah", "pattern_ai",
     "pattern_aj", "pattern_ak", "pattern_al", "pattern_am",
     "pattern_an", "pattern_ao", "pattern_ap", "pattern_aq",
+    "pattern_ar",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -34976,6 +35046,7 @@ _AUDIT_LABELS = {
     "pattern_ao": "Pattern AO (applier docstring gate doc)",
     "pattern_ap": "Pattern AP (bridge cascade isolation)",
     "pattern_aq": "Pattern AQ (verdict literal validation)",
+    "pattern_ar": "Pattern AR (cross-catalog parity)",
 }
 
 
@@ -44022,6 +44093,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-aq-audit":
         _cmd_pattern_aq_audit(args)
+        return
+
+    if args.command == "pattern-ar-audit":
+        _cmd_pattern_ar_audit(args)
         return
 
     if args.command == "autonomy-env":
