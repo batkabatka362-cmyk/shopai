@@ -32502,6 +32502,104 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                 "violations": list(cr.violations),
                 "info": list(cr.info),
             }
+        # Wave 121+: 7 additional autonomy-related audits
+        if name == "pattern_n":
+            from engines._pattern_n_audit import (
+                run_pattern_n_audit,
+            )
+            r = run_pattern_n_audit()
+            return {
+                "ok": not r.has_violations,
+                "strategies_probed": list(
+                    r.strategies_probed,
+                ),
+                "violations": [
+                    {"strategy": v.strategy_class}
+                    for v in r.violations
+                ],
+            }
+        if name == "pattern_o":
+            from engines._pattern_o_audit import (
+                run_pattern_o_audit,
+            )
+            r = run_pattern_o_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_engines": list(r.clean_engines),
+                "violations": [
+                    {
+                        "engine": v.engine,
+                        "writer_module": v.writer_module,
+                    }
+                    for v in r.violations
+                ],
+            }
+        if name == "pattern_p":
+            from engines._pattern_p_audit import (
+                run_pattern_p_audit,
+            )
+            r = run_pattern_p_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_domains": list(r.clean_domains),
+                "violations": [
+                    {"domain": v.domain, "file": v.file}
+                    for v in r.violations
+                ],
+            }
+        if name == "pattern_qprime":
+            from engines._pattern_qprime_audit import (
+                run_pattern_qprime_audit,
+            )
+            r = run_pattern_qprime_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_domains": list(r.clean_domains),
+                "violations": [
+                    {
+                        "domain": v.domain,
+                        "missing_fields": v.missing_fields,
+                    }
+                    for v in r.violations
+                ],
+            }
+        if name == "pattern_r":
+            from engines._pattern_r_audit import (
+                run_pattern_r_audit,
+            )
+            r = run_pattern_r_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_domains": list(r.clean_domains),
+                "violations": [
+                    {"domain": v.domain}
+                    for v in r.violations
+                ],
+            }
+        if name == "pattern_s":
+            from engines._pattern_s_audit import (
+                run_pattern_s_audit,
+            )
+            r = run_pattern_s_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_commands": list(r.clean_commands),
+                "violations": [
+                    {"command": v.command}
+                    for v in r.violations
+                ],
+            }
+        if name == "pattern_t":
+            from engines._pattern_t_audit import (
+                run_pattern_t_audit,
+            )
+            r = run_pattern_t_audit()
+            # Pattern T is info-only, always passes
+            return {
+                "ok": True,
+                "total_knobs": r.total_knobs,
+                "set_count": r.set_count,
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -32512,6 +32610,10 @@ _AUDIT_ORDER = (
     "pattern_k", "oauth", "pattern_y", "pattern_i", "pattern_j",
     "pattern_z", "pattern_q", "wireup_resolve",
     "cluster_topology",
+    # Wave 121+: Phase 11.D / Phase 12.D / Phase 14.B-C /
+    # Phase 16.A-B
+    "pattern_n", "pattern_o", "pattern_p", "pattern_qprime",
+    "pattern_r", "pattern_s", "pattern_t",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -32523,6 +32625,13 @@ _AUDIT_LABELS = {
     "pattern_q": "Pattern Q (engine envelope parity)",
     "wireup_resolve": "Phase 7 wireup resolution",
     "cluster_topology": "Cluster topology + risk taxonomy",
+    "pattern_n": "Pattern N (niche-merge preservation)",
+    "pattern_o": "Pattern O (opt-in gate verification)",
+    "pattern_p": "Pattern P (autonomy substrate adoption)",
+    "pattern_qprime": "Pattern Q' (DomainSummary shape)",
+    "pattern_r": "Pattern R (next_action presence)",
+    "pattern_s": "Pattern S (CLI --json consistency)",
+    "pattern_t": "Pattern T (env knob registry)",
 }
 
 
