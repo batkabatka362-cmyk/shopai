@@ -329,6 +329,51 @@ def collect_alerts() -> list[NotifyAlert]:
     except Exception as exc:  # noqa: BLE001
         logger.debug("notify: budget probe raised: %s", exc)
 
+    # 7. Wave 130: fulfillment auto-pause OR critical health.
+    try:
+        from engines.fulfillment_autonomy.fulfillment_state import (
+            get_state as _ff_state,
+        )
+        from engines.fulfillment_autonomy.fulfillment_health import (
+            analyze_fulfillment_health as _ff_health,
+        )
+        fstate = _ff_state()
+        if fstate.paused:
+            alerts.append(NotifyAlert(
+                kind="fulfillment_paused",
+                severity="critical",
+                message=(
+                    f"Fulfillment auto-pause active: "
+                    f"{fstate.reason or '(no reason)'}"
+                ),
+                context={
+                    "reason": fstate.reason,
+                    "paused_at": fstate.paused_at,
+                    "auto_resume_after": (
+                        fstate.auto_resume_after
+                    ),
+                },
+            ))
+        else:
+            fh = _ff_health(window_hours=24.0)
+            if fh.verdict == "critical":
+                alerts.append(NotifyAlert(
+                    kind="fulfillment_health_critical",
+                    severity="critical",
+                    message=(
+                        f"Fulfillment failure ratio "
+                        f"{fh.failure_ratio:.0%} >= "
+                        "critical threshold "
+                        f"(n={fh.sample_size})"
+                    ),
+                    context={
+                        "failure_ratio": fh.failure_ratio,
+                        "sample_size": fh.sample_size,
+                    },
+                ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("notify: fulfillment probe raised: %s", exc)
+
     return alerts
 
 

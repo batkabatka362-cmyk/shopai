@@ -42,6 +42,10 @@ _EXEMPT_WRITERS: frozenset[str] = frozenset({
     # Pre-existing exemption (email_marketing flow gates via
     # a different mechanism; documented but not in flow.py)
     "email_marketing/discount_minter.py",
+    # Wave 126-131: fulfillment_autonomy is substrate not a
+    # classical engine -- the applier gates via is_paused() +
+    # caller-level opt-in rather than data.get("apply_X").
+    "fulfillment_autonomy/fulfillment_applier.py",
 })
 
 

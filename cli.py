@@ -3829,6 +3829,59 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 126-130: fulfillment autonomy surfaces
+    fulfillment_status_p = sub.add_parser(
+        "fulfillment-status",
+        help=(
+            "Wave 130: empire-wide fulfillment autonomy report."
+        ),
+    )
+    fulfillment_status_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+    )
+    fulfillment_status_p.add_argument(
+        "--store", type=str, default="",
+    )
+    fulfillment_status_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    fulfillment_health_p = sub.add_parser(
+        "fulfillment-health",
+        help="Wave 128: analyze fulfillment loop health.",
+    )
+    fulfillment_health_p.add_argument(
+        "--window-hours", type=float, default=24.0,
+    )
+    fulfillment_health_p.add_argument(
+        "--apply-bridge", action="store_true",
+    )
+    fulfillment_health_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    fulfillment_pause_p = sub.add_parser(
+        "fulfillment-pause",
+        help="Wave 127: manually set fulfillment pause flag.",
+    )
+    fulfillment_pause_p.add_argument(
+        "--reason", type=str, default="manual operator pause",
+    )
+    fulfillment_pause_p.add_argument(
+        "--auto-resume-hours", type=float, default=0.0,
+    )
+    fulfillment_pause_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    fulfillment_resume_p = sub.add_parser(
+        "fulfillment-resume",
+        help="Wave 127: clear fulfillment pause flag.",
+    )
+    fulfillment_resume_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 110-115: marketing autonomy surfaces
     marketing_status_p = sub.add_parser(
         "marketing-status",
@@ -21056,6 +21109,25 @@ def _cmd_cycle_run(args) -> None:
             "budget-quarantine bridge failed: %s", exc,
         )
 
+    # Wave 130: fulfillment auto-pause bridge. Env-gated via
+    # SHOPAI_AUTO_PAUSE_FULFILLMENT_ON_FAILURE.
+    try:
+        from engines.fulfillment_autonomy.fulfillment_health import (
+            maybe_auto_pause_fulfillment,
+        )
+        ff_report = maybe_auto_pause_fulfillment(
+            window_hours=24.0,
+        )
+        if ff_report.bridge_fired:
+            logger.info(
+                "fulfillment auto-pause bridge fired: %s",
+                ff_report.bridge_reason,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "fulfillment-quarantine bridge failed: %s", exc,
+        )
+
     if as_json:
         print(json.dumps({
             "mode": "live",
@@ -28606,6 +28678,183 @@ def _cmd_pattern_n_audit(args) -> None:
             f"Pattern N OK -- {probed} orchestrator "
             f"strategy(ies) preserve niche merge."
         )
+
+
+def _cmd_fulfillment_status(args) -> None:
+    """Wave 130: empire-wide fulfillment autonomy status."""
+    from engines.fulfillment_autonomy.fulfillment_status import (
+        get_fulfillment_status,
+    )
+    as_json = bool(getattr(args, "json", False))
+    window_h = float(
+        getattr(args, "window_hours", 168.0) or 168.0,
+    )
+    store_id = (getattr(args, "store", "") or "").strip()
+    report = get_fulfillment_status(
+        window_hours=window_h,
+        store_id=store_id or None,
+    )
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "store_id": report.store_id,
+            "total_events": report.total_events,
+            "applied_count": report.applied_count,
+            "skipped_count": report.skipped_count,
+            "by_status": report.by_status,
+            "health_verdict": report.health_verdict,
+            "health_failure_ratio": (
+                report.health_failure_ratio
+            ),
+            "paused": report.paused,
+            "pause_reason": report.pause_reason,
+            "verdict": report.verdict,
+            "verdict_reasons": report.verdict_reasons,
+            "next_action": report.next_action,
+        }, indent=2, default=str))
+        return
+    marker = {
+        "healthy": "[OK ]", "quiet": "[ - ]",
+        "degraded": "[WRN]", "paused": "[BAD]",
+    }.get(report.verdict, "[ ? ]")
+    scope = (
+        f"store={report.store_id}" if report.store_id
+        else "fleet"
+    )
+    print(
+        f"Fulfillment status ({scope}, last "
+        f"{report.window_hours:.0f}h)"
+    )
+    print()
+    print(f"  Total events:   {report.total_events}")
+    print(f"  Applied:        {report.applied_count}")
+    print(f"  Skipped:        {report.skipped_count}")
+    print(
+        f"  Health:         {report.health_verdict}  "
+        f"(failure ratio "
+        f"{report.health_failure_ratio:.0%})"
+    )
+    if report.paused:
+        print(
+            f"  *** PAUSED ***  reason: "
+            f"{report.pause_reason}"
+        )
+    print()
+    print(f"  {marker} VERDICT: {report.verdict}")
+    for reason in report.verdict_reasons:
+        print(f"    - {reason}")
+    if report.next_action:
+        print()
+        print(f"  Next: {report.next_action}")
+
+
+def _cmd_fulfillment_health(args) -> None:
+    """Wave 128: fulfillment health analyzer."""
+    from engines.fulfillment_autonomy.fulfillment_health import (
+        analyze_fulfillment_health,
+        maybe_auto_pause_fulfillment,
+    )
+    as_json = bool(getattr(args, "json", False))
+    window_h = float(
+        getattr(args, "window_hours", 24.0) or 24.0,
+    )
+    apply_bridge = bool(getattr(args, "apply_bridge", False))
+    report = (
+        maybe_auto_pause_fulfillment(window_hours=window_h)
+        if apply_bridge
+        else analyze_fulfillment_health(window_hours=window_h)
+    )
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "sample_size": report.sample_size,
+            "applied_count": report.applied_count,
+            "adapter_failed_count": (
+                report.adapter_failed_count
+            ),
+            "failure_ratio": report.failure_ratio,
+            "verdict": report.verdict,
+            "reasons": report.reasons,
+            "already_paused": report.already_paused,
+            "bridge_fired": report.bridge_fired,
+            "bridge_reason": report.bridge_reason,
+        }, indent=2, default=str))
+        return
+    marker = {
+        "healthy": "[OK ]", "degraded": "[WRN]",
+        "critical": "[BAD]",
+    }.get(report.verdict, "[ ? ]")
+    print(
+        f"Fulfillment health (last {report.window_hours:.0f}h)"
+    )
+    print()
+    print(f"  Sample size:        {report.sample_size}")
+    print(f"  Applied:            {report.applied_count}")
+    print(
+        f"  Adapter failed:     "
+        f"{report.adapter_failed_count}"
+    )
+    print(
+        f"  Failure ratio:      "
+        f"{report.failure_ratio:.0%}"
+    )
+    print()
+    print(f"  {marker} VERDICT: {report.verdict}")
+    for reason in report.reasons:
+        print(f"    - {reason}")
+    if report.already_paused:
+        print()
+        print("  *** FULFILLMENT MUTATIONS PAUSED ***")
+    if apply_bridge:
+        print()
+        if report.bridge_fired:
+            print(f"  [AUTO-PAUSED] {report.bridge_reason}")
+        else:
+            print(f"  Bridge: {report.bridge_reason}")
+
+
+def _cmd_fulfillment_pause(args) -> None:
+    from engines.fulfillment_autonomy.fulfillment_state import (
+        pause,
+    )
+    import time as _t
+    as_json = bool(getattr(args, "json", False))
+    reason = (
+        getattr(args, "reason", "manual operator pause")
+        or "manual operator pause"
+    )
+    auto_h = float(
+        getattr(args, "auto_resume_hours", 0.0) or 0.0,
+    )
+    auto_resume_at = (
+        _t.time() + auto_h * 3600.0 if auto_h > 0 else 0.0
+    )
+    state = pause(
+        reason=reason, auto_resume_after=auto_resume_at,
+    )
+    if as_json:
+        print(json.dumps({
+            "paused": state.paused, "reason": state.reason,
+            "paused_at": state.paused_at,
+            "auto_resume_after": state.auto_resume_after,
+        }, indent=2, default=str))
+        return
+    print("Fulfillment auto-pause flag SET")
+    print(f"  Reason: {state.reason}")
+
+
+def _cmd_fulfillment_resume(args) -> None:
+    from engines.fulfillment_autonomy.fulfillment_state import (
+        resume,
+    )
+    as_json = bool(getattr(args, "json", False))
+    state = resume()
+    if as_json:
+        print(json.dumps({
+            "paused": state.paused, "reason": state.reason,
+        }, indent=2))
+        return
+    print("Fulfillment auto-pause flag CLEARED")
 
 
 def _cmd_marketing_status(args) -> None:
@@ -39956,6 +40205,19 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-o-audit":
         _cmd_pattern_o_audit(args)
+        return
+
+    if args.command == "fulfillment-status":
+        _cmd_fulfillment_status(args)
+        return
+    if args.command == "fulfillment-health":
+        _cmd_fulfillment_health(args)
+        return
+    if args.command == "fulfillment-pause":
+        _cmd_fulfillment_pause(args)
+        return
+    if args.command == "fulfillment-resume":
+        _cmd_fulfillment_resume(args)
         return
 
     if args.command == "marketing-status":
