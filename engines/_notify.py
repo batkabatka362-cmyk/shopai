@@ -419,6 +419,54 @@ def collect_alerts() -> list[NotifyAlert]:
     except Exception as exc:  # noqa: BLE001
         logger.debug("notify: inventory probe raised: %s", exc)
 
+    # 9. Wave 153: autonomy coalesce. Opt-in via
+    # SHOPAI_NOTIFY_AUTONOMY_COALESCE=1. When set, replace
+    # per-domain {refund,budget,fulfillment,inventory}_paused
+    # / _health_critical alerts with a single rolled-up
+    # autonomy_degraded alert. Reduces alert fatigue when
+    # multiple domains degrade together.
+    if os.environ.get("SHOPAI_NOTIFY_AUTONOMY_COALESCE", "") in (
+        "1", "true", "yes",
+    ):
+        autonomy_kinds = {
+            "refund_paused", "refund_health_critical",
+            "budget_paused", "budget_health_critical",
+            "fulfillment_paused",
+            "fulfillment_health_critical",
+            "inventory_paused", "inventory_health_critical",
+        }
+        autonomy_alerts = [
+            a for a in alerts if a.kind in autonomy_kinds
+        ]
+        if len(autonomy_alerts) >= 2:
+            # Coalesce: drop the per-domain alerts + emit a
+            # single rollup.
+            non_autonomy = [
+                a for a in alerts
+                if a.kind not in autonomy_kinds
+            ]
+            domains_affected = sorted({
+                a.kind.split("_")[0] for a in autonomy_alerts
+            })
+            non_autonomy.append(NotifyAlert(
+                kind="autonomy_degraded",
+                severity="critical",
+                message=(
+                    f"{len(autonomy_alerts)} autonomy "
+                    f"alert(s) across "
+                    f"{len(domains_affected)} domain(s): "
+                    f"{', '.join(domains_affected)}"
+                ),
+                context={
+                    "alert_count": len(autonomy_alerts),
+                    "domains": domains_affected,
+                    "alert_kinds": sorted(
+                        a.kind for a in autonomy_alerts
+                    ),
+                },
+            ))
+            return non_autonomy
+
     return alerts
 
 

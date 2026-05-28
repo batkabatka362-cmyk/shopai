@@ -2437,3 +2437,76 @@ Lines saved vs inlined: ~360 LOC across the two new domains
 
 149 substrate waves total. 4-domain autonomy parallel,
 template-validated.
+
+## Phase 13: Cross-domain autonomy integration (Waves 150-153, 2026-05-28)
+
+After Phase 12 shipped 4 production autonomy domains, Phase 13
+focuses on **observability + alert hygiene** across them.
+
+(Phase 13's original advisory→wired roll-out batch -- W138-147
+in earlier planning -- was deferred: many remaining advisory
+engines don't have clean Shopify-write targets, so forced
+conversions would ship low-quality tag-appliers. Better to
+ship valuable integration work than forced wire-ups.)
+
+### Wave 150 (already covered by Wave 12.D's empire row)
+
+empire dashboard autonomy one-liner. See Phase 12 section.
+
+### Wave 151: ``shopai autonomy-status --store STORE``
+
+The unified rollup now scopes to a single store. Threading
+the store_id through to each domain's status aggregator:
+
+  - get_support_status(store_id=...)
+  - get_marketing_status(store_id=...)
+  - get_fulfillment_status(store_id=...)
+  - get_inventory_status(store_id=...)
+
+CLI text view header switches from "fleet" to "store=<id>".
+JSON envelope gains store_id field.
+
+### Wave 152: daily-brief autonomy block
+
+Mirrors the Wave 107 support block. Renders a one-line
+autonomy rollup + the per-domain verdict slice (4 verdicts
+in slash-separated form):
+
+  Autonomy:     [BAD] paused  applied=0  domains=4 (paused/quiet/quiet/quiet)
+    *** PAUSED: customer_support ***
+
+Surfaces only when degraded/paused OR has activity. Quiet
+substrate stays silent.
+
+### Wave 153: notify autonomy coalesce
+
+Opt-in via ``SHOPAI_NOTIFY_AUTONOMY_COALESCE=1``. When set,
+``_notify.collect_alerts`` replaces multiple per-domain
+{refund,budget,fulfillment,inventory}_{paused,health_critical}
+alerts with a single ``autonomy_degraded`` rollup carrying:
+
+  - alert_count
+  - domains list (sorted unique)
+  - alert_kinds list
+
+Reduces alert fatigue when multiple domains degrade
+together. Operators wanting per-domain detail leave the
+env-var off; ones wanting empire-wide rollup set it.
+
+### Phase 13 in brief
+
+3 waves shipped (W151-153) + docs (W155). Phase 13.A focuses
+on cross-domain integration that improves operator
+experience without adding new domains. Future Phase 14
+candidates:
+
+  - 5th autonomy domain (customer outreach? review_response?)
+  - Live real-store end-to-end verification
+  - Pattern Q' (verify all autonomy domains produce identical
+    status report shape)
+  - Advisory→wired roll-out, but case-by-case after verifying
+    each engine produces per-entity classifications
+
+153 substrate waves total. Phase 13.A complete; 4 autonomy
+domains now have per-store filter + unified daily-brief
+visibility + opt-in alert coalescing.
