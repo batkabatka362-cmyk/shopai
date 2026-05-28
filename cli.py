@@ -3950,6 +3950,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_ak_p.add_argument("--json", action="store_true")
 
+    # Wave 319: Pattern AL audit (state path uniqueness)
+    pattern_al_p = sub.add_parser(
+        "pattern-al-audit",
+        help=(
+            "Wave 319: verify each domain's pause-state JSON "
+            "_STATE_PATH is unique + lives under data/. "
+            "Catches copy-paste collisions where two domains "
+            "silently share a pause flag."
+        ),
+    )
+    pattern_al_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -29444,6 +29456,46 @@ def _cmd_pattern_v_audit(args) -> None:
         )
 
 
+def _cmd_pattern_al_audit(args) -> None:
+    """Wave 319: state path uniqueness audit."""
+    from engines._pattern_al_audit import run_pattern_al_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_al_audit()
+    if as_json:
+        print(json.dumps({
+            "domains_scanned": report.domains_scanned,
+            "clean_domains": report.clean_domains,
+            "paths_by_domain": report.paths_by_domain,
+            "violations": [
+                {
+                    "domain": v.domain,
+                    "state_path": v.state_path,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern AL FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.domain}] {v.reason}")
+        sys.exit(1)
+    else:
+        scanned = len(report.domains_scanned)
+        clean = len(report.clean_domains)
+        print(
+            f"Pattern AL OK -- {clean}/{scanned} autonomy "
+            f"domain(s) have unique state file paths."
+        )
+
+
 def _cmd_pattern_ak_audit(args) -> None:
     """Wave 308: bridge ast.Call invocation audit."""
     from engines._pattern_ak_audit import run_pattern_ak_audit
@@ -34182,6 +34234,23 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_al":
+            from engines._pattern_al_audit import (
+                run_pattern_al_audit,
+            )
+            r = run_pattern_al_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_domains": list(r.clean_domains),
+                "paths_by_domain": dict(r.paths_by_domain),
+                "violations": [
+                    {
+                        "domain": v.domain,
+                        "state_path": v.state_path,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -34199,7 +34268,7 @@ _AUDIT_ORDER = (
     "pattern_u", "pattern_v", "pattern_w", "pattern_x",
     "pattern_yprime", "pattern_ac", "pattern_ad", "pattern_ae",
     "pattern_af", "pattern_ag", "pattern_ah", "pattern_ai",
-    "pattern_aj", "pattern_ak",
+    "pattern_aj", "pattern_ak", "pattern_al",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -34234,6 +34303,7 @@ _AUDIT_LABELS = {
     "pattern_ai": "Pattern AI (status get_X_status export)",
     "pattern_aj": "Pattern AJ (CLI dispatch parity)",
     "pattern_ak": "Pattern AK (bridge ast.Call invocation)",
+    "pattern_al": "Pattern AL (state path uniqueness)",
 }
 
 
@@ -43256,6 +43326,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-ak-audit":
         _cmd_pattern_ak_audit(args)
+        return
+
+    if args.command == "pattern-al-audit":
+        _cmd_pattern_al_audit(args)
         return
 
     if args.command == "autonomy-env":
