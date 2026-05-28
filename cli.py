@@ -3803,6 +3803,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the result envelope as JSON",
     )
 
+    # Wave 148: Pattern P audit (autonomy substrate adoption)
+    pattern_p_p = sub.add_parser(
+        "pattern-p-audit",
+        help=(
+            "Wave 148: verify every autonomy domain imports "
+            "from core/automation/* (prevents Phase 11/12 "
+            "boilerplate re-inlining)."
+        ),
+    )
+    pattern_p_p.add_argument("--json", action="store_true")
+
+    # Wave 149: empire-wide unified autonomy status
+    autonomy_status_p = sub.add_parser(
+        "autonomy-status",
+        help=(
+            "Wave 149: roll up all 4 autonomy domains "
+            "(customer-support + marketing + fulfillment + "
+            "inventory) into one verdict."
+        ),
+    )
+    autonomy_status_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+    )
+    autonomy_status_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 122: Pattern O audit (wired engines have opt-in gate)
     pattern_o_p = sub.add_parser(
         "pattern-o-audit",
@@ -28661,6 +28688,118 @@ def _cmd_onboard(args) -> None:
         print(f"  Cron: {sched.data['cron_line']}")
 
 
+def _cmd_pattern_p_audit(args) -> None:
+    """Wave 148: autonomy substrate adoption audit."""
+    from engines._pattern_p_audit import run_pattern_p_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_p_audit()
+    if as_json:
+        print(json.dumps({
+            "scanned_domains": report.scanned_domains,
+            "clean_domains": report.clean_domains,
+            "violations": [
+                {
+                    "domain": v.domain,
+                    "file": v.file,
+                    "missing_import": v.missing_import,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern P FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(
+                f"  [{v.domain}] {v.file} missing import: "
+                f"{v.missing_import}"
+            )
+        sys.exit(1)
+    else:
+        scanned = len(report.scanned_domains)
+        clean = len(report.clean_domains)
+        print(
+            f"Pattern P OK -- {clean}/{scanned} autonomy "
+            f"domain(s) use core/automation/* template."
+        )
+
+
+def _cmd_autonomy_status(args) -> None:
+    """Wave 149: unified autonomy status."""
+    from core.automation.autonomy_status import (
+        get_autonomy_status,
+    )
+    as_json = bool(getattr(args, "json", False))
+    window_h = float(
+        getattr(args, "window_hours", 168.0) or 168.0,
+    )
+    report = get_autonomy_status(window_hours=window_h)
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "overall_verdict": report.overall_verdict,
+            "overall_next_action": report.overall_next_action,
+            "total_applied": report.total_applied,
+            "paused_domains": report.paused_domains,
+            "domains": [
+                {
+                    "name": d.name,
+                    "verdict": d.verdict,
+                    "paused": d.paused,
+                    "applied_count": d.applied_count,
+                    "health_failure_ratio": (
+                        d.health_failure_ratio
+                    ),
+                    "next_action": d.next_action,
+                    "reasons": d.reasons,
+                }
+                for d in report.domains
+            ],
+        }, indent=2, default=str))
+        return
+    marker = {
+        "healthy": "[OK ]", "quiet": "[ - ]",
+        "degraded": "[WRN]", "paused": "[BAD]",
+    }.get(report.overall_verdict, "[ ? ]")
+    print(
+        f"Empire autonomy status (last "
+        f"{report.window_hours:.0f}h)"
+    )
+    print()
+    print(f"  Total applied:       {report.total_applied}")
+    if report.paused_domains:
+        print(
+            f"  Paused domains:      "
+            f"{', '.join(report.paused_domains)}"
+        )
+    print()
+    print("  Per-domain:")
+    for d in report.domains:
+        dmk = {
+            "healthy": "[OK ]", "quiet": "[ - ]",
+            "degraded": "[WRN]", "paused": "[BAD]",
+        }.get(d.verdict, "[ ? ]")
+        print(
+            f"    {dmk} {d.name:<18} "
+            f"verdict={d.verdict:<10} "
+            f"applied={d.applied_count}"
+        )
+    print()
+    print(
+        f"  {marker} OVERALL VERDICT: "
+        f"{report.overall_verdict}"
+    )
+    if report.overall_next_action:
+        print()
+        print(f"  Next: {report.overall_next_action}")
+
+
 def _cmd_pattern_o_audit(args) -> None:
     """Wave 122: opt-in gate audit."""
     from engines._pattern_o_audit import run_pattern_o_audit
@@ -40456,6 +40595,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-o-audit":
         _cmd_pattern_o_audit(args)
+        return
+
+    if args.command == "pattern-p-audit":
+        _cmd_pattern_p_audit(args)
+        return
+
+    if args.command == "autonomy-status":
+        _cmd_autonomy_status(args)
         return
 
     if args.command == "inventory-status":
