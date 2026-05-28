@@ -39,3 +39,7 @@ vault/.shopai_import_state.json
 codex.md
 codexrule.md
 codexplan.md
+
+# IDE state + local OAuth captures (never commit -- real secrets)
+.vscode/
+.oauth_code.json
