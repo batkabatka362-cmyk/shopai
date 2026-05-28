@@ -46,6 +46,8 @@ _EXEMPT_WRITERS: frozenset[str] = frozenset({
     # classical engine -- the applier gates via is_paused() +
     # caller-level opt-in rather than data.get("apply_X").
     "fulfillment_autonomy/fulfillment_applier.py",
+    # Wave 132-137: same pattern as fulfillment_autonomy
+    "inventory_autonomy/inventory_applier.py",
 })
 
 

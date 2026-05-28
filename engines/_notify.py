@@ -374,6 +374,51 @@ def collect_alerts() -> list[NotifyAlert]:
     except Exception as exc:  # noqa: BLE001
         logger.debug("notify: fulfillment probe raised: %s", exc)
 
+    # 8. Wave 136: inventory auto-pause / critical health.
+    try:
+        from engines.inventory_autonomy.inventory_state import (
+            get_state as _inv_state,
+        )
+        from engines.inventory_autonomy.inventory_health import (
+            analyze_inventory_health as _inv_health,
+        )
+        istate = _inv_state()
+        if istate.paused:
+            alerts.append(NotifyAlert(
+                kind="inventory_paused",
+                severity="critical",
+                message=(
+                    f"Inventory auto-pause active: "
+                    f"{istate.reason or '(no reason)'}"
+                ),
+                context={
+                    "reason": istate.reason,
+                    "paused_at": istate.paused_at,
+                    "auto_resume_after": (
+                        istate.auto_resume_after
+                    ),
+                },
+            ))
+        else:
+            ih = _inv_health(window_hours=24.0)
+            if ih.verdict == "critical":
+                alerts.append(NotifyAlert(
+                    kind="inventory_health_critical",
+                    severity="critical",
+                    message=(
+                        f"Inventory failure ratio "
+                        f"{ih.failure_ratio:.0%} >= "
+                        "critical threshold "
+                        f"(n={ih.sample_size})"
+                    ),
+                    context={
+                        "failure_ratio": ih.failure_ratio,
+                        "sample_size": ih.sample_size,
+                    },
+                ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("notify: inventory probe raised: %s", exc)
+
     return alerts
 
 
