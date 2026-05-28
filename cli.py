@@ -3962,6 +3962,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 235: empire-wide autonomy doctor (verdict + wiring)
+    autonomy_doctor_p = sub.add_parser(
+        "autonomy-doctor",
+        help=(
+            "Wave 235: 360 check across every autonomy domain "
+            "-- verdict + env-knob coverage + cycle/notify/"
+            "env-gate wiring + template completeness."
+        ),
+    )
+    autonomy_doctor_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+    )
+    autonomy_doctor_p.add_argument(
+        "--store", type=str, default="",
+        help="filter to one store_id",
+    )
+    autonomy_doctor_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 122: Pattern O audit (wired engines have opt-in gate)
     pattern_o_p = sub.add_parser(
         "pattern-o-audit",
@@ -29608,6 +29628,79 @@ def _cmd_pattern_p_audit(args) -> None:
         )
 
 
+def _cmd_autonomy_doctor(args) -> None:
+    """Wave 235: 360 autonomy doctor (verdict + wiring)."""
+    from core.automation.autonomy_doctor import (
+        run_autonomy_doctor,
+    )
+    window_hours = float(getattr(args, "window_hours", 168.0))
+    store = (getattr(args, "store", "") or "").strip() or None
+    as_json = bool(getattr(args, "json", False))
+    report = run_autonomy_doctor(
+        window_hours=window_hours, store_id=store,
+    )
+    if as_json:
+        print(json.dumps({
+            "overall_cls": report.overall_cls,
+            "overall_next_action": report.overall_next_action,
+            "window_hours": report.window_hours,
+            "store_id": report.store_id,
+            "ok": report.ok_count,
+            "warn": report.warn_count,
+            "fail": report.fail_count,
+            "domains": [
+                {
+                    "name": d.name,
+                    "cls": d.cls,
+                    "verdict": d.verdict,
+                    "paused": d.paused,
+                    "applied_count": d.applied_count,
+                    "cycle_hook_wired": d.cycle_hook_wired,
+                    "notify_kinds_count": d.notify_kinds_count,
+                    "env_gated": d.env_gated,
+                    "template_complete": d.template_complete,
+                    "env_knobs_set": d.env_knobs_set,
+                    "env_knobs_total": d.env_knobs_total,
+                    "reasons": d.reasons,
+                    "next_action": d.next_action,
+                }
+                for d in report.domains
+            ],
+        }, indent=2, default=str))
+        return
+    scope = f"store={report.store_id}" if report.store_id else "fleet"
+    header = (
+        f"Autonomy doctor ({scope}, "
+        f"window={int(report.window_hours)}h):"
+    )
+    print(header)
+    cls_marker = {
+        "ok": "[OK] ",
+        "warn": "[WRN]",
+        "fail": "[BAD]",
+    }
+    for d in report.domains:
+        mark = cls_marker.get(d.cls, "[?]  ")
+        line = (
+            f"  {mark} {d.name:<24}  "
+            f"verdict={d.verdict:<9} "
+            f"paused={d.paused!r:<5} "
+            f"env={d.env_knobs_set}/{d.env_knobs_total}  "
+            f"applied={d.applied_count}"
+        )
+        print(line)
+        if d.reasons:
+            for r in d.reasons:
+                print(f"        - {r}")
+    print(
+        f"\nOverall: {report.ok_count} ok / "
+        f"{report.warn_count} warn / "
+        f"{report.fail_count} fail"
+    )
+    if report.overall_cls != "ok":
+        print(f"Next: {report.overall_next_action}")
+
+
 def _cmd_autonomy_status(args) -> None:
     """Wave 149 + 151: unified autonomy status."""
     from core.automation.autonomy_status import (
@@ -42296,6 +42389,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomy-env":
         _cmd_autonomy_env(args)
+        return
+
+    if args.command == "autonomy-doctor":
+        _cmd_autonomy_doctor(args)
         return
 
     if args.command == "autonomy-status":
