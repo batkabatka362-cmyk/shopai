@@ -4287,6 +4287,57 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 519: scaffold a new autonomy domain
+    autonomy_init_p = sub.add_parser(
+        "autonomy-init",
+        help=(
+            "Wave 519: scaffold the 5 template module files + "
+            "test file for a new autonomy domain. Prints the "
+            "22-catalog update checklist when --print-checklist."
+        ),
+    )
+    autonomy_init_p.add_argument(
+        "--name", type=str, required=True,
+        help="canonical domain key, e.g. customer_outreach",
+    )
+    autonomy_init_p.add_argument(
+        "--prefix", type=str, required=True,
+        help="file prefix, e.g. outreach",
+    )
+    autonomy_init_p.add_argument(
+        "--capability", type=str, required=True,
+        help="Shopify capability, e.g. SHOPIFY_TAG_CUSTOMER",
+    )
+    autonomy_init_p.add_argument(
+        "--tag", action="append", default=[],
+        help=(
+            "curated taxonomy tag (repeat flag for each tag)"
+        ),
+    )
+    autonomy_init_p.add_argument(
+        "--max-per-run", type=int, default=200,
+        help="default per-cycle cap (env-overridable)",
+    )
+    autonomy_init_p.add_argument(
+        "--entity-id", type=str, default="product_id",
+        help="primary entity ID field name",
+    )
+    autonomy_init_p.add_argument(
+        "--wave-base", type=int, default=600,
+        help="starting wave number for docstrings",
+    )
+    autonomy_init_p.add_argument(
+        "--write", action="store_true",
+        help="actually write files to disk (default: dry-run)",
+    )
+    autonomy_init_p.add_argument(
+        "--print-checklist", action="store_true",
+        help="print catalog-update checklist after rendering",
+    )
+    autonomy_init_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 369: single-shot full-substrate JSON export
     autonomy_export_p = sub.add_parser(
         "autonomy-export",
@@ -30929,6 +30980,87 @@ def _cmd_autonomy_bulk_resume(args) -> None:
     _render_bulk_report(report, as_json)
 
 
+def _cmd_autonomy_init(args) -> None:
+    """Wave 519: scaffold a new autonomy domain."""
+    from core.automation.autonomy_init import (
+        DomainSpec,
+        catalog_checklist,
+        render_domain,
+        write_to_disk,
+    )
+    spec = DomainSpec(
+        domain=args.name,
+        prefix=args.prefix,
+        capability=args.capability,
+        tags=list(args.tag or []),
+        max_per_run=int(args.max_per_run),
+        entity_id=args.entity_id,
+        wave_base=int(args.wave_base),
+    )
+    rendered = render_domain(spec)
+    do_write = bool(getattr(args, "write", False))
+    as_json = bool(getattr(args, "json", False))
+    print_chk = bool(getattr(args, "print_checklist", False))
+
+    written: list = []
+    error: str | None = None
+    if do_write:
+        try:
+            written = [str(p) for p in write_to_disk(rendered)]
+        except FileExistsError as exc:
+            error = f"refused: target already exists: {exc}"
+
+    if as_json:
+        out = {
+            "spec": {
+                "domain": spec.domain,
+                "prefix": spec.prefix,
+                "capability": spec.capability,
+                "tags": list(spec.tags),
+                "package_dir": str(rendered.package_dir),
+                "test_path": str(rendered.test_path),
+            },
+            "files": list(rendered.files.keys()),
+            "test_file": rendered.test_file_name,
+            "written": written,
+            "dry_run": not do_write,
+            "error": error,
+        }
+        if print_chk:
+            out["checklist"] = catalog_checklist(spec)
+        print(json.dumps(out, indent=2, default=str))
+        if error:
+            sys.exit(1)
+        return
+
+    print(
+        f"Autonomy domain scaffold: {spec.domain} "
+        f"(prefix={spec.prefix})"
+    )
+    print()
+    print(f"  Package: {rendered.package_dir}")
+    print(f"  Test:    {rendered.test_path}")
+    print()
+    print("  Files to be generated:")
+    for f in rendered.files.keys():
+        print(f"    {rendered.package_dir / f}")
+    print(f"    {rendered.test_path}")
+    print()
+    if do_write:
+        if error:
+            print(f"  ERROR: {error}")
+            sys.exit(1)
+        print(f"  WROTE {len(written)} file(s).")
+    else:
+        print(
+            "  Dry-run (default). Pass --write to persist."
+        )
+    if print_chk:
+        print()
+        for line in catalog_checklist(spec):
+            print(line)
+
+
 def _cmd_autonomy_export(args) -> None:
     """Wave 369: full-substrate JSON dump."""
     from core.automation.autonomy_export import (
@@ -44829,6 +44961,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomy-bulk-resume":
         _cmd_autonomy_bulk_resume(args)
+        return
+
+    if args.command == "autonomy-init":
+        _cmd_autonomy_init(args)
         return
 
     if args.command == "autonomy-export":
