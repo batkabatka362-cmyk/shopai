@@ -3870,6 +3870,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_ad_p.add_argument("--json", action="store_true")
 
+    # Wave 261: Pattern AE audit (state is_paused export)
+    pattern_ae_p = sub.add_parser(
+        "pattern-ae-audit",
+        help=(
+            "Wave 261: verify each domain's state module "
+            "exports the canonical is_paused symbol at "
+            "module level (catches state-module rename / "
+            "removal that breaks applier gate at fire-time)."
+        ),
+    )
+    pattern_ae_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -29314,6 +29326,45 @@ def _cmd_pattern_v_audit(args) -> None:
         )
 
 
+def _cmd_pattern_ae_audit(args) -> None:
+    """Wave 261: state module is_paused export audit."""
+    from engines._pattern_ae_audit import run_pattern_ae_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_ae_audit()
+    if as_json:
+        print(json.dumps({
+            "domains_scanned": report.domains_scanned,
+            "clean_domains": report.clean_domains,
+            "violations": [
+                {
+                    "domain": v.domain,
+                    "module_path": v.module_path,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern AE FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.domain}] {v.reason}")
+        sys.exit(1)
+    else:
+        scanned = len(report.domains_scanned)
+        clean = len(report.clean_domains)
+        print(
+            f"Pattern AE OK -- {clean}/{scanned} autonomy "
+            f"domain(s) export is_paused at module level."
+        )
+
+
 def _cmd_pattern_ad_audit(args) -> None:
     """Wave 256: health bridge function export audit."""
     from engines._pattern_ad_audit import run_pattern_ad_audit
@@ -33505,6 +33556,22 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_ae":
+            from engines._pattern_ae_audit import (
+                run_pattern_ae_audit,
+            )
+            r = run_pattern_ae_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_domains": list(r.clean_domains),
+                "violations": [
+                    {
+                        "domain": v.domain,
+                        "module_path": v.module_path,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -33520,7 +33587,7 @@ _AUDIT_ORDER = (
     "pattern_n", "pattern_o", "pattern_p", "pattern_qprime",
     "pattern_r", "pattern_s", "pattern_t",
     "pattern_u", "pattern_v", "pattern_w", "pattern_x",
-    "pattern_yprime", "pattern_ac", "pattern_ad",
+    "pattern_yprime", "pattern_ac", "pattern_ad", "pattern_ae",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -33548,6 +33615,7 @@ _AUDIT_LABELS = {
     ),
     "pattern_ac": "Pattern AC (CLI command parity)",
     "pattern_ad": "Pattern AD (health bridge function export)",
+    "pattern_ae": "Pattern AE (state is_paused export)",
 }
 
 
@@ -42542,6 +42610,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-ad-audit":
         _cmd_pattern_ad_audit(args)
+        return
+
+    if args.command == "pattern-ae-audit":
+        _cmd_pattern_ae_audit(args)
         return
 
     if args.command == "autonomy-env":
