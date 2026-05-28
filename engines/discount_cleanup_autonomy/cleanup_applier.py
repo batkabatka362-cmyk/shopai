@@ -52,6 +52,9 @@ logger = get_logger(
 
 _ENGINE = "discount_cleanup"
 _ACTION_TYPE = "apply_discount_deactivate"
+# SHOPIFY_DEACTIVATE_CODE_DISCOUNT flips the discount's
+# active flag -- a state mutation on an existing entity.
+_WRITEBACK_RISK = "modification"
 
 
 def _min_age_days() -> int:

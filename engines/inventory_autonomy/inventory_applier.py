@@ -37,6 +37,9 @@ logger = get_logger("engines.inventory_autonomy.applier")
 
 _ENGINE = "inventory"
 _ACTION_TYPE = "apply_inventory_reorder"
+# SHOPIFY_SET_INVENTORY_QUANTITIES overwrites stock counts --
+# a state mutation, not entity creation.
+_WRITEBACK_RISK = "modification"
 
 
 def _max_quantity() -> int:

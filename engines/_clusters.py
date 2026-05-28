@@ -100,6 +100,10 @@ _CLUSTERS: tuple[Cluster, ...] = (
             "cart_recovery",
             "nps_engine",
             "customer_effort_score",
+            # Phase 15 + 27 autonomy: post-purchase nurture
+            # and at-risk customer tagging
+            "order_followup_autonomy",
+            "customer_outreach_autonomy",
         }),
         kpi="repeat_rate + ltv",
     ),
@@ -167,6 +171,10 @@ _CLUSTERS: tuple[Cluster, ...] = (
             "product_filter",
             "product_lifecycle",
             "product_optimization",
+            # Phase 18 + 28 autonomy: SEO + quality catalog
+            # presentation
+            "product_seo_autonomy",
+            "catalog_quality_autonomy",
         }),
         kpi="conversion_rate + AOV",
     ),
@@ -186,6 +194,9 @@ _CLUSTERS: tuple[Cluster, ...] = (
             "supplier",
             "supplier_communication",
             "supplier_discovery",
+            # Phase 11-28 autonomy domains in fulfillment
+            "fulfillment_autonomy",
+            "inventory_autonomy",
         }),
         kpi="fulfillment_time + stockout_rate (inverted)",
     ),
@@ -227,6 +238,9 @@ _CLUSTERS: tuple[Cluster, ...] = (
             "tax_engine",
             "accounting",
             "legal_document",
+            # Phase 14 autonomy: discount cleanup is a
+            # governance / housekeeping concern
+            "discount_cleanup_autonomy",
             "compliance" if False else "",  # placeholder
         }) - frozenset({""}),
         kpi="incident_count (inverted) + audit_pass_rate",

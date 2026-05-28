@@ -51,6 +51,9 @@ logger = get_logger("engines.roas_guardrails.budget_applier")
 
 _ENGINE = "roas_guardrails"
 _ACTION_TYPE = "apply_budget_change"
+# ADS_UPDATE_BUDGET / ADS_PAUSE_CAMPAIGN modify the
+# advertising platform's campaign state -- a state mutation.
+_WRITEBACK_RISK = "modification"
 
 
 def _max_delta() -> float:

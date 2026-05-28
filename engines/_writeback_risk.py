@@ -63,12 +63,19 @@ from pathlib import Path
 _ADDITIVE_HINTS = {
     # Tag writes (always additive)
     "SHOPIFY_TAG_CUSTOMER", "SHOPIFY_TAG_ORDER",
-    "SHOPIFY_ADD_TAGS",
+    "SHOPIFY_TAG_PRODUCT", "SHOPIFY_ADD_TAGS",
     # New entity creation (no operator-approved state to overwrite)
     "SHOPIFY_CREATE_PRODUCT", "SHOPIFY_CREATE_DISCOUNT",
     "SHOPIFY_CREATE_GIFT_CARD", "SHOPIFY_CREATE_PAGE",
     "SHOPIFY_CREATE_COLLECTION", "SHOPIFY_UPLOAD_FILE",
     "SHOPIFY_CREATE_AUTOMATIC_FREE_SHIPPING",
+    # Phase 11.A: refund creation attaches a new refund entity
+    # to an existing order without overwriting operator-set
+    # order fields (matches CREATE_GIFT_CARD precedent).
+    "SHOPIFY_CREATE_REFUND",
+    # Phase 12.A: fulfillment creation attaches a new fulfillment
+    # record to an order without overwriting operator-set fields.
+    "SHOPIFY_CREATE_FULFILLMENT",
     # Theme files: store_design pattern writes NEW asset/snippet
     # files only -- never overwrites stock theme files
     "SHOPIFY_UPSERT_THEME_FILES",
