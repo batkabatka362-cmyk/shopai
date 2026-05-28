@@ -22117,6 +22117,24 @@ def _cmd_cycle_run(args) -> None:
             "order-followup bridge failed: %s", exc,
         )
 
+    # Wave 397: customer outreach auto-pause bridge
+    try:
+        from engines.customer_outreach_autonomy.outreach_health import (  # noqa: E501
+            maybe_auto_pause_outreach,
+        )
+        co_report = maybe_auto_pause_outreach(
+            window_hours=24.0,
+        )
+        if co_report.bridge_fired:
+            logger.info(
+                "customer outreach auto-pause bridge fired: %s",
+                co_report.bridge_reason,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "customer-outreach bridge failed: %s", exc,
+        )
+
     # Wave 251: post-cycle autonomy-doctor snapshot. Cheap
     # (cached AST audits + per-domain summary calls); catches
     # substrate breakage that bridge fire alone wouldn't expose.
