@@ -3803,6 +3803,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the result envelope as JSON",
     )
 
+    # Wave 181: Pattern S audit (CLI --json consistency)
+    pattern_s_p = sub.add_parser(
+        "pattern-s-audit",
+        help=(
+            "Wave 181: verify every autonomy CLI command "
+            "(domain-status / -health / -pause / -resume) "
+            "accepts --json for machine-readable output."
+        ),
+    )
+    pattern_s_p.add_argument("--json", action="store_true")
+
     # Wave 164: Pattern R audit (next_action presence)
     pattern_r_p = sub.add_parser(
         "pattern-r-audit",
@@ -28945,6 +28956,41 @@ def _cmd_onboard(args) -> None:
         print(f"  Cron: {sched.data['cron_line']}")
 
 
+def _cmd_pattern_s_audit(args) -> None:
+    """Wave 181: CLI --json consistency audit."""
+    from engines._pattern_s_audit import run_pattern_s_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_s_audit()
+    if as_json:
+        print(json.dumps({
+            "commands_scanned": report.commands_scanned,
+            "clean_commands": report.clean_commands,
+            "violations": [
+                {"command": v.command, "reason": v.reason}
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern S FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.command}] {v.reason}")
+        sys.exit(1)
+    else:
+        scanned = len(report.commands_scanned)
+        clean = len(report.clean_commands)
+        print(
+            f"Pattern S OK -- {clean}/{scanned} autonomy "
+            f"CLI command(s) accept --json."
+        )
+
+
 def _cmd_pattern_r_audit(args) -> None:
     """Wave 164: next_action presence audit."""
     from engines._pattern_r_audit import run_pattern_r_audit
@@ -41321,6 +41367,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-r-audit":
         _cmd_pattern_r_audit(args)
+        return
+
+    if args.command == "pattern-s-audit":
+        _cmd_pattern_s_audit(args)
         return
 
     if args.command == "autonomy-status":
