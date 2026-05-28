@@ -4076,6 +4076,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 303: empire-wide autonomy summarize (one paragraph)
+    autonomy_summarize_p = sub.add_parser(
+        "autonomy-summarize",
+        help=(
+            "Wave 303: one-paragraph text digest of autonomy "
+            "substrate state -- combines doctor + smoke + "
+            "status + env for ops handoff / Slack paste."
+        ),
+    )
+    autonomy_summarize_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 122: Pattern O audit (wired engines have opt-in gate)
     pattern_o_p = sub.add_parser(
         "pattern-o-audit",
@@ -30091,6 +30104,23 @@ def _cmd_pattern_p_audit(args) -> None:
         )
 
 
+def _cmd_autonomy_summarize(args) -> None:
+    """Wave 303: one-paragraph autonomy substrate digest."""
+    from core.automation.autonomy_summarize import (
+        run_autonomy_summarize,
+    )
+    as_json = bool(getattr(args, "json", False))
+    summary = run_autonomy_summarize()
+    if as_json:
+        print(json.dumps({
+            "text": summary.text,
+            "overall_cls": summary.overall_cls,
+            "has_issues": summary.has_issues,
+        }, indent=2, default=str))
+        return
+    print(summary.text)
+
+
 def _cmd_autonomy_smoke(args) -> None:
     """Wave 289: runtime exerciser for autonomy substrate."""
     from core.automation.autonomy_smoke import (
@@ -43065,6 +43095,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomy-smoke":
         _cmd_autonomy_smoke(args)
+        return
+
+    if args.command == "autonomy-summarize":
+        _cmd_autonomy_summarize(args)
         return
 
     if args.command == "autonomy-status":
