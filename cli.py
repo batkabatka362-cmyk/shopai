@@ -3858,6 +3858,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_ac_p.add_argument("--json", action="store_true")
 
+    # Wave 256: Pattern AD audit (health bridge function export)
+    pattern_ad_p = sub.add_parser(
+        "pattern-ad-audit",
+        help=(
+            "Wave 256: verify each domain's health module "
+            "exports its maybe_auto_pause_X bridge function "
+            "(Pattern U checks cli.py REFERENCES the name; "
+            "AD checks the function actually EXISTS)."
+        ),
+    )
+    pattern_ad_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -29302,6 +29314,46 @@ def _cmd_pattern_v_audit(args) -> None:
         )
 
 
+def _cmd_pattern_ad_audit(args) -> None:
+    """Wave 256: health bridge function export audit."""
+    from engines._pattern_ad_audit import run_pattern_ad_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_ad_audit()
+    if as_json:
+        print(json.dumps({
+            "domains_scanned": report.domains_scanned,
+            "clean_domains": report.clean_domains,
+            "violations": [
+                {
+                    "domain": v.domain,
+                    "expected_function": v.expected_function,
+                    "module_path": v.module_path,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern AD FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.domain}] {v.reason}")
+        sys.exit(1)
+    else:
+        scanned = len(report.domains_scanned)
+        clean = len(report.clean_domains)
+        print(
+            f"Pattern AD OK -- {clean}/{scanned} autonomy "
+            f"domain(s) export their bridge function."
+        )
+
+
 def _cmd_pattern_ac_audit(args) -> None:
     """Wave 232: autonomy CLI command parity audit."""
     from engines._pattern_ac_audit import run_pattern_ac_audit
@@ -33437,6 +33489,22 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_ad":
+            from engines._pattern_ad_audit import (
+                run_pattern_ad_audit,
+            )
+            r = run_pattern_ad_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_domains": list(r.clean_domains),
+                "violations": [
+                    {
+                        "domain": v.domain,
+                        "expected_function": v.expected_function,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -33452,7 +33520,7 @@ _AUDIT_ORDER = (
     "pattern_n", "pattern_o", "pattern_p", "pattern_qprime",
     "pattern_r", "pattern_s", "pattern_t",
     "pattern_u", "pattern_v", "pattern_w", "pattern_x",
-    "pattern_yprime", "pattern_ac",
+    "pattern_yprime", "pattern_ac", "pattern_ad",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -33479,6 +33547,7 @@ _AUDIT_LABELS = {
         "Pattern Y' (5-piece template completeness)"
     ),
     "pattern_ac": "Pattern AC (CLI command parity)",
+    "pattern_ad": "Pattern AD (health bridge function export)",
 }
 
 
@@ -42469,6 +42538,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-ac-audit":
         _cmd_pattern_ac_audit(args)
+        return
+
+    if args.command == "pattern-ad-audit":
+        _cmd_pattern_ad_audit(args)
         return
 
     if args.command == "autonomy-env":
