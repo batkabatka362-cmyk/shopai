@@ -4050,6 +4050,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 289: empire-wide autonomy SMOKE (runtime exerciser)
+    autonomy_smoke_p = sub.add_parser(
+        "autonomy-smoke",
+        help=(
+            "Wave 289: runtime exerciser for every autonomy "
+            "domain's 5-piece template -- imports + calls "
+            "each canonical entry point with safe synthetic "
+            "input. Companion to autonomy-doctor (static)."
+        ),
+    )
+    autonomy_smoke_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 122: Pattern O audit (wired engines have opt-in gate)
     pattern_o_p = sub.add_parser(
         "pattern-o-audit",
@@ -30022,6 +30036,62 @@ def _cmd_pattern_p_audit(args) -> None:
         )
 
 
+def _cmd_autonomy_smoke(args) -> None:
+    """Wave 289: runtime exerciser for autonomy substrate."""
+    from core.automation.autonomy_smoke import (
+        run_autonomy_smoke,
+    )
+    as_json = bool(getattr(args, "json", False))
+    report = run_autonomy_smoke()
+    if as_json:
+        print(json.dumps({
+            "overall_cls": report.overall_cls,
+            "ok": report.ok_count,
+            "error": report.error_count,
+            "domains": [
+                {
+                    "name": d.domain,
+                    "cls": d.cls,
+                    "steps": [
+                        {"name": s.name, "ok": s.ok,
+                         "detail": s.detail}
+                        for s in d.steps
+                    ],
+                }
+                for d in report.domains
+            ],
+        }, indent=2, default=str))
+        if report.overall_cls != "ok":
+            sys.exit(1)
+        return
+    cls_marker = {"ok": "[OK] ", "error": "[BAD]"}
+    print("Autonomy smoke (runtime exerciser):")
+    for d in report.domains:
+        mark = cls_marker.get(d.cls, "[?]  ")
+        ok_steps = sum(1 for s in d.steps if s.ok)
+        total = len(d.steps)
+        print(
+            f"  {mark} {d.domain:<24}  "
+            f"{ok_steps}/{total} step(s) ok"
+        )
+        if d.cls == "error":
+            for s in d.steps:
+                if not s.ok:
+                    print(
+                        f"        [ERR] {s.name}: {s.detail}"
+                    )
+    print(
+        f"\nOverall: {report.ok_count} ok / "
+        f"{report.error_count} error"
+    )
+    if report.overall_cls != "ok":
+        print(
+            "Next: drill the BAD rows -- runtime errors that "
+            "static audits (pattern-*-audit) can't detect."
+        )
+        sys.exit(1)
+
+
 def _cmd_autonomy_doctor(args) -> None:
     """Wave 235: 360 autonomy doctor (verdict + wiring)."""
     from core.automation.autonomy_doctor import (
@@ -42914,6 +42984,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomy-doctor":
         _cmd_autonomy_doctor(args)
+        return
+
+    if args.command == "autonomy-smoke":
+        _cmd_autonomy_smoke(args)
         return
 
     if args.command == "autonomy-status":
