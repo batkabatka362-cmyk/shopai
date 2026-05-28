@@ -3835,6 +3835,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_x_p.add_argument("--json", action="store_true")
 
+    # Wave 229: Pattern Y' audit (5-piece template completeness)
+    pattern_yp_p = sub.add_parser(
+        "pattern-yprime-audit",
+        help=(
+            "Wave 229: verify every autonomy domain ships all "
+            "5 template modules (log/state/health/applier/"
+            "status)."
+        ),
+    )
+    pattern_yp_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -29175,6 +29186,51 @@ def _cmd_pattern_v_audit(args) -> None:
         )
 
 
+def _cmd_pattern_yprime_audit(args) -> None:
+    """Wave 229: 5-piece template completeness audit."""
+    from engines._pattern_yprime_audit import (
+        run_pattern_yprime_audit,
+    )
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_yprime_audit()
+    if as_json:
+        print(json.dumps({
+            "domains_scanned": report.domains_scanned,
+            "clean_domains": report.clean_domains,
+            "violations": [
+                {
+                    "domain": v.domain,
+                    "package_dir": v.package_dir,
+                    "missing_roles": v.missing_roles,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern Y' FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(
+                f"  [{v.domain}] missing: "
+                f"{v.missing_roles}"
+            )
+        sys.exit(1)
+    else:
+        scanned = len(report.domains_scanned)
+        clean = len(report.clean_domains)
+        print(
+            f"Pattern Y' OK -- {clean}/{scanned} autonomy "
+            f"domain(s) ship all 5 template modules."
+        )
+
+
 def _cmd_pattern_x_audit(args) -> None:
     """Wave 226: autonomy_status rollup coverage audit."""
     from engines._pattern_x_audit import run_pattern_x_audit
@@ -33117,6 +33173,22 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_yprime":
+            from engines._pattern_yprime_audit import (
+                run_pattern_yprime_audit,
+            )
+            r = run_pattern_yprime_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_domains": list(r.clean_domains),
+                "violations": [
+                    {
+                        "domain": v.domain,
+                        "missing_roles": v.missing_roles,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -33132,6 +33204,7 @@ _AUDIT_ORDER = (
     "pattern_n", "pattern_o", "pattern_p", "pattern_qprime",
     "pattern_r", "pattern_s", "pattern_t",
     "pattern_u", "pattern_v", "pattern_w", "pattern_x",
+    "pattern_yprime",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -33154,6 +33227,9 @@ _AUDIT_LABELS = {
     "pattern_v": "Pattern V (notify alert registration)",
     "pattern_w": "Pattern W (env-gate enforcement)",
     "pattern_x": "Pattern X (autonomy_status rollup coverage)",
+    "pattern_yprime": (
+        "Pattern Y' (5-piece template completeness)"
+    ),
 }
 
 
@@ -42136,6 +42212,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-x-audit":
         _cmd_pattern_x_audit(args)
+        return
+
+    if args.command == "pattern-yprime-audit":
+        _cmd_pattern_yprime_audit(args)
         return
 
     if args.command == "autonomy-env":
