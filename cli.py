@@ -3803,6 +3803,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the result envelope as JSON",
     )
 
+    # Wave 203: Pattern U audit (cycle hook coverage)
+    pattern_u_p = sub.add_parser(
+        "pattern-u-audit",
+        help=(
+            "Wave 203: verify every autonomy domain's bridge "
+            "function is referenced from _cmd_cycle_run."
+        ),
+    )
+    pattern_u_p.add_argument("--json", action="store_true")
+
+    # Wave 207: Pattern V audit (notify alert registration)
+    pattern_v_p = sub.add_parser(
+        "pattern-v-audit",
+        help=(
+            "Wave 207: verify every autonomy domain's 2 alert "
+            "kinds are referenced in _notify.collect_alerts."
+        ),
+    )
+    pattern_v_p.add_argument("--json", action="store_true")
+
     # Wave 185-186: Pattern T audit + autonomy-env registry
     pattern_t_p = sub.add_parser(
         "pattern-t-audit",
@@ -29052,6 +29072,87 @@ def _cmd_onboard(args) -> None:
         print(f"  Cron: {sched.data['cron_line']}")
 
 
+def _cmd_pattern_u_audit(args) -> None:
+    """Wave 203: cycle hook coverage audit."""
+    from engines._pattern_u_audit import run_pattern_u_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_u_audit()
+    if as_json:
+        print(json.dumps({
+            "domains_scanned": report.domains_scanned,
+            "clean_domains": report.clean_domains,
+            "violations": [
+                {
+                    "domain": v.domain,
+                    "bridge_name": v.bridge_name,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern U FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.domain}] {v.reason}")
+        sys.exit(1)
+    else:
+        scanned = len(report.domains_scanned)
+        clean = len(report.clean_domains)
+        print(
+            f"Pattern U OK -- {clean}/{scanned} autonomy "
+            f"domain(s) wired into cycle hook."
+        )
+
+
+def _cmd_pattern_v_audit(args) -> None:
+    """Wave 207: notify alert registration audit."""
+    from engines._pattern_v_audit import run_pattern_v_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_v_audit()
+    if as_json:
+        print(json.dumps({
+            "domains_scanned": report.domains_scanned,
+            "clean_domains": report.clean_domains,
+            "violations": [
+                {
+                    "domain": v.domain,
+                    "missing_kinds": v.missing_kinds,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern V FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(
+                f"  [{v.domain}] missing kinds: "
+                f"{v.missing_kinds}"
+            )
+        sys.exit(1)
+    else:
+        scanned = len(report.domains_scanned)
+        clean = len(report.clean_domains)
+        print(
+            f"Pattern V OK -- {clean}/{scanned} autonomy "
+            f"domain(s) have alert kinds registered."
+        )
+
+
 def _cmd_pattern_t_audit(args) -> None:
     """Wave 185: autonomy env knob registry audit."""
     from engines._pattern_t_audit import run_pattern_t_audit
@@ -32852,6 +32953,38 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                 "total_knobs": r.total_knobs,
                 "set_count": r.set_count,
             }
+        if name == "pattern_u":
+            from engines._pattern_u_audit import (
+                run_pattern_u_audit,
+            )
+            r = run_pattern_u_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_domains": list(r.clean_domains),
+                "violations": [
+                    {
+                        "domain": v.domain,
+                        "bridge_name": v.bridge_name,
+                    }
+                    for v in r.violations
+                ],
+            }
+        if name == "pattern_v":
+            from engines._pattern_v_audit import (
+                run_pattern_v_audit,
+            )
+            r = run_pattern_v_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_domains": list(r.clean_domains),
+                "violations": [
+                    {
+                        "domain": v.domain,
+                        "missing_kinds": v.missing_kinds,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -32863,9 +32996,10 @@ _AUDIT_ORDER = (
     "pattern_z", "pattern_q", "wireup_resolve",
     "cluster_topology",
     # Wave 121+: Phase 11.D / Phase 12.D / Phase 14.B-C /
-    # Phase 16.A-B
+    # Phase 16.A-B / Phase 18.B
     "pattern_n", "pattern_o", "pattern_p", "pattern_qprime",
     "pattern_r", "pattern_s", "pattern_t",
+    "pattern_u", "pattern_v",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -32884,6 +33018,8 @@ _AUDIT_LABELS = {
     "pattern_r": "Pattern R (next_action presence)",
     "pattern_s": "Pattern S (CLI --json consistency)",
     "pattern_t": "Pattern T (env knob registry)",
+    "pattern_u": "Pattern U (cycle hook coverage)",
+    "pattern_v": "Pattern V (notify alert registration)",
 }
 
 
@@ -41850,6 +41986,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-t-audit":
         _cmd_pattern_t_audit(args)
+        return
+
+    if args.command == "pattern-u-audit":
+        _cmd_pattern_u_audit(args)
+        return
+
+    if args.command == "pattern-v-audit":
+        _cmd_pattern_v_audit(args)
         return
 
     if args.command == "autonomy-env":
