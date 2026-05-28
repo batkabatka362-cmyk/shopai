@@ -3803,6 +3803,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit the result envelope as JSON",
     )
 
+    # Wave 164: Pattern R audit (next_action presence)
+    pattern_r_p = sub.add_parser(
+        "pattern-r-audit",
+        help=(
+            "Wave 164: verify every autonomy domain summary "
+            "populates next_action (drill-down hint pattern)."
+        ),
+    )
+    pattern_r_p.add_argument("--json", action="store_true")
+
     # Wave 160: Pattern Q' audit (autonomy DomainSummary)
     pattern_qprime_p = sub.add_parser(
         "pattern-qprime-audit",
@@ -8742,10 +8752,33 @@ def _cmd_empire(args) -> None:
             "total": len(stores_list),
         }
 
+    # Wave 161: 5-domain autonomy mix for JSON envelope
+    autonomy_block: dict | None = None
+    try:
+        from core.automation.autonomy_status import (
+            get_autonomy_status,
+        )
+        au = get_autonomy_status(window_hours=168.0)
+        autonomy_block = {
+            "overall_verdict": au.overall_verdict,
+            "total_applied": au.total_applied,
+            "paused_domains": au.paused_domains,
+            "domain_count": len(au.domains),
+            "by_verdict": {},
+        }
+        for d in au.domains:
+            autonomy_block["by_verdict"][d.verdict] = (
+                autonomy_block["by_verdict"].get(d.verdict, 0)
+                + 1
+            )
+    except Exception:  # noqa: BLE001
+        autonomy_block = None
+
     if as_json:
         print(json.dumps({
             "stores": stores_list,
             "niche_mix": niche_mix_block,
+            "autonomy": autonomy_block,
             "last_run": last_run_block,
             "revenue": revenue_block,
             "approvals": approvals_block,
@@ -28843,6 +28876,41 @@ def _cmd_onboard(args) -> None:
         print(f"  Cron: {sched.data['cron_line']}")
 
 
+def _cmd_pattern_r_audit(args) -> None:
+    """Wave 164: next_action presence audit."""
+    from engines._pattern_r_audit import run_pattern_r_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_r_audit()
+    if as_json:
+        print(json.dumps({
+            "domains_probed": report.domains_probed,
+            "clean_domains": report.clean_domains,
+            "violations": [
+                {"domain": v.domain, "reason": v.reason}
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern R FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.domain}] {v.reason}")
+        sys.exit(1)
+    else:
+        probed = len(report.domains_probed)
+        clean = len(report.clean_domains)
+        print(
+            f"Pattern R OK -- {clean}/{probed} autonomy "
+            f"domain(s) populate next_action."
+        )
+
+
 def _cmd_pattern_qprime_audit(args) -> None:
     """Wave 160: autonomy DomainSummary shape audit."""
     from engines._pattern_qprime_audit import (
@@ -40992,6 +41060,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-qprime-audit":
         _cmd_pattern_qprime_audit(args)
+        return
+
+    if args.command == "pattern-r-audit":
+        _cmd_pattern_r_audit(args)
         return
 
     if args.command == "autonomy-status":
