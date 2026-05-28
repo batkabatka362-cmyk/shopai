@@ -4101,6 +4101,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 313: empire-wide autonomy event timeline
+    autonomy_history_p = sub.add_parser(
+        "autonomy-history",
+        help=(
+            "Wave 313: unified chronological timeline of "
+            "recent events across all autonomy domains."
+        ),
+    )
+    autonomy_history_p.add_argument(
+        "--window-hours", type=float, default=24.0,
+    )
+    autonomy_history_p.add_argument(
+        "--store", type=str, default="",
+        help="filter to one store_id",
+    )
+    autonomy_history_p.add_argument(
+        "--limit", type=int, default=30,
+        help="max entries to display",
+    )
+    autonomy_history_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 122: Pattern O audit (wired engines have opt-in gate)
     pattern_o_p = sub.add_parser(
         "pattern-o-audit",
@@ -30155,6 +30178,84 @@ def _cmd_pattern_p_audit(args) -> None:
         )
 
 
+def _cmd_autonomy_history(args) -> None:
+    """Wave 313: unified autonomy event timeline."""
+    from core.automation.autonomy_history import (
+        run_autonomy_history,
+    )
+    window_hours = float(getattr(args, "window_hours", 24.0))
+    store = (getattr(args, "store", "") or "").strip() or None
+    limit = int(getattr(args, "limit", 30))
+    as_json = bool(getattr(args, "json", False))
+    report = run_autonomy_history(
+        window_hours=window_hours, store_id=store,
+    )
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "store_id": report.store_id,
+            "total": report.total,
+            "per_domain_count": report.per_domain_count,
+            "entries": [
+                {
+                    "timestamp": e.timestamp,
+                    "domain": e.domain,
+                    "action": e.action,
+                    "status": e.status,
+                    "detail": e.detail,
+                }
+                for e in report.entries[:limit]
+            ],
+        }, indent=2, default=str))
+        return
+    scope = (
+        f"store={report.store_id}"
+        if report.store_id else "fleet"
+    )
+    print(
+        f"Autonomy history ({scope}, "
+        f"window={int(report.window_hours)}h):"
+    )
+    if not report.entries:
+        print(
+            "  (no events recorded in window -- substrate "
+            "is idle)"
+        )
+        return
+    print(
+        f"  total: {report.total} event(s)"
+    )
+    per = ", ".join(
+        f"{d}={n}"
+        for d, n in report.per_domain_count.items() if n
+    )
+    if per:
+        print(f"  by domain: {per}")
+    print()
+    print(
+        f"  {'TIMESTAMP':<26} "
+        f"{'DOMAIN':<14} "
+        f"{'ACTION':<22} "
+        f"{'STATUS':<14} "
+        f"DETAIL"
+    )
+    for e in report.entries[:limit]:
+        ts = e.timestamp[:25] if e.timestamp else "(no ts)"
+        print(
+            f"  {ts:<26} "
+            f"{e.domain:<14} "
+            f"{e.action[:21]:<22} "
+            f"{e.status[:13]:<14} "
+            f"{e.detail[:60]}"
+        )
+    if len(report.entries) > limit:
+        remainder = len(report.entries) - limit
+        print(
+            f"  ... {remainder} more (raise --limit to "
+            "see all)"
+        )
+
+
 def _cmd_autonomy_summarize(args) -> None:
     """Wave 303: one-paragraph autonomy substrate digest."""
     from core.automation.autonomy_summarize import (
@@ -43171,6 +43272,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomy-summarize":
         _cmd_autonomy_summarize(args)
+        return
+
+    if args.command == "autonomy-history":
+        _cmd_autonomy_history(args)
         return
 
     if args.command == "autonomy-status":
