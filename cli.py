@@ -3883,6 +3883,57 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 174-180: order followup autonomy surfaces
+    followup_status_p = sub.add_parser(
+        "order-followup-status",
+        help="Wave 178: empire-wide order followup report.",
+    )
+    followup_status_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+    )
+    followup_status_p.add_argument(
+        "--store", type=str, default="",
+    )
+    followup_status_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    followup_health_p = sub.add_parser(
+        "order-followup-health",
+        help="Wave 176: analyze followup loop health.",
+    )
+    followup_health_p.add_argument(
+        "--window-hours", type=float, default=24.0,
+    )
+    followup_health_p.add_argument(
+        "--apply-bridge", action="store_true",
+    )
+    followup_health_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    followup_pause_p = sub.add_parser(
+        "order-followup-pause",
+        help="Wave 175: manually set followup pause flag.",
+    )
+    followup_pause_p.add_argument(
+        "--reason", type=str, default="manual operator pause",
+    )
+    followup_pause_p.add_argument(
+        "--auto-resume-hours", type=float, default=0.0,
+    )
+    followup_pause_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    followup_resume_p = sub.add_parser(
+        "order-followup-resume",
+        help="Wave 175: clear followup pause flag.",
+    )
+    followup_resume_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 154-159: discount cleanup autonomy surfaces
     cleanup_status_p = sub.add_parser(
         "discount-cleanup-status",
@@ -21412,6 +21463,24 @@ def _cmd_cycle_run(args) -> None:
             "discount-cleanup bridge failed: %s", exc,
         )
 
+    # Wave 179: order followup auto-pause bridge.
+    try:
+        from engines.order_followup_autonomy.followup_health import (
+            maybe_auto_pause_followup,
+        )
+        fu_report = maybe_auto_pause_followup(
+            window_hours=24.0,
+        )
+        if fu_report.bridge_fired:
+            logger.info(
+                "order followup auto-pause bridge fired: %s",
+                fu_report.bridge_reason,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "order-followup bridge failed: %s", exc,
+        )
+
     if as_json:
         print(json.dumps({
             "mode": "live",
@@ -29165,6 +29234,194 @@ def _cmd_pattern_n_audit(args) -> None:
             f"Pattern N OK -- {probed} orchestrator "
             f"strategy(ies) preserve niche merge."
         )
+
+
+def _cmd_followup_status(args) -> None:
+    """Wave 178: empire-wide order followup status."""
+    from engines.order_followup_autonomy.followup_status import (
+        get_followup_status,
+    )
+    as_json = bool(getattr(args, "json", False))
+    window_h = float(
+        getattr(args, "window_hours", 168.0) or 168.0,
+    )
+    store_id = (getattr(args, "store", "") or "").strip()
+    report = get_followup_status(
+        window_hours=window_h,
+        store_id=store_id or None,
+    )
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "store_id": report.store_id,
+            "total_events": report.total_events,
+            "applied_count": report.applied_count,
+            "skipped_count": report.skipped_count,
+            "by_tag": report.by_tag,
+            "by_status": report.by_status,
+            "health_verdict": report.health_verdict,
+            "health_failure_ratio": (
+                report.health_failure_ratio
+            ),
+            "paused": report.paused,
+            "pause_reason": report.pause_reason,
+            "verdict": report.verdict,
+            "verdict_reasons": report.verdict_reasons,
+            "next_action": report.next_action,
+        }, indent=2, default=str))
+        return
+    marker = {
+        "healthy": "[OK ]", "quiet": "[ - ]",
+        "degraded": "[WRN]", "paused": "[BAD]",
+    }.get(report.verdict, "[ ? ]")
+    scope = (
+        f"store={report.store_id}" if report.store_id
+        else "fleet"
+    )
+    print(
+        f"Order followup ({scope}, last "
+        f"{report.window_hours:.0f}h)"
+    )
+    print()
+    print(f"  Total events:     {report.total_events}")
+    print(f"  Tagged:           {report.applied_count}")
+    print(f"  Skipped:          {report.skipped_count}")
+    if report.by_tag:
+        print()
+        print("  Tags applied:")
+        for tag in sorted(
+            report.by_tag, key=lambda t: -report.by_tag[t],
+        ):
+            print(
+                f"    {tag:<40} {report.by_tag[tag]:>4}"
+            )
+    print(
+        f"  Health:           {report.health_verdict}  "
+        f"(failure ratio "
+        f"{report.health_failure_ratio:.0%})"
+    )
+    if report.paused:
+        print(
+            f"  *** PAUSED ***  reason: "
+            f"{report.pause_reason}"
+        )
+    print()
+    print(f"  {marker} VERDICT: {report.verdict}")
+    for reason in report.verdict_reasons:
+        print(f"    - {reason}")
+    if report.next_action:
+        print()
+        print(f"  Next: {report.next_action}")
+
+
+def _cmd_followup_health(args) -> None:
+    """Wave 176: followup health analyzer."""
+    from engines.order_followup_autonomy.followup_health import (
+        analyze_followup_health,
+        maybe_auto_pause_followup,
+    )
+    as_json = bool(getattr(args, "json", False))
+    window_h = float(
+        getattr(args, "window_hours", 24.0) or 24.0,
+    )
+    apply_bridge = bool(getattr(args, "apply_bridge", False))
+    report = (
+        maybe_auto_pause_followup(window_hours=window_h)
+        if apply_bridge
+        else analyze_followup_health(window_hours=window_h)
+    )
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "sample_size": report.sample_size,
+            "applied_count": report.applied_count,
+            "adapter_failed_count": (
+                report.adapter_failed_count
+            ),
+            "failure_ratio": report.failure_ratio,
+            "verdict": report.verdict,
+            "reasons": report.reasons,
+            "already_paused": report.already_paused,
+            "bridge_fired": report.bridge_fired,
+            "bridge_reason": report.bridge_reason,
+        }, indent=2, default=str))
+        return
+    marker = {
+        "healthy": "[OK ]", "degraded": "[WRN]",
+        "critical": "[BAD]",
+    }.get(report.verdict, "[ ? ]")
+    print(
+        f"Order followup health (last "
+        f"{report.window_hours:.0f}h)"
+    )
+    print()
+    print(f"  Sample size:        {report.sample_size}")
+    print(f"  Applied:            {report.applied_count}")
+    print(
+        f"  Adapter failed:     "
+        f"{report.adapter_failed_count}"
+    )
+    print(
+        f"  Failure ratio:      "
+        f"{report.failure_ratio:.0%}"
+    )
+    print()
+    print(f"  {marker} VERDICT: {report.verdict}")
+    for reason in report.reasons:
+        print(f"    - {reason}")
+    if report.already_paused:
+        print()
+        print("  *** FOLLOWUP MUTATIONS PAUSED ***")
+    if apply_bridge:
+        print()
+        if report.bridge_fired:
+            print(f"  [AUTO-PAUSED] {report.bridge_reason}")
+        else:
+            print(f"  Bridge: {report.bridge_reason}")
+
+
+def _cmd_followup_pause(args) -> None:
+    from engines.order_followup_autonomy.followup_state import (
+        pause,
+    )
+    import time as _t
+    as_json = bool(getattr(args, "json", False))
+    reason = (
+        getattr(args, "reason", "manual operator pause")
+        or "manual operator pause"
+    )
+    auto_h = float(
+        getattr(args, "auto_resume_hours", 0.0) or 0.0,
+    )
+    auto_resume_at = (
+        _t.time() + auto_h * 3600.0 if auto_h > 0 else 0.0
+    )
+    state = pause(
+        reason=reason, auto_resume_after=auto_resume_at,
+    )
+    if as_json:
+        print(json.dumps({
+            "paused": state.paused, "reason": state.reason,
+            "paused_at": state.paused_at,
+            "auto_resume_after": state.auto_resume_after,
+        }, indent=2, default=str))
+        return
+    print("Order followup auto-pause flag SET")
+    print(f"  Reason: {state.reason}")
+
+
+def _cmd_followup_resume(args) -> None:
+    from engines.order_followup_autonomy.followup_state import (
+        resume,
+    )
+    as_json = bool(getattr(args, "json", False))
+    state = resume()
+    if as_json:
+        print(json.dumps({
+            "paused": state.paused, "reason": state.reason,
+        }, indent=2))
+        return
+    print("Order followup auto-pause flag CLEARED")
 
 
 def _cmd_cleanup_status(args) -> None:
@@ -41068,6 +41325,19 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomy-status":
         _cmd_autonomy_status(args)
+        return
+
+    if args.command == "order-followup-status":
+        _cmd_followup_status(args)
+        return
+    if args.command == "order-followup-health":
+        _cmd_followup_health(args)
+        return
+    if args.command == "order-followup-pause":
+        _cmd_followup_pause(args)
+        return
+    if args.command == "order-followup-resume":
+        _cmd_followup_resume(args)
         return
 
     if args.command == "discount-cleanup-status":

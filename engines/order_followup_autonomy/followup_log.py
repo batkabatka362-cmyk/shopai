@@ -1,0 +1,49 @@
+"""Order followup action log (Wave 174)."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+import time
+from typing import Any
+
+from core.automation.action_log import (
+    record_event,
+    recent_events as _recent_events,
+    log_size as _log_size,
+)
+
+
+_LOG_PATH = Path("data") / "order_followup_log.json"
+
+
+@dataclass
+class OrderFollowupEvent:
+    order_id: str
+    store_id: str = ""
+    customer_id: str = ""
+    action: str = ""              # tag_followup / tag_thank_you / etc
+    tag: str = ""
+    applied: bool = False
+    status: str = ""
+    error: str = ""
+    recorded_at: float = field(default_factory=time.time)
+
+
+def record_followup_event(event: OrderFollowupEvent) -> None:
+    record_event(_LOG_PATH, event)
+
+
+def recent_events(
+    *,
+    window_hours: float = 168.0,
+    store_id: str | None = None,
+) -> list[dict[str, Any]]:
+    return _recent_events(
+        _LOG_PATH,
+        window_hours=window_hours,
+        filters={"store_id": store_id or ""},
+    )
+
+
+def log_size() -> int:
+    return _log_size(_LOG_PATH)

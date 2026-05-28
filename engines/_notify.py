@@ -465,11 +465,58 @@ def collect_alerts() -> list[NotifyAlert]:
             "notify: discount_cleanup probe raised: %s", exc,
         )
 
-    # 10. Wave 153: autonomy coalesce. Opt-in via
+    # 10. Wave 179: order followup auto-pause / critical.
+    try:
+        from engines.order_followup_autonomy.followup_state import (
+            get_state as _fu_state,
+        )
+        from engines.order_followup_autonomy.followup_health import (
+            analyze_followup_health as _fu_health,
+        )
+        fustate = _fu_state()
+        if fustate.paused:
+            alerts.append(NotifyAlert(
+                kind="order_followup_paused",
+                severity="critical",
+                message=(
+                    f"Order followup auto-pause active: "
+                    f"{fustate.reason or '(no reason)'}"
+                ),
+                context={
+                    "reason": fustate.reason,
+                    "paused_at": fustate.paused_at,
+                    "auto_resume_after": (
+                        fustate.auto_resume_after
+                    ),
+                },
+            ))
+        else:
+            fuh = _fu_health(window_hours=24.0)
+            if fuh.verdict == "critical":
+                alerts.append(NotifyAlert(
+                    kind="order_followup_health_critical",
+                    severity="critical",
+                    message=(
+                        f"Order followup failure ratio "
+                        f"{fuh.failure_ratio:.0%} >= critical "
+                        f"(n={fuh.sample_size})"
+                    ),
+                    context={
+                        "failure_ratio": fuh.failure_ratio,
+                        "sample_size": fuh.sample_size,
+                    },
+                ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "notify: order_followup probe raised: %s", exc,
+        )
+
+    # 11. Wave 153: autonomy coalesce. Opt-in via
     # SHOPAI_NOTIFY_AUTONOMY_COALESCE=1. When set, replace
     # per-domain {refund,budget,fulfillment,inventory,
-    # discount_cleanup}_paused / _health_critical alerts with
-    # a single rolled-up autonomy_degraded alert.
+    # discount_cleanup,order_followup}_paused /
+    # _health_critical alerts with a single rolled-up
+    # autonomy_degraded alert.
     if os.environ.get("SHOPAI_NOTIFY_AUTONOMY_COALESCE", "") in (
         "1", "true", "yes",
     ):
@@ -481,6 +528,8 @@ def collect_alerts() -> list[NotifyAlert]:
             "inventory_paused", "inventory_health_critical",
             "discount_cleanup_paused",
             "discount_cleanup_health_critical",
+            "order_followup_paused",
+            "order_followup_health_critical",
         }
         autonomy_alerts = [
             a for a in alerts if a.kind in autonomy_kinds

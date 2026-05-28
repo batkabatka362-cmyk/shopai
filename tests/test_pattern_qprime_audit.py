@@ -19,12 +19,12 @@ class TestPatternQPrimeLive:
             f"{[(v.domain, v.missing_fields) for v in report.violations]}"
         )
 
-    def test_probes_all_5_known_domains(self):
+    def test_probes_all_6_known_domains(self):
         report = run_pattern_qprime_audit()
         assert set(report.domains_probed) == {
             "customer_support", "marketing",
             "fulfillment", "inventory",
-            "discount_cleanup",
+            "discount_cleanup", "order_followup",
         }
 
     def test_canonical_fields_match_DomainSummary(self):
