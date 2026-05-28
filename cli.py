@@ -4197,6 +4197,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 341: per-domain bridge latency benchmark
+    autonomy_bench_p = sub.add_parser(
+        "autonomy-bench",
+        help=(
+            "Wave 341: measure each domain's maybe_auto_pause_X "
+            "bridge latency (median/max/total) -- pre-deploy "
+            "regression check + capacity planning."
+        ),
+    )
+    autonomy_bench_p.add_argument(
+        "--runs", type=int, default=3,
+        help="runs per domain (default 3)",
+    )
+    autonomy_bench_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 122: Pattern O audit (wired engines have opt-in gate)
     pattern_o_p = sub.add_parser(
         "pattern-o-audit",
@@ -30423,6 +30440,67 @@ def _cmd_pattern_p_audit(args) -> None:
         )
 
 
+def _cmd_autonomy_bench(args) -> None:
+    """Wave 341: per-domain bridge latency benchmark."""
+    from core.automation.autonomy_bench import (
+        run_autonomy_bench,
+    )
+    runs = int(getattr(args, "runs", 3))
+    as_json = bool(getattr(args, "json", False))
+    report = run_autonomy_bench(runs_per_domain=runs)
+    if as_json:
+        print(json.dumps({
+            "runs_per_domain": report.runs_per_domain,
+            "total_ms": report.total_ms,
+            "slowest_domain": report.slowest_domain,
+            "slowest_median_ms": report.slowest_median_ms,
+            "domains": [
+                {
+                    "name": d.domain,
+                    "runs": d.runs,
+                    "median_ms": d.median_ms,
+                    "max_ms": d.max_ms,
+                    "min_ms": d.min_ms,
+                    "total_ms": d.total_ms,
+                    "error": d.error,
+                }
+                for d in report.domains
+            ],
+        }, indent=2, default=str))
+        return
+    print(
+        f"Autonomy bench ({report.runs_per_domain} run(s) "
+        f"per domain):"
+    )
+    print()
+    print(
+        f"  {'DOMAIN':<24} {'MEDIAN':>10} {'MAX':>10} "
+        f"{'TOTAL':>10}"
+    )
+    for d in report.domains:
+        if d.error:
+            print(
+                f"  {d.domain:<24}  ERROR: {d.error[:50]}"
+            )
+            continue
+        print(
+            f"  {d.domain:<24} "
+            f"{d.median_ms:>8.1f}ms "
+            f"{d.max_ms:>8.1f}ms "
+            f"{d.total_ms:>8.1f}ms"
+        )
+    print()
+    print(
+        f"Total: {report.total_ms:.1f}ms across "
+        f"{report.domain_count} domain(s)."
+    )
+    if report.slowest_domain:
+        print(
+            f"Slowest: {report.slowest_domain} @ "
+            f"{report.slowest_median_ms:.1f}ms median"
+        )
+
+
 def _cmd_autonomy_domain(args) -> None:
     """Wave 332: per-domain drill view."""
     from core.automation.autonomy_domain_view import (
@@ -43719,6 +43797,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomy-domain":
         _cmd_autonomy_domain(args)
+        return
+
+    if args.command == "autonomy-bench":
+        _cmd_autonomy_bench(args)
         return
 
     if args.command == "autonomy-status":
