@@ -21722,11 +21722,33 @@ def _cmd_cycle_run(args) -> None:
             "order-followup bridge failed: %s", exc,
         )
 
+    # Wave 251: post-cycle autonomy-doctor snapshot. Cheap
+    # (cached AST audits + per-domain summary calls); catches
+    # substrate breakage that bridge fire alone wouldn't expose.
+    wiring_block: dict | None = None
+    try:
+        from core.automation.autonomy_doctor import (
+            run_autonomy_doctor,
+        )
+        wiring = run_autonomy_doctor(window_hours=24.0)
+        wiring_block = {
+            "overall_cls": wiring.overall_cls,
+            "ok": wiring.ok_count,
+            "warn": wiring.warn_count,
+            "fail": wiring.fail_count,
+            "domain_count": len(wiring.domains),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "post-cycle wiring snapshot failed: %s", exc,
+        )
+
     if as_json:
         print(json.dumps({
             "mode": "live",
             "summary": overall,
             "stores": per_store_results,
+            "wiring": wiring_block,
         }, indent=2, default=str))
         if any_error:
             sys.exit(1)
@@ -21756,6 +21778,19 @@ def _cmd_cycle_run(args) -> None:
             f"ok={sr['ok']:3d}  err={sr['errors']:3d}"
         )
     print()
+    if wiring_block and (
+        wiring_block["fail"] > 0 or wiring_block["warn"] > 0
+    ):
+        mark = (
+            "[BAD]" if wiring_block["fail"] > 0 else "[WRN]"
+        )
+        print(
+            f"  Wiring: {mark} "
+            f"{wiring_block['fail']} fail / "
+            f"{wiring_block['warn']} warn / "
+            f"{wiring_block['ok']} ok  "
+            "(drill: shopai autonomy-doctor)"
+        )
     print(
         "  Drill: `shopai approvals list --status pending` "
         "(see modification-tier engine outputs awaiting "
