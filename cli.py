@@ -4007,6 +4007,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_ap_p.add_argument("--json", action="store_true")
 
+    # Wave 358: Pattern AQ audit (verdict literal)
+    pattern_aq_p = sub.add_parser(
+        "pattern-aq-audit",
+        help=(
+            "Wave 358: verify every DomainSummary.verdict is "
+            "in the canonical set {healthy,quiet,degraded,"
+            "paused}. Catches off-spec verdicts that silently "
+            "fall through the rollup's worst-of comparator."
+        ),
+    )
+    pattern_aq_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -29573,6 +29585,48 @@ def _cmd_pattern_v_audit(args) -> None:
         )
 
 
+def _cmd_pattern_aq_audit(args) -> None:
+    """Wave 358: DomainSummary verdict literal audit."""
+    from engines._pattern_aq_audit import run_pattern_aq_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_aq_audit()
+    if as_json:
+        print(json.dumps({
+            "domains_scanned": report.domains_scanned,
+            "clean_domains": report.clean_domains,
+            "verdicts_by_domain": (
+                report.verdicts_by_domain
+            ),
+            "violations": [
+                {
+                    "domain": v.domain,
+                    "actual_verdict": v.actual_verdict,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern AQ FAILED -- "
+            f"{len(report.violations)} violation(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.domain}] {v.reason}")
+        sys.exit(1)
+    else:
+        scanned = len(report.domains_scanned)
+        clean = len(report.clean_domains)
+        print(
+            f"Pattern AQ OK -- {clean}/{scanned} autonomy "
+            f"domain(s) return canonical verdict literals."
+        )
+
+
 def _cmd_pattern_ap_audit(args) -> None:
     """Wave 353: bridge cascade isolation audit."""
     from engines._pattern_ap_audit import run_pattern_ap_audit
@@ -34844,6 +34898,25 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_aq":
+            from engines._pattern_aq_audit import (
+                run_pattern_aq_audit,
+            )
+            r = run_pattern_aq_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_domains": list(r.clean_domains),
+                "verdicts_by_domain": (
+                    dict(r.verdicts_by_domain)
+                ),
+                "violations": [
+                    {
+                        "domain": v.domain,
+                        "actual_verdict": v.actual_verdict,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -34862,7 +34935,7 @@ _AUDIT_ORDER = (
     "pattern_yprime", "pattern_ac", "pattern_ad", "pattern_ae",
     "pattern_af", "pattern_ag", "pattern_ah", "pattern_ai",
     "pattern_aj", "pattern_ak", "pattern_al", "pattern_am",
-    "pattern_an", "pattern_ao", "pattern_ap",
+    "pattern_an", "pattern_ao", "pattern_ap", "pattern_aq",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -34902,6 +34975,7 @@ _AUDIT_LABELS = {
     "pattern_an": "Pattern AN (writer _ENGINE constant)",
     "pattern_ao": "Pattern AO (applier docstring gate doc)",
     "pattern_ap": "Pattern AP (bridge cascade isolation)",
+    "pattern_aq": "Pattern AQ (verdict literal validation)",
 }
 
 
@@ -43944,6 +44018,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-ap-audit":
         _cmd_pattern_ap_audit(args)
+        return
+
+    if args.command == "pattern-aq-audit":
+        _cmd_pattern_aq_audit(args)
         return
 
     if args.command == "autonomy-env":
