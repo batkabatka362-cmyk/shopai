@@ -38,7 +38,12 @@ _EXPECTED_DOMAIN_COUNT = 9
 # tuple element is the domain key (smoke / history have this
 # shape); otherwise it's a dict and we read .keys().
 _CATALOGS: list[tuple[str, str, bool]] = [
-    # Pattern audits (17)
+    # Pattern audits (19 -- W226 added U+V to AR catalog
+    # when their drift was discovered during Phase 32.C
+    # daily-brief integration debugging)
+    ("engines._pattern_u_audit", "_DOMAIN_BRIDGES", False),
+    ("engines._pattern_v_audit", "_DOMAIN_ALERT_KINDS",
+     False),
     ("engines._pattern_w_audit", "_DOMAIN_HEALTH_MODULES",
      False),
     ("engines._pattern_x_audit", "_DOMAIN_SUMMARY_FUNCS",

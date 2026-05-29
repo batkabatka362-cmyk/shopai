@@ -71,6 +71,29 @@ def _audit_patches(spec: DomainSpec) -> list[CatalogPatch]:
     out: list[CatalogPatch] = []
 
     out.append(CatalogPatch(
+        name="pattern_u (cycle hook coverage)",
+        path=Path("engines/_pattern_u_audit.py"),
+        var_name="_DOMAIN_BRIDGES",
+        fn=patch_dict_append,
+        payload=f'"{d}": "maybe_auto_pause_{p}",',
+        skip_if_contains=f'"{d}":',
+    ))
+
+    out.append(CatalogPatch(
+        name="pattern_v (notify alert kinds)",
+        path=Path("engines/_pattern_v_audit.py"),
+        var_name="_DOMAIN_ALERT_KINDS",
+        fn=patch_dict_append,
+        payload=(
+            f'"{d}": (\n'
+            f'    "{d}_paused",\n'
+            f'    "{d}_health_critical",\n'
+            f'),'
+        ),
+        skip_if_contains=f'"{d}":',
+    ))
+
+    out.append(CatalogPatch(
         name="pattern_w (env-gate)",
         path=Path("engines/_pattern_w_audit.py"),
         var_name="_DOMAIN_HEALTH_MODULES",

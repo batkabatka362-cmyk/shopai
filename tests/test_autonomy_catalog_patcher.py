@@ -227,7 +227,7 @@ class TestApplyAllLive:
                 for f in failures
             )
         )
-        assert len(results) == 30
+        assert len(results) == 32
 
     def test_idempotent_for_existing_domain(self):
         # catalog_quality is already in every catalog.
@@ -243,7 +243,7 @@ class TestApplyAllLive:
         ok = sum(1 for r in results if r.success)
         # All 30 should succeed (idempotent for already-
         # present + skip for constant)
-        assert ok == 30
+        assert ok == 32
 
 
 # ─── PatchResult dataclass ──────────────────────────────────────────────

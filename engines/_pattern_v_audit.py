@@ -48,6 +48,14 @@ _DOMAIN_ALERT_KINDS: dict[str, tuple[str, str]] = {
         "product_seo_paused",
         "product_seo_health_critical",
     ),
+    "customer_outreach": (
+        "customer_outreach_paused",
+        "customer_outreach_health_critical",
+    ),
+    "catalog_quality": (
+        "catalog_quality_paused",
+        "catalog_quality_health_critical",
+    ),
 }
 
 

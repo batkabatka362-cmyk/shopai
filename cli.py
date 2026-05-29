@@ -4236,6 +4236,48 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 616: per-domain activity leaderboard
+    autonomy_lb_p = sub.add_parser(
+        "autonomy-leaderboard",
+        help=(
+            "Wave 616: rank all autonomy domains by activity "
+            "(applied count) / success_rate / failure_ratio."
+        ),
+    )
+    autonomy_lb_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+    )
+    autonomy_lb_p.add_argument(
+        "--store", type=str, default="",
+    )
+    autonomy_lb_p.add_argument(
+        "--sort-by", type=str, default="applied",
+        choices=["applied", "failure_ratio", "success_rate"],
+    )
+    autonomy_lb_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # Wave 631: side-by-side compare of two autonomy domains
+    autonomy_cmp_p = sub.add_parser(
+        "autonomy-compare",
+        help=(
+            "Wave 631: side-by-side diff of two autonomy "
+            "domains' state + activity."
+        ),
+    )
+    autonomy_cmp_p.add_argument("domain_a", type=str)
+    autonomy_cmp_p.add_argument("domain_b", type=str)
+    autonomy_cmp_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+    )
+    autonomy_cmp_p.add_argument(
+        "--store", type=str, default="",
+    )
+    autonomy_cmp_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 332: per-domain drill view
     autonomy_domain_p = sub.add_parser(
         "autonomy-domain",
@@ -9646,6 +9688,32 @@ def _cmd_empire(args) -> None:
             "empire wiring block raised: %s", exc,
         )
 
+    # Wave 649: autonomy trends one-liner. Surfaces ONLY when
+    # something is moving (rising/falling/new/dormant). Quiet
+    # substrate stays silent here.
+    try:
+        from core.automation.autonomy_trends import (
+            run_autonomy_trends,
+        )
+        trends = run_autonomy_trends(window_hours=168.0)
+        if (
+            trends.rising_count > 0
+            or trends.falling_count > 0
+            or trends.dormant_count > 0
+            or trends.new_count > 0
+        ):
+            print(
+                f"    trends:             [---] "
+                f"{trends.overall_summary}"
+            )
+            print(
+                "    -> shopai autonomy-trends"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "empire trends block raised: %s", exc,
+        )
+
     # Last cycle
     print()
     if last_run_block:
@@ -11100,6 +11168,32 @@ def _cmd_daily_brief(args) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "daily-brief wiring block raised: %s", exc,
+        )
+    # Wave 646: autonomy trends block. Distinct from the
+    # verdict + wiring blocks above -- surfaces direction
+    # (rising/falling) of activity vs the previous window.
+    # Silent in the clean (all-flat) case.
+    try:
+        from core.automation.autonomy_trends import (
+            run_autonomy_trends,
+        )
+        trends = run_autonomy_trends(window_hours=window_hours)
+        if (
+            trends.rising_count > 0
+            or trends.falling_count > 0
+            or trends.dormant_count > 0
+            or trends.new_count > 0
+        ):
+            print(
+                f"  Trends:       [---] "
+                f"{trends.overall_summary}"
+            )
+            print(
+                "    -> drill: shopai autonomy-trends"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief trends block raised: %s", exc,
         )
     # Surface the sickest engines when ANY are unhealthy --
     # cheap operator nudge to drill in via ``engine pulse``.
@@ -31347,6 +31441,199 @@ def _cmd_autonomy_domain(args) -> None:
         print(f"  Next: {view.next_action}")
 
 
+def _cmd_autonomy_leaderboard(args) -> None:
+    """Wave 616: rank autonomy domains by activity / success."""
+    from core.automation.autonomy_leaderboard import (
+        run_autonomy_leaderboard,
+    )
+    window_h = float(
+        getattr(args, "window_hours", 168.0) or 168.0,
+    )
+    store = (getattr(args, "store", "") or "").strip() or None
+    sort_by = getattr(args, "sort_by", "applied") or "applied"
+    as_json = bool(getattr(args, "json", False))
+    report = run_autonomy_leaderboard(
+        window_hours=window_h, store_id=store,
+        sort_by=sort_by,
+    )
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "store_id": report.store_id,
+            "sort_by": report.sort_by,
+            "total_applied_fleet": (
+                report.total_applied_fleet
+            ),
+            "total_skipped_fleet": (
+                report.total_skipped_fleet
+            ),
+            "active_count": report.active_count,
+            "paused_count": report.paused_count,
+            "most_active": report.most_active,
+            "highest_failure": report.highest_failure,
+            "entries": [
+                {
+                    "domain": e.domain,
+                    "total": e.total,
+                    "applied": e.applied,
+                    "skipped": e.skipped,
+                    "success_rate": e.success_rate,
+                    "failure_ratio": e.failure_ratio,
+                    "paused": e.paused,
+                    "health_verdict": e.health_verdict,
+                }
+                for e in report.entries
+            ],
+        }, indent=2, default=str))
+        return
+    scope = (
+        f"store={store}" if store else "fleet"
+    )
+    print(
+        f"Autonomy leaderboard ({scope}, "
+        f"window={int(window_h)}h, sort={sort_by}):"
+    )
+    print()
+    print(
+        f"  Fleet totals: applied={report.total_applied_fleet}"
+        f"  skipped={report.total_skipped_fleet}  "
+        f"active={report.active_count}/9  "
+        f"paused={report.paused_count}"
+    )
+    print()
+    print(
+        f"  {'#':>3} {'DOMAIN':<14} "
+        f"{'APPLIED':>7} {'TOTAL':>5} "
+        f"{'SUCCESS':>7} {'FAIL%':>6}  HEALTH"
+    )
+    for i, e in enumerate(report.entries, 1):
+        flag = "P" if e.paused else " "
+        succ = (
+            f"{e.success_rate * 100:5.1f}%"
+            if e.total > 0 else "    --"
+        )
+        fail = (
+            f"{e.failure_ratio * 100:4.1f}%"
+            if e.total > 0 else "  --"
+        )
+        print(
+            f"  {i:>3} {flag}{e.domain:<13} "
+            f"{e.applied:>7d} {e.total:>5d} "
+            f"{succ:>7} {fail:>6}  "
+            f"{e.health_verdict}"
+        )
+    if report.most_active:
+        print()
+        print(f"  Most active: {report.most_active}")
+    if report.highest_failure:
+        print(
+            f"  Highest failure: {report.highest_failure}"
+        )
+
+
+def _cmd_autonomy_compare(args) -> None:
+    """Wave 631: side-by-side compare of two autonomy domains."""
+    from core.automation.autonomy_domain_view import (
+        resolve_domain,
+        run_autonomy_domain_view,
+    )
+    name_a = args.domain_a
+    name_b = args.domain_b
+    window_h = float(
+        getattr(args, "window_hours", 168.0) or 168.0,
+    )
+    store = (getattr(args, "store", "") or "").strip() or None
+    as_json = bool(getattr(args, "json", False))
+
+    a_canonical = resolve_domain(name_a)
+    b_canonical = resolve_domain(name_b)
+    if not a_canonical or not b_canonical:
+        msg = "Unknown domain: "
+        if not a_canonical:
+            msg += f"{name_a!r}"
+        if not b_canonical:
+            msg += (
+                "" if a_canonical else " + "
+            ) + f"{name_b!r}"
+        if as_json:
+            print(json.dumps({"error": msg}, indent=2))
+        else:
+            print(msg)
+        sys.exit(1)
+
+    va = run_autonomy_domain_view(
+        a_canonical, window_hours=window_h, store_id=store,
+    )
+    vb = run_autonomy_domain_view(
+        b_canonical, window_hours=window_h, store_id=store,
+    )
+
+    if as_json:
+        def _to_dict(v):
+            return {
+                "domain": v.domain,
+                "verdict": v.verdict,
+                "paused": v.paused,
+                "applied_count": v.applied_count,
+                "health_failure_ratio": (
+                    v.health_failure_ratio
+                ),
+                "wiring_cls": v.wiring_cls,
+                "env_knobs_set": v.env_knobs_set,
+                "env_knobs_total": v.env_knobs_total,
+                "recent_events_count": (
+                    v.recent_events_count
+                ),
+                "next_action": v.next_action,
+            }
+        print(json.dumps({
+            "window_hours": window_h,
+            "store_id": store,
+            "a": _to_dict(va),
+            "b": _to_dict(vb),
+        }, indent=2, default=str))
+        return
+
+    print(
+        f"Autonomy compare (window={int(window_h)}h"
+        + (f", store={store}" if store else "")
+        + "):"
+    )
+    print()
+    print(
+        f"  {'FIELD':<22} "
+        f"{va.domain:>22} | {vb.domain}"
+    )
+    print(f"  {'-'*22}  {'-'*22}-+-{'-'*22}")
+    rows = [
+        ("verdict", va.verdict, vb.verdict),
+        ("paused",
+         "YES" if va.paused else "no",
+         "YES" if vb.paused else "no"),
+        ("wiring", va.wiring_cls, vb.wiring_cls),
+        ("applied (window)",
+         str(va.applied_count),
+         str(vb.applied_count)),
+        ("recent events",
+         str(va.recent_events_count),
+         str(vb.recent_events_count)),
+        ("env knobs (set/total)",
+         f"{va.env_knobs_set}/{va.env_knobs_total}",
+         f"{vb.env_knobs_set}/{vb.env_knobs_total}"),
+        ("failure ratio",
+         (f"{va.health_failure_ratio:.0%}"
+          if va.health_failure_ratio is not None else "n/a"),
+         (f"{vb.health_failure_ratio:.0%}"
+          if vb.health_failure_ratio is not None else "n/a")),
+    ]
+    for field_name, a_val, b_val in rows:
+        marker = "  " if a_val == b_val else " !"
+        print(
+            f" {marker}{field_name:<22} "
+            f"{a_val:>22} | {b_val}"
+        )
+
+
 def _cmd_autonomy_trends(args) -> None:
     """Wave 596: per-domain activity trend across two windows."""
     from core.automation.autonomy_trends import (
@@ -45119,6 +45406,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomy-trends":
         _cmd_autonomy_trends(args)
+        return
+
+    if args.command == "autonomy-leaderboard":
+        _cmd_autonomy_leaderboard(args)
+        return
+
+    if args.command == "autonomy-compare":
+        _cmd_autonomy_compare(args)
         return
 
     if args.command == "autonomy-domain":
