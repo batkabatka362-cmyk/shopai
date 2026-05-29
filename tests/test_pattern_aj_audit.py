@@ -13,7 +13,7 @@ from engines._pattern_aj_audit import (
 
 class TestCatalog:
 
-    def test_all_9_domains(self):
+    def test_all_10_domains(self):
         assert set(_DOMAIN_CLI_PREFIXES.keys()) == {
             "customer_support_refund",
             "marketing_budget",
@@ -24,6 +24,7 @@ class TestCatalog:
             "product_seo",
             "customer_outreach",
             "catalog_quality",
+            "shipping_alert",
         }
 
     def test_required_suffixes(self):
@@ -87,20 +88,20 @@ class TestRunPatternAJAudit:
         r = run_pattern_aj_audit()
         assert isinstance(r, PatternAJReport)
 
-    def test_scans_all_9_domains(self):
+    def test_scans_all_10_domains(self):
         r = run_pattern_aj_audit()
-        assert len(r.domains_scanned) == 8
+        assert len(r.domains_scanned) == 10
 
     def test_live_passes(self):
         r = run_pattern_aj_audit()
         assert not r.has_violations, r.violations
-        assert len(r.clean_domains) == 8
+        assert len(r.clean_domains) == 10
 
     def test_missing_cli_flags_all_domains(self, tmp_path):
         r = run_pattern_aj_audit(
             cli_path=tmp_path / "missing.py",
         )
-        assert len(r.violations) == 8
+        assert len(r.violations) == 10
 
     def test_partial_dispatch_flags_missing(self, tmp_path):
         src = tmp_path / "fake_cli.py"

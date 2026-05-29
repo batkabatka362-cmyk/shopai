@@ -12,7 +12,7 @@ from engines._pattern_yprime_audit import (
 
 class TestDomainCatalog:
 
-    def test_all_9_domains_present(self):
+    def test_all_10_domains_present(self):
         assert set(_DOMAIN_TEMPLATE.keys()) == {
             "customer_support_refund",
             "marketing_budget",
@@ -23,6 +23,7 @@ class TestDomainCatalog:
             "product_seo",
             "customer_outreach",
             "catalog_quality",
+            "shipping_alert",
         }
 
     def test_every_domain_has_all_5_roles(self):
@@ -48,14 +49,14 @@ class TestRunPatternYPrimeAudit:
         report = run_pattern_yprime_audit()
         assert isinstance(report, PatternYPrimeReport)
 
-    def test_scans_all_9_domains(self):
+    def test_scans_all_10_domains(self):
         report = run_pattern_yprime_audit()
-        assert len(report.domains_scanned) == 8
+        assert len(report.domains_scanned) == 10
 
     def test_live_passes(self):
         report = run_pattern_yprime_audit()
         assert not report.has_violations, report.violations
-        assert len(report.clean_domains) == 8
+        assert len(report.clean_domains) == 10
 
 
 class TestViolationDataclass:

@@ -13,7 +13,7 @@ from engines._pattern_ac_audit import (
 
 class TestDomainCatalog:
 
-    def test_all_9_domains_present(self):
+    def test_all_10_domains_present(self):
         assert set(_DOMAIN_CLI_PREFIXES.keys()) == {
             "customer_support_refund",
             "marketing_budget",
@@ -24,6 +24,7 @@ class TestDomainCatalog:
             "product_seo",
             "customer_outreach",
             "catalog_quality",
+            "shipping_alert",
         }
 
     def test_required_suffixes_are_4(self):
@@ -80,20 +81,20 @@ class TestRunPatternACAudit:
         report = run_pattern_ac_audit()
         assert isinstance(report, PatternACReport)
 
-    def test_scans_all_9_domains(self):
+    def test_scans_all_10_domains(self):
         report = run_pattern_ac_audit()
-        assert len(report.domains_scanned) == 8
+        assert len(report.domains_scanned) == 10
 
     def test_live_passes(self):
         report = run_pattern_ac_audit()
         assert not report.has_violations, report.violations
-        assert len(report.clean_domains) == 8
+        assert len(report.clean_domains) == 10
 
     def test_missing_cli_flags_all_domains(self, tmp_path):
         report = run_pattern_ac_audit(
             cli_path=tmp_path / "missing.py",
         )
-        assert len(report.violations) == 8
+        assert len(report.violations) == 10
 
     def test_partial_registration_flags_missing(
         self, tmp_path,

@@ -12,7 +12,7 @@ from engines._pattern_ah_audit import (
 
 class TestCatalog:
 
-    def test_all_9_domains(self):
+    def test_all_10_domains(self):
         assert set(_DOMAIN_APPLY_EXPORTS.keys()) == {
             "customer_support_refund",
             "marketing_budget",
@@ -23,6 +23,7 @@ class TestCatalog:
             "product_seo",
             "customer_outreach",
             "catalog_quality",
+            "shipping_alert",
         }
 
     def test_apply_fn_names_start_with_apply(self):
@@ -78,14 +79,14 @@ class TestRunPatternAHAudit:
         r = run_pattern_ah_audit()
         assert isinstance(r, PatternAHReport)
 
-    def test_scans_all_9_domains(self):
+    def test_scans_all_10_domains(self):
         r = run_pattern_ah_audit()
-        assert len(r.domains_scanned) == 8
+        assert len(r.domains_scanned) == 10
 
     def test_live_passes(self):
         r = run_pattern_ah_audit()
         assert not r.has_violations, r.violations
-        assert len(r.clean_domains) == 8
+        assert len(r.clean_domains) == 10
 
 
 class TestViolationDataclass:

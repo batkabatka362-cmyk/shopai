@@ -652,7 +652,53 @@ def collect_alerts() -> list[NotifyAlert]:
             "notify: catalog_quality probe raised: %s", exc,
         )
 
-    # 14. Wave 153: autonomy coalesce. Opt-in via
+    # 14. Wave 783: shipping alert auto-pause / critical.
+    try:
+        from engines.shipping_alert_autonomy.shipping_state import (  # noqa: E501
+            get_state as _sa_state,
+        )
+        from engines.shipping_alert_autonomy.shipping_health import (  # noqa: E501
+            analyze_shipping_alert_health as _sa_health,
+        )
+        sastate = _sa_state()
+        if sastate.paused:
+            alerts.append(NotifyAlert(
+                kind="shipping_alert_paused",
+                severity="critical",
+                message=(
+                    f"Shipping alert auto-pause active: "
+                    f"{sastate.reason or '(no reason)'}"
+                ),
+                context={
+                    "reason": sastate.reason,
+                    "paused_at": sastate.paused_at,
+                    "auto_resume_after": (
+                        sastate.auto_resume_after
+                    ),
+                },
+            ))
+        else:
+            sah = _sa_health(window_hours=24.0)
+            if sah.verdict == "critical":
+                alerts.append(NotifyAlert(
+                    kind="shipping_alert_health_critical",
+                    severity="critical",
+                    message=(
+                        f"Shipping alert failure ratio "
+                        f"{sah.failure_ratio:.0%} >= critical"
+                        f" (n={sah.sample_size})"
+                    ),
+                    context={
+                        "failure_ratio": sah.failure_ratio,
+                        "sample_size": sah.sample_size,
+                    },
+                ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "notify: shipping_alert probe raised: %s", exc,
+        )
+
+    # 15. Wave 153: autonomy coalesce. Opt-in via
     # SHOPAI_NOTIFY_AUTONOMY_COALESCE=1. When set, replace
     # per-domain {refund,budget,fulfillment,inventory,
     # discount_cleanup,order_followup,product_seo}_paused /
@@ -677,6 +723,8 @@ def collect_alerts() -> list[NotifyAlert]:
             "customer_outreach_health_critical",
             "catalog_quality_paused",
             "catalog_quality_health_critical",
+            "shipping_alert_paused",
+            "shipping_alert_health_critical",
         }
         autonomy_alerts = [
             a for a in alerts if a.kind in autonomy_kinds

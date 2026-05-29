@@ -13,8 +13,8 @@ from engines._pattern_ar_audit import (
 
 class TestCatalogList:
 
-    def test_expected_count_is_9(self):
-        assert _EXPECTED_DOMAIN_COUNT == 9
+    def test_expected_count_is_10(self):
+        assert _EXPECTED_DOMAIN_COUNT == 10
 
     def test_at_least_15_catalogs_registered(self):
         # Phase 25 audit family + core/automation modules
@@ -46,7 +46,7 @@ class TestReadCatalogSize:
             "_DOMAIN_HEALTH_MODULES",
             False,
         )
-        assert count == 9
+        assert count == 10
         assert reason == ""
 
     def test_real_list_catalog(self):
@@ -55,7 +55,7 @@ class TestReadCatalogSize:
             "_DOMAINS",
             True,
         )
-        assert count == 9
+        assert count == 10
         assert reason == ""
 
     def test_missing_module(self):

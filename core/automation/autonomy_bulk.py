@@ -42,6 +42,8 @@ _DOMAIN_STATE_MODULES = [
      "outreach_state"),
     ("catalog_quality", "catalog_quality_autonomy",
      "quality_state"),
+     ("shipping_alert", "shipping_alert_autonomy",
+      "shipping_state"),
 ]
 
 

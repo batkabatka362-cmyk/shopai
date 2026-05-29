@@ -210,6 +210,33 @@ def _order_followup_summary(
         )
 
 
+def _shipping_alert_summary(
+    window_hours: float, store_id: str | None = None,
+) -> DomainSummary:
+    try:
+        from engines.shipping_alert_autonomy.shipping_status import (  # noqa: E501
+            get_shipping_alert_status,
+        )
+        r = get_shipping_alert_status(
+            window_hours=window_hours, store_id=store_id,
+        )
+        return DomainSummary(
+            name="shipping_alert",
+            verdict=r.verdict,
+            paused=r.paused,
+            applied_count=r.applied_count,
+            health_failure_ratio=r.health_failure_ratio,
+            next_action=r.next_action,
+            reasons=list(r.verdict_reasons),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return DomainSummary(
+            name="shipping_alert",
+            verdict="quiet",
+            reasons=[f"probe raised: {exc}"],
+        )
+
+
 def _catalog_quality_summary(
     window_hours: float, store_id: str | None = None,
 ) -> DomainSummary:
@@ -330,6 +357,9 @@ def get_autonomy_status(
             window_hours, store_id=store_id,
         ),
         _catalog_quality_summary(
+            window_hours, store_id=store_id,
+        ),
+        _shipping_alert_summary(
             window_hours, store_id=store_id,
         ),
     ]

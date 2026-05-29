@@ -136,16 +136,16 @@ class TestRunAutonomyDoctor:
         r = run_autonomy_doctor()
         assert isinstance(r, AutonomyDoctorReport)
 
-    def test_covers_7_domains(self):
+    def test_covers_10_domains(self):
         r = run_autonomy_doctor()
-        assert len(r.domains) == 7
+        assert len(r.domains) == 10
 
     def test_live_all_ok_on_branch(self):
         r = run_autonomy_doctor()
         assert r.overall_cls == "ok", [
             (d.name, d.cls, d.reasons) for d in r.domains
         ]
-        assert r.ok_count == 7
+        assert r.ok_count == 10
         assert r.warn_count == 0
         assert r.fail_count == 0
 

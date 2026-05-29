@@ -13,7 +13,7 @@ from engines._pattern_ap_audit import (
 
 class TestCatalog:
 
-    def test_all_9_domains(self):
+    def test_all_10_domains(self):
         assert set(_DOMAIN_BRIDGES.keys()) == {
             "customer_support_refund",
             "marketing_budget",
@@ -24,6 +24,7 @@ class TestCatalog:
             "product_seo",
             "customer_outreach",
             "catalog_quality",
+            "shipping_alert",
         }
 
     def test_bridge_names_use_maybe_auto_pause_prefix(self):
@@ -98,20 +99,20 @@ class TestRunPatternAPAudit:
         r = run_pattern_ap_audit()
         assert isinstance(r, PatternAPReport)
 
-    def test_scans_all_9_domains(self):
+    def test_scans_all_10_domains(self):
         r = run_pattern_ap_audit()
-        assert len(r.domains_scanned) == 8
+        assert len(r.domains_scanned) == 10
 
     def test_live_passes(self):
         r = run_pattern_ap_audit()
         assert not r.has_violations, r.violations
-        assert len(r.clean_domains) == 8
+        assert len(r.clean_domains) == 10
 
     def test_missing_cli_flags_all_domains(self, tmp_path):
         r = run_pattern_ap_audit(
             cli_path=tmp_path / "missing.py",
         )
-        assert len(r.violations) == 8
+        assert len(r.violations) == 10
 
     def test_unwrapped_bridge_flags_violation(self, tmp_path):
         """The whole point of AP: bridges OUTSIDE try blocks
@@ -128,7 +129,7 @@ class TestRunPatternAPAudit:
             encoding="utf-8",
         )
         r = run_pattern_ap_audit(cli_path=src)
-        assert len(r.violations) == 8
+        assert len(r.violations) == 10
 
 
 class TestViolationDataclass:

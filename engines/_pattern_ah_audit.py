@@ -70,6 +70,10 @@ _DOMAIN_APPLY_EXPORTS: dict[
         "engines/catalog_quality_autonomy/quality_applier.py",
         "apply_catalog_quality",
     ),
+    "shipping_alert": (
+        "engines/shipping_alert_autonomy/shipping_applier.py",
+        "apply_shipping_alert",
+    ),
 }
 
 

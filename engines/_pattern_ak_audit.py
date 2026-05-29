@@ -41,6 +41,7 @@ _DOMAIN_BRIDGES: dict[str, str] = {
     "product_seo": "maybe_auto_pause_seo",
     "customer_outreach": "maybe_auto_pause_outreach",
     "catalog_quality": "maybe_auto_pause_quality",
+    "shipping_alert": "maybe_auto_pause_shipping",
 }
 
 

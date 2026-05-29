@@ -68,6 +68,10 @@ _DOMAIN_ANALYZE_EXPORTS: dict[
         "engines/catalog_quality_autonomy/quality_health.py",
         "analyze_catalog_quality_health",
     ),
+    "shipping_alert": (
+        "engines/shipping_alert_autonomy/shipping_health.py",
+        "analyze_shipping_alert_health",
+    ),
 }
 
 

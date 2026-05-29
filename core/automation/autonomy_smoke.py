@@ -89,6 +89,12 @@ _DOMAINS = [
         "quality",
         "get_catalog_quality_status",
     ),
+    (
+        "shipping_alert",
+        "shipping_alert_autonomy",
+        "shipping",
+        "get_shipping_alert_status",
+    ),
 ]
 
 
@@ -103,6 +109,7 @@ _APPLY_NAMES: dict[str, str] = {
     "seo": "apply_seo_updates",
     "outreach": "apply_customer_outreach",
     "quality": "apply_catalog_quality",
+    "shipping": "apply_shipping_alert",
 }
 
 
@@ -119,6 +126,7 @@ _APPLY_EMPTY_PAYLOAD: dict[str, tuple] = {
     "seo": ([],),
     "outreach": ([],),
     "quality": ([],),
+    "shipping": ([],),
 }
 
 
@@ -133,6 +141,7 @@ _LOG_MODULE_NAMES: dict[str, str] = {
     "seo": "seo_log",
     "outreach": "outreach_log",
     "quality": "quality_log",
+    "shipping": "shipping_log",
 }
 
 
@@ -148,6 +157,7 @@ _STATUS_MODULE_NAMES: dict[str, str] = {
     "seo": "seo_status",
     "outreach": "outreach_status",
     "quality": "quality_status",
+    "shipping": "shipping_status",
 }
 
 
@@ -162,6 +172,7 @@ _ANALYZE_NAMES: dict[str, str] = {
     "seo": "analyze_seo_health",
     "outreach": "analyze_customer_outreach_health",
     "quality": "analyze_catalog_quality_health",
+    "shipping": "analyze_shipping_alert_health",
 }
 
 

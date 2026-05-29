@@ -52,6 +52,9 @@ _DOMAIN_TEST_KEYWORDS: dict[str, tuple[str, ...]] = {
     "catalog_quality": (
         "catalog_quality_autonomy", "catalog_quality",
     ),
+    "shipping_alert": (
+        "shipping_alert_autonomy", "shipping_alert",
+    ),
 }
 
 

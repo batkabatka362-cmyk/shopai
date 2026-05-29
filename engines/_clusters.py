@@ -197,6 +197,8 @@ _CLUSTERS: tuple[Cluster, ...] = (
             # Phase 11-28 autonomy domains in fulfillment
             "fulfillment_autonomy",
             "inventory_autonomy",
+            # Phase 35: shipping alert tagging
+            "shipping_alert_autonomy",
         }),
         kpi="fulfillment_time + stockout_rate (inverted)",
     ),

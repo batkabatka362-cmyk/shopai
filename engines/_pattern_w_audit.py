@@ -68,6 +68,10 @@ _DOMAIN_HEALTH_MODULES: dict[
         "engines/catalog_quality_autonomy/quality_health.py",
         "CATALOG_QUALITY",
     ),
+    "shipping_alert": (
+        "engines/shipping_alert_autonomy/shipping_health.py",
+        "SHIPPING_ALERT",
+    ),
 }
 
 

@@ -66,6 +66,10 @@ _DOMAIN_STATUS_EXPORTS: dict[
         "engines/catalog_quality_autonomy/quality_status.py",
         "get_catalog_quality_status",
     ),
+    "shipping_alert": (
+        "engines/shipping_alert_autonomy/shipping_status.py",
+        "get_shipping_alert_status",
+    ),
 }
 
 

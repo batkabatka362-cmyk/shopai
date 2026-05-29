@@ -79,6 +79,11 @@ _DOMAIN_LOG_EXPORTS: dict[
         "record_quality_event",
         "recent_events",
     ),
+    "shipping_alert": (
+        "engines/shipping_alert_autonomy/shipping_log.py",
+        "record_shipping_event",
+        "recent_events",
+    ),
 }
 
 

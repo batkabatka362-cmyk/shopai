@@ -100,6 +100,13 @@ class TestAutonomyStatusAggregation:
                 name="catalog_quality",
                 verdict="healthy",
             ),
+        ), patch(
+            "core.automation.autonomy_status."
+            "_shipping_alert_summary",
+            return_value=DomainSummary(
+                name="shipping_alert",
+                verdict="healthy",
+            ),
         ):
             report = get_autonomy_status()
         assert report.overall_verdict == "healthy"

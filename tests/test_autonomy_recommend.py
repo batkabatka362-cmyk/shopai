@@ -40,8 +40,8 @@ class TestRunAutonomyRecommend:
         r = run_autonomy_recommend()
         assert r.critical_count == 0
         assert r.warn_count == 0
-        # 9 domains, all quiet with default env -> 9 info
-        assert r.info_count == 9
+        # 10 domains, all quiet with default env -> 10 info
+        assert r.info_count == 10
         for rec in r.recommendations:
             assert rec.severity == "info"
             assert rec.priority == 20

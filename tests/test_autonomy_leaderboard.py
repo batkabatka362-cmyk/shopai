@@ -56,9 +56,9 @@ class TestRunAutonomyLeaderboard:
         r = run_autonomy_leaderboard()
         assert isinstance(r, LeaderboardReport)
 
-    def test_covers_9_domains(self):
+    def test_covers_10_domains(self):
         r = run_autonomy_leaderboard()
-        assert len(r.entries) == 9
+        assert len(r.entries) == 10
 
     def test_default_sort_is_applied(self):
         r = run_autonomy_leaderboard()

@@ -37,18 +37,18 @@ class TestRunPatternAQAudit:
         r = run_pattern_aq_audit()
         assert isinstance(r, PatternAQReport)
 
-    def test_scans_all_9_domains(self):
+    def test_scans_all_10_domains(self):
         r = run_pattern_aq_audit()
-        assert len(r.domains_scanned) == 9
+        assert len(r.domains_scanned) == 10
 
     def test_live_passes(self):
         r = run_pattern_aq_audit()
         assert not r.has_violations, r.violations
-        assert len(r.clean_domains) == 9
+        assert len(r.clean_domains) == 10
 
     def test_verdicts_by_domain_populated(self):
         r = run_pattern_aq_audit()
-        assert len(r.verdicts_by_domain) == 9
+        assert len(r.verdicts_by_domain) == 10
         for d, verdict in r.verdicts_by_domain.items():
             assert verdict in CANONICAL_VERDICTS, (
                 d, verdict,

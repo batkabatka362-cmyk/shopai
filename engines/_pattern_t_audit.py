@@ -79,6 +79,10 @@ _DOMAINS: dict[str, tuple[str, list[str]]] = {
         "CATALOG_QUALITY",
         ["SHOPAI_CATALOG_QUALITY_MAX_PER_RUN"],
     ),
+    "shipping_alert": (
+        "SHIPPING_ALERT",
+        ["SHOPAI_SHIPPING_ALERT_MAX_PER_RUN"],
+    ),
 }
 
 

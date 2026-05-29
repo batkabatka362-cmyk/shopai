@@ -80,6 +80,12 @@ _DOMAIN_LOGS = [
         "quality_log",
         "recent_events",
     ),
+    (
+        "shipping",
+        "shipping_alert_autonomy",
+        "shipping_log",
+        "recent_events",
+    ),
 ]
 
 

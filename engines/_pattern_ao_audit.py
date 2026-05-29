@@ -61,6 +61,9 @@ _DOMAIN_APPLIERS: dict[str, str] = {
     "catalog_quality": (
         "engines/catalog_quality_autonomy/quality_applier.py"
     ),
+    "shipping_alert": (
+        "engines/shipping_alert_autonomy/shipping_applier.py"
+    ),
 }
 
 

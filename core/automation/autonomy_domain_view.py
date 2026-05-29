@@ -48,6 +48,8 @@ _DOMAIN_ALIASES: dict[str, str] = {
     "seo": "product_seo",
     "outreach": "customer_outreach",
     "quality": "catalog_quality",
+    "shipping_alert": "shipping_alert",
+    "shipping": "shipping_alert",
 }
 
 
@@ -65,6 +67,7 @@ _DOMAIN_META: dict[
     "product_seo": ("product_seo", "seo"),
     "customer_outreach": ("customer_outreach", "outreach"),
     "catalog_quality": ("catalog_quality", "quality"),
+    "shipping_alert": ("shipping_alert", "shipping"),
 }
 
 

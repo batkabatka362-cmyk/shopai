@@ -75,7 +75,7 @@ def recent_events(
     return _recent_events(
         _LOG_PATH,
         window_hours=window_hours,
-        filters={{"store_id": store_id or ""}},
+        filters={"store_id": store_id or ""} if store_id else None,
     )
 
 

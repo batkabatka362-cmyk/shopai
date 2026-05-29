@@ -75,14 +75,14 @@ class TestRunAutonomyTrends:
         r = run_autonomy_trends()
         assert isinstance(r, TrendReport)
 
-    def test_covers_9_domains(self):
+    def test_covers_10_domains(self):
         r = run_autonomy_trends()
-        assert len(r.domains) == 9
+        assert len(r.domains) == 10
 
     def test_idle_branch_all_flat(self):
-        # No autonomous fires recorded -> all 9 should be flat
+        # No autonomous fires recorded -> all 10 should be flat
         r = run_autonomy_trends()
-        assert r.flat_count == 9
+        assert r.flat_count == 10
         assert r.rising_count == 0
         assert r.falling_count == 0
         assert r.new_count == 0

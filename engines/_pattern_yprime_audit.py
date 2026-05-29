@@ -129,6 +129,16 @@ _DOMAIN_TEMPLATE: dict[
             "status": "quality_status.py",
         },
     ),
+    "shipping_alert": (
+        "engines/shipping_alert_autonomy",
+        {
+            "log": "shipping_log.py",
+            "state": "shipping_state.py",
+            "health": "shipping_health.py",
+            "applier": "shipping_applier.py",
+            "status": "shipping_status.py",
+        },
+    ),
 }
 
 

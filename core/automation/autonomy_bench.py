@@ -83,6 +83,12 @@ _DOMAIN_BRIDGES = [
         "quality_health",
         "maybe_auto_pause_quality",
     ),
+    (
+        "shipping_alert",
+        "shipping_alert_autonomy",
+        "shipping_health",
+        "maybe_auto_pause_shipping",
+    ),
 ]
 
 

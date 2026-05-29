@@ -70,6 +70,10 @@ _DOMAIN_ENGINE_NAMES: dict[
         "engines/catalog_quality_autonomy/quality_applier.py",
         "catalog_quality",
     ),
+    "shipping_alert": (
+        "engines/shipping_alert_autonomy/shipping_applier.py",
+        "shipping_alert",
+    ),
 }
 
 

@@ -55,6 +55,9 @@ _DOMAIN_STATE_MODULES: dict[str, str] = {
     "catalog_quality": (
         "engines/catalog_quality_autonomy/quality_state.py"
     ),
+    "shipping_alert": (
+        "engines/shipping_alert_autonomy/shipping_state.py"
+    ),
 }
 
 
