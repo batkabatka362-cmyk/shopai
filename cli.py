@@ -4278,6 +4278,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 696: priority-ranked operator recommendations
+    autonomy_rec_p = sub.add_parser(
+        "autonomy-recommend",
+        help=(
+            "Wave 696: scan substrate state + emit priority-"
+            "ranked operator action items (paused / degraded "
+            "/ wiring-fail / dormant / untuned)."
+        ),
+    )
+    autonomy_rec_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+    )
+    autonomy_rec_p.add_argument(
+        "--store", type=str, default="",
+    )
+    autonomy_rec_p.add_argument(
+        "--limit", type=int, default=10,
+        help="max recommendations to display",
+    )
+    autonomy_rec_p.add_argument(
+        "--critical-only", action="store_true",
+        help="filter to critical-severity only",
+    )
+    autonomy_rec_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 332: per-domain drill view
     autonomy_domain_p = sub.add_parser(
         "autonomy-domain",
@@ -9714,6 +9741,34 @@ def _cmd_empire(args) -> None:
             "empire trends block raised: %s", exc,
         )
 
+    # Wave 711: autonomy recommendations one-liner. Surfaces
+    # critical+warn counts + top domain so operator's empire
+    # scan immediately sees "what needs attention".
+    try:
+        from core.automation.autonomy_recommend import (
+            run_autonomy_recommend,
+        )
+        rec_e = run_autonomy_recommend(window_hours=168.0)
+        actionable_e = [
+            r for r in rec_e.recommendations
+            if r.severity in ("critical", "warn")
+        ]
+        if actionable_e:
+            top = actionable_e[0]
+            print(
+                f"    recommend:          [---] "
+                f"{rec_e.critical_count} critical, "
+                f"{rec_e.warn_count} warn  "
+                f"(top: {top.domain})"
+            )
+            print(
+                "    -> shopai autonomy-recommend"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "empire recommend block raised: %s", exc,
+        )
+
     # Last cycle
     print()
     if last_run_block:
@@ -11194,6 +11249,40 @@ def _cmd_daily_brief(args) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "daily-brief trends block raised: %s", exc,
+        )
+    # Wave 706: autonomy recommendations block. Surface the
+    # top critical/warn recommendations so operator's morning
+    # scan immediately sees "what needs attention". Silent in
+    # the clean (no critical/warn) case.
+    try:
+        from core.automation.autonomy_recommend import (
+            run_autonomy_recommend,
+        )
+        rec = run_autonomy_recommend(window_hours=window_hours)
+        actionable = [
+            r for r in rec.recommendations
+            if r.severity in ("critical", "warn")
+        ]
+        if actionable:
+            top3 = actionable[:3]
+            print(
+                f"  Recommend:    [---] "
+                f"{rec.critical_count} critical, "
+                f"{rec.warn_count} warn "
+                "(top: " + top3[0].domain + ")"
+            )
+            for r in top3:
+                mk = (
+                    "*"
+                    if r.severity == "critical" else "-"
+                )
+                print(f"    {mk} {r.domain}: {r.action}")
+            print(
+                "    -> drill: shopai autonomy-recommend"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief recommend block raised: %s", exc,
         )
     # Surface the sickest engines when ANY are unhealthy --
     # cheap operator nudge to drill in via ``engine pulse``.
@@ -31531,6 +31620,88 @@ def _cmd_autonomy_leaderboard(args) -> None:
         )
 
 
+def _cmd_autonomy_recommend(args) -> None:
+    """Wave 696: priority-ranked operator recommendations."""
+    from core.automation.autonomy_recommend import (
+        run_autonomy_recommend,
+    )
+    window_h = float(
+        getattr(args, "window_hours", 168.0) or 168.0,
+    )
+    store = (getattr(args, "store", "") or "").strip() or None
+    limit = int(getattr(args, "limit", 10))
+    critical_only = bool(getattr(args, "critical_only", False))
+    as_json = bool(getattr(args, "json", False))
+    report = run_autonomy_recommend(
+        window_hours=window_h, store_id=store,
+    )
+    recs = report.recommendations
+    if critical_only:
+        recs = [r for r in recs if r.severity == "critical"]
+    recs = recs[:limit]
+
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "store_id": report.store_id,
+            "critical_count": report.critical_count,
+            "warn_count": report.warn_count,
+            "info_count": report.info_count,
+            "recommendations": [
+                {
+                    "domain": r.domain,
+                    "action": r.action,
+                    "command": r.command,
+                    "severity": r.severity,
+                    "priority": r.priority,
+                    "reason": r.reason,
+                }
+                for r in recs
+            ],
+        }, indent=2, default=str))
+        return
+
+    scope = (
+        f"store={store}" if store else "fleet"
+    )
+    print(
+        f"Autonomy recommendations ({scope}, "
+        f"window={int(window_h)}h):"
+    )
+    print()
+    print(
+        f"  Summary: {report.critical_count} critical, "
+        f"{report.warn_count} warn, "
+        f"{report.info_count} info"
+    )
+    if not recs:
+        print()
+        print("  No recommendations -- substrate is clean.")
+        return
+    print()
+    marker = {
+        "critical": "[CRT]",
+        "warn":     "[WRN]",
+        "info":     "[INF]",
+    }
+    for i, r in enumerate(recs, 1):
+        mk = marker.get(r.severity, "[ ? ]")
+        print(
+            f"  #{i}  {mk}  {r.domain:<20} "
+            f"(priority {r.priority})"
+        )
+        print(f"        action: {r.action}")
+        print(f"        cmd:    {r.command}")
+        if r.reason:
+            print(f"        reason: {r.reason}")
+        print()
+    if len(report.recommendations) > limit:
+        print(
+            f"  ... {len(report.recommendations) - limit} "
+            "more (raise --limit to see all)"
+        )
+
+
 def _cmd_autonomy_compare(args) -> None:
     """Wave 631: side-by-side compare of two autonomy domains."""
     from core.automation.autonomy_domain_view import (
@@ -45414,6 +45585,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomy-compare":
         _cmd_autonomy_compare(args)
+        return
+
+    if args.command == "autonomy-recommend":
+        _cmd_autonomy_recommend(args)
         return
 
     if args.command == "autonomy-domain":
