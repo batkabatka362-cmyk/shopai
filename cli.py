@@ -4335,6 +4335,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="print catalog-update checklist after rendering",
     )
     autonomy_init_p.add_argument(
+        "--patch-catalogs", action="store_true",
+        help=(
+            "Wave 536: also apply the 30 mechanical catalog "
+            "patches (17 audits + substrate + meta). Skips "
+            "the anchor-fragile cli.py / _notify.py / "
+            "autonomy_status edits -- those stay manual."
+        ),
+    )
+    autonomy_init_p.add_argument(
+        "--new-domain-count", type=int, default=0,
+        help=(
+            "target value for Pattern AR's "
+            "_EXPECTED_DOMAIN_COUNT after this domain ships "
+            "(only used when --patch-catalogs is set; default "
+            "auto-detects current count + 1)"
+        ),
+    )
+    autonomy_init_p.add_argument(
         "--json", action="store_true",
     )
 
@@ -30981,7 +30999,13 @@ def _cmd_autonomy_bulk_resume(args) -> None:
 
 
 def _cmd_autonomy_init(args) -> None:
-    """Wave 519: scaffold a new autonomy domain."""
+    """Wave 519: scaffold a new autonomy domain.
+
+    Wave 536 extension: with --patch-catalogs, also apply the
+    30 mechanical catalog patches (17 audits + 11 substrate +
+    2 meta). Anchor-fragile edits (cli.py / _notify.py /
+    autonomy_status / clusters / Pattern T) remain manual.
+    """
     from core.automation.autonomy_init import (
         DomainSpec,
         catalog_checklist,
@@ -31001,6 +31025,8 @@ def _cmd_autonomy_init(args) -> None:
     do_write = bool(getattr(args, "write", False))
     as_json = bool(getattr(args, "json", False))
     print_chk = bool(getattr(args, "print_checklist", False))
+    do_patch = bool(getattr(args, "patch_catalogs", False))
+    new_count = int(getattr(args, "new_domain_count", 0))
 
     written: list = []
     error: str | None = None
@@ -31009,6 +31035,28 @@ def _cmd_autonomy_init(args) -> None:
             written = [str(p) for p in write_to_disk(rendered)]
         except FileExistsError as exc:
             error = f"refused: target already exists: {exc}"
+
+    # Wave 536: catalog patching
+    patch_results: list = []
+    if do_patch and not error:
+        from core.automation.autonomy_catalog_patches import (
+            all_patches, apply_all,
+        )
+        if new_count <= 0:
+            # Auto-detect: read current Pattern AR constant
+            try:
+                from engines._pattern_ar_audit import (
+                    _EXPECTED_DOMAIN_COUNT as _cur,
+                )
+                new_count = _cur + 1
+            except Exception:  # noqa: BLE001
+                new_count = 10  # fallback
+        patches = all_patches(
+            spec, new_domain_count=new_count,
+        )
+        patch_results = apply_all(
+            patches, dry_run=not do_write,
+        )
 
     if as_json:
         out = {
@@ -31024,6 +31072,14 @@ def _cmd_autonomy_init(args) -> None:
             "test_file": rendered.test_file_name,
             "written": written,
             "dry_run": not do_write,
+            "patched": [
+                {
+                    "name": p.path.name + "::" + p.var_name,
+                    "ok": p.success,
+                    "reason": p.reason,
+                }
+                for p in patch_results
+            ] if patch_results else [],
             "error": error,
         }
         if print_chk:
@@ -31055,6 +31111,22 @@ def _cmd_autonomy_init(args) -> None:
         print(
             "  Dry-run (default). Pass --write to persist."
         )
+
+    if patch_results:
+        ok = sum(1 for p in patch_results if p.success)
+        print()
+        mode = "applied" if do_write else "dry-run"
+        print(
+            f"  Catalog patches ({mode}): "
+            f"{ok}/{len(patch_results)} ok"
+        )
+        for p in patch_results:
+            if not p.success:
+                print(
+                    f"    FAIL {p.path.name}::"
+                    f"{p.var_name}: {p.reason}"
+                )
+
     if print_chk:
         print()
         for line in catalog_checklist(spec):
