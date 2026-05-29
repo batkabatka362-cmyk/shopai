@@ -4041,6 +4041,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_as_p.add_argument("--json", action="store_true")
 
+    # Wave 817: Pattern AT audit (template double-brace lint)
+    pattern_at_p = sub.add_parser(
+        "pattern-at-audit",
+        help=(
+            "Wave 817: scan autonomy packages + core/automation "
+            "for stray {{ / }} -- the scaffolder-template "
+            "renderer trap that broke Phase 35 shipping_alert."
+        ),
+    )
+    pattern_at_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -30276,6 +30287,51 @@ def _cmd_pattern_as_audit(args) -> None:
         )
 
 
+def _cmd_pattern_at_audit(args) -> None:
+    """Wave 817: scaffolder-template double-brace lint."""
+    from engines._pattern_at_audit import run_pattern_at_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_at_audit()
+    if as_json:
+        print(json.dumps({
+            "files_scanned": report.files_scanned,
+            "clean_files": report.clean_files,
+            "violations": [
+                {
+                    "file_path": v.file_path,
+                    "line_no": v.line_no,
+                    "line_excerpt": v.line_excerpt,
+                    "kind": v.kind,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern AT FAILED -- "
+            f"{len(report.violations)} stray brace(s):"
+        )
+        for v in report.violations[:20]:
+            print(
+                f"  {v.file_path}:{v.line_no} "
+                f"({v.kind}) {v.line_excerpt}"
+            )
+        if len(report.violations) > 20:
+            print(
+                f"  ... and {len(report.violations) - 20} more"
+            )
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern AT OK -- {len(report.clean_files)} of "
+            f"{len(report.files_scanned)} files clean."
+        )
+
+
 def _cmd_pattern_ar_audit(args) -> None:
     """Wave 363: cross-catalog parity audit."""
     from engines._pattern_ar_audit import run_pattern_ar_audit
@@ -37160,6 +37216,24 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_at":
+            from engines._pattern_at_audit import (
+                run_pattern_at_audit,
+            )
+            r = run_pattern_at_audit()
+            return {
+                "ok": not r.has_violations,
+                "files_scanned": len(r.files_scanned),
+                "clean_files": len(r.clean_files),
+                "violations": [
+                    {
+                        "file_path": v.file_path,
+                        "line_no": v.line_no,
+                        "kind": v.kind,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -37179,7 +37253,7 @@ _AUDIT_ORDER = (
     "pattern_af", "pattern_ag", "pattern_ah", "pattern_ai",
     "pattern_aj", "pattern_ak", "pattern_al", "pattern_am",
     "pattern_an", "pattern_ao", "pattern_ap", "pattern_aq",
-    "pattern_ar", "pattern_as",
+    "pattern_ar", "pattern_as", "pattern_at",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -37222,6 +37296,7 @@ _AUDIT_LABELS = {
     "pattern_aq": "Pattern AQ (verdict literal validation)",
     "pattern_ar": "Pattern AR (cross-catalog parity)",
     "pattern_as": "Pattern AS (env knob name uniqueness)",
+    "pattern_at": "Pattern AT (template double-brace lint)",
 }
 
 
@@ -46276,6 +46351,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-as-audit":
         _cmd_pattern_as_audit(args)
+        return
+
+    if args.command == "pattern-at-audit":
+        _cmd_pattern_at_audit(args)
         return
 
     if args.command == "autonomy-env":
