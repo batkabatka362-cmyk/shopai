@@ -270,12 +270,12 @@ def _record(
             engine=_ENGINE,
             action_type=_ACTION_TYPE,
             capability="{CAPABILITY}",
-            params={{
+            params={
                 "{ENTITY}": {ENTITY},
                 "store_id": store_id,
                 "tag": tag,
                 "signal_source": signal_source,
-            }},
+            },
             success=applied,
             error=error,
         )
@@ -337,12 +337,12 @@ def {APPLY_FN}(
         elif tag not in _VALID_TAGS:
             status_label = "invalid_tag"
             error = (
-                f"tag={{tag!r}} not in curated taxonomy"
+                f"tag={tag!r} not in curated taxonomy"
             )
         elif tagged_so_far >= cap_run:
             status_label = "exceeds_per_run_cap"
             error = (
-                f"per-run cap reached: {{cap_run}}"
+                f"per-run cap reached: {cap_run}"
             )
         elif router is None or cap is None:
             status_label = "router_unavailable"
@@ -350,7 +350,7 @@ def {APPLY_FN}(
             try:
                 res = router.execute(
                     cap,
-                    {{"{ENTITY}": eid, "tags": [tag]}},
+                    {"{ENTITY}": eid, "tags": [tag]},
                 )
                 if getattr(res, "ok", False):
                     applied = True
@@ -379,13 +379,13 @@ def {APPLY_FN}(
             status=status_label,
             error=error,
         )
-        out.append({{
+        out.append({
             "{ENTITY}": eid,
             "tag": tag,
             "applied": applied,
             "status": status_label,
             "error": error,
-        }})
+        })
     return out
 '''
 
@@ -476,7 +476,7 @@ def {STATUS_FN}(
         report.verdict = "paused"
         report.verdict_reasons.append(
             f"{DOMAIN} auto-pause active: "
-            f"{{report.pause_reason or '(no reason)'}}"
+            f"{report.pause_reason or '(no reason)'}"
         )
         report.next_action = (
             "Resume via `shopai {DOMAIN_HYPHEN}-resume`."
@@ -485,7 +485,7 @@ def {STATUS_FN}(
         report.verdict = "degraded"
         report.verdict_reasons.append(
             f"failure ratio "
-            f"{{report.health_failure_ratio:.0%}} >= critical"
+            f"{report.health_failure_ratio:.0%} >= critical"
         )
         report.next_action = (
             "`shopai {DOMAIN_HYPHEN}-health --apply-bridge`."
@@ -494,7 +494,7 @@ def {STATUS_FN}(
         report.verdict = "degraded"
         report.verdict_reasons.append(
             f"failure ratio "
-            f"{{report.health_failure_ratio:.0%}} above warn"
+            f"{report.health_failure_ratio:.0%} above warn"
         )
         report.next_action = "Monitor closely."
     elif report.total_events == 0:
@@ -508,7 +508,7 @@ def {STATUS_FN}(
     else:
         report.verdict = "healthy"
         report.verdict_reasons.append(
-            f"{{report.applied_count}} entity(s) tagged"
+            f"{report.applied_count} entity(s) tagged"
         )
         report.next_action = "Monitor via daily-brief."
     return report

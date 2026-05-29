@@ -4188,6 +4188,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 816: direct applier invocation
+    autonomy_fire_p = sub.add_parser(
+        "autonomy-fire",
+        help=(
+            "Wave 816: directly invoke a domain's applier with "
+            "a curated payload. Default DRY-RUN; --yes invokes."
+        ),
+    )
+    autonomy_fire_p.add_argument(
+        "domain", type=str,
+        help="autonomy domain name (e.g. shipping_alert)",
+    )
+    autonomy_fire_p.add_argument(
+        "--payload-json", type=str, default="",
+        help="JSON list of payload dicts",
+    )
+    autonomy_fire_p.add_argument(
+        "--payload-file", type=str, default="",
+        help="path to JSON file containing a payload list",
+    )
+    autonomy_fire_p.add_argument(
+        "--yes", action="store_true",
+        help="actually invoke (default is dry-run)",
+    )
+    autonomy_fire_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 235: empire-wide autonomy doctor (verdict + wiring)
     autonomy_doctor_p = sub.add_parser(
         "autonomy-doctor",
@@ -32607,6 +32635,93 @@ def _cmd_autonomy_armed(args) -> None:
     )
 
 
+def _cmd_autonomy_fire(args) -> None:
+    """Wave 816: direct invocation of an autonomy applier."""
+    from core.automation.autonomy_fire import fire, known_domains
+
+    domain = (getattr(args, "domain", "") or "").strip()
+    payload_json = getattr(args, "payload_json", "") or ""
+    payload_file = getattr(args, "payload_file", "") or ""
+    yes = bool(getattr(args, "yes", False))
+    as_json = bool(getattr(args, "json", False))
+
+    if domain not in known_domains():
+        msg = (
+            f"unknown domain {domain!r}. Known: "
+            f"{', '.join(known_domains())}"
+        )
+        if as_json:
+            print(json.dumps({"ok": False, "error": msg}))
+        else:
+            print(f"ERROR: {msg}")
+        sys.exit(1)
+
+    payload: list[dict] = []
+    try:
+        if payload_file:
+            with open(payload_file, encoding="utf-8") as fh:
+                payload = json.load(fh)
+        elif payload_json:
+            payload = json.loads(payload_json)
+    except Exception as exc:  # noqa: BLE001
+        msg = f"payload parse failed: {exc!s:.150}"
+        if as_json:
+            print(json.dumps({"ok": False, "error": msg}))
+        else:
+            print(f"ERROR: {msg}")
+        sys.exit(1)
+    if not isinstance(payload, list):
+        msg = (
+            f"payload must be a JSON list of dicts, got "
+            f"{type(payload).__name__}"
+        )
+        if as_json:
+            print(json.dumps({"ok": False, "error": msg}))
+        else:
+            print(f"ERROR: {msg}")
+        sys.exit(1)
+
+    result = fire(domain, payload, dry_run=not yes)
+
+    if as_json:
+        print(json.dumps({
+            "ok": result.ok,
+            "domain": result.domain,
+            "dry_run": result.dry_run,
+            "invoked": result.invoked,
+            "payload_size": result.payload_size,
+            "event_count": len(result.events),
+            "duration_ms": result.duration_ms,
+            "error": result.error,
+        }, indent=2, default=str))
+        return
+
+    mode = "DRY-RUN" if result.dry_run else "LIVE"
+    print(
+        f"autonomy-fire [{mode}] domain={result.domain} "
+        f"payload_size={result.payload_size}"
+    )
+    if result.error:
+        print(f"  ERROR: {result.error}")
+        sys.exit(1)
+    if result.dry_run:
+        print(
+            "  Pre-flight OK -- applier resolved + payload "
+            "validated. Add --yes to invoke."
+        )
+        return
+    print(
+        f"  invoked: {result.invoked}  "
+        f"events={len(result.events)}  "
+        f"duration_ms={result.duration_ms:.1f}"
+    )
+    if result.events:
+        print("  Events:")
+        for i, ev in enumerate(result.events[:10]):
+            ev_str = str(ev)[:120]
+            print(f"    [{i}] {ev_str}")
+
+
 def _cmd_pattern_o_audit(args) -> None:
     """Wave 122: opt-in gate audit."""
     from engines._pattern_o_audit import run_pattern_o_audit
@@ -46238,6 +46353,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "autonomy-armed":
         _cmd_autonomy_armed(args)
+        return
+    if args.command == "autonomy-fire":
+        _cmd_autonomy_fire(args)
         return
 
     if args.command == "product-seo-status":

@@ -82,7 +82,7 @@ def get_shipping_alert_status(
         report.verdict = "paused"
         report.verdict_reasons.append(
             f"shipping_alert auto-pause active: "
-            f"{{report.pause_reason or '(no reason)'}}"
+            f"{report.pause_reason or '(no reason)'}"
         )
         report.next_action = (
             "Resume via `shopai shipping-alert-resume`."
@@ -91,7 +91,7 @@ def get_shipping_alert_status(
         report.verdict = "degraded"
         report.verdict_reasons.append(
             f"failure ratio "
-            f"{{report.health_failure_ratio:.0%}} >= critical"
+            f"{report.health_failure_ratio:.0%} >= critical"
         )
         report.next_action = (
             "`shopai shipping-alert-health --apply-bridge`."
@@ -100,7 +100,7 @@ def get_shipping_alert_status(
         report.verdict = "degraded"
         report.verdict_reasons.append(
             f"failure ratio "
-            f"{{report.health_failure_ratio:.0%}} above warn"
+            f"{report.health_failure_ratio:.0%} above warn"
         )
         report.next_action = "Monitor closely."
     elif report.total_events == 0:
@@ -114,7 +114,7 @@ def get_shipping_alert_status(
     else:
         report.verdict = "healthy"
         report.verdict_reasons.append(
-            f"{{report.applied_count}} entity(s) tagged"
+            f"{report.applied_count} entity(s) tagged"
         )
         report.next_action = "Monitor via daily-brief."
     return report

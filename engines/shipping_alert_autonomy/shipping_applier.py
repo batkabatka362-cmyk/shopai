@@ -96,12 +96,12 @@ def _record(
             engine=_ENGINE,
             action_type=_ACTION_TYPE,
             capability="SHOPIFY_TAG_ORDER",
-            params={{
+            params={
                 "order_id": order_id,
                 "store_id": store_id,
                 "tag": tag,
                 "signal_source": signal_source,
-            }},
+            },
             success=applied,
             error=error,
         )
@@ -163,12 +163,12 @@ def apply_shipping_alert(
         elif tag not in _VALID_TAGS:
             status_label = "invalid_tag"
             error = (
-                f"tag={{tag!r}} not in curated taxonomy"
+                f"tag={tag!r} not in curated taxonomy"
             )
         elif tagged_so_far >= cap_run:
             status_label = "exceeds_per_run_cap"
             error = (
-                f"per-run cap reached: {{cap_run}}"
+                f"per-run cap reached: {cap_run}"
             )
         elif router is None or cap is None:
             status_label = "router_unavailable"
@@ -176,7 +176,7 @@ def apply_shipping_alert(
             try:
                 res = router.execute(
                     cap,
-                    {{"order_id": eid, "tags": [tag]}},
+                    {"order_id": eid, "tags": [tag]},
                 )
                 if getattr(res, "ok", False):
                     applied = True
@@ -205,11 +205,11 @@ def apply_shipping_alert(
             status=status_label,
             error=error,
         )
-        out.append({{
+        out.append({
             "order_id": eid,
             "tag": tag,
             "applied": applied,
             "status": status_label,
             "error": error,
-        }})
+        })
     return out
