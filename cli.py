@@ -32441,7 +32441,7 @@ def _cmd_autonomy_status(args) -> None:
 def _cmd_autonomy_arm(args) -> None:
     """Wave 812: arm a domain so cycle fires its appliers."""
     from core.automation.autonomy_armed import (
-        DOMAIN_APPLY_FLAGS, arm,
+        DOMAIN_APPLY_FLAGS, arm, firing_mode_for_domain,
     )
     domain = (getattr(args, "domain", "") or "").strip()
     reason = (getattr(args, "reason", "") or "").strip()
@@ -32458,6 +32458,7 @@ def _cmd_autonomy_arm(args) -> None:
         sys.exit(1)
     entry = arm(domain, reason=reason)
     flags = DOMAIN_APPLY_FLAGS[domain]
+    mode = firing_mode_for_domain(domain)
     if as_json:
         print(json.dumps({
             "ok": True,
@@ -32465,14 +32466,25 @@ def _cmd_autonomy_arm(args) -> None:
             "armed_at": entry.armed_at,
             "reason": entry.reason,
             "flags": list(flags),
+            "firing_mode": mode,
         }, indent=2))
         return
-    print(f"Armed: {domain}")
-    print(f"  Flags injected on cycle: {', '.join(flags)}")
+    print(f"Armed: {domain}  [firing_mode={mode}]")
+    print(f"  Flags: {', '.join(flags)}")
     if reason:
         print(f"  Reason: {reason}")
     print()
-    print("  Next cycle will fire this domain's appliers.")
+    if mode == "engine":
+        print(
+            "  Next cycle will inject these flags into the "
+            "engine input and fire."
+        )
+    elif mode == "substrate":
+        print(
+            "  NOTE: this is a substrate-only domain. The "
+            "applier exists but no engine wraps it -- cycle "
+            "does NOT fire it today. Arm is aspirational."
+        )
     print("  Disarm via: shopai autonomy-disarm " + domain)
 
 
@@ -32518,7 +32530,7 @@ def _cmd_autonomy_disarm(args) -> None:
 def _cmd_autonomy_armed(args) -> None:
     """Wave 812: list currently-armed autonomy domains."""
     from core.automation.autonomy_armed import (
-        DOMAIN_APPLY_FLAGS, list_armed,
+        DOMAIN_APPLY_FLAGS, DOMAIN_FIRING_MODE, list_armed,
     )
     entries = list_armed()
     as_json = bool(getattr(args, "json", False))
@@ -32532,17 +32544,36 @@ def _cmd_autonomy_armed(args) -> None:
                     "flags": list(
                         DOMAIN_APPLY_FLAGS.get(e.domain, ()),
                     ),
+                    "firing_mode": DOMAIN_FIRING_MODE.get(
+                        e.domain, "unknown",
+                    ),
                 }
                 for e in entries
             ],
             "total_domains": len(DOMAIN_APPLY_FLAGS),
             "armed_count": len(entries),
+            "engine_mode_count": sum(
+                1 for m in DOMAIN_FIRING_MODE.values()
+                if m == "engine"
+            ),
+            "substrate_mode_count": sum(
+                1 for m in DOMAIN_FIRING_MODE.values()
+                if m == "substrate"
+            ),
         }, indent=2, default=str))
         return
+    n_engine = sum(
+        1 for m in DOMAIN_FIRING_MODE.values() if m == "engine"
+    )
+    n_sub = sum(
+        1 for m in DOMAIN_FIRING_MODE.values()
+        if m == "substrate"
+    )
     if not entries:
         print(
             "No domains armed. "
-            f"({len(DOMAIN_APPLY_FLAGS)} available)"
+            f"({len(DOMAIN_APPLY_FLAGS)} available: "
+            f"{n_engine} engine-mode, {n_sub} substrate-only)"
         )
         print()
         print("  Arm one via: shopai autonomy-arm <domain>")
@@ -32558,15 +32589,22 @@ def _cmd_autonomy_armed(args) -> None:
     print()
     for e in entries:
         flags = DOMAIN_APPLY_FLAGS.get(e.domain, ())
+        mode = DOMAIN_FIRING_MODE.get(e.domain, "unknown")
+        mode_badge = "[FIRE]" if mode == "engine" else "[NOOP]"
         ts = time.strftime(
             "%Y-%m-%d %H:%M UTC", time.gmtime(e.armed_at),
         )
         reason = f" -- {e.reason}" if e.reason else ""
         print(
-            f"  [+]  {e.domain:<20}  "
+            f"  [+] {mode_badge} {e.domain:<20}  "
             f"flags={','.join(flags)}  "
             f"armed_at={ts}{reason}"
         )
+    print()
+    print(
+        "  [FIRE] = cycle fires this domain today; "
+        "[NOOP] = substrate-only, arm is aspirational."
+    )
 
 
 def _cmd_pattern_o_audit(args) -> None:

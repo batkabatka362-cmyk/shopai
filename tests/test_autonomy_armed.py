@@ -7,12 +7,14 @@ import pytest
 
 from core.automation.autonomy_armed import (
     DOMAIN_APPLY_FLAGS,
+    DOMAIN_FIRING_MODE,
     ArmedEntry,
     ArmedState,
     apply_flags_for_domain,
     arm,
     disarm,
     disarm_all,
+    firing_mode_for_domain,
     is_armed,
     list_armed,
 )
@@ -72,6 +74,49 @@ class TestDomainCatalog:
 
     def test_unknown_domain_returns_empty_tuple(self):
         assert apply_flags_for_domain("does_not_exist") == ()
+
+
+class TestFiringMode:
+    """W815: firing-mode classification (engine vs substrate)."""
+
+    def test_every_domain_has_a_firing_mode(self):
+        for domain in DOMAIN_APPLY_FLAGS:
+            mode = firing_mode_for_domain(domain)
+            assert mode in {"engine", "substrate"}, (domain, mode)
+
+    def test_unknown_domain_returns_unknown(self):
+        assert firing_mode_for_domain("not_a_domain") == "unknown"
+
+    def test_engine_mode_domains(self):
+        # Picked up by the cycle's writeback wired_map -- the
+        # cycle controller will inject apply_X=True today.
+        assert DOMAIN_FIRING_MODE["customer_support"] == "engine"
+        assert DOMAIN_FIRING_MODE["marketing"] == "engine"
+
+    def test_substrate_mode_domains(self):
+        # No engine wraps these appliers; cycle does not fire
+        # them today. Arm is aspirational.
+        for d in (
+            "fulfillment", "inventory", "discount_cleanup",
+            "order_followup", "product_seo",
+            "customer_outreach", "catalog_quality",
+            "shipping_alert",
+        ):
+            assert DOMAIN_FIRING_MODE[d] == "substrate", d
+
+    def test_mode_split_2_engine_8_substrate(self):
+        n_engine = sum(
+            1 for m in DOMAIN_FIRING_MODE.values()
+            if m == "engine"
+        )
+        n_sub = sum(
+            1 for m in DOMAIN_FIRING_MODE.values()
+            if m == "substrate"
+        )
+        # 2 engine-style + 8 substrate-only = 10 total
+        assert n_engine == 2
+        assert n_sub == 8
+        assert n_engine + n_sub == len(DOMAIN_APPLY_FLAGS)
 
 
 class TestArmDisarm:

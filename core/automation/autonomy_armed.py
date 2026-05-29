@@ -1,26 +1,31 @@
-"""Autonomy arm-state substrate (Wave 811).
+"""Autonomy arm-state substrate (Wave 811 + W815).
 
 Bridges the gap between "autonomy domain X has substrate" and
-"autonomy domain X actually fires in the cycle." Each of the 10
-autonomy domains gates its applier behind ``data.apply_X=True``
-in its engine input -- but the cycle controller has historically
-never set those flags. Result: substrate is built, audits pass,
-operator sees ``applied=0`` for every domain.
+"autonomy domain X actually fires in the cycle."
 
-This module is the operator-facing arm/disarm switch. Once a
-domain is armed, the cycle controller (separate wave) injects
-the corresponding ``apply_X=True`` into the engine's input when
-the engine fires.
+Two firing modes:
+
+  * ``engine`` -- a registered engine (in the writeback audit's
+    wired_map) consumes the apply_X flag from its input. The
+    cycle controller already injects apply_X=True for every
+    wired+selected member (see cli.py _cmd_cycle_run, line
+    ~22189). When the domain is armed, the operator gets
+    surface-level confirmation that the engine WILL fire.
+
+  * ``substrate`` -- no engine wraps the applier. The autonomy
+    domain has a standalone apply_X function exposed via
+    ``engines.<domain>_autonomy.<X>_applier``. The cycle does
+    NOT call these today; the appliers are exercised only by
+    autonomy-smoke. Arming a substrate-only domain is
+    aspirational -- the operator's intent is recorded, but no
+    cycle integration fires it yet.
 
 Default state is DISARMED for every domain. Arming requires an
-explicit operator action (env-var unlock or CLI flag) so the
-substrate stays safe-by-default.
+explicit operator action (CLI flag) so the substrate stays
+safe-by-default.
 
 Pattern J guard: writes short-circuit under pytest so test runs
 don't pollute ``data/autonomy_armed.json``.
-
-The (domain -> apply-flag) catalog lives here too so the cycle
-controller has one source of truth.
 """
 from __future__ import annotations
 
@@ -40,10 +45,11 @@ def _is_test_environment() -> bool:
     return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 
-# (domain -> list of apply_X flags) -- each domain's engine flow
-# reads these from its input data dict. Multiple flags per domain
-# when one logical domain wraps multiple appliers (e.g. customer
-# support has refund + ticket-tag).
+# (domain -> list of apply_X flags) -- catalog of every flag
+# the domain's substrate exposes. For ``engine``-mode domains
+# the flags appear in the wired_map (engine flow.py reads them);
+# for ``substrate``-mode domains the flags are documented for
+# future cycle integration but no engine reads them today.
 DOMAIN_APPLY_FLAGS: dict[str, tuple[str, ...]] = {
     "customer_support": (
         "apply_refunds",
@@ -59,6 +65,30 @@ DOMAIN_APPLY_FLAGS: dict[str, tuple[str, ...]] = {
     "catalog_quality": ("apply_catalog_quality",),
     "shipping_alert": ("apply_shipping_alert",),
 }
+
+
+# Honest per-domain firing-mode declaration. ``engine`` means an
+# engine in the writeback audit's wired_map consumes the flag --
+# cycle will inject apply_X=True today and fire. ``substrate``
+# means the applier is standalone -- cycle does NOT call it; the
+# arm is aspirational until cycle wiring lands.
+DOMAIN_FIRING_MODE: dict[str, str] = {
+    "customer_support": "engine",   # returns_management + cs
+    "marketing": "engine",          # roas_guardrails
+    "fulfillment": "substrate",
+    "inventory": "substrate",
+    "discount_cleanup": "substrate",
+    "order_followup": "substrate",
+    "product_seo": "substrate",
+    "customer_outreach": "substrate",
+    "catalog_quality": "substrate",
+    "shipping_alert": "substrate",
+}
+
+
+def firing_mode_for_domain(domain: str) -> str:
+    """``engine`` or ``substrate``. Unknown domain -> ``unknown``."""
+    return DOMAIN_FIRING_MODE.get(domain, "unknown")
 
 
 @dataclass
