@@ -4210,6 +4210,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 820: inspect registered payload discoverers
+    autonomy_discover_p = sub.add_parser(
+        "autonomy-discover",
+        help=(
+            "Wave 820: list registered payload-discoverers + "
+            "run one to preview the generated payload."
+        ),
+    )
+    autonomy_discover_p.add_argument(
+        "domain", type=str, nargs="?", default="",
+        help="domain to discover; omit to list all registered",
+    )
+    autonomy_discover_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 816: direct applier invocation
     autonomy_fire_p = sub.add_parser(
         "autonomy-fire",
@@ -32756,6 +32772,80 @@ def _cmd_autonomy_armed(args) -> None:
     )
 
 
+def _cmd_autonomy_discover(args) -> None:
+    """Wave 820: inspect + run payload discoverers."""
+    # Lazy-load every per-domain discoverer so they register.
+    try:
+        from core.automation import (  # noqa: F401
+            discoverer_registry,
+        )
+    except ImportError:
+        pass
+    from core.automation.payload_discoverer import (
+        discover, has_discoverer, registered_domains,
+    )
+    domain = (getattr(args, "domain", "") or "").strip()
+    as_json = bool(getattr(args, "json", False))
+
+    if not domain:
+        regs = registered_domains()
+        if as_json:
+            print(json.dumps({
+                "registered_discoverers": regs,
+                "count": len(regs),
+            }, indent=2))
+            return
+        if not regs:
+            print(
+                "No discoverers registered yet. "
+                "(Substrate W820 ships the registry; "
+                "per-domain wiring starts W821.)"
+            )
+            return
+        print(f"Registered discoverers ({len(regs)}):")
+        for d in regs:
+            print(f"  - {d}")
+        return
+
+    if not has_discoverer(domain):
+        msg = f"no discoverer registered for {domain!r}"
+        if as_json:
+            print(json.dumps({"ok": False, "error": msg}))
+        else:
+            print(f"ERROR: {msg}")
+        sys.exit(1)
+
+    result = discover(domain)
+    if as_json:
+        print(json.dumps({
+            "ok": result.ok,
+            "domain": result.domain,
+            "source": result.source,
+            "payload_size": result.payload_size,
+            "discovered_at": result.discovered_at,
+            "error": result.error,
+            "payload_preview": result.payload[:5],
+        }, indent=2, default=str))
+        if not result.ok:
+            sys.exit(1)
+        return
+
+    if not result.ok:
+        print(f"discoverer FAILED for {domain}: {result.error}")
+        sys.exit(1)
+    print(
+        f"discoverer OK for {domain}: "
+        f"source={result.source}  "
+        f"payload_size={result.payload_size}"
+    )
+    for i, row in enumerate(result.payload[:5]):
+        print(f"  [{i}] {str(row)[:140]}")
+    if result.payload_size > 5:
+        print(
+            f"  ... and {result.payload_size - 5} more rows"
+        )
+
+
 def _cmd_autonomy_fire(args) -> None:
     """Wave 816: direct invocation of an autonomy applier."""
     from core.automation.autonomy_fire import fire, known_domains
@@ -46518,6 +46608,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "autonomy-fire":
         _cmd_autonomy_fire(args)
+        return
+    if args.command == "autonomy-discover":
+        _cmd_autonomy_discover(args)
         return
 
     if args.command == "product-seo-status":
