@@ -4215,6 +4215,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 596: per-domain activity trend
+    autonomy_trends_p = sub.add_parser(
+        "autonomy-trends",
+        help=(
+            "Wave 596: per-domain activity trend across two "
+            "adjacent windows (current vs previous). Surfaces "
+            "rising / falling / new / dormant domains."
+        ),
+    )
+    autonomy_trends_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+        help="size of each window (default 168h = 7 days)",
+    )
+    autonomy_trends_p.add_argument(
+        "--store", type=str, default="",
+        help="filter to one store_id",
+    )
+    autonomy_trends_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 332: per-domain drill view
     autonomy_domain_p = sub.add_parser(
         "autonomy-domain",
@@ -31326,6 +31347,83 @@ def _cmd_autonomy_domain(args) -> None:
         print(f"  Next: {view.next_action}")
 
 
+def _cmd_autonomy_trends(args) -> None:
+    """Wave 596: per-domain activity trend across two windows."""
+    from core.automation.autonomy_trends import (
+        run_autonomy_trends,
+    )
+    window_h = float(
+        getattr(args, "window_hours", 168.0) or 168.0,
+    )
+    store = (getattr(args, "store", "") or "").strip() or None
+    as_json = bool(getattr(args, "json", False))
+    report = run_autonomy_trends(
+        window_hours=window_h, store_id=store,
+    )
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "summary": report.overall_summary,
+            "rising": report.rising_count,
+            "falling": report.falling_count,
+            "flat": report.flat_count,
+            "new": report.new_count,
+            "dormant": report.dormant_count,
+            "domains": [
+                {
+                    "domain": d.domain,
+                    "current_total": d.current_total,
+                    "current_applied": d.current_applied,
+                    "current_skipped": d.current_skipped,
+                    "previous_total": d.previous_total,
+                    "previous_applied": d.previous_applied,
+                    "previous_skipped": d.previous_skipped,
+                    "delta_total": d.delta_total,
+                    "delta_applied": d.delta_applied,
+                    "delta_pct": d.delta_pct,
+                    "verdict": d.verdict,
+                }
+                for d in report.domains
+            ],
+        }, indent=2, default=str))
+        return
+    scope = (
+        f"store={store}" if store else "fleet"
+    )
+    print(
+        f"Autonomy trends ({scope}, "
+        f"window={int(window_h)}h each, current vs previous):"
+    )
+    print()
+    marker = {
+        "rising": "[UP]",
+        "falling": "[DN]",
+        "flat": "[--]",
+        "new": "[NEW]",
+        "dormant": "[ZZZ]",
+    }
+    print(
+        f"  {'DOMAIN':<12} {'CUR':>5} {'PREV':>5} "
+        f"{'DELTA':>7} {'PCT':>8}  VERDICT"
+    )
+    for d in report.domains:
+        mk = marker.get(d.verdict, "[?]")
+        pct = (
+            f"{d.delta_pct:+6.1f}%"
+            if d.verdict not in {"new", "flat"}
+            or d.delta_pct != 0
+            else "    --"
+        )
+        print(
+            f"  {d.domain:<12} {d.current_applied:>5d} "
+            f"{d.previous_applied:>5d} "
+            f"{d.delta_applied:>+7d} {pct:>8}  "
+            f"{mk} {d.verdict}"
+        )
+    print()
+    print(f"  Summary: {report.overall_summary}")
+
+
 def _cmd_autonomy_history(args) -> None:
     """Wave 313: unified autonomy event timeline."""
     from core.automation.autonomy_history import (
@@ -45017,6 +45115,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomy-history":
         _cmd_autonomy_history(args)
+        return
+
+    if args.command == "autonomy-trends":
+        _cmd_autonomy_trends(args)
         return
 
     if args.command == "autonomy-domain":
