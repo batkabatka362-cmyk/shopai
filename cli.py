@@ -4305,6 +4305,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 736: pairwise domain fire correlation
+    autonomy_corr_p = sub.add_parser(
+        "autonomy-correlate",
+        help=(
+            "Wave 736: pairwise Jaccard correlation across "
+            "domains -- which pairs fire in the same time "
+            "buckets?"
+        ),
+    )
+    autonomy_corr_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+        help="lookback total (default 168h = 7 days)",
+    )
+    autonomy_corr_p.add_argument(
+        "--bucket-hours", type=float, default=24.0,
+        help="bucket width (default 24h)",
+    )
+    autonomy_corr_p.add_argument(
+        "--store", type=str, default="",
+    )
+    autonomy_corr_p.add_argument(
+        "--top", type=int, default=10,
+        help="show top-N strongest pairs (default 10)",
+    )
+    autonomy_corr_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 332: per-domain drill view
     autonomy_domain_p = sub.add_parser(
         "autonomy-domain",
@@ -31620,6 +31648,87 @@ def _cmd_autonomy_leaderboard(args) -> None:
         )
 
 
+def _cmd_autonomy_correlate(args) -> None:
+    """Wave 736: pairwise domain fire correlation."""
+    from core.automation.autonomy_correlate import (
+        run_autonomy_correlate,
+    )
+    window_h = float(
+        getattr(args, "window_hours", 168.0) or 168.0,
+    )
+    bucket_h = float(
+        getattr(args, "bucket_hours", 24.0) or 24.0,
+    )
+    store = (getattr(args, "store", "") or "").strip() or None
+    top = int(getattr(args, "top", 10))
+    as_json = bool(getattr(args, "json", False))
+    report = run_autonomy_correlate(
+        window_hours=window_h, bucket_hours=bucket_h,
+        store_id=store,
+    )
+    pairs = report.pairs[:top]
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "bucket_hours": report.bucket_hours,
+            "bucket_count": report.bucket_count,
+            "store_id": report.store_id,
+            "active_domain_count": report.active_domain_count,
+            "total_pairs": len(report.pairs),
+            "pairs": [
+                {
+                    "domain_a": p.domain_a,
+                    "domain_b": p.domain_b,
+                    "buckets_a": p.buckets_a,
+                    "buckets_b": p.buckets_b,
+                    "shared": p.shared,
+                    "union": p.union,
+                    "jaccard": p.jaccard,
+                }
+                for p in pairs
+            ],
+        }, indent=2, default=str))
+        return
+    scope = (
+        f"store={store}" if store else "fleet"
+    )
+    print(
+        f"Autonomy correlate ({scope}, "
+        f"window={int(window_h)}h, bucket={int(bucket_h)}h, "
+        f"buckets={report.bucket_count}):"
+    )
+    print()
+    print(
+        f"  Active domains: {report.active_domain_count}/9  "
+        f"Pairs: {len(report.pairs)}"
+    )
+    if not pairs:
+        print()
+        print(
+            "  No correlations -- no domains fired in window."
+        )
+        return
+    print()
+    print(
+        f"  {'PAIR':<32} {'JACCARD':>8} "
+        f"{'SHARED':>7} {'A_ONLY':>7} {'B_ONLY':>7}"
+    )
+    for p in pairs:
+        pair_str = f"{p.domain_a} ~ {p.domain_b}"
+        a_only = p.buckets_a - p.shared
+        b_only = p.buckets_b - p.shared
+        print(
+            f"  {pair_str:<32} {p.jaccard:>7.2f}  "
+            f"{p.shared:>7d} {a_only:>7d} {b_only:>7d}"
+        )
+    if len(report.pairs) > top:
+        print()
+        print(
+            f"  ... {len(report.pairs) - top} more "
+            "(raise --top to see all)"
+        )
+
+
 def _cmd_autonomy_recommend(args) -> None:
     """Wave 696: priority-ranked operator recommendations."""
     from core.automation.autonomy_recommend import (
@@ -45589,6 +45698,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomy-recommend":
         _cmd_autonomy_recommend(args)
+        return
+
+    if args.command == "autonomy-correlate":
+        _cmd_autonomy_correlate(args)
         return
 
     if args.command == "autonomy-domain":
