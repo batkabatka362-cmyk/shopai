@@ -4145,6 +4145,49 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 812: arm / disarm / list autonomy domains
+    autonomy_arm_p = sub.add_parser(
+        "autonomy-arm",
+        help=(
+            "Wave 812: arm an autonomy domain so the next cycle "
+            "fires its applier (default: domains stay idle)."
+        ),
+    )
+    autonomy_arm_p.add_argument(
+        "domain", type=str,
+        help="domain name (e.g. shipping_alert)",
+    )
+    autonomy_arm_p.add_argument(
+        "--reason", type=str, default="",
+        help="audit trail for why this is being armed",
+    )
+    autonomy_arm_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    autonomy_disarm_p = sub.add_parser(
+        "autonomy-disarm",
+        help="Wave 812: disarm a domain. --all = emergency stop.",
+    )
+    autonomy_disarm_p.add_argument(
+        "domain", type=str, nargs="?", default="",
+    )
+    autonomy_disarm_p.add_argument(
+        "--all", action="store_true",
+        help="disarm every domain (emergency halt)",
+    )
+    autonomy_disarm_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    autonomy_armed_p = sub.add_parser(
+        "autonomy-armed",
+        help="Wave 812: list which autonomy domains are armed.",
+    )
+    autonomy_armed_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 235: empire-wide autonomy doctor (verdict + wiring)
     autonomy_doctor_p = sub.add_parser(
         "autonomy-doctor",
@@ -32368,6 +32411,163 @@ def _cmd_autonomy_status(args) -> None:
         print()
         print(f"  Next: {report.overall_next_action}")
 
+    # W814: surface armed-state badges so operator sees which
+    # domains are wired to actually fire vs. sit idle.
+    try:
+        from core.automation.autonomy_armed import (
+            DOMAIN_APPLY_FLAGS, list_armed,
+        )
+        armed = {e.domain for e in list_armed()}
+        unarmed = sorted(
+            set(DOMAIN_APPLY_FLAGS) - armed,
+        )
+        if armed or unarmed:
+            print()
+            if armed:
+                print(
+                    "  ARMED ({}): {}".format(
+                        len(armed), ", ".join(sorted(armed)),
+                    )
+                )
+            if unarmed and not armed:
+                print(
+                    f"  No domains armed. Run "
+                    f"`shopai autonomy-arm <domain>` to enable."
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("autonomy-status armed badge raised: %s", exc)
+
+
+def _cmd_autonomy_arm(args) -> None:
+    """Wave 812: arm a domain so cycle fires its appliers."""
+    from core.automation.autonomy_armed import (
+        DOMAIN_APPLY_FLAGS, arm,
+    )
+    domain = (getattr(args, "domain", "") or "").strip()
+    reason = (getattr(args, "reason", "") or "").strip()
+    as_json = bool(getattr(args, "json", False))
+    if domain not in DOMAIN_APPLY_FLAGS:
+        msg = (
+            f"unknown domain: {domain!r}. Known: "
+            f"{', '.join(sorted(DOMAIN_APPLY_FLAGS))}"
+        )
+        if as_json:
+            print(json.dumps({"ok": False, "error": msg}))
+        else:
+            print(f"ERROR: {msg}")
+        sys.exit(1)
+    entry = arm(domain, reason=reason)
+    flags = DOMAIN_APPLY_FLAGS[domain]
+    if as_json:
+        print(json.dumps({
+            "ok": True,
+            "domain": entry.domain,
+            "armed_at": entry.armed_at,
+            "reason": entry.reason,
+            "flags": list(flags),
+        }, indent=2))
+        return
+    print(f"Armed: {domain}")
+    print(f"  Flags injected on cycle: {', '.join(flags)}")
+    if reason:
+        print(f"  Reason: {reason}")
+    print()
+    print("  Next cycle will fire this domain's appliers.")
+    print("  Disarm via: shopai autonomy-disarm " + domain)
+
+
+def _cmd_autonomy_disarm(args) -> None:
+    """Wave 812: disarm a domain."""
+    from core.automation.autonomy_armed import (
+        DOMAIN_APPLY_FLAGS, disarm, disarm_all,
+    )
+    domain = (getattr(args, "domain", "") or "").strip()
+    all_flag = bool(getattr(args, "all", False))
+    as_json = bool(getattr(args, "json", False))
+    if all_flag:
+        count = disarm_all()
+        if as_json:
+            print(json.dumps({
+                "ok": True, "removed": count, "all": True,
+            }))
+            return
+        print(f"Disarmed all ({count} entries removed).")
+        return
+    if domain not in DOMAIN_APPLY_FLAGS:
+        msg = (
+            f"unknown domain: {domain!r}. Known: "
+            f"{', '.join(sorted(DOMAIN_APPLY_FLAGS))}"
+        )
+        if as_json:
+            print(json.dumps({"ok": False, "error": msg}))
+        else:
+            print(f"ERROR: {msg}")
+        sys.exit(1)
+    removed = disarm(domain)
+    if as_json:
+        print(json.dumps({
+            "ok": True, "domain": domain, "removed": removed,
+        }))
+        return
+    if removed:
+        print(f"Disarmed: {domain}")
+    else:
+        print(f"Already disarmed: {domain} (no-op)")
+
+
+def _cmd_autonomy_armed(args) -> None:
+    """Wave 812: list currently-armed autonomy domains."""
+    from core.automation.autonomy_armed import (
+        DOMAIN_APPLY_FLAGS, list_armed,
+    )
+    entries = list_armed()
+    as_json = bool(getattr(args, "json", False))
+    if as_json:
+        print(json.dumps({
+            "armed": [
+                {
+                    "domain": e.domain,
+                    "armed_at": e.armed_at,
+                    "reason": e.reason,
+                    "flags": list(
+                        DOMAIN_APPLY_FLAGS.get(e.domain, ()),
+                    ),
+                }
+                for e in entries
+            ],
+            "total_domains": len(DOMAIN_APPLY_FLAGS),
+            "armed_count": len(entries),
+        }, indent=2, default=str))
+        return
+    if not entries:
+        print(
+            "No domains armed. "
+            f"({len(DOMAIN_APPLY_FLAGS)} available)"
+        )
+        print()
+        print("  Arm one via: shopai autonomy-arm <domain>")
+        print(
+            "  Domains: "
+            + ", ".join(sorted(DOMAIN_APPLY_FLAGS))
+        )
+        return
+    print(
+        f"Armed autonomy domains "
+        f"({len(entries)}/{len(DOMAIN_APPLY_FLAGS)}):"
+    )
+    print()
+    for e in entries:
+        flags = DOMAIN_APPLY_FLAGS.get(e.domain, ())
+        ts = time.strftime(
+            "%Y-%m-%d %H:%M UTC", time.gmtime(e.armed_at),
+        )
+        reason = f" -- {e.reason}" if e.reason else ""
+        print(
+            f"  [+]  {e.domain:<20}  "
+            f"flags={','.join(flags)}  "
+            f"armed_at={ts}{reason}"
+        )
+
 
 def _cmd_pattern_o_audit(args) -> None:
     """Wave 122: opt-in gate audit."""
@@ -45991,6 +46191,15 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomy-status":
         _cmd_autonomy_status(args)
+        return
+    if args.command == "autonomy-arm":
+        _cmd_autonomy_arm(args)
+        return
+    if args.command == "autonomy-disarm":
+        _cmd_autonomy_disarm(args)
+        return
+    if args.command == "autonomy-armed":
+        _cmd_autonomy_armed(args)
         return
 
     if args.command == "product-seo-status":
