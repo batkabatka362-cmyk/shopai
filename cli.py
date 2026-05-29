@@ -22695,6 +22695,23 @@ def _cmd_cycle_run(args) -> None:
             "shipping-alert bridge failed: %s", exc,
         )
 
+    # Wave 822: armed substrate-domain fire (discoverer -> applier)
+    try:
+        from core.automation.substrate_fire import (
+            fire_armed_substrate_domains,
+        )
+        sub_report = fire_armed_substrate_domains()
+        if sub_report.outcomes:
+            logger.info(
+                "substrate-fire: %d invoked, %d discovered rows",
+                sub_report.total_invoked,
+                sub_report.total_discovered_rows,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "substrate-fire bridge raised: %s", exc,
+        )
+
     # Wave 251: post-cycle autonomy-doctor snapshot. Cheap
     # (cached AST audits + per-domain summary calls); catches
     # substrate breakage that bridge fire alone wouldn't expose.
