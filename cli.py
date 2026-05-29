@@ -32474,6 +32474,18 @@ def _cmd_autonomy_status(args) -> None:
             f"  Paused domains:      "
             f"{', '.join(report.paused_domains)}"
         )
+    # W818: pre-fetch armed state + firing modes once for the
+    # per-domain rendering loop below.
+    try:
+        from core.automation.autonomy_armed import (
+            DOMAIN_FIRING_MODE, list_armed,
+        )
+        _armed_set = {e.domain for e in list_armed()}
+        _mode_map = dict(DOMAIN_FIRING_MODE)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("autonomy-status mode probe raised: %s", exc)
+        _armed_set, _mode_map = set(), {}
+
     print()
     print("  Per-domain:")
     for d in report.domains:
@@ -32481,8 +32493,15 @@ def _cmd_autonomy_status(args) -> None:
             "healthy": "[OK ]", "quiet": "[ - ]",
             "degraded": "[WRN]", "paused": "[BAD]",
         }.get(d.verdict, "[ ? ]")
+        mode = _mode_map.get(d.name, "unknown")
+        if d.name in _armed_set:
+            arm_badge = (
+                "[FIRE]" if mode == "engine" else "[NOOP]"
+            )
+        else:
+            arm_badge = "[idle]"
         print(
-            f"    {dmk} {d.name:<18} "
+            f"    {dmk} {arm_badge} {d.name:<18} "
             f"verdict={d.verdict:<10} "
             f"applied={d.applied_count}"
         )
@@ -32495,31 +32514,27 @@ def _cmd_autonomy_status(args) -> None:
         print()
         print(f"  Next: {report.overall_next_action}")
 
-    # W814: surface armed-state badges so operator sees which
-    # domains are wired to actually fire vs. sit idle.
-    try:
-        from core.automation.autonomy_armed import (
-            DOMAIN_APPLY_FLAGS, list_armed,
+    # W818: footer summary of armed counts + hint when nothing
+    # is armed.
+    armed_count = len(_armed_set)
+    if armed_count == 0:
+        print()
+        print(
+            "  No domains armed. Arm one via: "
+            "shopai autonomy-arm <domain>"
         )
-        armed = {e.domain for e in list_armed()}
-        unarmed = sorted(
-            set(DOMAIN_APPLY_FLAGS) - armed,
+    else:
+        n_fire = sum(
+            1 for n in _armed_set
+            if _mode_map.get(n) == "engine"
         )
-        if armed or unarmed:
-            print()
-            if armed:
-                print(
-                    "  ARMED ({}): {}".format(
-                        len(armed), ", ".join(sorted(armed)),
-                    )
-                )
-            if unarmed and not armed:
-                print(
-                    f"  No domains armed. Run "
-                    f"`shopai autonomy-arm <domain>` to enable."
-                )
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("autonomy-status armed badge raised: %s", exc)
+        n_noop = armed_count - n_fire
+        print()
+        print(
+            f"  ARMED: {armed_count}  "
+            f"([FIRE]={n_fire}, [NOOP]={n_noop}, "
+            f"[idle]={len(report.domains) - armed_count})"
+        )
 
 
 def _cmd_autonomy_arm(args) -> None:
