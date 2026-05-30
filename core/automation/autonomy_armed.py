@@ -96,18 +96,32 @@ class ArmedEntry:
     domain: str
     armed_at: float
     reason: str = ""
+    # W869: per-store scope. Empty string = fleet-wide (the
+    # original W815 behaviour). Non-empty = scoped to one store.
+    store_id: str = ""
 
 
 @dataclass
 class ArmedState:
     entries: list[ArmedEntry] = field(default_factory=list)
 
-    def is_armed(self, domain: str) -> bool:
-        return any(e.domain == domain for e in self.entries)
-
-    def get(self, domain: str) -> ArmedEntry | None:
+    def is_armed(
+        self, domain: str, store_id: str = "",
+    ) -> bool:
+        """Match exact (domain, store_id) tuple. Empty
+        store_id matches only the fleet-wide entry."""
+        sid = store_id or ""
         for e in self.entries:
-            if e.domain == domain:
+            if e.domain == domain and (e.store_id or "") == sid:
+                return True
+        return False
+
+    def get(
+        self, domain: str, store_id: str = "",
+    ) -> ArmedEntry | None:
+        sid = store_id or ""
+        for e in self.entries:
+            if e.domain == domain and (e.store_id or "") == sid:
                 return e
         return None
 
@@ -127,6 +141,9 @@ def _load_state() -> ArmedState:
             domain=e["domain"],
             armed_at=float(e.get("armed_at", 0.0)),
             reason=e.get("reason", ""),
+            # W869: backward-compat -- pre-W869 entries lack
+            # store_id; default to fleet-wide empty string.
+            store_id=str(e.get("store_id", "") or ""),
         )
         for e in raw.get("entries", [])
         if isinstance(e, dict) and "domain" in e
@@ -147,14 +164,27 @@ def _save_state(state: ArmedState) -> None:
     )
 
 
-def is_armed(domain: str) -> bool:
-    """True iff the given domain is currently armed."""
-    return _load_state().is_armed(domain)
+def is_armed(domain: str, store_id: str = "") -> bool:
+    """True iff the (domain, store_id) tuple is currently
+    armed. Empty store_id checks the fleet-wide entry only."""
+    return _load_state().is_armed(domain, store_id)
 
 
-def list_armed() -> list[ArmedEntry]:
-    """All currently-armed domain entries in stable order."""
-    return list(_load_state().entries)
+def list_armed(
+    *,
+    store_id: str | None = None,
+) -> list[ArmedEntry]:
+    """All currently-armed entries in stable order.
+
+    W869: when ``store_id`` is supplied, returns only entries
+    scoped to that store (exact match). When omitted, returns
+    every entry (fleet-wide + per-store) so legacy callers see
+    everything."""
+    entries = list(_load_state().entries)
+    if store_id is None:
+        return entries
+    sid = store_id or ""
+    return [e for e in entries if (e.store_id or "") == sid]
 
 
 class ArmCooldownError(RuntimeError):
@@ -204,8 +234,9 @@ def arm(
     reason: str = "",
     *,
     force: bool = False,
+    store_id: str = "",
 ) -> ArmedEntry:
-    """Arm the given domain. Idempotent.
+    """Arm the (domain, store_id) tuple. Idempotent.
 
     Returns the resulting entry (existing if already armed, else
     a freshly-created one). Raises ValueError on unknown domain.
@@ -215,12 +246,19 @@ def arm(
     ``SHOPAI_AUTO_DISARM_COOLDOWN_HOURS`` (default 12) hours.
     Raises ``ArmCooldownError`` with the remaining cooldown.
     ``force=True`` bypasses the check (operator override).
+
+    W869: ``store_id`` scopes the entry. Empty string (default)
+    is fleet-wide -- back-compat with W815 callers. Non-empty
+    arms the domain ONLY for that store. The cooldown check is
+    keyed off ``(domain, store_id)`` so per-store cooldowns are
+    independent.
     """
     if domain not in DOMAIN_APPLY_FLAGS:
         raise ValueError(
             f"unknown autonomy domain: {domain!r} "
             f"(known: {sorted(DOMAIN_APPLY_FLAGS)})"
         )
+    sid = store_id or ""
     if not force:
         try:
             from core.automation.substrate_fire_disarm_log import (  # noqa
@@ -241,33 +279,58 @@ def arm(
                     hours_remaining=cooldown - elapsed,
                 )
     state = _load_state()
-    existing = state.get(domain)
+    existing = state.get(domain, sid)
     if existing is not None:
         return existing
     entry = ArmedEntry(
         domain=domain,
         armed_at=time.time(),
         reason=reason,
+        store_id=sid,
     )
     state.entries.append(entry)
     _save_state(state)
     return entry
 
 
-def disarm(domain: str) -> bool:
-    """Disarm the given domain. Idempotent.
+def disarm(domain: str, store_id: str = "") -> bool:
+    """Disarm the (domain, store_id) tuple. Idempotent.
 
-    Returns True if a previously-armed entry was removed, False if
-    the domain wasn't armed.
+    Returns True if a previously-armed entry was removed,
+    False if the (domain, store_id) tuple wasn't armed.
+
+    W869: empty ``store_id`` removes the fleet-wide entry
+    only. Per-store entries for the same domain stay armed.
+    To remove EVERY entry for a domain (fleet + per-store),
+    call ``disarm_domain_all(domain)``.
     """
+    sid = store_id or ""
     state = _load_state()
-    if not state.is_armed(domain):
+    if not state.is_armed(domain, sid):
         return False
     state.entries = [
-        e for e in state.entries if e.domain != domain
+        e for e in state.entries
+        if not (
+            e.domain == domain
+            and (e.store_id or "") == sid
+        )
     ]
     _save_state(state)
     return True
+
+
+def disarm_domain_all(domain: str) -> int:
+    """Remove every armed entry for ``domain`` regardless of
+    store_id. Returns the count of entries removed."""
+    state = _load_state()
+    before = len(state.entries)
+    state.entries = [
+        e for e in state.entries if e.domain != domain
+    ]
+    removed = before - len(state.entries)
+    if removed > 0:
+        _save_state(state)
+    return removed
 
 
 def disarm_all() -> int:

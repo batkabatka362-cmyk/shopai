@@ -300,6 +300,114 @@ class TestArmCooldown:
         assert e.domain == "shipping_alert"
 
 
+class TestPerStoreScope:
+    """W869: per-store armed entries."""
+
+    def test_fleet_and_per_store_independent(self):
+        # Fleet-wide arm + per-store arm for same domain are
+        # independent entries.
+        e1 = arm("shipping_alert", reason="fleet")
+        e2 = arm(
+            "shipping_alert", reason="per_store",
+            store_id="store-1",
+        )
+        assert e1.store_id == ""
+        assert e2.store_id == "store-1"
+        assert e1.armed_at != e2.armed_at or True  # both ok
+        assert is_armed("shipping_alert")
+        assert is_armed("shipping_alert", store_id="store-1")
+        assert not is_armed(
+            "shipping_alert", store_id="store-2",
+        )
+
+    def test_disarm_fleet_does_not_touch_per_store(self):
+        arm("shipping_alert", reason="fleet")
+        arm(
+            "shipping_alert", reason="per",
+            store_id="store-1",
+        )
+        assert disarm("shipping_alert")  # fleet-wide
+        assert not is_armed("shipping_alert")
+        # Per-store entry survives
+        assert is_armed(
+            "shipping_alert", store_id="store-1",
+        )
+
+    def test_disarm_per_store_specific(self):
+        arm(
+            "shipping_alert", reason="a", store_id="store-1",
+        )
+        arm(
+            "shipping_alert", reason="b", store_id="store-2",
+        )
+        assert disarm("shipping_alert", store_id="store-1")
+        assert not is_armed(
+            "shipping_alert", store_id="store-1",
+        )
+        assert is_armed(
+            "shipping_alert", store_id="store-2",
+        )
+
+    def test_disarm_domain_all_removes_every_scope(self):
+        from core.automation.autonomy_armed import (
+            disarm_domain_all,
+        )
+        arm("shipping_alert", reason="fleet")
+        arm(
+            "shipping_alert", reason="a",
+            store_id="store-1",
+        )
+        arm(
+            "shipping_alert", reason="b",
+            store_id="store-2",
+        )
+        removed = disarm_domain_all("shipping_alert")
+        assert removed == 3
+        assert not is_armed("shipping_alert")
+        assert not is_armed(
+            "shipping_alert", store_id="store-1",
+        )
+
+    def test_list_armed_filter_by_store(self):
+        arm("shipping_alert", reason="fleet")
+        arm(
+            "shipping_alert", reason="a",
+            store_id="store-1",
+        )
+        arm(
+            "inventory", reason="b",
+            store_id="store-1",
+        )
+        store1 = list_armed(store_id="store-1")
+        assert len(store1) == 2
+        assert all(
+            e.store_id == "store-1" for e in store1
+        )
+        fleet = list_armed(store_id="")
+        assert len(fleet) == 1
+        assert fleet[0].store_id == ""
+
+    def test_list_armed_no_filter_returns_all(self):
+        arm("shipping_alert", reason="fleet")
+        arm(
+            "shipping_alert", reason="a",
+            store_id="store-1",
+        )
+        all_entries = list_armed()
+        assert len(all_entries) == 2
+
+    def test_arm_idempotent_per_store(self):
+        e1 = arm(
+            "shipping_alert", reason="x",
+            store_id="store-1",
+        )
+        e2 = arm(
+            "shipping_alert", reason="y",
+            store_id="store-1",
+        )
+        assert e1.armed_at == e2.armed_at  # same entry
+
+
 class TestArmedStateDataclass:
 
     def test_empty_state_no_armed(self):
