@@ -4063,6 +4063,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_au_p.add_argument("--json", action="store_true")
 
+    # Wave 823: Pattern AV audit (discoverer ownership parity)
+    pattern_av_p = sub.add_parser(
+        "pattern-av-audit",
+        help=(
+            "Wave 823: verify every registered discoverer is "
+            "for a known substrate-mode domain (catches "
+            "engine-mode registrations + typos)."
+        ),
+    )
+    pattern_av_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -30331,6 +30342,51 @@ def _cmd_pattern_as_audit(args) -> None:
         )
 
 
+def _cmd_pattern_av_audit(args) -> None:
+    """Wave 823: discoverer ownership parity."""
+    from engines._pattern_av_audit import run_pattern_av_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_av_audit()
+    if as_json:
+        print(json.dumps({
+            "registered_discoverers": (
+                report.registered_discoverers
+            ),
+            "substrate_domains": report.substrate_domains,
+            "engine_domains": report.engine_domains,
+            "substrate_without_discoverer": (
+                report.substrate_without_discoverer
+            ),
+            "clean_pairings": report.clean_pairings,
+            "violations": [
+                {"domain": v.domain, "reason": v.reason}
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern AV FAILED -- "
+            f"{len(report.violations)} drift(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.domain}] {v.reason}")
+        sys.exit(1)
+    else:
+        n_clean = len(report.clean_pairings)
+        n_sub = len(report.substrate_domains)
+        n_missing = len(report.substrate_without_discoverer)
+        print(
+            f"Pattern AV OK -- {n_clean} discoverer(s) clean; "
+            f"{n_missing} substrate-mode domain(s) still need "
+            f"a discoverer ({n_clean}/{n_sub} substrate-mode "
+            "covered)."
+        )
+
+
 def _cmd_pattern_au_audit(args) -> None:
     """Wave 819: autonomy_fire catalog parity."""
     from engines._pattern_au_audit import run_pattern_au_audit
@@ -37419,6 +37475,25 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_av":
+            from engines._pattern_av_audit import (
+                run_pattern_av_audit,
+            )
+            r = run_pattern_av_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_pairings": r.clean_pairings,
+                "registered_discoverers": (
+                    r.registered_discoverers
+                ),
+                "substrate_without_discoverer": (
+                    r.substrate_without_discoverer
+                ),
+                "violations": [
+                    {"domain": v.domain, "reason": v.reason}
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -37439,6 +37514,7 @@ _AUDIT_ORDER = (
     "pattern_aj", "pattern_ak", "pattern_al", "pattern_am",
     "pattern_an", "pattern_ao", "pattern_ap", "pattern_aq",
     "pattern_ar", "pattern_as", "pattern_at", "pattern_au",
+    "pattern_av",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -37483,6 +37559,7 @@ _AUDIT_LABELS = {
     "pattern_as": "Pattern AS (env knob name uniqueness)",
     "pattern_at": "Pattern AT (template double-brace lint)",
     "pattern_au": "Pattern AU (autonomy_fire catalog parity)",
+    "pattern_av": "Pattern AV (discoverer ownership parity)",
 }
 
 
@@ -46545,6 +46622,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-au-audit":
         _cmd_pattern_au_audit(args)
+        return
+
+    if args.command == "pattern-av-audit":
+        _cmd_pattern_av_audit(args)
         return
 
     if args.command == "autonomy-env":
