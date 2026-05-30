@@ -4085,6 +4085,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_aw_p.add_argument("--json", action="store_true")
 
+    # Wave 833: Pattern AX (action-string parity)
+    pattern_ax_p = sub.add_parser(
+        "pattern-ax-audit",
+        help=(
+            "Wave 833: verify each discoverer emits the "
+            "exact 'action' string the matching applier "
+            "expects (catches silent not_actionable drift)."
+        ),
+    )
+    pattern_ax_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -30353,6 +30364,48 @@ def _cmd_pattern_as_audit(args) -> None:
         )
 
 
+def _cmd_pattern_ax_audit(args) -> None:
+    """Wave 833: discoverer-applier action-string parity."""
+    from engines._pattern_ax_audit import run_pattern_ax_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_ax_audit()
+    if as_json:
+        print(json.dumps({
+            "domains_scanned": report.domains_scanned,
+            "clean_pairs": report.clean_pairs,
+            "violations": [
+                {
+                    "domain": v.domain,
+                    "discoverer_action": v.discoverer_action,
+                    "applier_action": v.applier_action,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern AX FAILED -- "
+            f"{len(report.violations)} drift(s):"
+        )
+        for v in report.violations:
+            print(
+                f"  [{v.domain}] discoverer={v.discoverer_action!r} "
+                f"applier={v.applier_action!r}: {v.reason}"
+            )
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern AX OK -- {len(report.clean_pairs)} "
+            "(discoverer, applier) action-string pair(s) "
+            "aligned."
+        )
+
+
 def _cmd_pattern_aw_audit(args) -> None:
     """Wave 826: discoverer return-shape parity."""
     from engines._pattern_aw_audit import run_pattern_aw_audit
@@ -37591,6 +37644,22 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_ax":
+            from engines._pattern_ax_audit import (
+                run_pattern_ax_audit,
+            )
+            r = run_pattern_ax_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_pairs": r.clean_pairs,
+                "violations": [
+                    {
+                        "domain": v.domain,
+                        "reason": v.reason,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -37611,7 +37680,7 @@ _AUDIT_ORDER = (
     "pattern_aj", "pattern_ak", "pattern_al", "pattern_am",
     "pattern_an", "pattern_ao", "pattern_ap", "pattern_aq",
     "pattern_ar", "pattern_as", "pattern_at", "pattern_au",
-    "pattern_av", "pattern_aw",
+    "pattern_av", "pattern_aw", "pattern_ax",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -37658,6 +37727,7 @@ _AUDIT_LABELS = {
     "pattern_au": "Pattern AU (autonomy_fire catalog parity)",
     "pattern_av": "Pattern AV (discoverer ownership parity)",
     "pattern_aw": "Pattern AW (discoverer return-shape)",
+    "pattern_ax": "Pattern AX (action-string parity)",
 }
 
 
@@ -46728,6 +46798,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-aw-audit":
         _cmd_pattern_aw_audit(args)
+        return
+
+    if args.command == "pattern-ax-audit":
+        _cmd_pattern_ax_audit(args)
         return
 
     if args.command == "autonomy-env":
