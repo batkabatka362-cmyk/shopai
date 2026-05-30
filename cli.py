@@ -4265,6 +4265,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 848: per-domain substrate-fire KPI
+    autonomy_kpi_p = sub.add_parser(
+        "autonomy-kpi",
+        help=(
+            "Wave 848: per-domain substrate-fire KPIs "
+            "(success rate, avg duration, error count)."
+        ),
+    )
+    autonomy_kpi_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+    )
+    autonomy_kpi_p.add_argument(
+        "--store", type=str, default="",
+    )
+    autonomy_kpi_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 841: substrate-fire history
     autonomy_fire_status_p = sub.add_parser(
         "autonomy-fire-status",
@@ -33355,6 +33373,71 @@ def _cmd_autonomy_armed(args) -> None:
     )
 
 
+def _cmd_autonomy_kpi(args) -> None:
+    """Wave 848: per-domain substrate-fire KPI table."""
+    from core.automation.substrate_fire_kpi import (
+        compute_fire_kpis,
+    )
+    window = float(getattr(args, "window_hours", 168.0) or 168.0)
+    store = (getattr(args, "store", "") or "").strip()
+    as_json = bool(getattr(args, "json", False))
+    report = compute_fire_kpis(
+        window_hours=window,
+        store_id=store or None,
+    )
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "store_id": report.store_id,
+            "per_domain": [
+                {
+                    "domain": k.domain,
+                    "total_outcomes": k.total_outcomes,
+                    "fired": k.fired,
+                    "dry_run": k.dry_run,
+                    "errors": k.errors,
+                    "success_rate": round(k.success_rate, 3),
+                    "avg_duration_ms": round(
+                        k.avg_duration_ms, 1,
+                    ),
+                }
+                for k in report.per_domain
+            ],
+        }, indent=2, default=str))
+        return
+    scope = f"store={store}" if store else "fleet"
+    print(
+        f"Substrate-fire KPIs ({scope}, last "
+        f"{window:.0f}h):"
+    )
+    print()
+    if not report.per_domain:
+        print(
+            "  (No outcomes in window. Arm + "
+            "SHOPAI_AUTONOMY_FIRE_CONFIRM=1 to populate.)"
+        )
+        return
+    print(
+        f"  {'domain':<22} {'total':>6} {'fired':>6} "
+        f"{'dry':>5} {'err':>5} {'success':>8} "
+        f"{'avg_ms':>8}"
+    )
+    for k in report.per_domain:
+        marker = (
+            "[BAD]" if k.errors and not k.fired
+            else "[WRN]" if k.errors
+            else "[OK ]" if k.fired
+            else "[ - ]"
+        )
+        print(
+            f"  {marker} {k.domain:<16} "
+            f"{k.total_outcomes:>6} {k.fired:>6} "
+            f"{k.dry_run:>5} {k.errors:>5} "
+            f"{k.success_rate * 100:>7.1f}% "
+            f"{k.avg_duration_ms:>7.1f}"
+        )
+
+
 def _cmd_autonomy_fire_status(args) -> None:
     """Wave 841: substrate_fire history."""
     from core.automation.substrate_fire_log import (
@@ -47420,6 +47503,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "autonomy-fire-status":
         _cmd_autonomy_fire_status(args)
+        return
+    if args.command == "autonomy-kpi":
+        _cmd_autonomy_kpi(args)
         return
 
     if args.command == "product-seo-status":
