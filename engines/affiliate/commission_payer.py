@@ -38,6 +38,7 @@ from utils.logger import get_logger
 
 from engines._agi_context import (
     explain_thrash_block,
+    log_thrash_block,
     should_block_thrashing_store,
 )
 from engines._writeback_recorder import record_writeback
@@ -116,6 +117,12 @@ def pay_commissions(
             params={"commission_count": len(commissions)},
             success=False,
             error=reason,
+        )
+        log_thrash_block(
+            engine="affiliate",
+            action_type="pay_commission",
+            capability="SHOPIFY_CREATE_GIFT_CARD",
+            store_id=active_store_id,
         )
         return [
             {

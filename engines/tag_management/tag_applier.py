@@ -31,6 +31,7 @@ from utils.logger import get_logger
 
 from engines._agi_context import (
     explain_thrash_block,
+    log_thrash_block,
     should_block_thrashing_store,
 )
 from engines._writeback_recorder import record_writeback
@@ -96,6 +97,12 @@ def apply_tags(
             params={"assignment_count": len(assignments)},
             success=False,
             error=reason,
+        )
+        log_thrash_block(
+            engine="tag_management",
+            action_type="apply_tags",
+            capability="SHOPIFY_UPDATE_PRODUCT",
+            store_id=active_store_id,
         )
         return [
             {

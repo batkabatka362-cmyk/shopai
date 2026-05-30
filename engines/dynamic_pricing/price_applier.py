@@ -37,6 +37,7 @@ from utils.logger import get_logger
 
 from engines._agi_context import (
     explain_thrash_block,
+    log_thrash_block,
     should_block_thrashing_store,
 )
 from engines._writeback_recorder import record_writeback
@@ -108,6 +109,12 @@ def apply_price_changes(
             params={"adjustment_count": len(adjustments)},
             success=False,
             error=reason,
+        )
+        log_thrash_block(
+            engine="dynamic_pricing",
+            action_type="apply_price_change",
+            capability="SHOPIFY_UPDATE_VARIANTS",
+            store_id=active_store_id,
         )
         return [
             {

@@ -50,6 +50,7 @@ from engines._agi_context import (
     explain_guardrail_block,
     explain_thrash_block,
     guardrail_enabled,
+    log_thrash_block,
     should_block_thrashing_store,
     should_block_unambiguous_negative,
 )
@@ -162,6 +163,12 @@ def mint_strategy_code(
             success=False,
             error=explain_thrash_block(active_store_id),
             metrics=None,
+        )
+        log_thrash_block(
+            engine="discount_strategy",
+            action_type="mint_strategy_code",
+            capability="SHOPIFY_CREATE_DISCOUNT",
+            store_id=active_store_id,
         )
         return None
 

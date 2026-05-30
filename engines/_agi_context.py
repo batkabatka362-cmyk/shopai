@@ -315,6 +315,35 @@ def explain_thrash_block(store_id: str | None) -> str:
     )
 
 
+def log_thrash_block(
+    *,
+    engine: str,
+    action_type: str,
+    capability: str,
+    store_id: str | None,
+) -> None:
+    """Wave 930: append blocked writeback to the read-side log.
+
+    Best-effort -- never raises. Appliers call this AFTER
+    record_writeback so the read-side substrate sees the
+    block event with a dedicated query path
+    (``shopai thrash-blocks``).
+    """
+    try:
+        from core.automation.thrash_block_log import (
+            record_block,
+        )
+        record_block(
+            engine=engine,
+            action_type=action_type,
+            capability=capability,
+            store_id=store_id,
+            reason=explain_thrash_block(store_id),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("log_thrash_block raised: %s", exc)
+
+
 def _summarize_similar(
     similar: list[dict[str, Any]],
 ) -> dict[str, Any]:

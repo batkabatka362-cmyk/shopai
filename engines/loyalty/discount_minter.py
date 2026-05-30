@@ -25,6 +25,7 @@ from typing import Any
 from engines._agi_context import (
     capture_decision_context,
     explain_thrash_block,
+    log_thrash_block,
     should_block_thrashing_store,
 )
 from engines._recovery_codes import mint_recovery_code as _mint
@@ -176,6 +177,12 @@ def mint_loyalty_code(
             success=False,
             error=explain_thrash_block(active_store_id),
             metrics=None,
+        )
+        log_thrash_block(
+            engine="loyalty",
+            action_type="mint_loyalty_code",
+            capability="SHOPIFY_CREATE_DISCOUNT",
+            store_id=active_store_id,
         )
         return None
 
