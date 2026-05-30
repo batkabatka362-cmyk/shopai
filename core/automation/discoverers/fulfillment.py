@@ -166,7 +166,7 @@ def _fetch_orders() -> list[dict[str, Any]]:
     return orders
 
 
-def discover_fulfillment() -> DiscoveryResult:
+def discover_fulfillment(*, store_id: str | None = None) -> DiscoveryResult:
     now = time.time()
     try:
         orders = _fetch_orders()
@@ -176,6 +176,7 @@ def discover_fulfillment() -> DiscoveryResult:
             payload=[],
             source="shopify_orders",
             discovered_at=now,
+            store_id=store_id,
             error=f"fetch raised: {exc!s:.200}",
         )
     default_lid = _default_location_id()
@@ -189,6 +190,7 @@ def discover_fulfillment() -> DiscoveryResult:
         payload=payload,
         source="shopify_orders",
         discovered_at=now,
+            store_id=store_id,
     )
 
 

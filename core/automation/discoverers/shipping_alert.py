@@ -152,7 +152,7 @@ def _fetch_recent_orders() -> list[dict[str, Any]]:
     return orders
 
 
-def discover_shipping_alert() -> DiscoveryResult:
+def discover_shipping_alert(*, store_id: str | None = None) -> DiscoveryResult:
     """Generate payload of shipping-tag actions for recent
     orders."""
     now = time.time()
@@ -164,6 +164,7 @@ def discover_shipping_alert() -> DiscoveryResult:
             payload=[],
             source="shopify_orders",
             discovered_at=now,
+            store_id=store_id,
             error=f"fetch raised: {exc!s:.200}",
         )
     payload: list[dict] = []
@@ -189,6 +190,7 @@ def discover_shipping_alert() -> DiscoveryResult:
         payload=payload,
         source="shopify_orders",
         discovered_at=now,
+            store_id=store_id,
     )
 
 

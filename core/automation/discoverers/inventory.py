@@ -179,7 +179,7 @@ def _fetch_levels() -> list[dict[str, Any]]:
     return levels
 
 
-def discover_inventory() -> DiscoveryResult:
+def discover_inventory(*, store_id: str | None = None) -> DiscoveryResult:
     now = time.time()
     try:
         levels = _fetch_levels()
@@ -189,6 +189,7 @@ def discover_inventory() -> DiscoveryResult:
             payload=[],
             source="shopify_inventory_levels",
             discovered_at=now,
+            store_id=store_id,
             error=f"fetch raised: {exc!s:.200}",
         )
     safety = _safety_stock()
@@ -204,6 +205,7 @@ def discover_inventory() -> DiscoveryResult:
         payload=payload,
         source="shopify_inventory_levels",
         discovered_at=now,
+            store_id=store_id,
     )
 
 

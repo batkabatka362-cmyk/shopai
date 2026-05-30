@@ -133,7 +133,7 @@ def _fetch_products() -> list[dict[str, Any]]:
     return products
 
 
-def discover_catalog_quality() -> DiscoveryResult:
+def discover_catalog_quality(*, store_id: str | None = None) -> DiscoveryResult:
     now = time.time()
     try:
         products = _fetch_products()
@@ -143,6 +143,7 @@ def discover_catalog_quality() -> DiscoveryResult:
             payload=[],
             source="shopify_products",
             discovered_at=now,
+            store_id=store_id,
             error=f"fetch raised: {exc!s:.200}",
         )
     payload: list[dict] = []
@@ -168,6 +169,7 @@ def discover_catalog_quality() -> DiscoveryResult:
         payload=payload,
         source="shopify_products",
         discovered_at=now,
+            store_id=store_id,
     )
 
 

@@ -161,7 +161,7 @@ def _fetch_discounts() -> list[dict[str, Any]]:
     return discounts
 
 
-def discover_discount_cleanup() -> DiscoveryResult:
+def discover_discount_cleanup(*, store_id: str | None = None) -> DiscoveryResult:
     now = time.time()
     try:
         discounts = _fetch_discounts()
@@ -171,6 +171,7 @@ def discover_discount_cleanup() -> DiscoveryResult:
             payload=[],
             source="shopify_discounts",
             discovered_at=now,
+            store_id=store_id,
             error=f"fetch raised: {exc!s:.200}",
         )
     min_age = _min_age_days()
@@ -201,6 +202,7 @@ def discover_discount_cleanup() -> DiscoveryResult:
         payload=payload,
         source="shopify_discounts",
         discovered_at=now,
+            store_id=store_id,
     )
 
 

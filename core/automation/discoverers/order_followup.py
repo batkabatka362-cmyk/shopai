@@ -144,7 +144,7 @@ def _fetch_orders() -> list[dict[str, Any]]:
     return orders
 
 
-def discover_order_followup() -> DiscoveryResult:
+def discover_order_followup(*, store_id: str | None = None) -> DiscoveryResult:
     now = time.time()
     try:
         orders = _fetch_orders()
@@ -154,6 +154,7 @@ def discover_order_followup() -> DiscoveryResult:
             payload=[],
             source="shopify_orders",
             discovered_at=now,
+            store_id=store_id,
             error=f"fetch raised: {exc!s:.200}",
         )
     payload: list[dict] = []
@@ -179,6 +180,7 @@ def discover_order_followup() -> DiscoveryResult:
         payload=payload,
         source="shopify_orders",
         discovered_at=now,
+            store_id=store_id,
     )
 
 

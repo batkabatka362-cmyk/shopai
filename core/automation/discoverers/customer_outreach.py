@@ -155,7 +155,7 @@ def _fetch_customers() -> list[dict[str, Any]]:
     return customers
 
 
-def discover_customer_outreach() -> DiscoveryResult:
+def discover_customer_outreach(*, store_id: str | None = None) -> DiscoveryResult:
     now = time.time()
     try:
         customers = _fetch_customers()
@@ -165,6 +165,7 @@ def discover_customer_outreach() -> DiscoveryResult:
             payload=[],
             source="shopify_customers",
             discovered_at=now,
+            store_id=store_id,
             error=f"fetch raised: {exc!s:.200}",
         )
     vip_usd = _vip_threshold()
@@ -191,6 +192,7 @@ def discover_customer_outreach() -> DiscoveryResult:
         payload=payload,
         source="shopify_customers",
         discovered_at=now,
+            store_id=store_id,
     )
 
 
