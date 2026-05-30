@@ -4365,6 +4365,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_bx_p.add_argument("--json", action="store_true")
 
+    # Wave 933: Pattern BY (thrash block log chain)
+    pattern_by_p = sub.add_parser(
+        "pattern-by-audit",
+        help=(
+            "Wave 933: verify thrash block log substrate + "
+            "CLI + per-applier wireup."
+        ),
+    )
+    pattern_by_p.add_argument("--json", action="store_true")
+
     # Wave 926: thrash guardrail status CLI
     thrash_guardrail_p = sub.add_parser(
         "thrash-guardrail",
@@ -4374,6 +4384,30 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     thrash_guardrail_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # Wave 932: thrash-blocks query CLI
+    thrash_blocks_p = sub.add_parser(
+        "thrash-blocks",
+        help=(
+            "Wave 932: query recent thrash-guardrail-blocked "
+            "writebacks (read-side log)."
+        ),
+    )
+    thrash_blocks_p.add_argument(
+        "--limit", type=int, default=20,
+    )
+    thrash_blocks_p.add_argument(
+        "--window-hours", type=float, default=24.0,
+    )
+    thrash_blocks_p.add_argument(
+        "--store", type=str, default="",
+    )
+    thrash_blocks_p.add_argument(
+        "--engine", type=str, default="",
+    )
+    thrash_blocks_p.add_argument(
         "--json", action="store_true",
     )
 
@@ -31798,6 +31832,43 @@ def _cmd_pattern_bx_audit(args) -> None:
         )
 
 
+def _cmd_pattern_by_audit(args) -> None:
+    """Wave 933: thrash block log chain."""
+    from engines._pattern_by_audit import run_pattern_by_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_by_audit()
+    if as_json:
+        print(json.dumps({
+            "invariants_checked": report.invariants_checked,
+            "clean_invariants": report.clean_invariants,
+            "violations": [
+                {
+                    "invariant": v.invariant,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern BY FAILED -- "
+            f"{len(report.violations)} broken link(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.invariant}] {v.reason}")
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern BY OK -- "
+            f"{len(report.clean_invariants)} block log chain "
+            "link(s) honored."
+        )
+
+
 def _cmd_pattern_bn_audit(args) -> None:
     """Wave 893: autonomy-overview output schema."""
     from engines._pattern_bn_audit import run_pattern_bn_audit
@@ -35521,6 +35592,62 @@ def _cmd_autonomy_overview_history(args) -> None:
             f"{ts:<17} {e.verdict:<10} "
             f"{e.armed_total:>5} {fires:>9} "
             f"{e.fires_errors:>4} {e.alerts_critical:>4}"
+        )
+
+
+def _cmd_thrash_blocks(args) -> None:
+    """Wave 932: query thrash-blocked writebacks."""
+    from core.automation.thrash_block_log import (
+        recent_blocks,
+    )
+    limit = int(getattr(args, "limit", 20) or 20)
+    window = float(getattr(args, "window_hours", 24.0) or 24.0)
+    store = (getattr(args, "store", "") or "").strip()
+    engine = (getattr(args, "engine", "") or "").strip()
+    as_json = bool(getattr(args, "json", False))
+
+    rows = recent_blocks(
+        limit=limit,
+        window_hours=window,
+        store_id=store or None,
+        engine=engine or None,
+    )
+    if as_json:
+        print(json.dumps({
+            "limit": limit,
+            "window_hours": window,
+            "store_id": store or None,
+            "engine": engine or None,
+            "rows": [r.to_dict() for r in rows],
+        }, indent=2, default=str))
+        return
+
+    scope_parts = []
+    if store:
+        scope_parts.append(f"store={store}")
+    if engine:
+        scope_parts.append(f"engine={engine}")
+    scope = ", ".join(scope_parts) if scope_parts else "fleet"
+    print(
+        f"Thrash-guardrail blocks ({scope}, "
+        f"last {window:.0f}h, {len(rows)} row(s)):"
+    )
+    if not rows:
+        print("  (no blocks in window)")
+        return
+    print()
+    print(
+        f"{'when':<17} {'engine':<20} {'store':<20} action"
+    )
+    for r in rows:
+        ts = time.strftime(
+            "%Y-%m-%d %H:%M",
+            time.localtime(r.blocked_at),
+        )
+        store_disp = r.store_id or "(fleet)"
+        print(
+            f"{ts:<17} {r.engine:<20} {store_disp:<20} "
+            f"{r.action_type}"
         )
 
 
@@ -41068,6 +41195,22 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_by":
+            from engines._pattern_by_audit import (
+                run_pattern_by_audit,
+            )
+            r = run_pattern_by_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_invariants": r.clean_invariants,
+                "violations": [
+                    {
+                        "invariant": v.invariant,
+                        "reason": v.reason,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -41095,6 +41238,7 @@ _AUDIT_ORDER = (
     "pattern_bm", "pattern_bn", "pattern_bo", "pattern_bp",
     "pattern_bq", "pattern_br", "pattern_bs", "pattern_bt",
     "pattern_bu", "pattern_bv", "pattern_bw", "pattern_bx",
+    "pattern_by",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -41167,6 +41311,7 @@ _AUDIT_LABELS = {
     "pattern_bv": "Pattern BV (thrash guardrail per-applier wireup)",
     "pattern_bw": "Pattern BW (per-store thrash guardrail)",
     "pattern_bx": "Pattern BX (empire guardrail-override row)",
+    "pattern_by": "Pattern BY (thrash block log chain)",
 }
 
 
@@ -50337,6 +50482,9 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "pattern-bx-audit":
         _cmd_pattern_bx_audit(args)
         return
+    if args.command == "pattern-by-audit":
+        _cmd_pattern_by_audit(args)
+        return
 
     if args.command == "autonomy-env":
         _cmd_autonomy_env(args)
@@ -50437,6 +50585,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "thrash-guardrail":
         _cmd_thrash_guardrail(args)
+        return
+    if args.command == "thrash-blocks":
+        _cmd_thrash_blocks(args)
         return
     if args.command == "autonomy-overview":
         _cmd_autonomy_overview(args)
