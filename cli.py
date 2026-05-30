@@ -4261,6 +4261,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="audit trail for why this is being armed",
     )
     autonomy_arm_p.add_argument(
+        "--force", action="store_true",
+        help=(
+            "W859: bypass the re-arm cooldown after an "
+            "auto-disarm (default refuses for "
+            "SHOPAI_AUTO_DISARM_COOLDOWN_HOURS hours)"
+        ),
+    )
+    autonomy_arm_p.add_argument(
         "--json", action="store_true",
     )
 
@@ -33421,10 +33429,12 @@ def _cmd_autonomy_status(args) -> None:
 def _cmd_autonomy_arm(args) -> None:
     """Wave 812: arm a domain so cycle fires its appliers."""
     from core.automation.autonomy_armed import (
-        DOMAIN_APPLY_FLAGS, arm, firing_mode_for_domain,
+        ArmCooldownError, DOMAIN_APPLY_FLAGS, arm,
+        firing_mode_for_domain,
     )
     domain = (getattr(args, "domain", "") or "").strip()
     reason = (getattr(args, "reason", "") or "").strip()
+    force = bool(getattr(args, "force", False))
     as_json = bool(getattr(args, "json", False))
     if domain not in DOMAIN_APPLY_FLAGS:
         msg = (
@@ -33436,7 +33446,26 @@ def _cmd_autonomy_arm(args) -> None:
         else:
             print(f"ERROR: {msg}")
         sys.exit(1)
-    entry = arm(domain, reason=reason)
+    try:
+        entry = arm(domain, reason=reason, force=force)
+    except ArmCooldownError as cd:
+        msg = (
+            f"re-arm blocked: {cd.domain} was auto-"
+            f"disarmed recently; "
+            f"cooldown {cd.hours_remaining:.1f}h remaining. "
+            "Re-run with --force to override."
+        )
+        if as_json:
+            print(json.dumps({
+                "ok": False,
+                "error": msg,
+                "cooldown_remaining_hours": (
+                    cd.hours_remaining
+                ),
+            }))
+        else:
+            print(f"ERROR: {msg}")
+        sys.exit(2)
     flags = DOMAIN_APPLY_FLAGS[domain]
     mode = firing_mode_for_domain(domain)
     if as_json:

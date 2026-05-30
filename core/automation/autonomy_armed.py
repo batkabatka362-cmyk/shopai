@@ -157,17 +157,75 @@ def list_armed() -> list[ArmedEntry]:
     return list(_load_state().entries)
 
 
-def arm(domain: str, reason: str = "") -> ArmedEntry:
+class ArmCooldownError(RuntimeError):
+    """Raised by ``arm`` when ``force=False`` and the domain
+    was auto-disarmed within the cooldown window."""
+
+    def __init__(
+        self,
+        domain: str,
+        hours_remaining: float,
+    ) -> None:
+        super().__init__(
+            f"{domain!r} was auto-disarmed recently; "
+            f"cooldown {hours_remaining:.1f}h remaining. "
+            "Pass force=True (CLI: --force) to override."
+        )
+        self.domain = domain
+        self.hours_remaining = hours_remaining
+
+
+def _cooldown_hours() -> float:
+    raw = os.environ.get(
+        "SHOPAI_AUTO_DISARM_COOLDOWN_HOURS", "12.0",
+    )
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 12.0
+
+
+def arm(
+    domain: str,
+    reason: str = "",
+    *,
+    force: bool = False,
+) -> ArmedEntry:
     """Arm the given domain. Idempotent.
 
     Returns the resulting entry (existing if already armed, else
     a freshly-created one). Raises ValueError on unknown domain.
+
+    W859: when ``force=False`` (default), refuses to arm a
+    domain that was auto-disarmed within the last
+    ``SHOPAI_AUTO_DISARM_COOLDOWN_HOURS`` (default 12) hours.
+    Raises ``ArmCooldownError`` with the remaining cooldown.
+    ``force=True`` bypasses the check (operator override).
     """
     if domain not in DOMAIN_APPLY_FLAGS:
         raise ValueError(
             f"unknown autonomy domain: {domain!r} "
             f"(known: {sorted(DOMAIN_APPLY_FLAGS)})"
         )
+    if not force:
+        try:
+            from core.automation.substrate_fire_disarm_log import (  # noqa
+                last_disarm_at,
+            )
+            last = last_disarm_at(domain)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "arm: disarm-log check raised: %s", exc,
+            )
+            last = None
+        if last is not None:
+            cooldown = _cooldown_hours()
+            elapsed = (time.time() - last) / 3600.0
+            if elapsed < cooldown:
+                raise ArmCooldownError(
+                    domain=domain,
+                    hours_remaining=cooldown - elapsed,
+                )
     state = _load_state()
     existing = state.get(domain)
     if existing is not None:

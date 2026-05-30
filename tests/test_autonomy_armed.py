@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from core.automation.autonomy_armed import (
+    ArmCooldownError,
     DOMAIN_APPLY_FLAGS,
     DOMAIN_FIRING_MODE,
     ArmedEntry,
@@ -174,6 +175,59 @@ class TestArmDisarm:
         assert names == [
             "marketing", "shipping_alert", "inventory",
         ]
+
+
+class TestArmCooldown:
+    """W859: post-auto-disarm cooldown blocks re-arm."""
+
+    def test_no_recent_disarm_arm_succeeds(self):
+        from unittest.mock import patch
+        with patch(
+            "core.automation.substrate_fire_disarm_log."
+            "last_disarm_at",
+            return_value=None,
+        ):
+            e = arm("shipping_alert", reason="ok")
+        assert e.domain == "shipping_alert"
+
+    def test_recent_disarm_blocks_arm(self):
+        import time as _time
+        from unittest.mock import patch
+        # Auto-disarmed 1h ago; default cooldown 12h
+        with patch(
+            "core.automation.substrate_fire_disarm_log."
+            "last_disarm_at",
+            return_value=_time.time() - 3600.0,
+        ):
+            with pytest.raises(ArmCooldownError) as exc_info:
+                arm("shipping_alert", reason="too soon")
+        assert exc_info.value.hours_remaining > 10.0
+        assert exc_info.value.hours_remaining <= 12.0
+
+    def test_old_disarm_does_not_block(self):
+        import time as _time
+        from unittest.mock import patch
+        # Auto-disarmed 100h ago; outside cooldown
+        with patch(
+            "core.automation.substrate_fire_disarm_log."
+            "last_disarm_at",
+            return_value=_time.time() - 100 * 3600.0,
+        ):
+            e = arm("shipping_alert", reason="ok")
+        assert e.domain == "shipping_alert"
+
+    def test_force_bypasses_cooldown(self):
+        import time as _time
+        from unittest.mock import patch
+        with patch(
+            "core.automation.substrate_fire_disarm_log."
+            "last_disarm_at",
+            return_value=_time.time() - 60.0,
+        ):
+            e = arm(
+                "shipping_alert", reason="ovr", force=True,
+            )
+        assert e.domain == "shipping_alert"
 
 
 class TestArmedStateDataclass:
