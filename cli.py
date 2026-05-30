@@ -4345,6 +4345,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Treat pending wireups as hard fails.",
     )
 
+    # Wave 926: thrash guardrail status CLI
+    thrash_guardrail_p = sub.add_parser(
+        "thrash-guardrail",
+        help=(
+            "Wave 926: show current thrash guardrail state "
+            "(fleet + per-store override)."
+        ),
+    )
+    thrash_guardrail_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -35360,6 +35372,78 @@ def _cmd_autonomy_overview_history(args) -> None:
         )
 
 
+def _cmd_thrash_guardrail(args) -> None:
+    """Wave 926: thrash guardrail state across fleet."""
+    import os as _os
+    from engines._agi_context import thrash_guardrail_enabled
+    as_json = bool(getattr(args, "json", False))
+
+    fleet_on = thrash_guardrail_enabled()
+    sm = _get_store_manager()
+    stores: list[dict] = []
+    try:
+        for s in sm.list_stores() or []:
+            sid = getattr(s, "store_id", None) or s.get(
+                "store_id",
+            ) if isinstance(s, dict) else s.store_id
+            per_store_key = (
+                f"SHOPAI_THRASH_GUARDRAIL_"
+                f"{sid.upper().replace('-', '_')}"
+            )
+            per_store_raw = _os.environ.get(per_store_key, "")
+            effective = thrash_guardrail_enabled(sid)
+            stores.append({
+                "store_id": sid,
+                "per_store_env": per_store_key,
+                "per_store_raw": per_store_raw,
+                "effective": effective,
+            })
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("thrash-guardrail list raised: %s", exc)
+
+    if as_json:
+        print(json.dumps({
+            "fleet_env": "SHOPAI_THRASH_GUARDRAIL",
+            "fleet_raw": _os.environ.get(
+                "SHOPAI_THRASH_GUARDRAIL", "",
+            ),
+            "fleet_effective": fleet_on,
+            "stores": stores,
+        }, indent=2, default=str))
+        return
+
+    fleet_mark = "[ON ]" if fleet_on else "[OFF]"
+    print(f"Thrash guardrail status:")
+    print()
+    print(
+        f"  Fleet:  {fleet_mark}  "
+        f"SHOPAI_THRASH_GUARDRAIL="
+        f"{_os.environ.get('SHOPAI_THRASH_GUARDRAIL', '') or '(unset)'}"
+    )
+    if not stores:
+        print(
+            "    (no stores registered; per-store overrides "
+            "N/A)"
+        )
+    else:
+        print()
+        print(f"  Per-store:")
+        for s in stores:
+            mark = "[ON ]" if s["effective"] else "[OFF]"
+            override = s["per_store_raw"] or "(inherits fleet)"
+            print(
+                f"    {mark}  {s['store_id']:<24}  "
+                f"override={override}"
+            )
+    print()
+    print(
+        "  Set per-store override:"
+    )
+    print(
+        "    $env:SHOPAI_THRASH_GUARDRAIL_<STORE>=1"
+    )
+
+
 def _cmd_autonomy_alerts(args) -> None:
     """Wave 850: substrate-fire degradation alerts."""
     from core.automation.substrate_fire_alerts import (
@@ -50158,6 +50242,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "autonomy-alerts":
         _cmd_autonomy_alerts(args)
+        return
+    if args.command == "thrash-guardrail":
+        _cmd_thrash_guardrail(args)
         return
     if args.command == "autonomy-overview":
         _cmd_autonomy_overview(args)
