@@ -4585,6 +4585,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Bucket size for --thrash (default 1h).",
     )
     autonomy_overview_history_p.add_argument(
+        "--above-threshold", action="store_true",
+        help=(
+            "Wave 912: filter --thrash output to "
+            "elevated/thrashing buckets only."
+        ),
+    )
+    autonomy_overview_history_p.add_argument(
         "--json", action="store_true",
     )
 
@@ -10301,7 +10308,9 @@ def _cmd_empire(args) -> None:
     except Exception:  # noqa: BLE001
         autonomy_block = None
 
-    # Wave 910: verdict-flip thrash block
+    # Wave 910: verdict-flip thrash block.
+    # Wave 913: per-store breakdown -- surfaces only stores
+    # whose verdict is NOT calm.
     thrash_block: dict | None = None
     try:
         from core.automation.autonomy_overview_thrash import (
@@ -10312,7 +10321,23 @@ def _cmd_empire(args) -> None:
             "verdict": rep.verdict,
             "total_flips": rep.total_flips,
             "peak_flips": rep.peak_flips,
+            "per_store": [],
         }
+        for s in stores_list:
+            try:
+                srep = compute_thrash(
+                    window_hours=24.0,
+                    store_id=s["store_id"],
+                )
+                if srep.verdict != "calm":
+                    thrash_block["per_store"].append({
+                        "store_id": s["store_id"],
+                        "verdict": srep.verdict,
+                        "total_flips": srep.total_flips,
+                        "peak_flips": srep.peak_flips,
+                    })
+            except Exception:  # noqa: BLE001
+                continue
     except Exception:  # noqa: BLE001
         thrash_block = None
 
@@ -10588,23 +10613,48 @@ def _cmd_empire(args) -> None:
 
     # Wave 910: verdict-flip thrash inline. Surfaces ONLY
     # when verdict != calm (consistent with daily-brief).
+    # Wave 913: also lists any per-store thrash.
     try:
-        if thrash_block and thrash_block.get("verdict") not in (
-            None, "calm",
-        ):
-            tmk = {
-                "elevated": "[WRN]",
-                "thrashing": "[BAD]",
-            }.get(thrash_block["verdict"], "[ ? ]")
-            print(
-                f"    thrash:             {tmk} "
-                f"verdict={thrash_block['verdict']}  "
-                f"peak={thrash_block['peak_flips']}/h  "
-                f"total={thrash_block['total_flips']}/24h"
+        any_per_store = bool(
+            thrash_block and thrash_block.get("per_store")
+        )
+        fleet_thrash = (
+            thrash_block
+            and thrash_block.get("verdict") not in (
+                None, "calm",
             )
+        )
+        if fleet_thrash or any_per_store:
+            if fleet_thrash:
+                tmk = {
+                    "elevated": "[WRN]",
+                    "thrashing": "[BAD]",
+                }.get(thrash_block["verdict"], "[ ? ]")
+                print(
+                    f"    thrash:             {tmk} "
+                    f"verdict={thrash_block['verdict']}  "
+                    f"peak={thrash_block['peak_flips']}/h  "
+                    f"total="
+                    f"{thrash_block['total_flips']}/24h"
+                )
+            if any_per_store:
+                ps = thrash_block["per_store"]
+                stores_str = ", ".join(
+                    f"{p['store_id']}({p['verdict']})"
+                    for p in ps[:3]
+                )
+                more = (
+                    f" +{len(ps) - 3} more"
+                    if len(ps) > 3 else ""
+                )
+                print(
+                    f"    thrash per-store:   [WRN] "
+                    f"{len(ps)} store(s): "
+                    f"{stores_str}{more}"
+                )
             print(
                 "    -> shopai autonomy-overview-history "
-                "--thrash"
+                "--thrash [--store X]"
             )
     except Exception as exc:  # noqa: BLE001
         logger.debug("empire thrash block raised: %s", exc)
@@ -35003,6 +35053,7 @@ def _cmd_autonomy_overview_history(args) -> None:
     transitions_only = bool(getattr(args, "transitions", False))
     thrash_view = bool(getattr(args, "thrash", False))
     bucket_h = float(getattr(args, "bucket_hours", 1.0) or 1.0)
+    above_only = bool(getattr(args, "above_threshold", False))
 
     if thrash_view:
         from core.automation.autonomy_overview_thrash import (
@@ -35015,6 +35066,11 @@ def _cmd_autonomy_overview_history(args) -> None:
             bucket_hours=bucket_h,
             store_id=store or None,
         )
+        bucket_iter = (
+            [b for b in rep.buckets if b.density_label
+             in ("elevated", "thrashing")]
+            if above_only else rep.buckets
+        )
         if as_json:
             print(json.dumps({
                 "store_id": rep.store_id,
@@ -35023,6 +35079,7 @@ def _cmd_autonomy_overview_history(args) -> None:
                 "verdict": rep.verdict,
                 "total_flips": rep.total_flips,
                 "peak_flips": rep.peak_flips,
+                "above_threshold": above_only,
                 "buckets": [
                     {
                         "start_at": b.start_at,
@@ -35031,7 +35088,7 @@ def _cmd_autonomy_overview_history(args) -> None:
                         "density_label": b.density_label,
                         "verdict_sequence": b.verdict_sequence,
                     }
-                    for b in rep.buckets
+                    for b in bucket_iter
                 ],
             }, indent=2, default=str))
             return
@@ -35045,12 +35102,28 @@ def _cmd_autonomy_overview_history(args) -> None:
         if not rep.buckets:
             print("  (no history yet)")
             return
-        nonzero = [b for b in rep.buckets if b.flip_count > 0]
-        if not nonzero:
-            print(
-                "  (steady-state; no flips in window)"
-            )
-            return
+        if above_only:
+            nonzero = [
+                b for b in rep.buckets
+                if b.density_label in (
+                    "elevated", "thrashing",
+                )
+            ]
+            if not nonzero:
+                print(
+                    "  (no elevated/thrashing buckets in "
+                    "window)"
+                )
+                return
+        else:
+            nonzero = [
+                b for b in rep.buckets if b.flip_count > 0
+            ]
+            if not nonzero:
+                print(
+                    "  (steady-state; no flips in window)"
+                )
+                return
         print(
             f"{'when':<17} {'flips':>5}  density"
         )
