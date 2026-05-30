@@ -4074,6 +4074,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_av_p.add_argument("--json", action="store_true")
 
+    # Wave 826: Pattern AW audit (discoverer return-shape)
+    pattern_aw_p = sub.add_parser(
+        "pattern-aw-audit",
+        help=(
+            "Wave 826: invoke every discoverer + verify the "
+            "return shape (DiscoveryResult, domain match, "
+            "list[dict] payload, non-empty source)."
+        ),
+    )
+    pattern_aw_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -30342,6 +30353,40 @@ def _cmd_pattern_as_audit(args) -> None:
         )
 
 
+def _cmd_pattern_aw_audit(args) -> None:
+    """Wave 826: discoverer return-shape parity."""
+    from engines._pattern_aw_audit import run_pattern_aw_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_aw_audit()
+    if as_json:
+        print(json.dumps({
+            "discoverers_scanned": report.discoverers_scanned,
+            "clean_discoverers": report.clean_discoverers,
+            "violations": [
+                {"domain": v.domain, "reason": v.reason}
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern AW FAILED -- "
+            f"{len(report.violations)} drift(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.domain}] {v.reason}")
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern AW OK -- "
+            f"{len(report.clean_discoverers)} discoverer(s) "
+            "return shape contracts honored."
+        )
+
+
 def _cmd_pattern_av_audit(args) -> None:
     """Wave 823: discoverer ownership parity."""
     from engines._pattern_av_audit import run_pattern_av_audit
@@ -37494,6 +37539,19 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_aw":
+            from engines._pattern_aw_audit import (
+                run_pattern_aw_audit,
+            )
+            r = run_pattern_aw_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_discoverers": r.clean_discoverers,
+                "violations": [
+                    {"domain": v.domain, "reason": v.reason}
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -37514,7 +37572,7 @@ _AUDIT_ORDER = (
     "pattern_aj", "pattern_ak", "pattern_al", "pattern_am",
     "pattern_an", "pattern_ao", "pattern_ap", "pattern_aq",
     "pattern_ar", "pattern_as", "pattern_at", "pattern_au",
-    "pattern_av",
+    "pattern_av", "pattern_aw",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -37560,6 +37618,7 @@ _AUDIT_LABELS = {
     "pattern_at": "Pattern AT (template double-brace lint)",
     "pattern_au": "Pattern AU (autonomy_fire catalog parity)",
     "pattern_av": "Pattern AV (discoverer ownership parity)",
+    "pattern_aw": "Pattern AW (discoverer return-shape)",
 }
 
 
@@ -46626,6 +46685,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-av-audit":
         _cmd_pattern_av_audit(args)
+        return
+
+    if args.command == "pattern-aw-audit":
+        _cmd_pattern_aw_audit(args)
         return
 
     if args.command == "autonomy-env":
