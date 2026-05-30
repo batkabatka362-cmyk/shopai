@@ -171,6 +171,79 @@ class TestArmedSubstrateWithDiscoverer:
         assert r.outcomes == []
 
 
+class TestPerStoreArmedFire:
+    """W872: per-store armed entries fire only on matching store."""
+
+    def test_per_store_armed_only_fires_for_that_store(
+        self, _disable_pytest_guards, monkeypatch,
+    ):
+        from core.automation.autonomy_armed import arm
+        from core.automation.payload_discoverer import (
+            register_discoverer,
+        )
+        monkeypatch.setenv(
+            "SHOPAI_AUTONOMY_FIRE_CONFIRM", "1",
+        )
+        arm(
+            "shipping_alert", reason="per",
+            store_id="store-1",
+        )
+        # Register a discoverer that returns one payload row
+        register_discoverer(
+            "shipping_alert",
+            lambda *, store_id=None: DiscoveryResult(
+                domain="shipping_alert",
+                payload=[{"order_id": "x"}],
+                source="test",
+                store_id=store_id,
+            ),
+        )
+        # Calling with store-2 -> no match -> empty outcomes
+        r1 = fire_armed_substrate_domains(store_id="store-2")
+        assert r1.outcomes == []
+        # Calling with store-1 -> match
+        r2 = fire_armed_substrate_domains(store_id="store-1")
+        # Should fire shipping_alert for store-1
+        assert any(
+            o.domain == "shipping_alert"
+            for o in r2.outcomes
+        )
+
+    def test_fleet_call_walks_every_armed_entry(
+        self, _disable_pytest_guards, monkeypatch,
+    ):
+        from core.automation.autonomy_armed import arm
+        from core.automation.payload_discoverer import (
+            register_discoverer,
+        )
+        monkeypatch.setenv(
+            "SHOPAI_AUTONOMY_FIRE_CONFIRM", "1",
+        )
+        arm(
+            "shipping_alert", reason="fleet",
+            # no store_id -> fleet-wide entry
+        )
+        arm(
+            "shipping_alert", reason="per",
+            store_id="store-1",
+        )
+        register_discoverer(
+            "shipping_alert",
+            lambda *, store_id=None: DiscoveryResult(
+                domain="shipping_alert",
+                payload=[{"order_id": "x"}],
+                source="test",
+                store_id=store_id,
+            ),
+        )
+        # Fleet-wide invocation iterates BOTH entries
+        r = fire_armed_substrate_domains()
+        assert len(r.outcomes) == 2
+        store_ids = {o.store_id for o in r.outcomes}
+        assert None in store_ids or "" in store_ids
+        assert "store-1" in store_ids
+
+
 class TestReportDataclass:
 
     def test_empty_report_aggregates_to_zero(self):

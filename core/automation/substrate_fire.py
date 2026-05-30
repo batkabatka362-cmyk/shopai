@@ -107,18 +107,35 @@ def fire_armed_substrate_domains(
         )
         return report
 
-    for entry in list_armed():
+    # W872: when store_id is supplied, narrow to that store's
+    # armed entries (exact match). When None/empty, walk every
+    # armed entry (fleet-wide + per-store) -- legacy fleet-
+    # wide invocation continues to work.
+    if store_id:
+        armed_iter = list_armed(store_id=store_id)
+    else:
+        armed_iter = list_armed()
+    for entry in armed_iter:
         domain = entry.domain
         if DOMAIN_FIRING_MODE.get(domain) != "substrate":
             continue
+        # W872: per-store fire uses the ARMED entry's store_id
+        # when the bridge wasn't given an explicit one. Lets
+        # fleet-wide calls discover per-store entries
+        # automatically.
+        effective_sid = store_id or entry.store_id or ""
         outcome = SubstrateFireOutcome(
-            domain=domain, store_id=store_id,
+            domain=domain,
+            store_id=effective_sid or None,
         )
         if not has_discoverer(domain):
             outcome.reason = "no_discoverer"
             report.outcomes.append(outcome)
             continue
-        disc = discover(domain, store_id=store_id)
+        disc = discover(
+            domain,
+            store_id=effective_sid or None,
+        )
         if not disc.ok:
             outcome.reason = "discoverer_error"
             outcome.error = disc.error
@@ -133,8 +150,11 @@ def fire_armed_substrate_domains(
             outcome.reason = "dry_run"
             report.outcomes.append(outcome)
             continue
-        # Live invocation
+        # Live invocation (per-store payload + outcome)
         fr = fire(domain, disc.payload, dry_run=False)
+        # W872: attach the effective store scope so the W858
+        # disarm log + W853 alert history carry per-store
+        # attribution.
         outcome.invoked = fr.invoked
         outcome.events = len(fr.events) if fr.events else 0
         outcome.duration_ms = fr.duration_ms
@@ -145,10 +165,15 @@ def fire_armed_substrate_domains(
             outcome.reason = "fired"
         report.outcomes.append(outcome)
 
-    # W840: persist actionable outcomes to the log.
+    # W840 + W872: persist actionable outcomes to the log.
+    # Use the outcome's own store_id when set (per-store
+    # entry); fall back to the bridge-level store_id.
     for outcome in report.outcomes:
         try:
-            record_substrate_fire(outcome, store_id=store_id)
+            record_substrate_fire(
+                outcome,
+                store_id=outcome.store_id or store_id,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "substrate_fire log raised for %s: %s",
