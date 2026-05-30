@@ -4321,6 +4321,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_bt_p.add_argument("--json", action="store_true")
 
+    # Wave 916: Pattern BU (thrash guardrail substrate)
+    pattern_bu_p = sub.add_parser(
+        "pattern-bu-audit",
+        help=(
+            "Wave 916: verify thrash guardrail substrate "
+            "contract (enabled / block / explain)."
+        ),
+    )
+    pattern_bu_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -31528,6 +31538,43 @@ def _cmd_pattern_bt_audit(args) -> None:
         )
 
 
+def _cmd_pattern_bu_audit(args) -> None:
+    """Wave 916: thrash guardrail substrate."""
+    from engines._pattern_bu_audit import run_pattern_bu_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_bu_audit()
+    if as_json:
+        print(json.dumps({
+            "invariants_checked": report.invariants_checked,
+            "clean_invariants": report.clean_invariants,
+            "violations": [
+                {
+                    "invariant": v.invariant,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern BU FAILED -- "
+            f"{len(report.violations)} broken link(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.invariant}] {v.reason}")
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern BU OK -- "
+            f"{len(report.clean_invariants)} thrash guardrail "
+            "substrate link(s) honored."
+        )
+
+
 def _cmd_pattern_bn_audit(args) -> None:
     """Wave 893: autonomy-overview output schema."""
     from engines._pattern_bn_audit import run_pattern_bn_audit
@@ -40659,6 +40706,22 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_bu":
+            from engines._pattern_bu_audit import (
+                run_pattern_bu_audit,
+            )
+            r = run_pattern_bu_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_invariants": r.clean_invariants,
+                "violations": [
+                    {
+                        "invariant": v.invariant,
+                        "reason": v.reason,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -40685,6 +40748,7 @@ _AUDIT_ORDER = (
     "pattern_bh", "pattern_bi", "pattern_bj", "pattern_bk",
     "pattern_bm", "pattern_bn", "pattern_bo", "pattern_bp",
     "pattern_bq", "pattern_br", "pattern_bs", "pattern_bt",
+    "pattern_bu",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -40753,6 +40817,7 @@ _AUDIT_LABELS = {
     "pattern_br": "Pattern BR (autonomy-overview thrash chain)",
     "pattern_bs": "Pattern BS (empire+per-store thrash surface)",
     "pattern_bt": "Pattern BT (thrash noise filter + empire per-store)",
+    "pattern_bu": "Pattern BU (thrash guardrail substrate)",
 }
 
 
@@ -49910,6 +49975,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "pattern-bt-audit":
         _cmd_pattern_bt_audit(args)
+        return
+    if args.command == "pattern-bu-audit":
+        _cmd_pattern_bu_audit(args)
         return
 
     if args.command == "autonomy-env":
