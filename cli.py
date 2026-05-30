@@ -33567,11 +33567,21 @@ def _cmd_autonomy_status(args) -> None:
         from core.automation.autonomy_armed import (
             DOMAIN_FIRING_MODE, list_armed,
         )
-        _armed_set = {e.domain for e in list_armed()}
+        # W873: track per-store armed entries so each row can
+        # show "+N stores" annotation when scopes exist.
+        _armed_entries = list_armed()
+        _armed_set = {e.domain for e in _armed_entries}
+        _armed_stores_per_domain: dict[str, set[str]] = {}
+        for _e in _armed_entries:
+            if _e.store_id:
+                _armed_stores_per_domain.setdefault(
+                    _e.domain, set(),
+                ).add(_e.store_id)
         _mode_map = dict(DOMAIN_FIRING_MODE)
     except Exception as exc:  # noqa: BLE001
         logger.debug("autonomy-status mode probe raised: %s", exc)
         _armed_set, _mode_map = set(), {}
+        _armed_stores_per_domain = {}
     try:
         from core.automation import (  # noqa: F401
             discoverer_registry,
@@ -33655,12 +33665,17 @@ def _cmd_autonomy_status(args) -> None:
             f"  cooldown={cooldown_h:.1f}h"
             if cooldown_h is not None else ""
         )
+        # W873: per-store armed-entry annotation
+        stores = _armed_stores_per_domain.get(d.name)
+        store_col = (
+            f"  stores={len(stores)}" if stores else ""
+        )
         print(
             f"    {dmk} {arm_badge} {disc_badge} "
             f"{d.name:<18} "
             f"verdict={d.verdict:<10} "
             f"applied={d.applied_count}  "
-            f"{fire_col}{cooldown_col}"
+            f"{fire_col}{cooldown_col}{store_col}"
         )
     print()
     print(
