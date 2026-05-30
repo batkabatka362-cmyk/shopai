@@ -408,6 +408,52 @@ class TestPerStoreScope:
         assert e1.armed_at == e2.armed_at  # same entry
 
 
+class TestPerStoreCooldown:
+    """W876: per-store cooldown scoped to (domain, store)."""
+
+    def test_per_store_disarm_blocks_only_that_store(self):
+        import time as _time
+        from unittest.mock import patch
+
+        def _fake_last(domain, store_id=None):
+            if store_id == "store-1":
+                return _time.time() - 3600.0
+            return None
+
+        with patch(
+            "core.automation.substrate_fire_disarm_log."
+            "last_disarm_at",
+            side_effect=_fake_last,
+        ):
+            with pytest.raises(ArmCooldownError):
+                arm(
+                    "shipping_alert", reason="too soon",
+                    store_id="store-1",
+                )
+            e = arm(
+                "shipping_alert", reason="fresh",
+                store_id="store-2",
+            )
+            assert e.store_id == "store-2"
+
+    def test_fleet_arm_checks_any_scope_disarm(self):
+        import time as _time
+        from unittest.mock import patch
+
+        def _fake_last(domain, store_id=None):
+            return _time.time() - 3600.0
+
+        with patch(
+            "core.automation.substrate_fire_disarm_log."
+            "last_disarm_at",
+            side_effect=_fake_last,
+        ):
+            with pytest.raises(ArmCooldownError):
+                arm(
+                    "shipping_alert", reason="fleet",
+                )
+
+
 class TestArmedStateDataclass:
 
     def test_empty_state_no_armed(self):

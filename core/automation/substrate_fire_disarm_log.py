@@ -106,13 +106,21 @@ def disarm_log_size() -> int:
     return _log_size(_LOG_PATH)
 
 
-def last_disarm_at(domain: str) -> float | None:
+def last_disarm_at(
+    domain: str,
+    store_id: str | None = None,
+) -> float | None:
     """Return the UNIX timestamp of the most-recent
     ``disarmed=True`` decision for ``domain``, or None if
-    never auto-disarmed."""
+    never auto-disarmed.
+
+    W876: when ``store_id`` is supplied, narrows to that
+    store. None (default) keeps W858 behavior (any scope wins,
+    used by the global cooldown chain)."""
     rows = recent_disarms(
         window_hours=24 * 365.0,  # effectively unbounded
         domain=domain,
+        store_id=store_id,
         only_disarmed=True,
     )
     if not rows:

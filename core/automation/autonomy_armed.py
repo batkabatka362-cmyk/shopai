@@ -264,7 +264,14 @@ def arm(
             from core.automation.substrate_fire_disarm_log import (  # noqa
                 last_disarm_at,
             )
-            last = last_disarm_at(domain)
+            # W876: per-store arm queries per-store cooldown.
+            # Fleet-wide arm (sid="") passes None to match the
+            # W858 behaviour where any-scope disarm blocks
+            # fleet re-arm.
+            last = last_disarm_at(
+                domain,
+                store_id=sid if sid else None,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "arm: disarm-log check raised: %s", exc,
