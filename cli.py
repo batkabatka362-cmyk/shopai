@@ -4359,6 +4359,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 863: clear cooldown for a domain (operator nuclear)
+    autonomy_cooldown_clear_p = sub.add_parser(
+        "autonomy-cooldown-clear",
+        help=(
+            "Wave 863: wipe a domain's auto-disarm history "
+            "(zeroes the W859 cooldown). Operator override "
+            "after confirming the underlying issue is fixed."
+        ),
+    )
+    autonomy_cooldown_clear_p.add_argument(
+        "domain", type=str,
+        help="domain whose cooldown to clear",
+    )
+    autonomy_cooldown_clear_p.add_argument(
+        "--yes", action="store_true",
+        help="confirm the destructive history wipe",
+    )
+    autonomy_cooldown_clear_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 860: auto-disarm history
     autonomy_disarm_hist_p = sub.add_parser(
         "autonomy-disarm-history",
@@ -33921,6 +33942,56 @@ def _cmd_autonomy_kpi(args) -> None:
         )
 
 
+def _cmd_autonomy_cooldown_clear(args) -> None:
+    """Wave 863: wipe a domain's auto-disarm history."""
+    from core.automation.autonomy_armed import (
+        DOMAIN_APPLY_FLAGS,
+    )
+    from core.automation.substrate_fire_disarm_log import (
+        clear_history,
+    )
+    domain = (getattr(args, "domain", "") or "").strip()
+    confirmed = bool(getattr(args, "yes", False))
+    as_json = bool(getattr(args, "json", False))
+    if domain not in DOMAIN_APPLY_FLAGS:
+        msg = (
+            f"unknown domain: {domain!r}. Known: "
+            f"{', '.join(sorted(DOMAIN_APPLY_FLAGS))}"
+        )
+        if as_json:
+            print(json.dumps({"ok": False, "error": msg}))
+        else:
+            print(f"ERROR: {msg}")
+        sys.exit(1)
+    if not confirmed:
+        msg = (
+            "cooldown-clear is destructive. Re-run with --yes "
+            "to wipe the auto-disarm history for "
+            f"{domain!r}."
+        )
+        if as_json:
+            print(json.dumps({"ok": False, "error": msg}))
+        else:
+            print(f"ERROR: {msg}")
+        sys.exit(1)
+    removed = clear_history(domain)
+    if as_json:
+        print(json.dumps({
+            "ok": True,
+            "domain": domain,
+            "removed_rows": removed,
+        }, indent=2))
+        return
+    print(
+        f"Cleared auto-disarm history for {domain}: "
+        f"{removed} row(s) removed."
+    )
+    if removed == 0:
+        print(
+            "  (No history to clear; cooldown was already 0.)"
+        )
+
+
 def _cmd_autonomy_disarm_history(args) -> None:
     """Wave 860: auto-disarm decision history."""
     from core.automation.substrate_fire_disarm_log import (
@@ -48128,6 +48199,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "autonomy-disarm-history":
         _cmd_autonomy_disarm_history(args)
+        return
+    if args.command == "autonomy-cooldown-clear":
+        _cmd_autonomy_cooldown_clear(args)
         return
     if args.command == "autonomy-kpi":
         _cmd_autonomy_kpi(args)

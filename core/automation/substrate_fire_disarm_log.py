@@ -113,3 +113,25 @@ def last_disarm_at(domain: str) -> float | None:
         return None
     ts = rows[0].get("recorded_at")
     return float(ts) if isinstance(ts, (int, float)) else None
+
+
+def clear_history(domain: str) -> int:
+    """Remove every disarm-log row for ``domain``. Returns
+    the count of removed rows. Operator nuclear-option that
+    effectively zeroes the cooldown for ``domain``.
+
+    Pattern J test-env guard: under pytest the file write
+    short-circuits but the return value still reflects what
+    WOULD have been removed."""
+    from core.automation.action_log import (  # noqa
+        is_test_environment, load_log, save_log,
+    )
+    rows = load_log(_LOG_PATH)
+    keep = [
+        r for r in rows
+        if not isinstance(r, dict) or r.get("domain") != domain
+    ]
+    removed = len(rows) - len(keep)
+    if removed > 0 and not is_test_environment():
+        save_log(_LOG_PATH, keep)
+    return removed

@@ -156,6 +156,80 @@ class TestLastDisarmAt:
         assert ts == now
 
 
+class TestClearHistory:
+    """W863: operator nuclear-option to zero the cooldown."""
+
+    def test_no_history_returns_zero(self):
+        from core.automation.substrate_fire_disarm_log import (  # noqa
+            clear_history,
+        )
+        # Pattern J inherits from action_log so under pytest
+        # the load returns empty + return value is 0.
+        assert clear_history("shipping_alert") == 0
+
+    def test_pattern_j_no_write_under_pytest(self):
+        # Even with synthetic rows we don't persist; the
+        # load_log inside clear_history hits the empty real
+        # file under Pattern J + returns 0.
+        from core.automation.substrate_fire_disarm_log import (  # noqa
+            clear_history,
+        )
+        record_disarm_decisions([
+            FakeDecision(
+                domain="shipping_alert",
+                disarmed=True, would_disarm=True,
+                consecutive_days=5, threshold=3,
+            ),
+        ])
+        # Pattern J: above record didn't actually persist
+        # -> nothing to clear -> 0
+        assert clear_history("shipping_alert") == 0
+
+    def test_clear_works_with_real_log(self):
+        from unittest.mock import patch
+        fd, path = tempfile.mkstemp(
+            suffix="_clear_test.json",
+        )
+        try:
+            with patch(
+                "core.automation.action_log."
+                "is_test_environment",
+                return_value=False,
+            ), patch(
+                "core.automation.substrate_fire_disarm_log."
+                "_LOG_PATH",
+                Path(path),
+            ):
+                from core.automation import (
+                    substrate_fire_disarm_log as _l,
+                )
+                _l.record_disarm_decisions([
+                    FakeDecision(
+                        domain="shipping_alert",
+                        disarmed=True,
+                    ),
+                    FakeDecision(
+                        domain="catalog_quality",
+                        disarmed=True,
+                    ),
+                ])
+                removed = _l.clear_history("shipping_alert")
+                assert removed == 1
+                # Other domain untouched
+                remaining = _l.recent_disarms(
+                    window_hours=24.0,
+                )
+                assert len(remaining) == 1
+                assert remaining[0]["domain"] == (
+                    "catalog_quality"
+                )
+        finally:
+            try:
+                Path(path).unlink()
+            except OSError:
+                pass
+
+
 class TestEntryDataclass:
 
     def test_defaults(self):
