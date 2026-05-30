@@ -40,15 +40,16 @@ _DEFAULT_LIMIT = 100
 _THIN_DESC_CHARS = 80
 
 
-def _limit() -> int:
-    raw = os.environ.get(
-        "SHOPAI_CATALOG_QUALITY_DISCOVER_LIMIT",
-        str(_DEFAULT_LIMIT),
+def _limit(store_id: str | None = None) -> int:
+    """W881: per-store override via
+    SHOPAI_CATALOG_QUALITY_DISCOVER_LIMIT_<STORE>."""
+    from core.automation.discoverer_env import resolve_int
+    return resolve_int(
+        _DOMAIN, "LIMIT",
+        default=_DEFAULT_LIMIT,
+        store_id=store_id,
+        min_value=1,
     )
-    try:
-        return max(1, int(raw))
-    except (TypeError, ValueError):
-        return _DEFAULT_LIMIT
 
 
 def _classify_product(prod: dict[str, Any]) -> str | None:
@@ -91,7 +92,9 @@ def _classify_product(prod: dict[str, Any]) -> str | None:
     return "shopai-quality-validated"
 
 
-def _fetch_products() -> list[dict[str, Any]]:
+def _fetch_products(
+    store_id: str | None = None,
+) -> list[dict[str, Any]]:
     """Pull a page of products via SmartRouter. [] on
     unavailable."""
     try:
@@ -115,7 +118,7 @@ def _fetch_products() -> list[dict[str, Any]]:
     if cap is None:
         return []
     try:
-        res = router.execute(cap, {"limit": _limit()})
+        res = router.execute(cap, {"limit": _limit(store_id)})
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "catalog_quality discoverer: execute raised: %s",
@@ -136,7 +139,7 @@ def _fetch_products() -> list[dict[str, Any]]:
 def discover_catalog_quality(*, store_id: str | None = None) -> DiscoveryResult:
     now = time.time()
     try:
-        products = _fetch_products()
+        products = _fetch_products(store_id=store_id)
     except Exception as exc:  # noqa: BLE001
         return DiscoveryResult(
             domain=_DOMAIN,

@@ -130,7 +130,7 @@ class TestDiscover:
         assert r.payload == []
 
     def test_fetch_raise_captured(self):
-        def explode():
+        def explode(*args, **kwargs):
             raise RuntimeError("network down")
         with patch(
             "core.automation.discoverers.catalog_quality."

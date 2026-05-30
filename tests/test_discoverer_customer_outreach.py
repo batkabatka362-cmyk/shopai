@@ -143,7 +143,7 @@ class TestDiscover:
             assert p["action"] == "tag_outreach"
 
     def test_fetch_raise_captured(self):
-        def explode():
+        def explode(*args, **kwargs):
             raise RuntimeError("api down")
         with patch(
             "core.automation.discoverers.customer_outreach."

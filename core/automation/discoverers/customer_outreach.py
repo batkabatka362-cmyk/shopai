@@ -38,18 +38,35 @@ _DEFAULT_LIMIT = 200
 _DEFAULT_VIP_USD = 500.0
 
 
-def _limit() -> int:
-    raw = os.environ.get(
-        "SHOPAI_CUSTOMER_OUTREACH_DISCOVER_LIMIT",
-        str(_DEFAULT_LIMIT),
+def _limit(store_id: str | None = None) -> int:
+    """W881: per-store override via
+    SHOPAI_CUSTOMER_OUTREACH_DISCOVER_LIMIT_<STORE>."""
+    from core.automation.discoverer_env import resolve_int
+    return resolve_int(
+        _DOMAIN, "LIMIT",
+        default=_DEFAULT_LIMIT,
+        store_id=store_id,
+        min_value=1,
     )
-    try:
-        return max(1, int(raw))
-    except (TypeError, ValueError):
-        return _DEFAULT_LIMIT
 
 
-def _vip_threshold() -> float:
+def _vip_threshold(store_id: str | None = None) -> float:
+    """W881: per-store VIP threshold override via
+    SHOPAI_CUSTOMER_OUTREACH_VIP_USD_<STORE>.
+
+    Note: this knob doesn't follow the standard
+    DISCOVER_<KNOB> naming so it bypasses the resolver
+    helper and uses direct env lookup."""
+    sid = (store_id or "").upper().replace("-", "_")
+    if sid:
+        per_store = os.environ.get(
+            f"SHOPAI_CUSTOMER_OUTREACH_VIP_USD_{sid}", "",
+        )
+        if per_store:
+            try:
+                return float(per_store)
+            except (TypeError, ValueError):
+                pass
     raw = os.environ.get(
         "SHOPAI_CUSTOMER_OUTREACH_VIP_USD",
         str(_DEFAULT_VIP_USD),
@@ -115,7 +132,9 @@ def _classify_customer(
     return None
 
 
-def _fetch_customers() -> list[dict[str, Any]]:
+def _fetch_customers(
+    store_id: str | None = None,
+) -> list[dict[str, Any]]:
     try:
         from core.adapters.router import get_router  # noqa
         from core.adapters.base import Capability
@@ -137,7 +156,9 @@ def _fetch_customers() -> list[dict[str, Any]]:
     if cap is None:
         return []
     try:
-        res = router.execute(cap, {"limit": _limit()})
+        res = router.execute(
+            cap, {"limit": _limit(store_id)},
+        )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "customer_outreach discoverer: execute raised: %s",
@@ -158,7 +179,7 @@ def _fetch_customers() -> list[dict[str, Any]]:
 def discover_customer_outreach(*, store_id: str | None = None) -> DiscoveryResult:
     now = time.time()
     try:
-        customers = _fetch_customers()
+        customers = _fetch_customers(store_id=store_id)
     except Exception as exc:  # noqa: BLE001
         return DiscoveryResult(
             domain=_DOMAIN,
@@ -168,7 +189,7 @@ def discover_customer_outreach(*, store_id: str | None = None) -> DiscoveryResul
             store_id=store_id,
             error=f"fetch raised: {exc!s:.200}",
         )
-    vip_usd = _vip_threshold()
+    vip_usd = _vip_threshold(store_id)
     payload: list[dict] = []
     for c in customers:
         if not isinstance(c, dict):
