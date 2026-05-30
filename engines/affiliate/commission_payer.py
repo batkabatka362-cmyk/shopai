@@ -36,6 +36,10 @@ from typing import Any
 
 from utils.logger import get_logger
 
+from engines._agi_context import (
+    explain_thrash_block,
+    should_block_thrashing_store,
+)
 from engines._writeback_recorder import record_writeback
 
 logger = get_logger("engines.affiliate.payer")
@@ -90,6 +94,37 @@ def pay_commissions(
                 "gift_card_id": "",
                 "code": "",
                 "error": "router_unavailable",
+            }
+            for c in commissions
+        ]
+
+    # Wave 922: thrash guardrail (system-level kill switch).
+    # Commission payouts mint REAL gift cards -- real money
+    # out the door. Refuse during thrash; partner gets paid
+    # later when the loop stabilizes.
+    try:
+        from core.context import get_active_store_id
+        active_store_id = get_active_store_id()
+    except Exception:  # noqa: BLE001
+        active_store_id = None
+    if should_block_thrashing_store(active_store_id):
+        reason = explain_thrash_block(active_store_id)
+        record_writeback(
+            engine="affiliate",
+            action_type="pay_commission",
+            capability="SHOPIFY_CREATE_GIFT_CARD",
+            params={"commission_count": len(commissions)},
+            success=False,
+            error=reason,
+        )
+        return [
+            {
+                "partner_id": str(c.get("partner_id", "")),
+                "paid": False,
+                "amount": _safe_float(c.get("commission_amount")),
+                "gift_card_id": "",
+                "code": "",
+                "error": reason,
             }
             for c in commissions
         ]
