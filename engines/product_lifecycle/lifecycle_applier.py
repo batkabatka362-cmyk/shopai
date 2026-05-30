@@ -28,6 +28,10 @@ from typing import Any
 
 from utils.logger import get_logger
 
+from engines._agi_context import (
+    explain_thrash_block,
+    should_block_thrashing_store,
+)
 from engines._writeback_recorder import record_writeback
 
 logger = get_logger("engines.product_lifecycle.applier")
@@ -80,6 +84,36 @@ def archive_declining_products(
                 "stage": str(e.get("stage", "")),
                 "velocity": _safe_float(e.get("velocity")),
                 "error": "router_unavailable",
+            }
+            for e in lifecycle
+        ]
+
+    # Wave 923: thrash guardrail (system-level kill switch).
+    # Product archiving is a MODIFICATION-class writer (per
+    # CLAUDE.md risk taxonomy) -- refuse during thrash so an
+    # upstream race doesn't compound into mass-archiving.
+    try:
+        from core.context import get_active_store_id
+        active_store_id = get_active_store_id()
+    except Exception:  # noqa: BLE001
+        active_store_id = None
+    if should_block_thrashing_store(active_store_id):
+        reason = explain_thrash_block(active_store_id)
+        record_writeback(
+            engine="product_lifecycle",
+            action_type="archive_product",
+            capability="SHOPIFY_UPDATE_PRODUCT",
+            params={"lifecycle_count": len(lifecycle)},
+            success=False,
+            error=reason,
+        )
+        return [
+            {
+                "product_id": str(e.get("product_id", "")),
+                "archived": False,
+                "stage": str(e.get("stage", "")),
+                "velocity": _safe_float(e.get("velocity")),
+                "error": reason,
             }
             for e in lifecycle
         ]
