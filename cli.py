@@ -4256,6 +4256,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="domain to discover; omit to list all registered",
     )
     autonomy_discover_p.add_argument(
+        "--all", action="store_true",
+        help="run every registered discoverer + summary table",
+    )
+    autonomy_discover_p.add_argument(
         "--json", action="store_true",
     )
 
@@ -32983,7 +32987,8 @@ def _cmd_autonomy_armed(args) -> None:
 
 
 def _cmd_autonomy_discover(args) -> None:
-    """Wave 820: inspect + run payload discoverers."""
+    """Wave 820: inspect + run payload discoverers.
+    Wave 834: --all runs every discoverer + summary."""
     # Lazy-load every per-domain discoverer so they register.
     try:
         from core.automation import (  # noqa: F401
@@ -32995,7 +33000,59 @@ def _cmd_autonomy_discover(args) -> None:
         discover, has_discoverer, registered_domains,
     )
     domain = (getattr(args, "domain", "") or "").strip()
+    run_all = bool(getattr(args, "all", False))
     as_json = bool(getattr(args, "json", False))
+
+    if run_all:
+        regs = registered_domains()
+        results = [(d, discover(d)) for d in regs]
+        if as_json:
+            print(json.dumps({
+                "count": len(regs),
+                "domains": [
+                    {
+                        "domain": d,
+                        "ok": r.ok,
+                        "source": r.source,
+                        "payload_size": r.payload_size,
+                        "discovered_at": r.discovered_at,
+                        "error": r.error,
+                    }
+                    for d, r in results
+                ],
+                "total_payload_rows": sum(
+                    r.payload_size for _, r in results
+                ),
+                "failed_count": sum(
+                    1 for _, r in results if not r.ok
+                ),
+            }, indent=2, default=str))
+            return
+        print(
+            f"Autonomy discoverers ({len(regs)}):"
+        )
+        print()
+        print(
+            f"  {'domain':<22} {'status':<8} "
+            f"{'rows':>5}  source"
+        )
+        for d, r in results:
+            status = "OK" if r.ok else "ERR"
+            print(
+                f"  {d:<22} {status:<8} "
+                f"{r.payload_size:>5}  {r.source or '(none)'}"
+            )
+        print()
+        total = sum(r.payload_size for _, r in results)
+        failed = sum(1 for _, r in results if not r.ok)
+        print(
+            f"  Total payload rows: {total}; "
+            f"failed discoverers: {failed}"
+        )
+        for d, r in results:
+            if not r.ok:
+                print(f"    ! {d}: {r.error}")
+        return
 
     if not domain:
         regs = registered_domains()
