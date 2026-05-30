@@ -4301,6 +4301,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_br_p.add_argument("--json", action="store_true")
 
+    # Wave 911: Pattern BS (empire+per-store thrash surface)
+    pattern_bs_p = sub.add_parser(
+        "pattern-bs-audit",
+        help=(
+            "Wave 911: verify empire dashboard + per-store "
+            "thrash surfaces."
+        ),
+    )
+    pattern_bs_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -10291,6 +10301,21 @@ def _cmd_empire(args) -> None:
     except Exception:  # noqa: BLE001
         autonomy_block = None
 
+    # Wave 910: verdict-flip thrash block
+    thrash_block: dict | None = None
+    try:
+        from core.automation.autonomy_overview_thrash import (
+            compute_thrash,
+        )
+        rep = compute_thrash(window_hours=24.0)
+        thrash_block = {
+            "verdict": rep.verdict,
+            "total_flips": rep.total_flips,
+            "peak_flips": rep.peak_flips,
+        }
+    except Exception:  # noqa: BLE001
+        thrash_block = None
+
     # Wave 835: discoverer coverage for JSON envelope + text
     discoverer_block: dict | None = None
     try:
@@ -10363,6 +10388,7 @@ def _cmd_empire(args) -> None:
             "stores": stores_list,
             "niche_mix": niche_mix_block,
             "autonomy": autonomy_block,
+            "thrash": thrash_block,
             "discoverers": discoverer_block,
             "substrate_fire": substrate_fire_block,
             "last_run": last_run_block,
@@ -10559,6 +10585,29 @@ def _cmd_empire(args) -> None:
         logger.debug(
             "empire recommend block raised: %s", exc,
         )
+
+    # Wave 910: verdict-flip thrash inline. Surfaces ONLY
+    # when verdict != calm (consistent with daily-brief).
+    try:
+        if thrash_block and thrash_block.get("verdict") not in (
+            None, "calm",
+        ):
+            tmk = {
+                "elevated": "[WRN]",
+                "thrashing": "[BAD]",
+            }.get(thrash_block["verdict"], "[ ? ]")
+            print(
+                f"    thrash:             {tmk} "
+                f"verdict={thrash_block['verdict']}  "
+                f"peak={thrash_block['peak_flips']}/h  "
+                f"total={thrash_block['total_flips']}/24h"
+            )
+            print(
+                "    -> shopai autonomy-overview-history "
+                "--thrash"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("empire thrash block raised: %s", exc)
 
     # Last cycle
     print()
@@ -31345,6 +31394,43 @@ def _cmd_pattern_br_audit(args) -> None:
         )
 
 
+def _cmd_pattern_bs_audit(args) -> None:
+    """Wave 911: empire + per-store thrash surfaces."""
+    from engines._pattern_bs_audit import run_pattern_bs_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_bs_audit()
+    if as_json:
+        print(json.dumps({
+            "invariants_checked": report.invariants_checked,
+            "clean_invariants": report.clean_invariants,
+            "violations": [
+                {
+                    "invariant": v.invariant,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern BS FAILED -- "
+            f"{len(report.violations)} broken link(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.invariant}] {v.reason}")
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern BS OK -- "
+            f"{len(report.clean_invariants)} empire+per-store "
+            "thrash link(s) honored."
+        )
+
+
 def _cmd_pattern_bn_audit(args) -> None:
     """Wave 893: autonomy-overview output schema."""
     from engines._pattern_bn_audit import run_pattern_bn_audit
@@ -40421,6 +40507,22 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_bs":
+            from engines._pattern_bs_audit import (
+                run_pattern_bs_audit,
+            )
+            r = run_pattern_bs_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_invariants": r.clean_invariants,
+                "violations": [
+                    {
+                        "invariant": v.invariant,
+                        "reason": v.reason,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -40446,7 +40548,7 @@ _AUDIT_ORDER = (
     "pattern_bd", "pattern_be", "pattern_bf", "pattern_bg",
     "pattern_bh", "pattern_bi", "pattern_bj", "pattern_bk",
     "pattern_bm", "pattern_bn", "pattern_bo", "pattern_bp",
-    "pattern_bq", "pattern_br",
+    "pattern_bq", "pattern_br", "pattern_bs",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -40513,6 +40615,7 @@ _AUDIT_LABELS = {
     "pattern_bp": "Pattern BP (autonomy-overview render formats)",
     "pattern_bq": "Pattern BQ (autonomy-overview history schema)",
     "pattern_br": "Pattern BR (autonomy-overview thrash chain)",
+    "pattern_bs": "Pattern BS (empire+per-store thrash surface)",
 }
 
 
@@ -49664,6 +49767,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "pattern-br-audit":
         _cmd_pattern_br_audit(args)
+        return
+    if args.command == "pattern-bs-audit":
+        _cmd_pattern_bs_audit(args)
         return
 
     if args.command == "autonomy-env":
