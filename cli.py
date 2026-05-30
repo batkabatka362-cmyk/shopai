@@ -20829,6 +20829,40 @@ def _cmd_cycle_status(args) -> None:
         ai_available = False
         ai_mode = "deterministic"
 
+    # W846: substrate-fire summary block (last 24h)
+    substrate_fire_block = None
+    try:
+        from core.automation.substrate_fire_log import (
+            recent_substrate_fires,
+        )
+        sf_rows = recent_substrate_fires(
+            window_hours=24.0,
+            store_id=store_filter or None,
+        )
+        if sf_rows:
+            substrate_fire_block = {
+                "window_hours": 24.0,
+                "total_outcomes": len(sf_rows),
+                "fired": sum(
+                    1 for r in sf_rows if r.get("invoked")
+                ),
+                "dry_run": sum(
+                    1 for r in sf_rows
+                    if r.get("reason") == "dry_run"
+                ),
+                "errors": sum(
+                    1 for r in sf_rows
+                    if r.get("reason") in (
+                        "applier_error", "discoverer_error",
+                    )
+                ),
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "cycle status substrate-fire block raised: %s",
+            exc,
+        )
+
     # 6. Revenue attribution (Shopify ground truth)
     attribution_block = None
     try:
@@ -20886,6 +20920,7 @@ def _cmd_cycle_status(args) -> None:
             "audit_ok": audit_ok,
             "audit_violations": audit_violations,
             "attribution_168h": attribution_block,
+            "substrate_fire_24h": substrate_fire_block,
             "cycle_delta": delta_block,
             "ai_strategy": {
                 "mode": ai_mode,
@@ -20958,6 +20993,28 @@ def _cmd_cycle_status(args) -> None:
             "    Drill: `shopai cycle attribution`"
         )
     print()
+
+    # W846: substrate-fire summary (24h)
+    if substrate_fire_block is not None:
+        n_err = substrate_fire_block["errors"]
+        n_fired = substrate_fire_block["fired"]
+        n_dry = substrate_fire_block["dry_run"]
+        n_total = substrate_fire_block["total_outcomes"]
+        marker = (
+            "[BAD]" if n_err
+            else "[OK ]" if n_fired else "[ - ]"
+        )
+        print("  Substrate-fire (24h):")
+        print(
+            f"    {marker} {n_total} outcome(s)  "
+            f"fired={n_fired}  dry_run={n_dry}  "
+            f"errors={n_err}"
+        )
+        print(
+            "    Drill: `shopai autonomy-fire-status "
+            "--window-hours 24`"
+        )
+        print()
 
     if delta_block is not None:
         d_rev = delta_block["overall_revenue_delta"]
