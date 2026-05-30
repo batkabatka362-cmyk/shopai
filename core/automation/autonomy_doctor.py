@@ -25,8 +25,11 @@ Overall rollup = worst per-domain class.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from core.automation.autonomy_status import (
     DomainSummary,
@@ -57,6 +60,9 @@ class DoctorDomainReport:
     # Env coverage
     env_knobs_total: int = 0
     env_knobs_set: int = 0
+    # W865: cooldown remaining (hours). > 0 means the domain is
+    # blocked from re-arm due to a recent auto-disarm.
+    cooldown_hours_remaining: float = 0.0
     reasons: list[str] = field(default_factory=list)
     next_action: str = ""
 
@@ -234,11 +240,52 @@ def run_autonomy_doctor(
     base = get_autonomy_status(
         window_hours=window_hours, store_id=store_id,
     )
+    # W865: pre-fetch cooldown per-domain so the doctor can
+    # surface blocked re-arms.
+    cooldown_per_domain: dict[str, float] = {}
+    try:
+        import time as _t
+        from core.automation.autonomy_armed import (
+            _cooldown_hours as _cd_hours,
+        )
+        from core.automation.substrate_fire_disarm_log import (
+            last_disarm_at as _last_disarm_at,
+        )
+        cd = _cd_hours()
+        for summary in base.domains:
+            ts = _last_disarm_at(summary.name)
+            if ts is None:
+                continue
+            elapsed_h = (_t.time() - ts) / 3600.0
+            if elapsed_h < cd:
+                cooldown_per_domain[summary.name] = (
+                    cd - elapsed_h
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "autonomy-doctor cooldown probe raised: %s", exc,
+        )
+
     for summary in base.domains:
         domain_key = _resolve_domain_key(summary.name)
         wiring = _wiring_checks(domain_key)
         env_set, env_total = _env_coverage(domain_key)
         cls, reasons = _classify(summary, wiring)
+        cd_remaining = cooldown_per_domain.get(
+            summary.name, 0.0,
+        )
+        if cd_remaining > 0:
+            # Escalate cls to at least 'warn' so overall_cls
+            # reflects pending operator action.
+            if cls == "ok":
+                cls = "warn"
+            reasons = list(reasons) + [
+                f"cooldown {cd_remaining:.1f}h remaining "
+                "after recent auto-disarm; re-arm blocked "
+                "(use shopai autonomy-arm --force to override "
+                "or shopai autonomy-cooldown-clear --yes "
+                "to reset)"
+            ]
         report.domains.append(DoctorDomainReport(
             name=summary.name,
             cls=cls,
@@ -251,6 +298,7 @@ def run_autonomy_doctor(
             template_complete=wiring["template_complete"],
             env_knobs_total=env_total,
             env_knobs_set=env_set,
+            cooldown_hours_remaining=cd_remaining,
             reasons=reasons or list(wiring["wiring_reasons"]),
             next_action=summary.next_action,
         ))
