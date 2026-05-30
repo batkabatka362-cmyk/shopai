@@ -94,6 +94,70 @@ class TestResolveInt:
         assert v == 1
 
 
+class TestLegacyEnvFallback:
+    """W887: legacy env name back-compat for naming migrations."""
+
+    def test_legacy_only_fallback_works(self, monkeypatch):
+        monkeypatch.delenv(
+            "SHOPAI_X_DISCOVER_RATIO", raising=False,
+        )
+        monkeypatch.setenv("LEGACY_RATIO_X", "0.75")
+        assert resolve_float(
+            "x", "RATIO", default=0.0,
+            legacy_env="LEGACY_RATIO_X",
+        ) == 0.75
+
+    def test_standard_overrides_legacy(self, monkeypatch):
+        monkeypatch.setenv("SHOPAI_X_DISCOVER_RATIO", "0.99")
+        monkeypatch.setenv("LEGACY_RATIO_X", "0.50")
+        assert resolve_float(
+            "x", "RATIO", default=0.0,
+            legacy_env="LEGACY_RATIO_X",
+        ) == 0.99
+
+    def test_per_store_standard_wins_over_legacy(
+        self, monkeypatch,
+    ):
+        monkeypatch.delenv(
+            "SHOPAI_X_DISCOVER_RATIO", raising=False,
+        )
+        monkeypatch.setenv(
+            "SHOPAI_X_DISCOVER_RATIO_STORE_A", "0.5",
+        )
+        monkeypatch.setenv("LEGACY_RATIO_X", "0.1")
+        assert resolve_float(
+            "x", "RATIO", default=0.0,
+            store_id="store-a",
+            legacy_env="LEGACY_RATIO_X",
+        ) == 0.5
+
+    def test_legacy_per_store_works(self, monkeypatch):
+        monkeypatch.delenv(
+            "SHOPAI_X_DISCOVER_RATIO", raising=False,
+        )
+        monkeypatch.delenv(
+            "SHOPAI_X_DISCOVER_RATIO_STORE_A", raising=False,
+        )
+        monkeypatch.setenv(
+            "LEGACY_RATIO_X_STORE_A", "0.33",
+        )
+        monkeypatch.setenv("LEGACY_RATIO_X", "0.10")
+        assert resolve_float(
+            "x", "RATIO", default=0.0,
+            store_id="store-a",
+            legacy_env="LEGACY_RATIO_X",
+        ) == 0.33
+
+    def test_no_legacy_arg_no_fallback(self, monkeypatch):
+        monkeypatch.delenv(
+            "SHOPAI_X_DISCOVER_RATIO", raising=False,
+        )
+        monkeypatch.setenv("LEGACY_RATIO_X", "0.75")
+        assert resolve_float(
+            "x", "RATIO", default=1.0,
+        ) == 1.0
+
+
 class TestResolveFloat:
 
     def test_default(self, monkeypatch):

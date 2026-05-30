@@ -35,7 +35,21 @@ def _resolve(
     domain: str,
     knob: str,
     store_id: str | None,
+    legacy_env: str | None = None,
 ) -> str | None:
+    """Resolve env value with per-store / global / legacy /
+    None fallback order.
+
+    W887: ``legacy_env`` lets callers migrate non-standard
+    naming knobs (e.g. ``SHOPAI_CUSTOMER_OUTREACH_VIP_USD``)
+    to the DISCOVER_<KNOB> convention while keeping the
+    legacy var live. Lookup order:
+
+      1. per-store standard naming (DISCOVER_<KNOB>_<STORE>)
+      2. global standard naming (DISCOVER_<KNOB>)
+      3. legacy_env (if supplied) -- per-store first, then bare
+      4. None (caller falls back to default)
+    """
     dom = _normalise(domain)
     knob_n = _normalise(knob)
     if store_id:
@@ -50,6 +64,17 @@ def _resolve(
     )
     if global_v is not None and global_v != "":
         return global_v
+    if legacy_env:
+        # Try per-store legacy first
+        if store_id:
+            per_store_legacy = os.environ.get(
+                f"{legacy_env}_{_normalise(store_id)}",
+            )
+            if per_store_legacy:
+                return per_store_legacy
+        bare_legacy = os.environ.get(legacy_env)
+        if bare_legacy:
+            return bare_legacy
     return None
 
 
@@ -60,9 +85,15 @@ def resolve_int(
     default: int,
     store_id: str | None = None,
     min_value: int | None = None,
+    legacy_env: str | None = None,
 ) -> int:
-    """Resolve a per-store int knob with global fallback."""
-    raw = _resolve(domain, knob, store_id)
+    """Resolve a per-store int knob.
+
+    W887: ``legacy_env`` enables back-compat migrations -- when
+    a non-standard env name was already in use, callers can
+    pass it as the legacy fallback so existing operators don't
+    have to rename their env at migration time."""
+    raw = _resolve(domain, knob, store_id, legacy_env)
     if raw is None:
         out = default
     else:
@@ -81,9 +112,11 @@ def resolve_float(
     *,
     default: float,
     store_id: str | None = None,
+    legacy_env: str | None = None,
 ) -> float:
-    """Resolve a per-store float knob with global fallback."""
-    raw = _resolve(domain, knob, store_id)
+    """Resolve a per-store float knob with optional legacy
+    back-compat fallback."""
+    raw = _resolve(domain, knob, store_id, legacy_env)
     if raw is None:
         return default
     try:
