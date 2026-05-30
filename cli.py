@@ -4254,6 +4254,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 841: substrate-fire history
+    autonomy_fire_status_p = sub.add_parser(
+        "autonomy-fire-status",
+        help=(
+            "Wave 841: recent substrate_fire outcomes from "
+            "the persistent log (data/substrate_fire_log.json)."
+        ),
+    )
+    autonomy_fire_status_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+    )
+    autonomy_fire_status_p.add_argument(
+        "--store", type=str, default="",
+    )
+    autonomy_fire_status_p.add_argument(
+        "--domain", type=str, default="",
+    )
+    autonomy_fire_status_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 820: inspect registered payload discoverers
     autonomy_discover_p = sub.add_parser(
         "autonomy-discover",
@@ -33100,6 +33121,72 @@ def _cmd_autonomy_armed(args) -> None:
     )
 
 
+def _cmd_autonomy_fire_status(args) -> None:
+    """Wave 841: substrate_fire history."""
+    from core.automation.substrate_fire_log import (
+        recent_substrate_fires, substrate_fire_log_size,
+    )
+    window = float(getattr(args, "window_hours", 168.0) or 168.0)
+    store = (getattr(args, "store", "") or "").strip()
+    domain = (getattr(args, "domain", "") or "").strip()
+    as_json = bool(getattr(args, "json", False))
+    rows = recent_substrate_fires(
+        window_hours=window,
+        store_id=store or None,
+        domain=domain or None,
+    )
+    if as_json:
+        print(json.dumps({
+            "rows": rows,
+            "count": len(rows),
+            "log_size": substrate_fire_log_size(),
+            "window_hours": window,
+            "store_filter": store,
+            "domain_filter": domain,
+        }, indent=2, default=str))
+        return
+    print(
+        f"Substrate-fire history "
+        f"(last {window:.0f}h"
+        + (f", store={store}" if store else "")
+        + (f", domain={domain}" if domain else "")
+        + f"): {len(rows)} entry(ies); "
+        f"log_size={substrate_fire_log_size()}"
+    )
+    if not rows:
+        print()
+        print(
+            "  (No actionable outcomes in window. Arm a "
+            "substrate-mode domain + set SHOPAI_AUTONOMY_FIRE_"
+            "CONFIRM=1 to fire.)"
+        )
+        return
+    print()
+    print(
+        f"  {'when':<19} {'domain':<20} {'store':<14} "
+        f"{'reason':<18} {'rows':>5} {'evts':>5} {'ms':>7}"
+    )
+    for r in rows[:50]:
+        ts = float(r.get("recorded_at") or 0)
+        when = (
+            time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts),
+            )[:19]
+            if ts else "-"
+        )
+        print(
+            f"  {when:<19} "
+            f"{(r.get('domain') or '-')[:20]:<20} "
+            f"{(r.get('store_id') or 'fleet')[:14]:<14} "
+            f"{(r.get('reason') or '-')[:18]:<18} "
+            f"{r.get('discovered', 0):>5} "
+            f"{r.get('events', 0):>5} "
+            f"{float(r.get('duration_ms') or 0):>7.1f}"
+        )
+    if len(rows) > 50:
+        print(f"  ... and {len(rows) - 50} older rows")
+
+
 def _cmd_autonomy_discover(args) -> None:
     """Wave 820: inspect + run payload discoverers.
     Wave 834: --all runs every discoverer + summary."""
@@ -47074,6 +47161,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "autonomy-discover":
         _cmd_autonomy_discover(args)
+        return
+    if args.command == "autonomy-fire-status":
+        _cmd_autonomy_fire_status(args)
         return
 
     if args.command == "product-seo-status":

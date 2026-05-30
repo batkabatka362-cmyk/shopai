@@ -98,6 +98,9 @@ def fire_armed_substrate_domains(
         from core.automation.payload_discoverer import (
             discover, has_discoverer,
         )
+        from core.automation.substrate_fire_log import (
+            record_substrate_fire,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "substrate_fire import raised: %s", exc,
@@ -141,5 +144,15 @@ def fire_armed_substrate_domains(
         else:
             outcome.reason = "fired"
         report.outcomes.append(outcome)
+
+    # W840: persist actionable outcomes to the log.
+    for outcome in report.outcomes:
+        try:
+            record_substrate_fire(outcome, store_id=store_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "substrate_fire log raised for %s: %s",
+                outcome.domain, exc,
+            )
 
     return report
