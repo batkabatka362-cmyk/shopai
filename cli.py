@@ -4265,6 +4265,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 850: substrate-fire degradation alerts
+    autonomy_alerts_p = sub.add_parser(
+        "autonomy-alerts",
+        help=(
+            "Wave 850: degradation alerts derived from "
+            "per-domain substrate-fire KPIs."
+        ),
+    )
+    autonomy_alerts_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+    )
+    autonomy_alerts_p.add_argument(
+        "--store", type=str, default="",
+    )
+    autonomy_alerts_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 848: per-domain substrate-fire KPI
     autonomy_kpi_p = sub.add_parser(
         "autonomy-kpi",
@@ -33373,6 +33391,75 @@ def _cmd_autonomy_armed(args) -> None:
     )
 
 
+def _cmd_autonomy_alerts(args) -> None:
+    """Wave 850: substrate-fire degradation alerts."""
+    from core.automation.substrate_fire_alerts import (
+        compute_fire_alerts,
+    )
+    window = float(getattr(args, "window_hours", 168.0) or 168.0)
+    store = (getattr(args, "store", "") or "").strip()
+    as_json = bool(getattr(args, "json", False))
+    report = compute_fire_alerts(
+        window_hours=window,
+        store_id=store or None,
+    )
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "store_id": report.store_id,
+            "domains_evaluated": report.domains_evaluated,
+            "config": report.config,
+            "alerts": [
+                {
+                    "domain": a.domain,
+                    "kind": a.kind,
+                    "severity": a.severity,
+                    "reason": a.reason,
+                    "success_rate": round(a.success_rate, 3),
+                    "errors": a.errors,
+                    "sample_size": a.sample_size,
+                }
+                for a in report.alerts
+            ],
+            "critical_count": report.critical_count,
+            "warn_count": report.warn_count,
+        }, indent=2, default=str))
+        return
+    scope = f"store={store}" if store else "fleet"
+    print(
+        f"Substrate-fire alerts ({scope}, last "
+        f"{window:.0f}h):"
+    )
+    print()
+    if not report.has_alerts:
+        if report.domains_evaluated == 0:
+            print(
+                "  (No domains evaluated -- arm + "
+                "SHOPAI_AUTONOMY_FIRE_CONFIRM=1 to populate "
+                "the fire log.)"
+            )
+        else:
+            print(
+                f"  [OK ] {report.domains_evaluated} "
+                "domain(s) evaluated; no degradation."
+            )
+        return
+    print(
+        f"  {report.critical_count} critical / "
+        f"{report.warn_count} warn  "
+        f"({report.domains_evaluated} domain(s) evaluated)"
+    )
+    print()
+    for a in report.alerts:
+        mk = (
+            "[BAD]" if a.severity == "critical" else "[WRN]"
+        )
+        print(
+            f"  {mk} {a.domain:<20} {a.kind:<22} "
+            f"{a.reason}"
+        )
+
+
 def _cmd_autonomy_kpi(args) -> None:
     """Wave 848: per-domain substrate-fire KPI table."""
     from core.automation.substrate_fire_kpi import (
@@ -47506,6 +47593,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "autonomy-kpi":
         _cmd_autonomy_kpi(args)
+        return
+    if args.command == "autonomy-alerts":
+        _cmd_autonomy_alerts(args)
         return
 
     if args.command == "product-seo-status":
