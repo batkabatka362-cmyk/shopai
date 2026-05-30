@@ -4291,6 +4291,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="audit trail for why this is being armed",
     )
     autonomy_arm_p.add_argument(
+        "--store", type=str, default="",
+        help=(
+            "W870: arm for one store only. Empty = fleet-wide "
+            "(W815 behaviour)."
+        ),
+    )
+    autonomy_arm_p.add_argument(
         "--force", action="store_true",
         help=(
             "W859: bypass the re-arm cooldown after an "
@@ -4310,6 +4317,20 @@ def build_parser() -> argparse.ArgumentParser:
         "domain", type=str, nargs="?", default="",
     )
     autonomy_disarm_p.add_argument(
+        "--store", type=str, default="",
+        help=(
+            "W870: disarm one store's entry only. Empty = "
+            "fleet-wide. Does NOT touch per-store entries."
+        ),
+    )
+    autonomy_disarm_p.add_argument(
+        "--domain-all", action="store_true",
+        help=(
+            "W870: remove EVERY entry for the domain across "
+            "fleet + every store. Domain-wide nuclear."
+        ),
+    )
+    autonomy_disarm_p.add_argument(
         "--all", action="store_true",
         help="disarm every domain (emergency halt)",
     )
@@ -4320,6 +4341,13 @@ def build_parser() -> argparse.ArgumentParser:
     autonomy_armed_p = sub.add_parser(
         "autonomy-armed",
         help="Wave 812: list which autonomy domains are armed.",
+    )
+    autonomy_armed_p.add_argument(
+        "--store", type=str, default="",
+        help=(
+            "W870: filter to one store's armed entries. "
+            "Empty = show all (fleet + every store)."
+        ),
     )
     autonomy_armed_p.add_argument(
         "--json", action="store_true",
@@ -33657,8 +33685,12 @@ def _cmd_autonomy_arm(args) -> None:
         else:
             print(f"ERROR: {msg}")
         sys.exit(1)
+    store = (getattr(args, "store", "") or "").strip()
     try:
-        entry = arm(domain, reason=reason, force=force)
+        entry = arm(
+            domain, reason=reason, force=force,
+            store_id=store,
+        )
     except ArmCooldownError as cd:
         msg = (
             f"re-arm blocked: {cd.domain} was auto-"
@@ -33679,6 +33711,10 @@ def _cmd_autonomy_arm(args) -> None:
         sys.exit(2)
     flags = DOMAIN_APPLY_FLAGS[domain]
     mode = firing_mode_for_domain(domain)
+    scope = (
+        f"store={entry.store_id}" if entry.store_id
+        else "fleet-wide"
+    )
     if as_json:
         print(json.dumps({
             "ok": True,
@@ -33687,9 +33723,14 @@ def _cmd_autonomy_arm(args) -> None:
             "reason": entry.reason,
             "flags": list(flags),
             "firing_mode": mode,
+            "store_id": entry.store_id,
+            "scope": scope,
         }, indent=2))
         return
-    print(f"Armed: {domain}  [firing_mode={mode}]")
+    print(
+        f"Armed: {domain}  [firing_mode={mode}]  "
+        f"({scope})"
+    )
     print(f"  Flags: {', '.join(flags)}")
     if reason:
         print(f"  Reason: {reason}")
@@ -33709,12 +33750,15 @@ def _cmd_autonomy_arm(args) -> None:
 
 
 def _cmd_autonomy_disarm(args) -> None:
-    """Wave 812: disarm a domain."""
+    """Wave 812 + W870: disarm a domain (per-store optional)."""
     from core.automation.autonomy_armed import (
         DOMAIN_APPLY_FLAGS, disarm, disarm_all,
+        disarm_domain_all,
     )
     domain = (getattr(args, "domain", "") or "").strip()
     all_flag = bool(getattr(args, "all", False))
+    store = (getattr(args, "store", "") or "").strip()
+    domain_all = bool(getattr(args, "domain_all", False))
     as_json = bool(getattr(args, "json", False))
     if all_flag:
         count = disarm_all()
@@ -33735,24 +33779,48 @@ def _cmd_autonomy_disarm(args) -> None:
         else:
             print(f"ERROR: {msg}")
         sys.exit(1)
-    removed = disarm(domain)
+    if domain_all:
+        count = disarm_domain_all(domain)
+        if as_json:
+            print(json.dumps({
+                "ok": True, "domain": domain,
+                "removed": count, "domain_all": True,
+            }))
+            return
+        print(
+            f"Disarmed {domain} across every scope: "
+            f"{count} entries removed."
+        )
+        return
+    removed = disarm(domain, store_id=store)
+    scope = f"store={store}" if store else "fleet-wide"
     if as_json:
         print(json.dumps({
-            "ok": True, "domain": domain, "removed": removed,
+            "ok": True, "domain": domain,
+            "removed": removed,
+            "store_id": store, "scope": scope,
         }))
         return
     if removed:
-        print(f"Disarmed: {domain}")
+        print(f"Disarmed: {domain} ({scope})")
     else:
-        print(f"Already disarmed: {domain} (no-op)")
+        print(
+            f"Already disarmed: {domain} ({scope}) -- "
+            "no-op"
+        )
 
 
 def _cmd_autonomy_armed(args) -> None:
-    """Wave 812: list currently-armed autonomy domains."""
+    """Wave 812 + W870: list currently-armed autonomy domains."""
     from core.automation.autonomy_armed import (
         DOMAIN_APPLY_FLAGS, DOMAIN_FIRING_MODE, list_armed,
     )
-    entries = list_armed()
+    store = (getattr(args, "store", "") or "").strip()
+    # W870: --store filter narrows to exact store match
+    if store:
+        entries = list_armed(store_id=store)
+    else:
+        entries = list_armed()
     as_json = bool(getattr(args, "json", False))
     if as_json:
         print(json.dumps({
@@ -33761,6 +33829,11 @@ def _cmd_autonomy_armed(args) -> None:
                     "domain": e.domain,
                     "armed_at": e.armed_at,
                     "reason": e.reason,
+                    "store_id": e.store_id,
+                    "scope": (
+                        f"store={e.store_id}" if e.store_id
+                        else "fleet-wide"
+                    ),
                     "flags": list(
                         DOMAIN_APPLY_FLAGS.get(e.domain, ()),
                     ),
@@ -33772,6 +33845,7 @@ def _cmd_autonomy_armed(args) -> None:
             ],
             "total_domains": len(DOMAIN_APPLY_FLAGS),
             "armed_count": len(entries),
+            "store_filter": store,
             "engine_mode_count": sum(
                 1 for m in DOMAIN_FIRING_MODE.values()
                 if m == "engine"
@@ -33815,8 +33889,13 @@ def _cmd_autonomy_armed(args) -> None:
             "%Y-%m-%d %H:%M UTC", time.gmtime(e.armed_at),
         )
         reason = f" -- {e.reason}" if e.reason else ""
+        scope = (
+            f"store={e.store_id}" if e.store_id
+            else "fleet-wide"
+        )
         print(
             f"  [+] {mode_badge} {e.domain:<20}  "
+            f"{scope:<22}  "
             f"flags={','.join(flags)}  "
             f"armed_at={ts}{reason}"
         )
