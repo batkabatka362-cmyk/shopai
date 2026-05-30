@@ -22792,7 +22792,11 @@ def _cmd_cycle_run(args) -> None:
             "shipping-alert bridge failed: %s", exc,
         )
 
-    # Wave 822: armed substrate-domain fire (discoverer -> applier)
+    # Wave 822 + 839: armed substrate-domain fire
+    # (discoverer -> applier). Fires fleet-wide first, then
+    # per-store for every store in the world-model snapshot so
+    # per-store attribution gets captured. The fleet-wide call
+    # is back-compat with operators that haven't tagged stores.
     try:
         from core.automation.substrate_fire import (
             fire_armed_substrate_domains,
@@ -22800,10 +22804,26 @@ def _cmd_cycle_run(args) -> None:
         sub_report = fire_armed_substrate_domains()
         if sub_report.outcomes:
             logger.info(
-                "substrate-fire: %d invoked, %d discovered rows",
+                "substrate-fire (fleet): %d invoked, "
+                "%d discovered rows",
                 sub_report.total_invoked,
                 sub_report.total_discovered_rows,
             )
+        for sid in list(world_models.keys()):
+            ps_report = fire_armed_substrate_domains(
+                store_id=sid,
+            )
+            if ps_report.outcomes and (
+                ps_report.total_discovered_rows > 0
+                or ps_report.total_invoked > 0
+            ):
+                logger.info(
+                    "substrate-fire (store=%s): "
+                    "%d invoked, %d discovered rows",
+                    sid,
+                    ps_report.total_invoked,
+                    ps_report.total_discovered_rows,
+                )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "substrate-fire bridge raised: %s", exc,
