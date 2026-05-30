@@ -698,7 +698,57 @@ def collect_alerts() -> list[NotifyAlert]:
             "notify: shipping_alert probe raised: %s", exc,
         )
 
-    # 15. Wave 153: autonomy coalesce. Opt-in via
+    # 15. Wave 851: substrate-fire degradation alerts (from
+    # the W849 fire alerter). Critical alerts always surface;
+    # warn alerts roll up to a single warn line.
+    try:
+        from core.automation.substrate_fire_alerts import (
+            compute_fire_alerts,
+        )
+        fa_report = compute_fire_alerts(window_hours=168.0)
+        for a in fa_report.alerts:
+            if a.severity == "critical":
+                alerts.append(NotifyAlert(
+                    kind=f"substrate_fire_{a.kind}",
+                    severity="critical",
+                    message=(
+                        f"[{a.domain}] {a.kind}: "
+                        f"{a.reason}"
+                    ),
+                    context={
+                        "domain": a.domain,
+                        "kind": a.kind,
+                        "success_rate": a.success_rate,
+                        "errors": a.errors,
+                        "sample_size": a.sample_size,
+                    },
+                ))
+        warn_alerts = [
+            a for a in fa_report.alerts
+            if a.severity == "warn"
+        ]
+        if warn_alerts:
+            domains = sorted({a.domain for a in warn_alerts})
+            alerts.append(NotifyAlert(
+                kind="substrate_fire_warns",
+                severity="warning",
+                message=(
+                    f"{len(warn_alerts)} substrate-fire "
+                    f"warn(s) across {len(domains)} "
+                    f"domain(s): {', '.join(domains)}"
+                ),
+                context={
+                    "alert_count": len(warn_alerts),
+                    "domains": domains,
+                },
+            ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "notify: substrate-fire alerts probe raised: %s",
+            exc,
+        )
+
+    # 16. Wave 153: autonomy coalesce. Opt-in via
     # SHOPAI_NOTIFY_AUTONOMY_COALESCE=1. When set, replace
     # per-domain {refund,budget,fulfillment,inventory,
     # discount_cleanup,order_followup,product_seo}_paused /

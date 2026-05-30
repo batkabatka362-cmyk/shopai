@@ -11666,6 +11666,31 @@ def _cmd_daily_brief(args) -> None:
             "daily-brief substrate-fire block raised: %s", exc,
         )
 
+    # Wave 851: substrate-fire degradation alerts. Surface
+    # only when at least one alert (critical or warn) fires.
+    try:
+        from core.automation.substrate_fire_alerts import (
+            compute_fire_alerts,
+        )
+        fa = compute_fire_alerts(window_hours=window_hours)
+        if fa.has_alerts:
+            mk = (
+                "[BAD]" if fa.critical_count
+                else "[WRN]"
+            )
+            print(
+                f"  Fire alerts:   {mk} "
+                f"{fa.critical_count} critical / "
+                f"{fa.warn_count} warn"
+            )
+            print(
+                "    -> drill: shopai autonomy-alerts"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief fire-alerts block raised: %s", exc,
+        )
+
     # Wave 248: autonomy substrate wiring health. Distinct from
     # the verdict block above -- only surfaces when wiring is
     # broken or degraded. Silent in the clean case.
