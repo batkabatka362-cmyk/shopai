@@ -785,6 +785,53 @@ def collect_alerts() -> list[NotifyAlert]:
             exc,
         )
 
+    # 16'. Wave 907: autonomy verdict-flip thrash alert.
+    # Fires when the autonomous merchant's verdict flips
+    # 5+ times within a 1-hour bucket (thrashing) or 3+
+    # times (elevated).
+    try:
+        from core.automation.autonomy_overview_thrash import (
+            compute_thrash,
+        )
+        thrash_rep = compute_thrash(
+            window_hours=24.0, bucket_hours=1.0,
+        )
+        if thrash_rep.verdict == "thrashing":
+            alerts.append(NotifyAlert(
+                kind="autonomy_thrash",
+                severity="critical",
+                message=(
+                    f"Autonomy verdict thrashing: peak "
+                    f"{thrash_rep.peak_flips} flip(s)/h, "
+                    f"total {thrash_rep.total_flips} in 24h"
+                ),
+                context={
+                    "verdict": thrash_rep.verdict,
+                    "peak_flips": thrash_rep.peak_flips,
+                    "total_flips": thrash_rep.total_flips,
+                },
+            ))
+        elif thrash_rep.verdict == "elevated":
+            alerts.append(NotifyAlert(
+                kind="autonomy_thrash_elevated",
+                severity="warning",
+                message=(
+                    f"Autonomy verdict elevated flip rate: "
+                    f"peak {thrash_rep.peak_flips}/h, "
+                    f"total {thrash_rep.total_flips} in 24h"
+                ),
+                context={
+                    "verdict": thrash_rep.verdict,
+                    "peak_flips": thrash_rep.peak_flips,
+                    "total_flips": thrash_rep.total_flips,
+                },
+            ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "notify: autonomy thrash probe raised: %s",
+            exc,
+        )
+
     # 16. Wave 153: autonomy coalesce. Opt-in via
     # SHOPAI_NOTIFY_AUTONOMY_COALESCE=1. When set, replace
     # per-domain {refund,budget,fulfillment,inventory,

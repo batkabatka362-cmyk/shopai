@@ -12065,6 +12065,37 @@ def _cmd_daily_brief(args) -> None:
             exc,
         )
 
+    # Wave 906: verdict-flip thrash row. Surfaces only when
+    # the autonomous merchant is flapping (elevated or
+    # thrashing verdict).
+    try:
+        from core.automation.autonomy_overview_thrash import (
+            compute_thrash,
+        )
+        thrash_rep = compute_thrash(
+            window_hours=24.0, bucket_hours=1.0,
+        )
+        if thrash_rep.verdict != "calm":
+            thrash_mk = {
+                "elevated": "[WRN]",
+                "thrashing": "[BAD]",
+            }.get(thrash_rep.verdict, "[ ? ]")
+            print(
+                f"  Thrash:        {thrash_mk} "
+                f"verdict={thrash_rep.verdict}  "
+                f"total_flips={thrash_rep.total_flips}  "
+                f"peak={thrash_rep.peak_flips}/h"
+            )
+            print(
+                "    -> drill: shopai "
+                "autonomy-overview-history --thrash"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief thrash block raised: %s",
+            exc,
+        )
+
     # Wave 851: substrate-fire degradation alerts. Surface
     # only when at least one alert (critical or warn) fires.
     try:
