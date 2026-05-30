@@ -10364,6 +10364,42 @@ def _cmd_empire(args) -> None:
     except Exception:  # noqa: BLE001
         autonomy_block = None
 
+    # Wave 928: thrash guardrail override block. Surfaces ONLY
+    # stores with an active per-store override (force-on or
+    # force-off vs fleet inherit).
+    guardrail_override_block: dict | None = None
+    try:
+        import os as _os
+        from engines._agi_context import (
+            thrash_guardrail_enabled,
+        )
+        fleet_on = thrash_guardrail_enabled()
+        overrides: list[dict] = []
+        for s in stores_list:
+            sid = s.get("store_id")
+            if not sid:
+                continue
+            key = (
+                f"SHOPAI_THRASH_GUARDRAIL_"
+                f"{sid.upper().replace('-', '_')}"
+            )
+            raw = _os.environ.get(key, "")
+            if not raw:
+                continue
+            effective = thrash_guardrail_enabled(sid)
+            overrides.append({
+                "store_id": sid,
+                "raw": raw,
+                "effective": effective,
+            })
+        if overrides:
+            guardrail_override_block = {
+                "fleet_on": fleet_on,
+                "overrides": overrides,
+            }
+    except Exception:  # noqa: BLE001
+        guardrail_override_block = None
+
     # Wave 910: verdict-flip thrash block.
     # Wave 913: per-store breakdown -- surfaces only stores
     # whose verdict is NOT calm.
@@ -10470,6 +10506,7 @@ def _cmd_empire(args) -> None:
             "niche_mix": niche_mix_block,
             "autonomy": autonomy_block,
             "thrash": thrash_block,
+            "guardrail_overrides": guardrail_override_block,
             "discoverers": discoverer_block,
             "substrate_fire": substrate_fire_block,
             "last_run": last_run_block,
@@ -10714,6 +10751,27 @@ def _cmd_empire(args) -> None:
             )
     except Exception as exc:  # noqa: BLE001
         logger.debug("empire thrash block raised: %s", exc)
+
+    # Wave 928: guardrail override inline row. Surfaces ONLY
+    # when at least one store has a per-store override.
+    try:
+        if guardrail_override_block:
+            ov = guardrail_override_block["overrides"]
+            mk = "[WRN]" if len(ov) > 0 else "[OK ]"
+            on_count = sum(1 for o in ov if o["effective"])
+            off_count = len(ov) - on_count
+            print(
+                f"    guardrail-override: {mk} "
+                f"{len(ov)} store(s) overridden  "
+                f"(on={on_count}, off={off_count})"
+            )
+            print(
+                "    -> shopai thrash-guardrail"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "empire guardrail-override raised: %s", exc,
+        )
 
     # Last cycle
     print()
