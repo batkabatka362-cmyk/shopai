@@ -4349,6 +4349,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 860: auto-disarm history
+    autonomy_disarm_hist_p = sub.add_parser(
+        "autonomy-disarm-history",
+        help=(
+            "Wave 860: history of auto-disarm bridge "
+            "decisions (would_disarm + disarmed)."
+        ),
+    )
+    autonomy_disarm_hist_p.add_argument(
+        "--window-hours", type=float, default=720.0,
+    )
+    autonomy_disarm_hist_p.add_argument(
+        "--domain", type=str, default="",
+    )
+    autonomy_disarm_hist_p.add_argument(
+        "--only-disarmed", action="store_true",
+    )
+    autonomy_disarm_hist_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 841: substrate-fire history
     autonomy_fire_status_p = sub.add_parser(
         "autonomy-fire-status",
@@ -33825,6 +33846,79 @@ def _cmd_autonomy_kpi(args) -> None:
         )
 
 
+def _cmd_autonomy_disarm_history(args) -> None:
+    """Wave 860: auto-disarm decision history."""
+    from core.automation.substrate_fire_disarm_log import (
+        disarm_log_size, recent_disarms,
+    )
+    window = float(getattr(args, "window_hours", 720.0) or 720.0)
+    domain = (getattr(args, "domain", "") or "").strip()
+    only_disarmed = bool(
+        getattr(args, "only_disarmed", False),
+    )
+    as_json = bool(getattr(args, "json", False))
+    rows = recent_disarms(
+        window_hours=window,
+        domain=domain or None,
+        only_disarmed=only_disarmed,
+    )
+    if as_json:
+        print(json.dumps({
+            "rows": rows,
+            "count": len(rows),
+            "log_size": disarm_log_size(),
+            "window_hours": window,
+            "domain_filter": domain,
+            "only_disarmed": only_disarmed,
+        }, indent=2, default=str))
+        return
+    suffix = (
+        f", domain={domain}" if domain else ""
+    ) + (
+        ", only_disarmed" if only_disarmed else ""
+    )
+    print(
+        f"Auto-disarm history "
+        f"(last {window:.0f}h{suffix}): "
+        f"{len(rows)} entry(ies); "
+        f"log_size={disarm_log_size()}"
+    )
+    if not rows:
+        print()
+        print(
+            "  (No bridge actions recorded. The bridge runs "
+            "every cycle; this log only persists when an "
+            "armed domain crosses the consecutive-day "
+            "threshold.)"
+        )
+        return
+    print()
+    print(
+        f"  {'when':<19} {'domain':<20} "
+        f"{'days':>5} {'thresh':>7} "
+        f"{'would':>6} {'fired':>6} {'enabled':>8}"
+    )
+    for r in rows[:50]:
+        ts = float(r.get("recorded_at") or 0)
+        when = (
+            time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts),
+            )[:19]
+            if ts else "-"
+        )
+        print(
+            f"  {when:<19} "
+            f"{(r.get('domain') or '-')[:20]:<20} "
+            f"{r.get('consecutive_days', 0):>5} "
+            f"{r.get('threshold', 0):>7} "
+            f"{('yes' if r.get('would_disarm') else 'no'):>6} "
+            f"{('YES' if r.get('disarmed') else '.'):>6} "
+            f"{('on' if r.get('bridge_enabled') else 'OFF'):>8}"
+        )
+    if len(rows) > 50:
+        print(f"  ... and {len(rows) - 50} older rows")
+
+
 def _cmd_autonomy_fire_status(args) -> None:
     """Wave 841: substrate_fire history."""
     from core.automation.substrate_fire_log import (
@@ -47935,6 +48029,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "autonomy-fire-status":
         _cmd_autonomy_fire_status(args)
+        return
+    if args.command == "autonomy-disarm-history":
+        _cmd_autonomy_disarm_history(args)
         return
     if args.command == "autonomy-kpi":
         _cmd_autonomy_kpi(args)
