@@ -239,17 +239,35 @@ def explain_guardrail_block(metrics: dict[str, Any]) -> str:
     )
 
 
-def thrash_guardrail_enabled() -> bool:
+def thrash_guardrail_enabled(
+    store_id: str | None = None,
+) -> bool:
     """Wave 915: env-var opt-in for the thrash guardrail.
 
-    Env var: ``SHOPAI_THRASH_GUARDRAIL``. Default OFF. When
-    enabled, ``should_block_thrashing_store`` returns True
+    Default env var: ``SHOPAI_THRASH_GUARDRAIL``. Default OFF.
+    When enabled, ``should_block_thrashing_store`` returns True
     for stores whose verdict-flip rate is ``thrashing``.
+
+    Wave 925: per-store override. When ``store_id`` is
+    supplied, the resolver checks
+    ``SHOPAI_THRASH_GUARDRAIL_<STORE>`` first; if set, that
+    value wins. Allows operators to quiesce a single
+    misbehaving store without touching the fleet-wide
+    setting. Empty per-store value falls through to the
+    global env var.
 
     Operator-level kill switch -- decoupled from per-engine
     AGI guardrails so a global thrash response can be flipped
     on/off in seconds without touching individual engines.
     """
+    if store_id:
+        per_store_key = (
+            f"SHOPAI_THRASH_GUARDRAIL_"
+            f"{store_id.upper().replace('-', '_')}"
+        )
+        per_store = os.environ.get(per_store_key, "")
+        if per_store:
+            return per_store in _GUARDRAIL_TRUTHY
     return os.environ.get(
         "SHOPAI_THRASH_GUARDRAIL", "",
     ) in _GUARDRAIL_TRUTHY
@@ -270,7 +288,7 @@ def should_block_thrashing_store(
     Never raises -- a probe failure returns False (does not
     block).
     """
-    if not thrash_guardrail_enabled():
+    if not thrash_guardrail_enabled(store_id):
         return False
     if not store_id:
         return False
