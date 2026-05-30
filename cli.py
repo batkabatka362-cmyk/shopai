@@ -4276,6 +4276,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 856: substrate-fire week-over-week trend
+    autonomy_fire_trend_p = sub.add_parser(
+        "autonomy-fire-trend",
+        help=(
+            "Wave 856: per-domain substrate-fire trend "
+            "(current window vs prior window of same size)."
+        ),
+    )
+    autonomy_fire_trend_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+    )
+    autonomy_fire_trend_p.add_argument(
+        "--store", type=str, default="",
+    )
+    autonomy_fire_trend_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 850: substrate-fire degradation alerts
     autonomy_alerts_p = sub.add_parser(
         "autonomy-alerts",
@@ -33493,6 +33511,81 @@ def _cmd_autonomy_armed(args) -> None:
     )
 
 
+def _cmd_autonomy_fire_trend(args) -> None:
+    """Wave 856: substrate-fire week-over-week trend."""
+    from core.automation.substrate_fire_trend import (
+        compute_fire_trend,
+    )
+    window = float(getattr(args, "window_hours", 168.0) or 168.0)
+    store = (getattr(args, "store", "") or "").strip()
+    as_json = bool(getattr(args, "json", False))
+    report = compute_fire_trend(
+        window_hours=window,
+        store_id=store or None,
+    )
+    if as_json:
+        print(json.dumps({
+            "window_hours": report.window_hours,
+            "store_id": report.store_id,
+            "rising_count": report.rising_count,
+            "falling_count": report.falling_count,
+            "flat_count": report.flat_count,
+            "per_domain": [
+                {
+                    "domain": d.domain,
+                    "verdict": d.verdict,
+                    "current_success_rate": round(
+                        d.current_success_rate, 3,
+                    ),
+                    "previous_success_rate": round(
+                        d.previous_success_rate, 3,
+                    ),
+                    "delta_success_rate": round(
+                        d.delta_success_rate, 3,
+                    ),
+                    "current_fired": d.current_fired,
+                    "previous_fired": d.previous_fired,
+                    "current_errors": d.current_errors,
+                    "previous_errors": d.previous_errors,
+                }
+                for d in report.per_domain
+            ],
+        }, indent=2, default=str))
+        return
+    scope = f"store={store}" if store else "fleet"
+    print(
+        f"Substrate-fire trend ({scope}, "
+        f"{window:.0f}h vs prior {window:.0f}h):"
+    )
+    print()
+    if not report.per_domain:
+        print(
+            "  (No domains have fire history. Arm + "
+            "SHOPAI_AUTONOMY_FIRE_CONFIRM=1 to populate.)"
+        )
+        return
+    print(
+        f"  {'verdict':<10} {'domain':<22} "
+        f"{'cur%':>6} {'prev%':>6} {'delta%':>7} "
+        f"{'cur_e':>6} {'prev_e':>6}"
+    )
+    for d in report.per_domain:
+        marker = {
+            "rising": "[OK ]",
+            "falling": "[WRN]",
+            "new": "[ + ]",
+            "dormant": "[ - ]",
+            "flat": "[ . ]",
+        }.get(d.verdict, "[ ? ]")
+        print(
+            f"  {marker} {d.verdict:<5} {d.domain:<22} "
+            f"{d.current_success_rate * 100:>5.1f}% "
+            f"{d.previous_success_rate * 100:>5.1f}% "
+            f"{d.delta_success_rate * 100:>+6.1f}% "
+            f"{d.current_errors:>6} {d.previous_errors:>6}"
+        )
+
+
 def _cmd_autonomy_alerts(args) -> None:
     """Wave 850: substrate-fire degradation alerts."""
     from core.automation.substrate_fire_alerts import (
@@ -47722,6 +47815,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "autonomy-alerts":
         _cmd_autonomy_alerts(args)
+        return
+    if args.command == "autonomy-fire-trend":
+        _cmd_autonomy_fire_trend(args)
         return
 
     if args.command == "product-seo-status":
