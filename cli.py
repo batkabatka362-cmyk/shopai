@@ -32659,7 +32659,9 @@ def _cmd_autonomy_status(args) -> None:
             f"{', '.join(report.paused_domains)}"
         )
     # W818: pre-fetch armed state + firing modes once for the
-    # per-domain rendering loop below.
+    # per-domain rendering loop below. W827: also load the
+    # registered discoverers so each row can show whether
+    # cycle has a payload-generator for it.
     try:
         from core.automation.autonomy_armed import (
             DOMAIN_FIRING_MODE, list_armed,
@@ -32669,6 +32671,19 @@ def _cmd_autonomy_status(args) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.debug("autonomy-status mode probe raised: %s", exc)
         _armed_set, _mode_map = set(), {}
+    try:
+        from core.automation import (  # noqa: F401
+            discoverer_registry,
+        )
+        from core.automation.payload_discoverer import (
+            registered_domains as _registered_discoverers,
+        )
+        _disc_set = set(_registered_discoverers())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "autonomy-status discoverer probe raised: %s", exc,
+        )
+        _disc_set = set()
 
     print()
     print("  Per-domain:")
@@ -32682,10 +32697,16 @@ def _cmd_autonomy_status(args) -> None:
             arm_badge = (
                 "[FIRE]" if mode == "engine" else "[NOOP]"
             )
+            # W827: armed substrate WITH a discoverer can
+            # actually fire via cycle bridge (W822).
+            if mode == "substrate" and d.name in _disc_set:
+                arm_badge = "[FIRE]"
         else:
             arm_badge = "[idle]"
+        disc_badge = "(disc)" if d.name in _disc_set else "     "
         print(
-            f"    {dmk} {arm_badge} {d.name:<18} "
+            f"    {dmk} {arm_badge} {disc_badge} "
+            f"{d.name:<18} "
             f"verdict={d.verdict:<10} "
             f"applied={d.applied_count}"
         )
@@ -32698,26 +32719,44 @@ def _cmd_autonomy_status(args) -> None:
         print()
         print(f"  Next: {report.overall_next_action}")
 
-    # W818: footer summary of armed counts + hint when nothing
-    # is armed.
+    # W818 + W827: footer summary of armed counts + discoverer
+    # coverage hint.
     armed_count = len(_armed_set)
+    n_disc = len(_disc_set)
+    n_total = len(report.domains)
     if armed_count == 0:
         print()
         print(
             "  No domains armed. Arm one via: "
             "shopai autonomy-arm <domain>"
         )
+        if n_disc:
+            print(
+                f"  Discoverers registered: {n_disc} "
+                f"({', '.join(sorted(_disc_set))})"
+            )
     else:
-        n_fire = sum(
+        # Armed domains that will FIRE = engine-mode armed +
+        # substrate-mode-with-discoverer armed.
+        n_engine_fire = sum(
             1 for n in _armed_set
             if _mode_map.get(n) == "engine"
         )
-        n_noop = armed_count - n_fire
+        n_sub_fire = sum(
+            1 for n in _armed_set
+            if (
+                _mode_map.get(n) == "substrate"
+                and n in _disc_set
+            )
+        )
+        n_noop = armed_count - n_engine_fire - n_sub_fire
         print()
         print(
             f"  ARMED: {armed_count}  "
-            f"([FIRE]={n_fire}, [NOOP]={n_noop}, "
-            f"[idle]={len(report.domains) - armed_count})"
+            f"([FIRE]={n_engine_fire + n_sub_fire}, "
+            f"[NOOP]={n_noop}, "
+            f"[idle]={n_total - armed_count})  "
+            f"Discoverers: {n_disc}"
         )
 
 
