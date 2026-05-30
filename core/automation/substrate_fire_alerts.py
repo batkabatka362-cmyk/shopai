@@ -173,4 +173,18 @@ def compute_fire_alerts(
         report.alerts.extend(
             _evaluate(k, min_rate, max_err, min_sample),
         )
+
+    # W853: persist this firing to alert history for the
+    # auto-disarm bridge + multi-day trend analysis.
+    if report.alerts:
+        try:
+            from core.automation.substrate_fire_alert_history import (  # noqa
+                record_alerts,
+            )
+            record_alerts(report.alerts, store_id=store_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "fire-alert history record raised: %s", exc,
+            )
+
     return report
