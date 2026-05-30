@@ -58,6 +58,69 @@ class OverviewSnapshot:
         return "armed"
 
 
+_VERDICT_EMOJI = {
+    "idle": "[.]",
+    "armed": "[~]",
+    "active": "[>]",
+    "degraded": "[!]",
+}
+
+
+def render_text(snap: "OverviewSnapshot") -> str:
+    """Wave 892 default: one key=value line."""
+    scope = (
+        f"store={snap.store_id}" if snap.store_id else "fleet"
+    )
+    return (
+        f"verdict={snap.verdict}  "
+        f"armed={snap.armed_total}  "
+        f"fires={snap.fires_invoked}/{snap.fires_total}  "
+        f"errors={snap.fires_errors}  "
+        f"cooldown_blocked={snap.cooldown_blocked}  "
+        f"alerts={snap.alerts_critical}c/{snap.alerts_warn}w  "
+        f"({scope}, {snap.window_hours:.0f}h)"
+    )
+
+
+def render_markdown(snap: "OverviewSnapshot") -> str:
+    """Wave 897: GitHub-flavored markdown table.
+
+    Suitable for embedding in PR comments, status pages, or
+    GitHub Actions summaries. Header line + one row.
+    """
+    scope = (
+        f"`{snap.store_id}`" if snap.store_id else "fleet"
+    )
+    return (
+        f"### Autonomy overview ({scope}, "
+        f"{snap.window_hours:.0f}h)\n"
+        "\n"
+        "| verdict | armed | fires | errors | cooldown |"
+        " alerts |\n"
+        "|---|---|---|---|---|---|\n"
+        f"| **{snap.verdict}** | {snap.armed_total} |"
+        f" {snap.fires_invoked}/{snap.fires_total} |"
+        f" {snap.fires_errors} | {snap.cooldown_blocked} |"
+        f" {snap.alerts_critical}c/{snap.alerts_warn}w |"
+    )
+
+
+def render_shell_prompt(snap: "OverviewSnapshot") -> str:
+    """Wave 898: minimal shell-prompt token.
+
+    Designed for `PS1` / `$PROMPT` embedding. Compact form:
+    one short marker + counts. No trailing newline.
+    """
+    marker = _VERDICT_EMOJI.get(snap.verdict, "[?]")
+    return (
+        f"{marker}{snap.verdict[:3]}"
+        f" a{snap.armed_total}"
+        f" f{snap.fires_invoked}/{snap.fires_total}"
+        f" e{snap.fires_errors}"
+        f" !{snap.alerts_critical}"
+    )
+
+
 def build_overview(
     *,
     window_hours: float = 24.0,

@@ -4496,6 +4496,20 @@ def build_parser() -> argparse.ArgumentParser:
     autonomy_overview_p.add_argument(
         "--json", action="store_true",
     )
+    autonomy_overview_p.add_argument(
+        "--markdown", action="store_true",
+        help=(
+            "Wave 897: GitHub-flavored markdown output for "
+            "PR comments / status pages."
+        ),
+    )
+    autonomy_overview_p.add_argument(
+        "--shell-prompt", action="store_true",
+        help=(
+            "Wave 898: compact shell-prompt token for PS1 "
+            "embedding."
+        ),
+    )
 
     # Wave 850: substrate-fire degradation alerts
     autonomy_alerts_p = sub.add_parser(
@@ -34635,10 +34649,17 @@ def _cmd_autonomy_fire_trend(args) -> None:
 
 def _cmd_autonomy_overview(args) -> None:
     """Wave 892: one-line autonomy overview."""
-    from core.automation.autonomy_overview import build_overview
+    from core.automation.autonomy_overview import (
+        build_overview,
+        render_markdown,
+        render_shell_prompt,
+        render_text,
+    )
     window = float(getattr(args, "window_hours", 24.0) or 24.0)
     store = (getattr(args, "store", "") or "").strip()
     as_json = bool(getattr(args, "json", False))
+    as_markdown = bool(getattr(args, "markdown", False))
+    as_shell = bool(getattr(args, "shell_prompt", False))
     snap = build_overview(
         window_hours=window,
         store_id=store or None,
@@ -34665,17 +34686,13 @@ def _cmd_autonomy_overview(args) -> None:
             "alerts_warn": snap.alerts_warn,
         }, indent=2, default=str))
         return
-    # Single-line key=value form
-    scope = f"store={store}" if store else "fleet"
-    print(
-        f"verdict={snap.verdict}  "
-        f"armed={snap.armed_total}  "
-        f"fires={snap.fires_invoked}/{snap.fires_total}  "
-        f"errors={snap.fires_errors}  "
-        f"cooldown_blocked={snap.cooldown_blocked}  "
-        f"alerts={snap.alerts_critical}c/{snap.alerts_warn}w  "
-        f"({scope}, {window:.0f}h)"
-    )
+    if as_markdown:
+        print(render_markdown(snap))
+        return
+    if as_shell:
+        print(render_shell_prompt(snap))
+        return
+    print(render_text(snap))
 
 
 def _cmd_autonomy_alerts(args) -> None:
