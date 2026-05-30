@@ -160,4 +160,22 @@ def maybe_auto_disarm() -> AutoDisarmReport:
                 )
             report.decisions.append(decision)
 
+    # W858: persist every decision to the disarm log so
+    # operator surfaces + the W859 cooldown can read it.
+    if report.decisions:
+        try:
+            from core.automation.substrate_fire_disarm_log import (  # noqa
+                record_disarm_decisions,
+            )
+            # Record bridge_enabled state too for forensics
+            for d in report.decisions:
+                d.__dict__["bridge_enabled"] = (
+                    report.bridge_enabled
+                )
+            record_disarm_decisions(report.decisions)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "disarm log record raised: %s", exc,
+            )
+
     return report

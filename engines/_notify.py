@@ -698,6 +698,43 @@ def collect_alerts() -> list[NotifyAlert]:
             "notify: shipping_alert probe raised: %s", exc,
         )
 
+    # 14b. Wave 858: notify on recent auto-disarm bridge fires.
+    # When the bridge revokes a domain's armed flag, surface
+    # a critical alert so operators see the disarm in their
+    # webhook/Slack feed immediately.
+    try:
+        from core.automation.substrate_fire_disarm_log import (  # noqa
+            recent_disarms,
+        )
+        fresh = recent_disarms(
+            window_hours=1.0,
+            only_disarmed=True,
+        )
+        for r in fresh:
+            domain = r.get("domain") or ""
+            if not domain:
+                continue
+            alerts.append(NotifyAlert(
+                kind="substrate_fire_auto_disarmed",
+                severity="critical",
+                message=(
+                    f"[{domain}] auto-disarmed by bridge: "
+                    f"{r.get('reason') or 'threshold hit'}"
+                ),
+                context={
+                    "domain": domain,
+                    "consecutive_days": (
+                        r.get("consecutive_days") or 0
+                    ),
+                    "threshold": r.get("threshold") or 0,
+                    "reason": r.get("reason") or "",
+                },
+            ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "notify: auto-disarm probe raised: %s", exc,
+        )
+
     # 15. Wave 851: substrate-fire degradation alerts (from
     # the W849 fire alerter). Critical alerts always surface;
     # warn alerts roll up to a single warn line.
