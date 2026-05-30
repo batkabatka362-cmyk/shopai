@@ -4521,6 +4521,32 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # Wave 901: autonomy-overview-history
+    autonomy_overview_history_p = sub.add_parser(
+        "autonomy-overview-history",
+        help=(
+            "Wave 901: query the persisted autonomy-overview "
+            "history (recent entries + verdict transitions)."
+        ),
+    )
+    autonomy_overview_history_p.add_argument(
+        "--limit", type=int, default=20,
+    )
+    autonomy_overview_history_p.add_argument(
+        "--store", type=str, default="",
+    )
+    autonomy_overview_history_p.add_argument(
+        "--window-hours", type=float, default=0.0,
+        help="0 = no window filter (default)",
+    )
+    autonomy_overview_history_p.add_argument(
+        "--transitions", action="store_true",
+        help="Show verdict-change events only.",
+    )
+    autonomy_overview_history_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 850: substrate-fire degradation alerts
     autonomy_alerts_p = sub.add_parser(
         "autonomy-alerts",
@@ -34742,6 +34768,87 @@ def _cmd_autonomy_overview(args) -> None:
     print(render_text(snap))
 
 
+def _cmd_autonomy_overview_history(args) -> None:
+    """Wave 901: history query CLI."""
+    from core.automation.autonomy_overview_history import (
+        recent_entries,
+        verdict_transitions,
+    )
+    store = (getattr(args, "store", "") or "").strip()
+    limit = int(getattr(args, "limit", 20) or 20)
+    window = float(getattr(args, "window_hours", 0.0) or 0.0)
+    as_json = bool(getattr(args, "json", False))
+    transitions_only = bool(getattr(args, "transitions", False))
+
+    if transitions_only:
+        trans = verdict_transitions(store_id=store or None)
+        if as_json:
+            print(json.dumps({
+                "store_id": store or None,
+                "transitions": trans,
+            }, indent=2, default=str))
+            return
+        scope = f"store={store}" if store else "fleet"
+        print(
+            f"Verdict transitions ({scope}, "
+            f"{len(trans)} change(s)):"
+        )
+        if not trans:
+            print("  (no history yet)")
+            return
+        for t in trans:
+            ts = time.strftime(
+                "%Y-%m-%d %H:%M",
+                time.localtime(t.get("at", 0)),
+            )
+            frm = t.get("from") or "(none)"
+            print(
+                f"  {ts}  {frm:>9} -> {t.get('to'):<10}"
+            )
+        return
+
+    entries = recent_entries(
+        limit=limit,
+        store_id=store or None,
+        window_hours=window or None,
+    )
+    if as_json:
+        print(json.dumps({
+            "store_id": store or None,
+            "limit": limit,
+            "window_hours": window,
+            "entries": [e.to_dict() for e in entries],
+        }, indent=2, default=str))
+        return
+    scope = f"store={store}" if store else "fleet"
+    print(
+        f"Autonomy-overview history ({scope}, "
+        f"{len(entries)} entry/entries):"
+    )
+    if not entries:
+        print("  (no history yet)")
+        print(
+            "  ==> shopai autonomy-overview "
+            "(runs once and seeds the log)"
+        )
+        return
+    print(
+        f"{'when':<17} {'verdict':<10} {'armed':>5} "
+        f"{'fires':>9} {'errs':>4} {'crit':>4}"
+    )
+    for e in entries:
+        ts = time.strftime(
+            "%Y-%m-%d %H:%M",
+            time.localtime(e.captured_at),
+        )
+        fires = f"{e.fires_invoked}/{e.fires_total}"
+        print(
+            f"{ts:<17} {e.verdict:<10} "
+            f"{e.armed_total:>5} {fires:>9} "
+            f"{e.fires_errors:>4} {e.alerts_critical:>4}"
+        )
+
+
 def _cmd_autonomy_alerts(args) -> None:
     """Wave 850: substrate-fire degradation alerts."""
     from core.automation.substrate_fire_alerts import (
@@ -49418,6 +49525,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "autonomy-overview":
         _cmd_autonomy_overview(args)
+        return
+    if args.command == "autonomy-overview-history":
+        _cmd_autonomy_overview_history(args)
         return
     if args.command == "autonomy-fire-trend":
         _cmd_autonomy_fire_trend(args)
