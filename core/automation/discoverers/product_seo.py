@@ -43,15 +43,16 @@ _PROPOSE_DESC_CHARS = 160
 _PROPOSE_TITLE_CHARS = 80
 
 
-def _limit() -> int:
-    raw = os.environ.get(
-        "SHOPAI_PRODUCT_SEO_DISCOVER_LIMIT",
-        str(_DEFAULT_LIMIT),
+def _limit(store_id: str | None = None) -> int:
+    """W883: per-store override via
+    SHOPAI_PRODUCT_SEO_DISCOVER_LIMIT_<STORE>."""
+    from core.automation.discoverer_env import resolve_int
+    return resolve_int(
+        _DOMAIN, "LIMIT",
+        default=_DEFAULT_LIMIT,
+        store_id=store_id,
+        min_value=1,
     )
-    try:
-        return max(1, int(raw))
-    except (TypeError, ValueError):
-        return _DEFAULT_LIMIT
 
 
 def _strip_html(text: str) -> str:
@@ -123,7 +124,9 @@ def _propose_for(product: dict[str, Any]) -> list[dict]:
     return rows
 
 
-def _fetch_products() -> list[dict[str, Any]]:
+def _fetch_products(
+    store_id: str | None = None,
+) -> list[dict[str, Any]]:
     try:
         from core.adapters.router import get_router  # noqa
         from core.adapters.base import Capability
@@ -144,7 +147,7 @@ def _fetch_products() -> list[dict[str, Any]]:
     if cap is None:
         return []
     try:
-        res = router.execute(cap, {"limit": _limit()})
+        res = router.execute(cap, {"limit": _limit(store_id)})
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "product_seo discoverer: execute raised: %s", exc,
@@ -164,7 +167,7 @@ def _fetch_products() -> list[dict[str, Any]]:
 def discover_product_seo(*, store_id: str | None = None) -> DiscoveryResult:
     now = time.time()
     try:
-        products = _fetch_products()
+        products = _fetch_products(store_id=store_id)
     except Exception as exc:  # noqa: BLE001
         return DiscoveryResult(
             domain=_DOMAIN,

@@ -139,7 +139,7 @@ class TestDiscover:
         assert r.payload[0]["action"] == "reorder"
 
     def test_fetch_raise_captured(self):
-        def explode():
+        def explode(*args, **kwargs):
             raise RuntimeError("api dead")
         with patch(
             "core.automation.discoverers.inventory."

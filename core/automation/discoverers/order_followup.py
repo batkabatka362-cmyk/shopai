@@ -36,15 +36,16 @@ _DOMAIN = "order_followup"
 _DEFAULT_LOOKBACK_DAYS = 30
 
 
-def _lookback_days() -> int:
-    raw = os.environ.get(
-        "SHOPAI_ORDER_FOLLOWUP_DISCOVER_DAYS",
-        str(_DEFAULT_LOOKBACK_DAYS),
+def _lookback_days(store_id: str | None = None) -> int:
+    """W883: per-store override via
+    SHOPAI_ORDER_FOLLOWUP_DISCOVER_DAYS_<STORE>."""
+    from core.automation.discoverer_env import resolve_int
+    return resolve_int(
+        _DOMAIN, "DAYS",
+        default=_DEFAULT_LOOKBACK_DAYS,
+        store_id=store_id,
+        min_value=1,
     )
-    try:
-        return max(1, int(raw))
-    except (TypeError, ValueError):
-        return _DEFAULT_LOOKBACK_DAYS
 
 
 def _classify_order(order: dict[str, Any]) -> str | None:
@@ -102,7 +103,9 @@ def _classify_order(order: dict[str, Any]) -> str | None:
     return "shopai-followup-pending-review"
 
 
-def _fetch_orders() -> list[dict[str, Any]]:
+def _fetch_orders(
+    store_id: str | None = None,
+) -> list[dict[str, Any]]:
     try:
         from core.adapters.router import get_router  # noqa
         from core.adapters.base import Capability
@@ -120,7 +123,7 @@ def _fetch_orders() -> list[dict[str, Any]]:
             exc,
         )
         return []
-    days = _lookback_days()
+    days = _lookback_days(store_id)
     since = (
         datetime.now(timezone.utc) - timedelta(days=days)
     ).isoformat()
@@ -147,7 +150,7 @@ def _fetch_orders() -> list[dict[str, Any]]:
 def discover_order_followup(*, store_id: str | None = None) -> DiscoveryResult:
     now = time.time()
     try:
-        orders = _fetch_orders()
+        orders = _fetch_orders(store_id=store_id)
     except Exception as exc:  # noqa: BLE001
         return DiscoveryResult(
             domain=_DOMAIN,

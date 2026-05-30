@@ -127,7 +127,7 @@ class TestDiscover:
             assert p["action"] == "tag_followup"
 
     def test_fetch_raise_captured(self):
-        def explode():
+        def explode(*args, **kwargs):
             raise RuntimeError("network down")
         with patch(
             "core.automation.discoverers.order_followup."

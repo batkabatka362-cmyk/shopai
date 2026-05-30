@@ -42,18 +42,29 @@ _DEFAULT_SAFETY_STOCK = 5
 _DEFAULT_REORDER_MULTIPLIER = 2
 
 
-def _limit() -> int:
-    raw = os.environ.get(
-        "SHOPAI_INVENTORY_DISCOVER_LIMIT",
-        str(_DEFAULT_LIMIT),
+def _limit(store_id: str | None = None) -> int:
+    """W883: per-store override."""
+    from core.automation.discoverer_env import resolve_int
+    return resolve_int(
+        _DOMAIN, "LIMIT",
+        default=_DEFAULT_LIMIT,
+        store_id=store_id,
+        min_value=1,
     )
-    try:
-        return max(1, int(raw))
-    except (TypeError, ValueError):
-        return _DEFAULT_LIMIT
 
 
-def _safety_stock() -> int:
+def _safety_stock(store_id: str | None = None) -> int:
+    """W883: per-store override -- non-DISCOVER naming, direct env."""
+    sid = (store_id or "").upper().replace("-", "_")
+    if sid:
+        per_store = os.environ.get(
+            f"SHOPAI_INVENTORY_SAFETY_STOCK_{sid}", "",
+        )
+        if per_store:
+            try:
+                return max(0, int(per_store))
+            except (TypeError, ValueError):
+                pass
     raw = os.environ.get(
         "SHOPAI_INVENTORY_SAFETY_STOCK",
         str(_DEFAULT_SAFETY_STOCK),
@@ -64,7 +75,20 @@ def _safety_stock() -> int:
         return _DEFAULT_SAFETY_STOCK
 
 
-def _reorder_multiplier() -> int:
+def _reorder_multiplier(
+    store_id: str | None = None,
+) -> int:
+    """W883: per-store override -- non-DISCOVER naming."""
+    sid = (store_id or "").upper().replace("-", "_")
+    if sid:
+        per_store = os.environ.get(
+            f"SHOPAI_INVENTORY_REORDER_MULTIPLIER_{sid}", "",
+        )
+        if per_store:
+            try:
+                return max(2, int(per_store))
+            except (TypeError, ValueError):
+                pass
     raw = os.environ.get(
         "SHOPAI_INVENTORY_REORDER_MULTIPLIER",
         str(_DEFAULT_REORDER_MULTIPLIER),
@@ -133,7 +157,9 @@ def _propose_for_level(
     }
 
 
-def _fetch_levels() -> list[dict[str, Any]]:
+def _fetch_levels(
+    store_id: str | None = None,
+) -> list[dict[str, Any]]:
     try:
         from core.adapters.router import get_router  # noqa
         from core.adapters.base import Capability
@@ -159,7 +185,7 @@ def _fetch_levels() -> list[dict[str, Any]]:
     if cap is None:
         return []
     try:
-        res = router.execute(cap, {"limit": _limit()})
+        res = router.execute(cap, {"limit": _limit(store_id)})
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "inventory discoverer: execute raised: %s", exc,
@@ -182,7 +208,7 @@ def _fetch_levels() -> list[dict[str, Any]]:
 def discover_inventory(*, store_id: str | None = None) -> DiscoveryResult:
     now = time.time()
     try:
-        levels = _fetch_levels()
+        levels = _fetch_levels(store_id=store_id)
     except Exception as exc:  # noqa: BLE001
         return DiscoveryResult(
             domain=_DOMAIN,
@@ -192,8 +218,8 @@ def discover_inventory(*, store_id: str | None = None) -> DiscoveryResult:
             store_id=store_id,
             error=f"fetch raised: {exc!s:.200}",
         )
-    safety = _safety_stock()
-    mult = _reorder_multiplier()
+    safety = _safety_stock(store_id)
+    mult = _reorder_multiplier(store_id)
     max_q = _max_quantity_default()
     payload: list[dict] = []
     for lvl in levels:

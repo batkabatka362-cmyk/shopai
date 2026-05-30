@@ -154,7 +154,7 @@ class TestDiscover:
             )
 
     def test_fetch_raise_captured(self):
-        def explode():
+        def explode(*args, **kwargs):
             raise RuntimeError("oops")
         with patch(
             "core.automation.discoverers.product_seo."
