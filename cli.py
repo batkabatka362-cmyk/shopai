@@ -4118,6 +4118,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_az_p.add_argument("--json", action="store_true")
 
+    # Wave 852: Pattern BA (notify autonomy_kinds parity)
+    pattern_ba_p = sub.add_parser(
+        "pattern-ba-audit",
+        help=(
+            "Wave 852: notify _notify.autonomy_kinds set "
+            "must mention exactly the per-domain alert kinds "
+            "expected from DOMAIN_APPLY_FLAGS."
+        ),
+    )
+    pattern_ba_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -30704,6 +30715,47 @@ def _cmd_pattern_as_audit(args) -> None:
         )
 
 
+def _cmd_pattern_ba_audit(args) -> None:
+    """Wave 852: notify autonomy_kinds parity."""
+    from engines._pattern_ba_audit import run_pattern_ba_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_ba_audit()
+    if as_json:
+        print(json.dumps({
+            "expected_kinds": report.expected_kinds,
+            "catalog_kinds": report.catalog_kinds,
+            "missing_in_catalog": (
+                report.missing_in_catalog
+            ),
+            "extra_in_catalog": report.extra_in_catalog,
+            "violations": [
+                {
+                    "expected": v.expected,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern BA FAILED -- "
+            f"{len(report.violations)} drift(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.expected}] {v.reason}")
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern BA OK -- "
+            f"{len(report.catalog_kinds)} alert kind(s) "
+            "match the expected autonomy domain set."
+        )
+
+
 def _cmd_pattern_az_audit(args) -> None:
     """Wave 842: substrate_fire log invariants."""
     from engines._pattern_az_audit import run_pattern_az_audit
@@ -38376,6 +38428,25 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_ba":
+            from engines._pattern_ba_audit import (
+                run_pattern_ba_audit,
+            )
+            r = run_pattern_ba_audit()
+            return {
+                "ok": not r.has_violations,
+                "expected_kinds": r.expected_kinds,
+                "catalog_kinds": r.catalog_kinds,
+                "missing_in_catalog": r.missing_in_catalog,
+                "extra_in_catalog": r.extra_in_catalog,
+                "violations": [
+                    {
+                        "expected": v.expected,
+                        "reason": v.reason,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -38397,7 +38468,7 @@ _AUDIT_ORDER = (
     "pattern_an", "pattern_ao", "pattern_ap", "pattern_aq",
     "pattern_ar", "pattern_as", "pattern_at", "pattern_au",
     "pattern_av", "pattern_aw", "pattern_ax", "pattern_ay",
-    "pattern_az",
+    "pattern_az", "pattern_ba",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -38447,6 +38518,7 @@ _AUDIT_LABELS = {
     "pattern_ax": "Pattern AX (action-string parity)",
     "pattern_ay": "Pattern AY (discoverer test file)",
     "pattern_az": "Pattern AZ (substrate_fire log invariants)",
+    "pattern_ba": "Pattern BA (notify autonomy_kinds parity)",
 }
 
 
@@ -47529,6 +47601,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-az-audit":
         _cmd_pattern_az_audit(args)
+        return
+
+    if args.command == "pattern-ba-audit":
+        _cmd_pattern_ba_audit(args)
         return
 
     if args.command == "autonomy-env":
