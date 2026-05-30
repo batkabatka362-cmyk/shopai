@@ -4355,6 +4355,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_bw_p.add_argument("--json", action="store_true")
 
+    # Wave 929: Pattern BX (empire guardrail-override surface)
+    pattern_bx_p = sub.add_parser(
+        "pattern-bx-audit",
+        help=(
+            "Wave 929: verify empire-dashboard guardrail-"
+            "override row + JSON envelope."
+        ),
+    )
+    pattern_bx_p.add_argument("--json", action="store_true")
+
     # Wave 926: thrash guardrail status CLI
     thrash_guardrail_p = sub.add_parser(
         "thrash-guardrail",
@@ -31751,6 +31761,43 @@ def _cmd_pattern_bw_audit(args) -> None:
         )
 
 
+def _cmd_pattern_bx_audit(args) -> None:
+    """Wave 929: empire-dashboard guardrail-override row."""
+    from engines._pattern_bx_audit import run_pattern_bx_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_bx_audit()
+    if as_json:
+        print(json.dumps({
+            "invariants_checked": report.invariants_checked,
+            "clean_invariants": report.clean_invariants,
+            "violations": [
+                {
+                    "invariant": v.invariant,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern BX FAILED -- "
+            f"{len(report.violations)} broken link(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.invariant}] {v.reason}")
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern BX OK -- "
+            f"{len(report.clean_invariants)} empire "
+            "guardrail-override link(s) honored."
+        )
+
+
 def _cmd_pattern_bn_audit(args) -> None:
     """Wave 893: autonomy-overview output schema."""
     from engines._pattern_bn_audit import run_pattern_bn_audit
@@ -41005,6 +41052,22 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_bx":
+            from engines._pattern_bx_audit import (
+                run_pattern_bx_audit,
+            )
+            r = run_pattern_bx_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_invariants": r.clean_invariants,
+                "violations": [
+                    {
+                        "invariant": v.invariant,
+                        "reason": v.reason,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -41031,7 +41094,7 @@ _AUDIT_ORDER = (
     "pattern_bh", "pattern_bi", "pattern_bj", "pattern_bk",
     "pattern_bm", "pattern_bn", "pattern_bo", "pattern_bp",
     "pattern_bq", "pattern_br", "pattern_bs", "pattern_bt",
-    "pattern_bu", "pattern_bv", "pattern_bw",
+    "pattern_bu", "pattern_bv", "pattern_bw", "pattern_bx",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -41103,6 +41166,7 @@ _AUDIT_LABELS = {
     "pattern_bu": "Pattern BU (thrash guardrail substrate)",
     "pattern_bv": "Pattern BV (thrash guardrail per-applier wireup)",
     "pattern_bw": "Pattern BW (per-store thrash guardrail)",
+    "pattern_bx": "Pattern BX (empire guardrail-override row)",
 }
 
 
@@ -50269,6 +50333,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "pattern-bw-audit":
         _cmd_pattern_bw_audit(args)
+        return
+    if args.command == "pattern-bx-audit":
+        _cmd_pattern_bx_audit(args)
         return
 
     if args.command == "autonomy-env":
