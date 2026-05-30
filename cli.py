@@ -11524,6 +11524,49 @@ def _cmd_daily_brief(args) -> None:
         logger.debug(
             "daily-brief autonomy block raised: %s", exc,
         )
+
+    # Wave 843: substrate-fire activity row. Surfaces only when
+    # at least one outcome accrued in the window. Quiet
+    # substrate stays silent.
+    try:
+        from core.automation.substrate_fire_log import (
+            recent_substrate_fires,
+        )
+        sf_rows = recent_substrate_fires(
+            window_hours=window_hours,
+        )
+        if sf_rows:
+            n_fired = sum(
+                1 for r in sf_rows
+                if r.get("invoked")
+            )
+            n_dry = sum(
+                1 for r in sf_rows
+                if r.get("reason") == "dry_run"
+            )
+            n_err = sum(
+                1 for r in sf_rows
+                if r.get("reason") in (
+                    "applier_error", "discoverer_error",
+                )
+            )
+            mk = "[BAD]" if n_err else (
+                "[OK ]" if n_fired else "[ - ]"
+            )
+            print(
+                f"  Substrate-fire: {mk} {len(sf_rows)} "
+                f"outcome(s)  fired={n_fired}  "
+                f"dry_run={n_dry}  errors={n_err}"
+            )
+            if n_err:
+                print(
+                    "    -> drill: shopai autonomy-fire-status"
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief substrate-fire block raised: %s", exc,
+        )
+
     # Wave 248: autonomy substrate wiring health. Distinct from
     # the verdict block above -- only surfaces when wiring is
     # broken or degraded. Silent in the clean case.
