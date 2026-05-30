@@ -18,6 +18,11 @@ from core.automation.payload_discoverer import (
 @pytest.fixture(autouse=True)
 def _isolate_registry():
     """Each test starts with a clean registry."""
+    # Populate the real registry before snapshotting so the
+    # teardown can restore it cleanly.
+    from core.automation import (  # noqa: F401
+        discoverer_registry,
+    )
     snapshot = dict(_DISCOVERERS)
     _DISCOVERERS.clear()
     yield
@@ -163,6 +168,58 @@ class TestDiscover:
         assert not r.ok
         assert "payload[1]" in r.error
         assert "must be dict" in r.error
+
+
+class TestDiscoverStoreScope:
+    """W837: per-store scoping of discover()."""
+
+    def test_store_id_forwarded_when_supported(self):
+        captured = {"sid": None}
+
+        def fake(*, store_id: str | None = None):
+            captured["sid"] = store_id
+            return DiscoveryResult(
+                domain="shipping_alert",
+                payload=[],
+                source="test",
+                store_id=store_id,
+            )
+        register_discoverer("shipping_alert", fake)
+        r = discover("shipping_alert", store_id="store-7")
+        assert captured["sid"] == "store-7"
+        assert r.store_id == "store-7"
+
+    def test_legacy_zero_arg_discoverer_works(self):
+        def legacy():
+            return DiscoveryResult(
+                domain="shipping_alert",
+                payload=[],
+                source="legacy",
+            )
+        register_discoverer("shipping_alert", legacy)
+        # Supplying store_id when discoverer doesn't accept
+        # must not raise
+        r = discover("shipping_alert", store_id="store-7")
+        assert r.ok
+        assert r.store_id is None  # legacy discoverer didn't set
+
+    def test_no_store_id_means_fleet_wide(self):
+        captured: dict = {"called": False, "sid": "unset"}
+
+        def fake(*, store_id: str | None = None):
+            captured["called"] = True
+            captured["sid"] = store_id
+            return DiscoveryResult(
+                domain="shipping_alert",
+                payload=[],
+                source="test",
+            )
+        register_discoverer("shipping_alert", fake)
+        r = discover("shipping_alert")
+        # fn() called without store_id -> default None
+        assert captured["called"]
+        assert captured["sid"] is None
+        assert r.store_id is None
 
 
 class TestDiscoverAllArmedSubstrate:

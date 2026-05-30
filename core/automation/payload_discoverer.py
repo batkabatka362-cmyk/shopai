@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -45,6 +46,7 @@ class DiscoveryResult:
     source: str = ""
     discovered_at: float = field(default_factory=time.time)
     error: str = ""
+    store_id: str | None = None  # W837 per-store scope
 
     @property
     def ok(self) -> bool:
@@ -97,10 +99,21 @@ def registered_domains() -> list[str]:
     return sorted(_DISCOVERERS)
 
 
-def discover(domain: str) -> DiscoveryResult:
+def discover(
+    domain: str,
+    *,
+    store_id: str | None = None,
+) -> DiscoveryResult:
     """Run the registered discoverer for ``domain``. Returns a
     ``DiscoveryResult`` with payload, source, timing, and
-    optional error. Never raises."""
+    optional error. Never raises.
+
+    W837: when ``store_id`` is supplied AND the discoverer's
+    signature accepts a ``store_id`` kwarg, the value is
+    forwarded. Discoverers that don't accept the kwarg are
+    invoked without it (back-compat with the W821 contract
+    where discoverers were zero-arg).
+    """
     now = time.time()
     fn = _DISCOVERERS.get(domain)
     if fn is None:
@@ -112,7 +125,18 @@ def discover(domain: str) -> DiscoveryResult:
             error=f"no discoverer registered for {domain!r}",
         )
     try:
-        result = fn()
+        if store_id is not None:
+            # Forward store_id only if the discoverer accepts it
+            try:
+                sig = inspect.signature(fn)
+                if "store_id" in sig.parameters:
+                    result = fn(store_id=store_id)
+                else:
+                    result = fn()
+            except (TypeError, ValueError):
+                result = fn()
+        else:
+            result = fn()
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "discoverer for %s raised: %s", domain, exc,
@@ -163,10 +187,18 @@ def discover(domain: str) -> DiscoveryResult:
     return result
 
 
-def discover_all_armed_substrate() -> list[DiscoveryResult]:
+def discover_all_armed_substrate(
+    *,
+    store_id: str | None = None,
+) -> list[DiscoveryResult]:
     """Discover payloads for every CURRENTLY-armed substrate-
     mode domain that has a registered discoverer. Used by the
-    cycle controller (W822+)."""
+    cycle controller (W822+).
+
+    W837: when ``store_id`` is supplied, every discoverer call
+    is scoped to that store + each DiscoveryResult carries the
+    store_id for downstream attribution.
+    """
     out: list[DiscoveryResult] = []
     try:
         from core.automation.autonomy_armed import (
@@ -182,5 +214,8 @@ def discover_all_armed_substrate() -> list[DiscoveryResult]:
             continue
         if not has_discoverer(entry.domain):
             continue
-        out.append(discover(entry.domain))
+        r = discover(entry.domain, store_id=store_id)
+        if store_id is not None and r.store_id is None:
+            r.store_id = store_id
+        out.append(r)
     return out

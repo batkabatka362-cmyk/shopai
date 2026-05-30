@@ -31,11 +31,11 @@ class TestLive:
         assert len(r.engine_domains) == 2
 
     def test_substrate_without_discoverer_reports(self):
-        # 8 substrate - 1 registered (shipping_alert) = 7 still
-        # needing a discoverer
+        # 8 substrate - 8 registered (all of them) = 0 still
+        # needing a discoverer. Coverage achieved W832.
         r = run_pattern_av_audit()
         assert (
-            len(r.substrate_without_discoverer) == 7
+            len(r.substrate_without_discoverer) == 0
         )
         assert "shipping_alert" not in (
             r.substrate_without_discoverer

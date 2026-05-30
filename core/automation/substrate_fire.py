@@ -45,6 +45,7 @@ class SubstrateFireOutcome:
     duration_ms: float = 0.0
     reason: str = ""  # e.g. "fired", "no_discoverer", "dry_run"
     error: str = ""
+    store_id: str | None = None  # W837 per-store scope
 
 
 @dataclass
@@ -54,6 +55,7 @@ class SubstrateFireReport:
     )
     confirm_set: bool = False
     test_skip: bool = False
+    store_id: str | None = None  # W837 per-store scope
 
     @property
     def total_invoked(self) -> int:
@@ -64,10 +66,19 @@ class SubstrateFireReport:
         return sum(o.discovered for o in self.outcomes)
 
 
-def fire_armed_substrate_domains() -> SubstrateFireReport:
+def fire_armed_substrate_domains(
+    *,
+    store_id: str | None = None,
+) -> SubstrateFireReport:
     """Iterate armed substrate-mode domains + run discoverer
-    -> applier chain. Returns a report; never raises."""
+    -> applier chain. Returns a report; never raises.
+
+    W837: when ``store_id`` is supplied, discoverers are
+    invoked scoped to that store + outcomes carry the
+    store_id for downstream attribution.
+    """
     report = SubstrateFireReport()
+    report.store_id = store_id
     if _is_test_environment():
         report.test_skip = True
         return report
@@ -97,12 +108,14 @@ def fire_armed_substrate_domains() -> SubstrateFireReport:
         domain = entry.domain
         if DOMAIN_FIRING_MODE.get(domain) != "substrate":
             continue
-        outcome = SubstrateFireOutcome(domain=domain)
+        outcome = SubstrateFireOutcome(
+            domain=domain, store_id=store_id,
+        )
         if not has_discoverer(domain):
             outcome.reason = "no_discoverer"
             report.outcomes.append(outcome)
             continue
-        disc = discover(domain)
+        disc = discover(domain, store_id=store_id)
         if not disc.ok:
             outcome.reason = "discoverer_error"
             outcome.error = disc.error

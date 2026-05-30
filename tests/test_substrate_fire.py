@@ -20,6 +20,12 @@ from core.automation.substrate_fire import (
 def _disable_pytest_guards():
     """Disable substrate_fire + autonomy_armed test-env guards
     so the bridge actually runs in tests."""
+    # Ensure the discoverer registry is populated BEFORE we
+    # snapshot it -- otherwise the teardown restores an empty
+    # registry and leaks across to other test modules.
+    from core.automation import (  # noqa: F401
+        discoverer_registry,
+    )
     state_ref = {"s": ArmedState()}
 
     def fake_load():

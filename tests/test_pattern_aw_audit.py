@@ -23,9 +23,10 @@ class TestLive:
         assert "catalog_quality" in r.clean_discoverers
         assert "order_followup" in r.clean_discoverers
 
-    def test_scans_three_discoverers(self):
+    def test_scans_eight_discoverers(self):
         r = run_pattern_aw_audit()
-        assert len(r.discoverers_scanned) == 3
+        # 8/8 substrate-mode discoverers registered (W832)
+        assert len(r.discoverers_scanned) == 8
 
 
 class TestSyntheticDrift:
