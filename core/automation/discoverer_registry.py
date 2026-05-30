@@ -13,5 +13,6 @@ from __future__ import annotations
 # Per-domain discoverers self-register at import time.
 from core.automation.discoverers import (  # noqa: F401
     catalog_quality,
+    order_followup,
     shipping_alert,
 )
