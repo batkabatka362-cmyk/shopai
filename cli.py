@@ -33480,8 +33480,8 @@ def _cmd_autonomy_status(args) -> None:
         logger.debug(
             "autonomy-status fire-log probe raised: %s", exc,
         )
-    # W862: pre-fetch per-domain cooldown remaining hours so
-    # idle rows can show "(cooldown 8.3h)" annotation.
+    # W862 + W866: pre-fetch per-domain cooldown remaining
+    # hours (per-domain env override consulted inside helper).
     _cooldown_per_domain: dict[str, float] = {}
     try:
         import time as _t
@@ -33491,12 +33491,12 @@ def _cmd_autonomy_status(args) -> None:
         from core.automation.substrate_fire_disarm_log import (
             last_disarm_at as _last_disarm_at,
         )
-        cd = _cd_hours()
         for d in _mode_map:
             ts = _last_disarm_at(d)
             if ts is None:
                 continue
             elapsed_h = (_t.time() - ts) / 3600.0
+            cd = _cd_hours(d)
             if elapsed_h < cd:
                 _cooldown_per_domain[d] = cd - elapsed_h
     except Exception as exc:  # noqa: BLE001

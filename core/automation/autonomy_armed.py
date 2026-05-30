@@ -175,7 +175,21 @@ class ArmCooldownError(RuntimeError):
         self.hours_remaining = hours_remaining
 
 
-def _cooldown_hours() -> float:
+def _cooldown_hours(domain: str | None = None) -> float:
+    """Return cooldown hours for ``domain``. Per-domain env
+    knob (``SHOPAI_AUTO_DISARM_COOLDOWN_<DOMAIN>_HOURS``)
+    wins when set; else the global default applies."""
+    if domain:
+        per_domain = os.environ.get(
+            f"SHOPAI_AUTO_DISARM_COOLDOWN_"
+            f"{domain.upper()}_HOURS",
+            "",
+        )
+        if per_domain:
+            try:
+                return max(0.0, float(per_domain))
+            except (TypeError, ValueError):
+                pass
     raw = os.environ.get(
         "SHOPAI_AUTO_DISARM_COOLDOWN_HOURS", "12.0",
     )
@@ -219,7 +233,7 @@ def arm(
             )
             last = None
         if last is not None:
-            cooldown = _cooldown_hours()
+            cooldown = _cooldown_hours(domain)
             elapsed = (time.time() - last) / 3600.0
             if elapsed < cooldown:
                 raise ArmCooldownError(

@@ -251,12 +251,12 @@ def run_autonomy_doctor(
         from core.automation.substrate_fire_disarm_log import (
             last_disarm_at as _last_disarm_at,
         )
-        cd = _cd_hours()
         for summary in base.domains:
             ts = _last_disarm_at(summary.name)
             if ts is None:
                 continue
             elapsed_h = (_t.time() - ts) / 3600.0
+            cd = _cd_hours(summary.name)
             if elapsed_h < cd:
                 cooldown_per_domain[summary.name] = (
                     cd - elapsed_h

@@ -177,6 +177,76 @@ class TestArmDisarm:
         ]
 
 
+class TestCooldownEnvKnobs:
+    """W866: per-domain env override of cooldown hours."""
+
+    def test_default_global(self, monkeypatch):
+        from core.automation.autonomy_armed import (
+            _cooldown_hours,
+        )
+        monkeypatch.delenv(
+            "SHOPAI_AUTO_DISARM_COOLDOWN_HOURS",
+            raising=False,
+        )
+        assert _cooldown_hours() == 12.0
+        assert _cooldown_hours("shipping_alert") == 12.0
+
+    def test_global_env_overrides(self, monkeypatch):
+        from core.automation.autonomy_armed import (
+            _cooldown_hours,
+        )
+        monkeypatch.setenv(
+            "SHOPAI_AUTO_DISARM_COOLDOWN_HOURS", "24",
+        )
+        assert _cooldown_hours() == 24.0
+        assert _cooldown_hours("shipping_alert") == 24.0
+
+    def test_per_domain_env_wins(self, monkeypatch):
+        from core.automation.autonomy_armed import (
+            _cooldown_hours,
+        )
+        monkeypatch.setenv(
+            "SHOPAI_AUTO_DISARM_COOLDOWN_HOURS", "12",
+        )
+        monkeypatch.setenv(
+            "SHOPAI_AUTO_DISARM_COOLDOWN_"
+            "SHIPPING_ALERT_HOURS",
+            "48",
+        )
+        # Other domains use global
+        assert _cooldown_hours("inventory") == 12.0
+        # shipping_alert uses per-domain
+        assert _cooldown_hours("shipping_alert") == 48.0
+
+    def test_invalid_per_domain_falls_back_to_global(
+        self, monkeypatch,
+    ):
+        from core.automation.autonomy_armed import (
+            _cooldown_hours,
+        )
+        monkeypatch.setenv(
+            "SHOPAI_AUTO_DISARM_COOLDOWN_HOURS", "12",
+        )
+        monkeypatch.setenv(
+            "SHOPAI_AUTO_DISARM_COOLDOWN_"
+            "SHIPPING_ALERT_HOURS",
+            "not-a-number",
+        )
+        assert _cooldown_hours("shipping_alert") == 12.0
+
+    def test_none_domain_returns_global(self, monkeypatch):
+        from core.automation.autonomy_armed import (
+            _cooldown_hours,
+        )
+        monkeypatch.setenv(
+            "SHOPAI_AUTO_DISARM_COOLDOWN_"
+            "SHIPPING_ALERT_HOURS",
+            "48",
+        )
+        # Passing None defers to global
+        assert _cooldown_hours(None) == 12.0
+
+
 class TestArmCooldown:
     """W859: post-auto-disarm cooldown blocks re-arm."""
 
