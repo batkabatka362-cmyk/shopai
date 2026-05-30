@@ -214,4 +214,14 @@ def build_overview(
     except Exception as exc:  # noqa: BLE001
         logger.debug("overview alerts probe raised: %s", exc)
 
+    # Wave 900: persist snapshot to history (Pattern J guard
+    # in record_snapshot short-circuits under pytest).
+    try:
+        from core.automation.autonomy_overview_history import (
+            record_snapshot,
+        )
+        record_snapshot(snap)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("overview history record raised: %s", exc)
+
     return snap
