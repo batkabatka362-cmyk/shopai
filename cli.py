@@ -23059,6 +23059,31 @@ def _cmd_cycle_run(args) -> None:
             "shipping-alert bridge failed: %s", exc,
         )
 
+    # Wave 854: auto-disarm bridge -- runs BEFORE the
+    # substrate fire so chronically-degraded domains get
+    # their armed flag revoked before they fire again.
+    try:
+        from core.automation.substrate_fire_auto_disarm import (  # noqa
+            maybe_auto_disarm,
+        )
+        disarm_report = maybe_auto_disarm()
+        if disarm_report.disarmed_count > 0:
+            logger.info(
+                "auto-disarm bridge fired: %d "
+                "domain(s) revoked",
+                disarm_report.disarmed_count,
+            )
+        elif disarm_report.would_disarm_count > 0:
+            logger.info(
+                "auto-disarm bridge OFF but %d "
+                "domain(s) at threshold",
+                disarm_report.would_disarm_count,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "auto-disarm bridge raised: %s", exc,
+        )
+
     # Wave 822 + 839: armed substrate-domain fire
     # (discoverer -> applier). Fires fleet-wide first, then
     # per-store for every store in the world-model snapshot so
