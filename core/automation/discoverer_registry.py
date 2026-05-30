@@ -15,6 +15,7 @@ from core.automation.discoverers import (  # noqa: F401
     catalog_quality,
     customer_outreach,
     discount_cleanup,
+    inventory,
     order_followup,
     product_seo,
     shipping_alert,
