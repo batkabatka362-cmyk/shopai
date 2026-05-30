@@ -11944,6 +11944,46 @@ def _cmd_daily_brief(args) -> None:
             "daily-brief substrate-fire block raised: %s", exc,
         )
 
+    # Wave 894: autonomy overview verdict row. Always shows
+    # so operator sees the aggregated health at a glance.
+    try:
+        from core.automation.autonomy_overview import (
+            build_overview,
+        )
+        snap = build_overview(window_hours=window_hours)
+        verdict_mk = {
+            "idle": "[ - ]",
+            "armed": "[OK ]",
+            "active": "[OK ]",
+            "degraded": "[BAD]",
+        }.get(snap.verdict, "[ ? ]")
+        # Surface only when something to report (any of:
+        # armed > 0, fires > 0, errors > 0, alerts > 0)
+        if (
+            snap.armed_total > 0
+            or snap.fires_total > 0
+            or snap.alerts_critical > 0
+            or snap.alerts_warn > 0
+        ):
+            print(
+                f"  Autonomy:      {verdict_mk} "
+                f"verdict={snap.verdict}  "
+                f"armed={snap.armed_total}  "
+                f"fires={snap.fires_invoked}/"
+                f"{snap.fires_total}  "
+                f"errors={snap.fires_errors}  "
+                f"alerts={snap.alerts_critical}c/"
+                f"{snap.alerts_warn}w"
+            )
+            print(
+                "    -> drill: shopai autonomy-overview"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief autonomy-overview block raised: %s",
+            exc,
+        )
+
     # Wave 851: substrate-fire degradation alerts. Surface
     # only when at least one alert (critical or warn) fires.
     try:
