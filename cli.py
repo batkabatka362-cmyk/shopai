@@ -9843,11 +9843,41 @@ def _cmd_empire(args) -> None:
     except Exception:  # noqa: BLE001
         autonomy_block = None
 
+    # Wave 835: discoverer coverage for JSON envelope + text
+    discoverer_block: dict | None = None
+    try:
+        from core.automation import (  # noqa: F401
+            discoverer_registry,
+        )
+        from core.automation.autonomy_armed import (
+            DOMAIN_FIRING_MODE,
+        )
+        from core.automation.payload_discoverer import (
+            registered_domains as _reg_discs,
+        )
+        regs = _reg_discs()
+        substrate_total = sum(
+            1 for m in DOMAIN_FIRING_MODE.values()
+            if m == "substrate"
+        )
+        discoverer_block = {
+            "registered_count": len(regs),
+            "registered_domains": regs,
+            "substrate_total": substrate_total,
+            "coverage_pct": (
+                round(100.0 * len(regs) / substrate_total, 1)
+                if substrate_total else 0.0
+            ),
+        }
+    except Exception:  # noqa: BLE001
+        discoverer_block = None
+
     if as_json:
         print(json.dumps({
             "stores": stores_list,
             "niche_mix": niche_mix_block,
             "autonomy": autonomy_block,
+            "discoverers": discoverer_block,
             "last_run": last_run_block,
             "revenue": revenue_block,
             "approvals": approvals_block,
@@ -9918,6 +9948,25 @@ def _cmd_empire(args) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "empire autonomy block raised: %s", exc,
+        )
+
+    # Wave 835: discoverer coverage line. Always shows so
+    # operator can see at a glance how many substrate-mode
+    # domains have payload generators wired up.
+    if discoverer_block:
+        cov = discoverer_block["coverage_pct"]
+        regs = discoverer_block["registered_count"]
+        sub = discoverer_block["substrate_total"]
+        if regs == sub:
+            badge = "[OK ]"
+        elif regs > 0:
+            badge = "[WRN]"
+        else:
+            badge = "[BAD]"
+        print(
+            f"    discoverers:        {badge} "
+            f"{regs}/{sub} substrate-mode covered "
+            f"({cov:.0f}%)"
         )
 
     # Wave 249: autonomy substrate wiring health. Distinct
