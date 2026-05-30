@@ -11720,6 +11720,34 @@ def _cmd_daily_brief(args) -> None:
             "daily-brief fire-alerts block raised: %s", exc,
         )
 
+    # Wave 856: substrate-fire trend row. Surfaces only when
+    # at least one domain is rising or falling significantly.
+    try:
+        from core.automation.substrate_fire_trend import (
+            compute_fire_trend,
+        )
+        ft = compute_fire_trend(window_hours=window_hours)
+        n_rise = ft.rising_count
+        n_fall = ft.falling_count
+        if n_fall > 0 or n_rise > 0:
+            mk = (
+                "[WRN]" if n_fall > n_rise
+                else "[OK ]"
+            )
+            print(
+                f"  Fire trend:    {mk} "
+                f"rising={n_rise}  falling={n_fall}  "
+                f"flat={ft.flat_count}"
+            )
+            if n_fall > 0:
+                print(
+                    "    -> drill: shopai autonomy-fire-trend"
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief fire-trend block raised: %s", exc,
+        )
+
     # Wave 248: autonomy substrate wiring health. Distinct from
     # the verdict block above -- only surfaces when wiring is
     # broken or degraded. Silent in the clean case.
