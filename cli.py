@@ -33713,8 +33713,9 @@ def _cmd_autonomy_status(args) -> None:
         logger.debug(
             "autonomy-status fire-log probe raised: %s", exc,
         )
-    # W862 + W866: pre-fetch per-domain cooldown remaining
-    # hours (per-domain env override consulted inside helper).
+    # W862 + W866 + W878: pre-fetch per-domain cooldown
+    # remaining hours. When --store is set, queries per-store
+    # cooldown so each row reflects the operator's scope.
     _cooldown_per_domain: dict[str, float] = {}
     try:
         import time as _t
@@ -33725,7 +33726,10 @@ def _cmd_autonomy_status(args) -> None:
             last_disarm_at as _last_disarm_at,
         )
         for d in _mode_map:
-            ts = _last_disarm_at(d)
+            ts = _last_disarm_at(
+                d,
+                store_id=store_id or None,
+            )
             if ts is None:
                 continue
             elapsed_h = (_t.time() - ts) / 3600.0

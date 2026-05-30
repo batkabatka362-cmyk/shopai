@@ -252,7 +252,12 @@ def run_autonomy_doctor(
             last_disarm_at as _last_disarm_at,
         )
         for summary in base.domains:
-            ts = _last_disarm_at(summary.name)
+            # W878: when scoped to a store, query per-store
+            # cooldown; otherwise fleet-wide (any scope).
+            ts = _last_disarm_at(
+                summary.name,
+                store_id=store_id if store_id else None,
+            )
             if ts is None:
                 continue
             elapsed_h = (_t.time() - ts) / 3600.0
