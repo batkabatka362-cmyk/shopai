@@ -4251,6 +4251,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_bm_p.add_argument("--json", action="store_true")
 
+    # Wave 893: Pattern BN (autonomy-overview output schema)
+    pattern_bn_p = sub.add_parser(
+        "pattern-bn-audit",
+        help=(
+            "Wave 893: verify autonomy-overview output "
+            "schema (text tokens + JSON fields)."
+        ),
+    )
+    pattern_bn_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -31025,6 +31035,43 @@ def _cmd_pattern_as_audit(args) -> None:
         )
 
 
+def _cmd_pattern_bn_audit(args) -> None:
+    """Wave 893: autonomy-overview output schema."""
+    from engines._pattern_bn_audit import run_pattern_bn_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_bn_audit()
+    if as_json:
+        print(json.dumps({
+            "invariants_checked": report.invariants_checked,
+            "clean_invariants": report.clean_invariants,
+            "violations": [
+                {
+                    "invariant": v.invariant,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern BN FAILED -- "
+            f"{len(report.violations)} broken link(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.invariant}] {v.reason}")
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern BN OK -- "
+            f"{len(report.clean_invariants)} "
+            "autonomy-overview schema link(s) honored."
+        )
+
+
 def _cmd_pattern_bm_audit(args) -> None:
     """Wave 891: autonomy-env --store plumbing."""
     from engines._pattern_bm_audit import run_pattern_bm_audit
@@ -39837,6 +39884,22 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_bn":
+            from engines._pattern_bn_audit import (
+                run_pattern_bn_audit,
+            )
+            r = run_pattern_bn_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_invariants": r.clean_invariants,
+                "violations": [
+                    {
+                        "invariant": v.invariant,
+                        "reason": v.reason,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -39861,7 +39924,7 @@ _AUDIT_ORDER = (
     "pattern_az", "pattern_ba", "pattern_bb", "pattern_bc",
     "pattern_bd", "pattern_be", "pattern_bf", "pattern_bg",
     "pattern_bh", "pattern_bi", "pattern_bj", "pattern_bk",
-    "pattern_bm",
+    "pattern_bm", "pattern_bn",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -39923,6 +39986,7 @@ _AUDIT_LABELS = {
     "pattern_bj": "Pattern BJ (every discoverer adopts env)",
     "pattern_bk": "Pattern BK (autonomy-discover --store plumb)",
     "pattern_bm": "Pattern BM (autonomy-env --store plumb)",
+    "pattern_bn": "Pattern BN (autonomy-overview schema)",
 }
 
 
@@ -49057,6 +49121,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-bm-audit":
         _cmd_pattern_bm_audit(args)
+        return
+
+    if args.command == "pattern-bn-audit":
+        _cmd_pattern_bn_audit(args)
         return
 
     if args.command == "autonomy-env":
