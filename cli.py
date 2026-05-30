@@ -4554,6 +4554,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show verdict-change events only.",
     )
     autonomy_overview_history_p.add_argument(
+        "--thrash", action="store_true",
+        help=(
+            "Wave 905: show verdict-flip density per "
+            "bucket (calm/elevated/thrashing)."
+        ),
+    )
+    autonomy_overview_history_p.add_argument(
+        "--bucket-hours", type=float, default=1.0,
+        help="Bucket size for --thrash (default 1h).",
+    )
+    autonomy_overview_history_p.add_argument(
         "--json", action="store_true",
     )
 
@@ -34826,6 +34837,69 @@ def _cmd_autonomy_overview_history(args) -> None:
     window = float(getattr(args, "window_hours", 0.0) or 0.0)
     as_json = bool(getattr(args, "json", False))
     transitions_only = bool(getattr(args, "transitions", False))
+    thrash_view = bool(getattr(args, "thrash", False))
+    bucket_h = float(getattr(args, "bucket_hours", 1.0) or 1.0)
+
+    if thrash_view:
+        from core.automation.autonomy_overview_thrash import (
+            compute_thrash,
+        )
+        # Default to 24h if user left window=0
+        win = window if window > 0 else 24.0
+        rep = compute_thrash(
+            window_hours=win,
+            bucket_hours=bucket_h,
+            store_id=store or None,
+        )
+        if as_json:
+            print(json.dumps({
+                "store_id": rep.store_id,
+                "window_hours": rep.window_hours,
+                "bucket_hours": rep.bucket_hours,
+                "verdict": rep.verdict,
+                "total_flips": rep.total_flips,
+                "peak_flips": rep.peak_flips,
+                "buckets": [
+                    {
+                        "start_at": b.start_at,
+                        "end_at": b.end_at,
+                        "flip_count": b.flip_count,
+                        "density_label": b.density_label,
+                        "verdict_sequence": b.verdict_sequence,
+                    }
+                    for b in rep.buckets
+                ],
+            }, indent=2, default=str))
+            return
+        scope = f"store={store}" if store else "fleet"
+        print(
+            f"Verdict-flip thrash ({scope}, "
+            f"verdict={rep.verdict}, "
+            f"total={rep.total_flips}, "
+            f"peak={rep.peak_flips}/bucket):"
+        )
+        if not rep.buckets:
+            print("  (no history yet)")
+            return
+        nonzero = [b for b in rep.buckets if b.flip_count > 0]
+        if not nonzero:
+            print(
+                "  (steady-state; no flips in window)"
+            )
+            return
+        print(
+            f"{'when':<17} {'flips':>5}  density"
+        )
+        for b in nonzero:
+            ts = time.strftime(
+                "%Y-%m-%d %H:%M",
+                time.localtime(b.start_at),
+            )
+            print(
+                f"{ts:<17} {b.flip_count:>5}  "
+                f"{b.density_label}"
+            )
+        return
 
     if transitions_only:
         trans = verdict_transitions(store_id=store or None)
