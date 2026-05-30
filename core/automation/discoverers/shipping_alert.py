@@ -44,15 +44,16 @@ _DOMAIN = "shipping_alert"
 _DEFAULT_LOOKBACK_DAYS = 60
 
 
-def _lookback_days() -> int:
-    raw = os.environ.get(
-        "SHOPAI_SHIPPING_ALERT_DISCOVER_DAYS",
-        str(_DEFAULT_LOOKBACK_DAYS),
+def _lookback_days(store_id: str | None = None) -> int:
+    """W879: per-store override via
+    SHOPAI_SHIPPING_ALERT_DISCOVER_DAYS_<STORE>."""
+    from core.automation.discoverer_env import resolve_int
+    return resolve_int(
+        _DOMAIN, "DAYS",
+        default=_DEFAULT_LOOKBACK_DAYS,
+        store_id=store_id,
+        min_value=1,
     )
-    try:
-        return max(1, int(raw))
-    except (TypeError, ValueError):
-        return _DEFAULT_LOOKBACK_DAYS
 
 
 def _classify_order(order: dict[str, Any]) -> str | None:
@@ -108,9 +109,14 @@ def _classify_order(order: dict[str, Any]) -> str | None:
     return "shopai-shipping-in-transit"
 
 
-def _fetch_recent_orders() -> list[dict[str, Any]]:
+def _fetch_recent_orders(
+    store_id: str | None = None,
+) -> list[dict[str, Any]]:
     """Pull recent orders via the SmartRouter. Returns [] if
-    the router / adapter is unavailable."""
+    the router / adapter is unavailable.
+
+    W879: ``store_id`` selects the per-store lookback override
+    when set."""
     try:
         from core.adapters.router import get_router  # noqa
         from core.adapters.base import Capability
@@ -128,7 +134,7 @@ def _fetch_recent_orders() -> list[dict[str, Any]]:
             exc,
         )
         return []
-    days = _lookback_days()
+    days = _lookback_days(store_id)
     since = (
         datetime.now(timezone.utc) - timedelta(days=days)
     ).isoformat()
@@ -157,7 +163,7 @@ def discover_shipping_alert(*, store_id: str | None = None) -> DiscoveryResult:
     orders."""
     now = time.time()
     try:
-        orders = _fetch_recent_orders()
+        orders = _fetch_recent_orders(store_id=store_id)
     except Exception as exc:  # noqa: BLE001
         return DiscoveryResult(
             domain=_DOMAIN,
