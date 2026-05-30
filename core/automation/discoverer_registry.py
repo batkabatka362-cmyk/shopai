@@ -14,6 +14,7 @@ from __future__ import annotations
 from core.automation.discoverers import (  # noqa: F401
     catalog_quality,
     customer_outreach,
+    discount_cleanup,
     order_followup,
     product_seo,
     shipping_alert,
