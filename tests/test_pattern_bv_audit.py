@@ -21,27 +21,22 @@ class TestRoster:
 
 class TestLive:
 
-    def test_non_strict_passes(self):
-        # Loose mode: missing wireups don't fail the audit
-        r = run_pattern_bv_audit(strict=False)
+    def test_strict_default_passes(self):
+        # After Phase 175 closure: 6/6 wired, strict-default
+        r = run_pattern_bv_audit()
         assert not r.has_violations, [
             (v.invariant, v.reason) for v in r.violations
         ]
 
-    def test_loyalty_is_wired(self):
-        r = run_pattern_bv_audit(strict=False)
-        assert r.wired_count >= 1
+    def test_all_wired(self):
+        r = run_pattern_bv_audit()
+        assert r.wired_count == 6
+        assert r.pending_count == 0
 
-    def test_pending_counted(self):
+    def test_non_strict_passes_too(self):
+        # Loose mode still works for ergonomic progress queries
         r = run_pattern_bv_audit(strict=False)
-        # 6 minters - 1 wired = 5 pending
-        assert r.pending_count == 5
-
-    def test_strict_mode_fails_on_pending(self):
-        r = run_pattern_bv_audit(strict=True)
-        assert r.has_violations
-        # Each pending counts as 1 violation
-        assert len(r.violations) >= 5
+        assert not r.has_violations
 
 
 class TestReportDataclass:

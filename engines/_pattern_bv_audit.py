@@ -91,14 +91,15 @@ def _file_references(path: Path, *symbols: str) -> bool:
 def run_pattern_bv_audit(
     *,
     repo_root: str | Path = ".",
-    strict: bool = False,
+    strict: bool = True,
 ) -> PatternBVReport:
     """Verify the W917+ thrash guardrail wireup roster.
 
-    When ``strict=False`` (the default), pending engines are
-    counted but do NOT produce violations -- only missing
-    files do. Use ``strict=True`` to flip pending engines
-    into hard fails (CI gate once the wireup is complete).
+    Default is ``strict=True`` after Phase 175 closed the
+    roster (6/6 wired). Future roster additions add as
+    ``(engine, path)`` tuples and immediately gate; the loose
+    mode (``strict=False``) is preserved for ergonomic
+    progress queries during partial roll-outs.
     """
     report = PatternBVReport()
     root = Path(repo_root).resolve()
