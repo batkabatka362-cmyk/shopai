@@ -59,16 +59,36 @@ def _limit(store_id: str | None = None) -> int:
 def _default_location_id(
     store_id: str | None = None,
 ) -> str:
-    """W882: per-store override via
-    SHOPAI_FULFILLMENT_DEFAULT_LOCATION_ID_<STORE>."""
+    """W888: standardised naming with legacy back-compat.
+
+    New: SHOPAI_FULFILLMENT_DISCOVER_DEFAULT_LOCATION_ID[_<STORE>]
+    Legacy: SHOPAI_FULFILLMENT_DEFAULT_LOCATION_ID[_<STORE>]
+
+    String-valued; bypasses resolve_int/float. Same lookup
+    order as the int/float helpers."""
     sid = (store_id or "").upper().replace("-", "_")
+    # 1. per-store standard
     if sid:
-        per_store = os.environ.get(
-            f"SHOPAI_FULFILLMENT_DEFAULT_LOCATION_ID_{sid}",
-            "",
+        v = os.environ.get(
+            f"SHOPAI_FULFILLMENT_DISCOVER_DEFAULT_LOCATION_ID_"
+            f"{sid}",
         )
-        if per_store:
-            return per_store.strip()
+        if v:
+            return v.strip()
+    # 2. global standard
+    v = os.environ.get(
+        "SHOPAI_FULFILLMENT_DISCOVER_DEFAULT_LOCATION_ID",
+    )
+    if v:
+        return v.strip()
+    # 3. per-store legacy
+    if sid:
+        v = os.environ.get(
+            f"SHOPAI_FULFILLMENT_DEFAULT_LOCATION_ID_{sid}",
+        )
+        if v:
+            return v.strip()
+    # 4. bare legacy
     return (
         os.environ.get(
             "SHOPAI_FULFILLMENT_DEFAULT_LOCATION_ID", "",

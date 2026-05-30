@@ -45,29 +45,20 @@ def _limit(store_id: str | None = None) -> int:
 
 
 def _min_age_days(store_id: str | None = None) -> int:
-    """W882: per-store override via
-    SHOPAI_DISCOUNT_CLEANUP_MIN_AGE_DAYS_<STORE>.
+    """W888: standardised naming with legacy back-compat.
 
-    Doesn't follow DISCOVER_<KNOB> naming -- direct env."""
-    sid = (store_id or "").upper().replace("-", "_")
-    if sid:
-        per_store = os.environ.get(
-            f"SHOPAI_DISCOUNT_CLEANUP_MIN_AGE_DAYS_{sid}",
-            "",
-        )
-        if per_store:
-            try:
-                return max(0, int(per_store))
-            except (TypeError, ValueError):
-                pass
-    raw = os.environ.get(
-        "SHOPAI_DISCOUNT_CLEANUP_MIN_AGE_DAYS",
-        str(_DEFAULT_MIN_AGE_DAYS),
+    New: SHOPAI_DISCOUNT_CLEANUP_DISCOVER_MIN_AGE_DAYS[_<STORE>]
+    Legacy: SHOPAI_DISCOUNT_CLEANUP_MIN_AGE_DAYS[_<STORE>]"""
+    from core.automation.discoverer_env import resolve_int
+    return resolve_int(
+        _DOMAIN, "MIN_AGE_DAYS",
+        default=_DEFAULT_MIN_AGE_DAYS,
+        store_id=store_id,
+        min_value=0,
+        legacy_env=(
+            "SHOPAI_DISCOUNT_CLEANUP_MIN_AGE_DAYS"
+        ),
     )
-    try:
-        return max(0, int(raw))
-    except (TypeError, ValueError):
-        return _DEFAULT_MIN_AGE_DAYS
 
 
 def _parse_iso(ts: str) -> datetime | None:

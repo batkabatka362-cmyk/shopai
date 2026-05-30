@@ -54,49 +54,35 @@ def _limit(store_id: str | None = None) -> int:
 
 
 def _safety_stock(store_id: str | None = None) -> int:
-    """W883: per-store override -- non-DISCOVER naming, direct env."""
-    sid = (store_id or "").upper().replace("-", "_")
-    if sid:
-        per_store = os.environ.get(
-            f"SHOPAI_INVENTORY_SAFETY_STOCK_{sid}", "",
-        )
-        if per_store:
-            try:
-                return max(0, int(per_store))
-            except (TypeError, ValueError):
-                pass
-    raw = os.environ.get(
-        "SHOPAI_INVENTORY_SAFETY_STOCK",
-        str(_DEFAULT_SAFETY_STOCK),
+    """W888: standardised naming with legacy back-compat.
+
+    New: SHOPAI_INVENTORY_DISCOVER_SAFETY_STOCK[_<STORE>]
+    Legacy: SHOPAI_INVENTORY_SAFETY_STOCK[_<STORE>]"""
+    from core.automation.discoverer_env import resolve_int
+    return resolve_int(
+        _DOMAIN, "SAFETY_STOCK",
+        default=_DEFAULT_SAFETY_STOCK,
+        store_id=store_id,
+        min_value=0,
+        legacy_env="SHOPAI_INVENTORY_SAFETY_STOCK",
     )
-    try:
-        return max(0, int(raw))
-    except (TypeError, ValueError):
-        return _DEFAULT_SAFETY_STOCK
 
 
 def _reorder_multiplier(
     store_id: str | None = None,
 ) -> int:
-    """W883: per-store override -- non-DISCOVER naming."""
-    sid = (store_id or "").upper().replace("-", "_")
-    if sid:
-        per_store = os.environ.get(
-            f"SHOPAI_INVENTORY_REORDER_MULTIPLIER_{sid}", "",
-        )
-        if per_store:
-            try:
-                return max(2, int(per_store))
-            except (TypeError, ValueError):
-                pass
-    raw = os.environ.get(
-        "SHOPAI_INVENTORY_REORDER_MULTIPLIER",
-        str(_DEFAULT_REORDER_MULTIPLIER),
+    """W888: standardised naming with legacy back-compat.
+
+    New: SHOPAI_INVENTORY_DISCOVER_REORDER_MULTIPLIER[_<STORE>]
+    Legacy: SHOPAI_INVENTORY_REORDER_MULTIPLIER[_<STORE>]"""
+    from core.automation.discoverer_env import resolve_int
+    return resolve_int(
+        _DOMAIN, "REORDER_MULTIPLIER",
+        default=_DEFAULT_REORDER_MULTIPLIER,
+        store_id=store_id,
+        min_value=2,
+        legacy_env="SHOPAI_INVENTORY_REORDER_MULTIPLIER",
     )
-    try:
-        return max(2, int(raw))
-    except (TypeError, ValueError):
-        return _DEFAULT_REORDER_MULTIPLIER
 
 
 def _max_quantity_default() -> int:

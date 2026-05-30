@@ -51,30 +51,19 @@ def _limit(store_id: str | None = None) -> int:
 
 
 def _vip_threshold(store_id: str | None = None) -> float:
-    """W881: per-store VIP threshold override via
-    SHOPAI_CUSTOMER_OUTREACH_VIP_USD_<STORE>.
+    """W888: standardised naming with legacy back-compat.
 
-    Note: this knob doesn't follow the standard
-    DISCOVER_<KNOB> naming so it bypasses the resolver
-    helper and uses direct env lookup."""
-    sid = (store_id or "").upper().replace("-", "_")
-    if sid:
-        per_store = os.environ.get(
-            f"SHOPAI_CUSTOMER_OUTREACH_VIP_USD_{sid}", "",
-        )
-        if per_store:
-            try:
-                return float(per_store)
-            except (TypeError, ValueError):
-                pass
-    raw = os.environ.get(
-        "SHOPAI_CUSTOMER_OUTREACH_VIP_USD",
-        str(_DEFAULT_VIP_USD),
+    New: SHOPAI_CUSTOMER_OUTREACH_DISCOVER_VIP_USD[_<STORE>]
+    Legacy: SHOPAI_CUSTOMER_OUTREACH_VIP_USD[_<STORE>]
+    Lookup order: per-store new -> global new -> per-store
+    legacy -> bare legacy -> default."""
+    from core.automation.discoverer_env import resolve_float
+    return resolve_float(
+        _DOMAIN, "VIP_USD",
+        default=_DEFAULT_VIP_USD,
+        store_id=store_id,
+        legacy_env="SHOPAI_CUSTOMER_OUTREACH_VIP_USD",
     )
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return _DEFAULT_VIP_USD
 
 
 def _parse_iso(ts: str) -> datetime | None:
