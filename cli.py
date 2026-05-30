@@ -32967,6 +32967,23 @@ def _cmd_autonomy_status(args) -> None:
             "autonomy-status discoverer probe raised: %s", exc,
         )
         _disc_set = set()
+    # W844: pre-fetch substrate_fire recent activity per domain
+    # so each row can show a tiny activity count.
+    _fire_per_domain: dict[str, int] = {}
+    try:
+        from core.automation.substrate_fire_log import (
+            recent_substrate_fires as _recent_sf,
+        )
+        for r in _recent_sf(window_hours=window_h):
+            d = r.get("domain") or ""
+            if d:
+                _fire_per_domain[d] = (
+                    _fire_per_domain.get(d, 0) + 1
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "autonomy-status fire-log probe raised: %s", exc,
+        )
 
     print()
     print("  Per-domain:")
@@ -32987,11 +33004,17 @@ def _cmd_autonomy_status(args) -> None:
         else:
             arm_badge = "[idle]"
         disc_badge = "(disc)" if d.name in _disc_set else "     "
+        fire_count = _fire_per_domain.get(d.name, 0)
+        fire_col = (
+            f"fires={fire_count}" if fire_count
+            else "         "
+        )
         print(
             f"    {dmk} {arm_badge} {disc_badge} "
             f"{d.name:<18} "
             f"verdict={d.verdict:<10} "
-            f"applied={d.applied_count}"
+            f"applied={d.applied_count}  "
+            f"{fire_col}"
         )
     print()
     print(
