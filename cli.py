@@ -4463,6 +4463,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--domain", type=str, default="",
     )
     autonomy_disarm_hist_p.add_argument(
+        "--store", type=str, default="",
+        help=(
+            "W875: filter to one store's disarm decisions. "
+            "Empty = show all (fleet + every store)."
+        ),
+    )
+    autonomy_disarm_hist_p.add_argument(
         "--only-disarmed", action="store_true",
     )
     autonomy_disarm_hist_p.add_argument(
@@ -34275,12 +34282,13 @@ def _cmd_autonomy_cooldown_clear(args) -> None:
 
 
 def _cmd_autonomy_disarm_history(args) -> None:
-    """Wave 860: auto-disarm decision history."""
+    """Wave 860 + W875: auto-disarm decision history."""
     from core.automation.substrate_fire_disarm_log import (
         disarm_log_size, recent_disarms,
     )
     window = float(getattr(args, "window_hours", 720.0) or 720.0)
     domain = (getattr(args, "domain", "") or "").strip()
+    store = (getattr(args, "store", "") or "").strip()
     only_disarmed = bool(
         getattr(args, "only_disarmed", False),
     )
@@ -34288,6 +34296,7 @@ def _cmd_autonomy_disarm_history(args) -> None:
     rows = recent_disarms(
         window_hours=window,
         domain=domain or None,
+        store_id=store or None,
         only_disarmed=only_disarmed,
     )
     if as_json:
@@ -34297,11 +34306,14 @@ def _cmd_autonomy_disarm_history(args) -> None:
             "log_size": disarm_log_size(),
             "window_hours": window,
             "domain_filter": domain,
+            "store_filter": store,
             "only_disarmed": only_disarmed,
         }, indent=2, default=str))
         return
     suffix = (
         f", domain={domain}" if domain else ""
+    ) + (
+        f", store={store}" if store else ""
     ) + (
         ", only_disarmed" if only_disarmed else ""
     )

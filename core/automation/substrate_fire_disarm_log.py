@@ -80,12 +80,18 @@ def recent_disarms(
     *,
     window_hours: float = 720.0,  # 30 days default
     domain: str | None = None,
+    store_id: str | None = None,
     only_disarmed: bool = False,
 ) -> list[dict[str, Any]]:
-    """Read recent disarm decisions newest-first."""
+    """Read recent disarm decisions newest-first.
+
+    W875: ``store_id`` filter narrows to one store's
+    decisions. Empty/None = no filter."""
     filters: dict[str, str] = {}
     if domain:
         filters["domain"] = domain
+    if store_id:
+        filters["store_id"] = store_id
     rows = _recent_events(
         _LOG_PATH,
         window_hours=window_hours,
