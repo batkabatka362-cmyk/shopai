@@ -4277,6 +4277,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter to one domain",
     )
     autonomy_env_p.add_argument(
+        "--store", type=str, default="",
+        help=(
+            "W890: surface the per-store knob naming for one "
+            "store + show its current resolved value."
+        ),
+    )
+    autonomy_env_p.add_argument(
         "--json", action="store_true",
     )
 
@@ -32549,7 +32556,9 @@ def _cmd_pattern_t_audit(args) -> None:
 
 
 def _cmd_autonomy_env(args) -> None:
-    """Wave 186: autonomy env knob discovery surface."""
+    """Wave 186: autonomy env knob discovery surface.
+    Wave 890: --store shows the per-store variant name + value."""
+    import os
     from engines._pattern_t_audit import (
         build_autonomy_env_registry,
     )
@@ -32558,11 +32567,69 @@ def _cmd_autonomy_env(args) -> None:
     domain_filter = (
         getattr(args, "domain", "") or ""
     ).strip()
+    store = (getattr(args, "store", "") or "").strip()
     report = build_autonomy_env_registry()
 
     rows = report.knobs
     if domain_filter:
         rows = [k for k in rows if k.domain == domain_filter]
+
+    # W890: when --store is set, transform each knob name to
+    # its per-store form + read the per-store env value.
+    if store:
+        store_token = (
+            store.upper().replace("-", "_")
+        )
+        # Filter to non-empty token
+        rendered = []
+        for k in rows:
+            ps_name = f"{k.name}_{store_token}"
+            ps_value = os.environ.get(ps_name) or None
+            # Effective resolved value: per-store wins, else
+            # the base knob's current value
+            effective = ps_value or k.current_value
+            rendered.append((k.domain, ps_name, effective))
+        if set_only:
+            rendered = [
+                r for r in rendered if r[2] is not None
+            ]
+        if as_json:
+            print(json.dumps({
+                "domain_filter": domain_filter or None,
+                "store_id": store,
+                "set_only": set_only,
+                "count": len(rendered),
+                "knobs": [
+                    {
+                        "name": name,
+                        "domain": d,
+                        "current_value": v,
+                    }
+                    for d, name, v in rendered
+                ],
+            }, indent=2, default=str))
+            return
+        print(
+            f"Autonomy env knobs ({len(rendered)} shown"
+            + (
+                f"; filter={domain_filter}"
+                if domain_filter else ""
+            )
+            + f"; store={store}"
+            + (", set-only" if set_only else "")
+            + ")"
+        )
+        print()
+        current_domain = None
+        for d, name, value in rendered:
+            if d != current_domain:
+                print(f"  [{d}]")
+                current_domain = d
+            marker = "[SET]" if value else "[   ]"
+            val_display = f"  = {value}" if value else ""
+            print(f"    {marker} {name}{val_display}")
+        return
+
     if set_only:
         rows = [k for k in rows if k.current_value is not None]
 
