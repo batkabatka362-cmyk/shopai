@@ -12363,6 +12363,43 @@ def _cmd_daily_brief(args) -> None:
             exc,
         )
 
+    # Wave 934: thrash-guardrail block log row. Surfaces only
+    # when at least one block fired in the last 24h.
+    try:
+        from core.automation.thrash_block_log import (
+            recent_blocks,
+        )
+        blocks = recent_blocks(
+            limit=500, window_hours=24.0,
+        )
+        if blocks:
+            engines_blocked = sorted({
+                b.engine for b in blocks
+            })
+            stores_blocked = sorted({
+                b.store_id for b in blocks
+                if b.store_id
+            })
+            inline = ", ".join(engines_blocked[:3])
+            more = (
+                f" +{len(engines_blocked) - 3} more"
+                if len(engines_blocked) > 3 else ""
+            )
+            print(
+                f"  Thrash blocks: [WRN] "
+                f"{len(blocks)} block(s) "
+                f"({len(engines_blocked)} engine(s), "
+                f"{len(stores_blocked)} store(s))  "
+                f"engines={inline}{more}"
+            )
+            print(
+                "    -> drill: shopai thrash-blocks"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief thrash-blocks row raised: %s", exc,
+        )
+
     # Wave 851: substrate-fire degradation alerts. Surface
     # only when at least one alert (critical or warn) fires.
     try:
