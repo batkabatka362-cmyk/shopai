@@ -4220,6 +4220,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_bj_p.add_argument("--json", action="store_true")
 
+    # Wave 886: Pattern BK (autonomy-discover --store plumb)
+    pattern_bk_p = sub.add_parser(
+        "pattern-bk-audit",
+        help=(
+            "Wave 886: verify autonomy-discover --store "
+            "(W885) plumbs store_id= into discover()."
+        ),
+    )
+    pattern_bk_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -30969,6 +30979,44 @@ def _cmd_pattern_as_audit(args) -> None:
         )
 
 
+def _cmd_pattern_bk_audit(args) -> None:
+    """Wave 886: autonomy-discover --store plumbing."""
+    from engines._pattern_bk_audit import run_pattern_bk_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_bk_audit()
+    if as_json:
+        print(json.dumps({
+            "invariants_checked": report.invariants_checked,
+            "clean_invariants": report.clean_invariants,
+            "violations": [
+                {
+                    "invariant": v.invariant,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern BK FAILED -- "
+            f"{len(report.violations)} broken link(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.invariant}] {v.reason}")
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern BK OK -- "
+            f"{len(report.clean_invariants)} "
+            "autonomy-discover --store plumbing link(s) "
+            "honored."
+        )
+
+
 def _cmd_pattern_bj_audit(args) -> None:
     """Wave 884: every discoverer adopts the env helper."""
     from engines._pattern_bj_audit import run_pattern_bj_audit
@@ -39511,6 +39559,22 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_bk":
+            from engines._pattern_bk_audit import (
+                run_pattern_bk_audit,
+            )
+            r = run_pattern_bk_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_invariants": r.clean_invariants,
+                "violations": [
+                    {
+                        "invariant": v.invariant,
+                        "reason": v.reason,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -39534,7 +39598,7 @@ _AUDIT_ORDER = (
     "pattern_av", "pattern_aw", "pattern_ax", "pattern_ay",
     "pattern_az", "pattern_ba", "pattern_bb", "pattern_bc",
     "pattern_bd", "pattern_be", "pattern_bf", "pattern_bg",
-    "pattern_bh", "pattern_bi", "pattern_bj",
+    "pattern_bh", "pattern_bi", "pattern_bj", "pattern_bk",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -39594,6 +39658,7 @@ _AUDIT_LABELS = {
     "pattern_bh": "Pattern BH (per-store cooldown chain)",
     "pattern_bi": "Pattern BI (per-store discoverer env)",
     "pattern_bj": "Pattern BJ (every discoverer adopts env)",
+    "pattern_bk": "Pattern BK (autonomy-discover --store plumb)",
 }
 
 
@@ -48716,6 +48781,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-bj-audit":
         _cmd_pattern_bj_audit(args)
+        return
+
+    if args.command == "pattern-bk-audit":
+        _cmd_pattern_bk_audit(args)
         return
 
     if args.command == "autonomy-env":
