@@ -4459,6 +4459,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # Wave 892: autonomy overview one-liner
+    autonomy_overview_p = sub.add_parser(
+        "autonomy-overview",
+        help=(
+            "Wave 892: one-line autonomy status summary "
+            "(armed + fires + cooldowns + alerts + verdict)."
+        ),
+    )
+    autonomy_overview_p.add_argument(
+        "--window-hours", type=float, default=24.0,
+    )
+    autonomy_overview_p.add_argument(
+        "--store", type=str, default="",
+    )
+    autonomy_overview_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 850: substrate-fire degradation alerts
     autonomy_alerts_p = sub.add_parser(
         "autonomy-alerts",
@@ -34481,6 +34499,51 @@ def _cmd_autonomy_fire_trend(args) -> None:
         )
 
 
+def _cmd_autonomy_overview(args) -> None:
+    """Wave 892: one-line autonomy overview."""
+    from core.automation.autonomy_overview import build_overview
+    window = float(getattr(args, "window_hours", 24.0) or 24.0)
+    store = (getattr(args, "store", "") or "").strip()
+    as_json = bool(getattr(args, "json", False))
+    snap = build_overview(
+        window_hours=window,
+        store_id=store or None,
+    )
+    if as_json:
+        print(json.dumps({
+            "captured_at": snap.captured_at,
+            "store_id": snap.store_id,
+            "window_hours": snap.window_hours,
+            "verdict": snap.verdict,
+            "armed_total": snap.armed_total,
+            "armed_engine_mode": snap.armed_engine_mode,
+            "armed_substrate_with_discoverer": (
+                snap.armed_substrate_with_discoverer
+            ),
+            "armed_substrate_no_discoverer": (
+                snap.armed_substrate_no_discoverer
+            ),
+            "fires_total": snap.fires_total,
+            "fires_invoked": snap.fires_invoked,
+            "fires_errors": snap.fires_errors,
+            "cooldown_blocked": snap.cooldown_blocked,
+            "alerts_critical": snap.alerts_critical,
+            "alerts_warn": snap.alerts_warn,
+        }, indent=2, default=str))
+        return
+    # Single-line key=value form
+    scope = f"store={store}" if store else "fleet"
+    print(
+        f"verdict={snap.verdict}  "
+        f"armed={snap.armed_total}  "
+        f"fires={snap.fires_invoked}/{snap.fires_total}  "
+        f"errors={snap.fires_errors}  "
+        f"cooldown_blocked={snap.cooldown_blocked}  "
+        f"alerts={snap.alerts_critical}c/{snap.alerts_warn}w  "
+        f"({scope}, {window:.0f}h)"
+    )
+
+
 def _cmd_autonomy_alerts(args) -> None:
     """Wave 850: substrate-fire degradation alerts."""
     from core.automation.substrate_fire_alerts import (
@@ -49092,6 +49155,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "autonomy-alerts":
         _cmd_autonomy_alerts(args)
+        return
+    if args.command == "autonomy-overview":
+        _cmd_autonomy_overview(args)
         return
     if args.command == "autonomy-fire-trend":
         _cmd_autonomy_fire_trend(args)
