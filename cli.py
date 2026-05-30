@@ -4544,6 +4544,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="run every registered discoverer + summary table",
     )
     autonomy_discover_p.add_argument(
+        "--store", type=str, default="",
+        help=(
+            "W885: pass store_id into the discoverer so "
+            "per-store env overrides fire."
+        ),
+    )
+    autonomy_discover_p.add_argument(
         "--json", action="store_true",
     )
 
@@ -34586,19 +34593,25 @@ def _cmd_autonomy_discover(args) -> None:
     )
     domain = (getattr(args, "domain", "") or "").strip()
     run_all = bool(getattr(args, "all", False))
+    store = (getattr(args, "store", "") or "").strip()
     as_json = bool(getattr(args, "json", False))
 
     if run_all:
         regs = registered_domains()
-        results = [(d, discover(d)) for d in regs]
+        results = [
+            (d, discover(d, store_id=store or None))
+            for d in regs
+        ]
         if as_json:
             print(json.dumps({
                 "count": len(regs),
+                "store_id": store,
                 "domains": [
                     {
                         "domain": d,
                         "ok": r.ok,
                         "source": r.source,
+                        "store_id": r.store_id,
                         "payload_size": r.payload_size,
                         "discovered_at": r.discovered_at,
                         "error": r.error,
@@ -34613,8 +34626,9 @@ def _cmd_autonomy_discover(args) -> None:
                 ),
             }, indent=2, default=str))
             return
+        scope_label = f" (store={store})" if store else ""
         print(
-            f"Autonomy discoverers ({len(regs)}):"
+            f"Autonomy discoverers ({len(regs)}){scope_label}:"
         )
         print()
         print(
@@ -34667,12 +34681,13 @@ def _cmd_autonomy_discover(args) -> None:
             print(f"ERROR: {msg}")
         sys.exit(1)
 
-    result = discover(domain)
+    result = discover(domain, store_id=store or None)
     if as_json:
         print(json.dumps({
             "ok": result.ok,
             "domain": result.domain,
             "source": result.source,
+            "store_id": result.store_id,
             "payload_size": result.payload_size,
             "discovered_at": result.discovered_at,
             "error": result.error,
@@ -34685,10 +34700,12 @@ def _cmd_autonomy_discover(args) -> None:
     if not result.ok:
         print(f"discoverer FAILED for {domain}: {result.error}")
         sys.exit(1)
+    scope_label = f"  store={store}" if store else ""
     print(
         f"discoverer OK for {domain}: "
         f"source={result.source}  "
         f"payload_size={result.payload_size}"
+        f"{scope_label}"
     )
     for i, row in enumerate(result.payload[:5]):
         print(f"  [{i}] {str(row)[:140]}")
