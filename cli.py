@@ -9915,12 +9915,51 @@ def _cmd_empire(args) -> None:
     except Exception:  # noqa: BLE001
         discoverer_block = None
 
+    # Wave 845: substrate_fire activity rollup for empire view.
+    substrate_fire_block: dict | None = None
+    try:
+        from core.automation.substrate_fire_log import (
+            recent_substrate_fires,
+        )
+        sf_rows = recent_substrate_fires(window_hours=168.0)
+        n_fired = sum(
+            1 for r in sf_rows if r.get("invoked")
+        )
+        n_dry = sum(
+            1 for r in sf_rows
+            if r.get("reason") == "dry_run"
+        )
+        n_err = sum(
+            1 for r in sf_rows
+            if r.get("reason") in (
+                "applier_error", "discoverer_error",
+            )
+        )
+        by_domain: dict[str, int] = {}
+        for r in sf_rows:
+            d = r.get("domain") or ""
+            if d:
+                by_domain[d] = by_domain.get(d, 0) + 1
+        substrate_fire_block = {
+            "total_outcomes": len(sf_rows),
+            "fired": n_fired,
+            "dry_run": n_dry,
+            "errors": n_err,
+            "by_domain": by_domain,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "empire substrate-fire block raised: %s", exc,
+        )
+        substrate_fire_block = None
+
     if as_json:
         print(json.dumps({
             "stores": stores_list,
             "niche_mix": niche_mix_block,
             "autonomy": autonomy_block,
             "discoverers": discoverer_block,
+            "substrate_fire": substrate_fire_block,
             "last_run": last_run_block,
             "revenue": revenue_block,
             "approvals": approvals_block,
@@ -10010,6 +10049,30 @@ def _cmd_empire(args) -> None:
             f"    discoverers:        {badge} "
             f"{regs}/{sub} substrate-mode covered "
             f"({cov:.0f}%)"
+        )
+
+    # Wave 845: substrate-fire activity row. Surfaces only
+    # when actionable outcomes exist in window (7d here).
+    if (
+        substrate_fire_block
+        and substrate_fire_block.get("total_outcomes", 0) > 0
+    ):
+        n_err = substrate_fire_block.get("errors", 0)
+        n_fired = substrate_fire_block.get("fired", 0)
+        n_dry = substrate_fire_block.get("dry_run", 0)
+        n_total = substrate_fire_block.get(
+            "total_outcomes", 0,
+        )
+        badge = (
+            "[BAD]" if n_err
+            else "[OK ]" if n_fired
+            else "[ - ]"
+        )
+        print(
+            f"    substrate-fire:     {badge} "
+            f"{n_total} outcome(s) "
+            f"fired={n_fired} dry_run={n_dry} "
+            f"errors={n_err}"
         )
 
     # Wave 249: autonomy substrate wiring health. Distinct
