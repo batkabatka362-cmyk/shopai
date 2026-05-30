@@ -36,6 +36,8 @@ _STANDARD_HEALTH_KNOBS = (
     "SHOPAI_{PREFIX}_PAUSE_FAILURE_RATIO",
     "SHOPAI_{PREFIX}_HEALTH_MIN_SAMPLE",
     "SHOPAI_{PREFIX}_AUTO_RESUME_HOURS",
+    # W868: per-domain cooldown override (from W866)
+    "SHOPAI_AUTO_DISARM_COOLDOWN_{PREFIX}_HOURS",
 )
 
 # Domains with (env_prefix, extra_knobs) tuples

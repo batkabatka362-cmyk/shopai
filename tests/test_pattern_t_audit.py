@@ -13,15 +13,19 @@ from engines._pattern_t_audit import (
 
 class TestExpandKnobs:
 
-    def test_standard_health_knobs_emit_5_entries(self):
+    def test_standard_health_knobs_emit_6_entries(self):
         knobs = _expand_knobs("TESTPREFIX", [])
-        # 5 standard health knobs
-        assert len(knobs) == 5
+        # 6 standard health knobs (5 pre-W868 + cooldown override)
+        assert len(knobs) == 6
         assert (
             "SHOPAI_AUTO_PAUSE_TESTPREFIX_ON_FAILURE" in knobs
         )
         assert (
             "SHOPAI_TESTPREFIX_HEALTH_MIN_SAMPLE" in knobs
+        )
+        assert (
+            "SHOPAI_AUTO_DISARM_COOLDOWN_TESTPREFIX_HOURS"
+            in knobs
         )
 
     def test_extras_appended(self):
@@ -29,7 +33,7 @@ class TestExpandKnobs:
             "FOO", ["SHOPAI_FOO_CUSTOM"],
         )
         assert "SHOPAI_FOO_CUSTOM" in knobs
-        assert len(knobs) == 6
+        assert len(knobs) == 7
 
 
 class TestRegistry:
@@ -40,18 +44,10 @@ class TestRegistry:
 
     def test_total_knob_count(self):
         report = build_autonomy_env_registry()
-        # 9 domains × 5 standard + extras:
-        # customer_support_refund: 5 + 2 = 7
-        # marketing_budget: 5 + 1 = 6
-        # fulfillment: 5
-        # inventory: 5 + 2 = 7
-        # discount_cleanup: 5 + 2 = 7
-        # order_followup: 5
-        # product_seo: 5 + 1 = 6
-        # customer_outreach: 5 + 1 = 6
-        # catalog_quality: 5 + 1 = 6  (W458-475)
-        # Total: 55
-        assert report.total_knobs == 61
+        # W868: 6 standard health knobs per domain (was 5;
+        # added per-domain cooldown override). 10 domains
+        # × 6 standard = 60, plus 11 extras = 71.
+        assert report.total_knobs == 71
 
     def test_unset_knob_records_none_value(self, monkeypatch):
         monkeypatch.delenv(
