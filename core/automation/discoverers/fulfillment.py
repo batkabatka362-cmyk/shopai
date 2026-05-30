@@ -44,18 +44,31 @@ _DEFAULT_LIMIT = 100
 _LOOKBACK_DAYS = 14
 
 
-def _limit() -> int:
-    raw = os.environ.get(
-        "SHOPAI_FULFILLMENT_DISCOVER_LIMIT",
-        str(_DEFAULT_LIMIT),
+def _limit(store_id: str | None = None) -> int:
+    """W882: per-store override via
+    SHOPAI_FULFILLMENT_DISCOVER_LIMIT_<STORE>."""
+    from core.automation.discoverer_env import resolve_int
+    return resolve_int(
+        _DOMAIN, "LIMIT",
+        default=_DEFAULT_LIMIT,
+        store_id=store_id,
+        min_value=1,
     )
-    try:
-        return max(1, int(raw))
-    except (TypeError, ValueError):
-        return _DEFAULT_LIMIT
 
 
-def _default_location_id() -> str:
+def _default_location_id(
+    store_id: str | None = None,
+) -> str:
+    """W882: per-store override via
+    SHOPAI_FULFILLMENT_DEFAULT_LOCATION_ID_<STORE>."""
+    sid = (store_id or "").upper().replace("-", "_")
+    if sid:
+        per_store = os.environ.get(
+            f"SHOPAI_FULFILLMENT_DEFAULT_LOCATION_ID_{sid}",
+            "",
+        )
+        if per_store:
+            return per_store.strip()
     return (
         os.environ.get(
             "SHOPAI_FULFILLMENT_DEFAULT_LOCATION_ID", "",
@@ -119,7 +132,9 @@ def _classify_order(
     }
 
 
-def _fetch_orders() -> list[dict[str, Any]]:
+def _fetch_orders(
+    store_id: str | None = None,
+) -> list[dict[str, Any]]:
     try:
         from core.adapters.router import get_router  # noqa
         from core.adapters.base import Capability
@@ -169,7 +184,7 @@ def _fetch_orders() -> list[dict[str, Any]]:
 def discover_fulfillment(*, store_id: str | None = None) -> DiscoveryResult:
     now = time.time()
     try:
-        orders = _fetch_orders()
+        orders = _fetch_orders(store_id=store_id)
     except Exception as exc:  # noqa: BLE001
         return DiscoveryResult(
             domain=_DOMAIN,
@@ -179,7 +194,7 @@ def discover_fulfillment(*, store_id: str | None = None) -> DiscoveryResult:
             store_id=store_id,
             error=f"fetch raised: {exc!s:.200}",
         )
-    default_lid = _default_location_id()
+    default_lid = _default_location_id(store_id)
     payload: list[dict] = []
     for o in orders:
         row = _classify_order(o, default_lid)

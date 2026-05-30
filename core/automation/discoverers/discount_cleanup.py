@@ -32,18 +32,34 @@ _DEFAULT_LIMIT = 100
 _DEFAULT_MIN_AGE_DAYS = 30
 
 
-def _limit() -> int:
-    raw = os.environ.get(
-        "SHOPAI_DISCOUNT_CLEANUP_DISCOVER_LIMIT",
-        str(_DEFAULT_LIMIT),
+def _limit(store_id: str | None = None) -> int:
+    """W882: per-store override via
+    SHOPAI_DISCOUNT_CLEANUP_DISCOVER_LIMIT_<STORE>."""
+    from core.automation.discoverer_env import resolve_int
+    return resolve_int(
+        _DOMAIN, "LIMIT",
+        default=_DEFAULT_LIMIT,
+        store_id=store_id,
+        min_value=1,
     )
-    try:
-        return max(1, int(raw))
-    except (TypeError, ValueError):
-        return _DEFAULT_LIMIT
 
 
-def _min_age_days() -> int:
+def _min_age_days(store_id: str | None = None) -> int:
+    """W882: per-store override via
+    SHOPAI_DISCOUNT_CLEANUP_MIN_AGE_DAYS_<STORE>.
+
+    Doesn't follow DISCOVER_<KNOB> naming -- direct env."""
+    sid = (store_id or "").upper().replace("-", "_")
+    if sid:
+        per_store = os.environ.get(
+            f"SHOPAI_DISCOUNT_CLEANUP_MIN_AGE_DAYS_{sid}",
+            "",
+        )
+        if per_store:
+            try:
+                return max(0, int(per_store))
+            except (TypeError, ValueError):
+                pass
     raw = os.environ.get(
         "SHOPAI_DISCOUNT_CLEANUP_MIN_AGE_DAYS",
         str(_DEFAULT_MIN_AGE_DAYS),
@@ -113,7 +129,9 @@ def _classify_discount(
     return None
 
 
-def _fetch_discounts() -> list[dict[str, Any]]:
+def _fetch_discounts(
+    store_id: str | None = None,
+) -> list[dict[str, Any]]:
     try:
         from core.adapters.router import get_router  # noqa
         from core.adapters.base import Capability
@@ -140,7 +158,7 @@ def _fetch_discounts() -> list[dict[str, Any]]:
     if cap is None:
         return []
     try:
-        res = router.execute(cap, {"limit": _limit()})
+        res = router.execute(cap, {"limit": _limit(store_id)})
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "discount_cleanup discoverer: execute raised: %s",
@@ -164,7 +182,7 @@ def _fetch_discounts() -> list[dict[str, Any]]:
 def discover_discount_cleanup(*, store_id: str | None = None) -> DiscoveryResult:
     now = time.time()
     try:
-        discounts = _fetch_discounts()
+        discounts = _fetch_discounts(store_id=store_id)
     except Exception as exc:  # noqa: BLE001
         return DiscoveryResult(
             domain=_DOMAIN,
@@ -174,7 +192,7 @@ def discover_discount_cleanup(*, store_id: str | None = None) -> DiscoveryResult
             store_id=store_id,
             error=f"fetch raised: {exc!s:.200}",
         )
-    min_age = _min_age_days()
+    min_age = _min_age_days(store_id)
     payload: list[dict] = []
     for d in discounts:
         if not isinstance(d, dict):

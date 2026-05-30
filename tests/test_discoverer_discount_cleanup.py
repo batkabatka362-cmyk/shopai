@@ -157,7 +157,7 @@ class TestDiscover:
         assert r.payload == []
 
     def test_fetch_raise_captured(self):
-        def explode():
+        def explode(*args, **kwargs):
             raise RuntimeError("api gone")
         with patch(
             "core.automation.discoverers.discount_cleanup."

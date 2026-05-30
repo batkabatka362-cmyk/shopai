@@ -155,7 +155,7 @@ class TestDiscover:
             assert row["location_id"] == "ENV_DEFAULT"
 
     def test_fetch_raise_captured(self):
-        def explode():
+        def explode(*args, **kwargs):
             raise RuntimeError("net down")
         with patch(
             "core.automation.discoverers.fulfillment."
