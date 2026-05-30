@@ -4230,6 +4230,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_bk_p.add_argument("--json", action="store_true")
 
+    # Wave 889: Pattern BL (legacy env alias inventory)
+    pattern_bl_p = sub.add_parser(
+        "pattern-bl-audit",
+        help=(
+            "Wave 889: informational inventory of legacy "
+            "env aliases. Never fails; surfaces what's still "
+            "in legacy naming for operator migration."
+        ),
+    )
+    pattern_bl_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -30979,6 +30990,64 @@ def _cmd_pattern_as_audit(args) -> None:
         )
 
 
+def _cmd_pattern_bl_audit(args) -> None:
+    """Wave 889: legacy env alias inventory."""
+    from engines._pattern_bl_audit import run_pattern_bl_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_bl_audit()
+    if as_json:
+        print(json.dumps({
+            "aliases": [
+                {
+                    "discoverer": a.discoverer,
+                    "knob": a.knob,
+                    "standard_env": a.standard_env,
+                    "legacy_env": a.legacy_env,
+                    "standard_set": a.standard_set,
+                    "legacy_set": a.legacy_set,
+                }
+                for a in report.aliases
+            ],
+            "legacy_only_count": report.legacy_only_count,
+            "both_set_count": report.both_set_count,
+            "migrated_count": report.migrated_count,
+        }, indent=2, default=str))
+        return
+    print(
+        f"Pattern BL legacy alias inventory "
+        f"({len(report.aliases)} aliases tracked):"
+    )
+    print()
+    print(
+        f"  {'discoverer':<20} {'knob':<22} "
+        f"{'std':<4} {'leg':<4}"
+    )
+    for a in report.aliases:
+        std = "set" if a.standard_set else "-"
+        leg = "set" if a.legacy_set else "-"
+        print(
+            f"  {a.discoverer:<20} {a.knob:<22} "
+            f"{std:<4} {leg:<4}"
+        )
+    print()
+    print(
+        f"  migrated (std only):  {report.migrated_count}"
+    )
+    print(
+        f"  legacy-only:          {report.legacy_only_count}"
+    )
+    print(
+        f"  both set (redundant): {report.both_set_count}"
+    )
+    if report.legacy_only_count > 0:
+        print()
+        print(
+            "  Tip: rename legacy env vars to the standard "
+            "form so future Pattern BL runs show zero "
+            "legacy-only."
+        )
+
+
 def _cmd_pattern_bk_audit(args) -> None:
     """Wave 886: autonomy-discover --store plumbing."""
     from engines._pattern_bk_audit import run_pattern_bk_audit
@@ -48785,6 +48854,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-bk-audit":
         _cmd_pattern_bk_audit(args)
+        return
+
+    if args.command == "pattern-bl-audit":
+        _cmd_pattern_bl_audit(args)
         return
 
     if args.command == "autonomy-env":
