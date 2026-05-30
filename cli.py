@@ -4107,6 +4107,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_ay_p.add_argument("--json", action="store_true")
 
+    # Wave 842: Pattern AZ (substrate_fire log invariants)
+    pattern_az_p = sub.add_parser(
+        "pattern-az-audit",
+        help=(
+            "Wave 842: substrate_fire log recorder + reader "
+            "invariants (no-op outcomes filtered, safe "
+            "filters, callable surface)."
+        ),
+    )
+    pattern_az_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -30469,6 +30480,43 @@ def _cmd_pattern_as_audit(args) -> None:
         )
 
 
+def _cmd_pattern_az_audit(args) -> None:
+    """Wave 842: substrate_fire log invariants."""
+    from engines._pattern_az_audit import run_pattern_az_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_az_audit()
+    if as_json:
+        print(json.dumps({
+            "invariants_checked": report.invariants_checked,
+            "clean_invariants": report.clean_invariants,
+            "violations": [
+                {
+                    "invariant": v.invariant,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern AZ FAILED -- "
+            f"{len(report.violations)} broken invariant(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.invariant}] {v.reason}")
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern AZ OK -- "
+            f"{len(report.clean_invariants)} substrate_fire "
+            "log invariant(s) honored."
+        )
+
+
 def _cmd_pattern_ay_audit(args) -> None:
     """Wave 836: discoverer test-file existence."""
     from engines._pattern_ay_audit import run_pattern_ay_audit
@@ -37931,6 +37979,22 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_az":
+            from engines._pattern_az_audit import (
+                run_pattern_az_audit,
+            )
+            r = run_pattern_az_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_invariants": r.clean_invariants,
+                "violations": [
+                    {
+                        "invariant": v.invariant,
+                        "reason": v.reason,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -37952,6 +38016,7 @@ _AUDIT_ORDER = (
     "pattern_an", "pattern_ao", "pattern_ap", "pattern_aq",
     "pattern_ar", "pattern_as", "pattern_at", "pattern_au",
     "pattern_av", "pattern_aw", "pattern_ax", "pattern_ay",
+    "pattern_az",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -38000,6 +38065,7 @@ _AUDIT_LABELS = {
     "pattern_aw": "Pattern AW (discoverer return-shape)",
     "pattern_ax": "Pattern AX (action-string parity)",
     "pattern_ay": "Pattern AY (discoverer test file)",
+    "pattern_az": "Pattern AZ (substrate_fire log invariants)",
 }
 
 
@@ -47078,6 +47144,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-ay-audit":
         _cmd_pattern_ay_audit(args)
+        return
+
+    if args.command == "pattern-az-audit":
+        _cmd_pattern_az_audit(args)
         return
 
     if args.command == "autonomy-env":
