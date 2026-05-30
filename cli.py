@@ -4150,6 +4150,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_bc_p.add_argument("--json", action="store_true")
 
+    # Wave 864: Pattern BD (cooldown UX consistency)
+    pattern_bd_p = sub.add_parser(
+        "pattern-bd-audit",
+        help=(
+            "Wave 864: verify operator-facing cooldown UX "
+            "(clear CLI + --force + ArmCooldownError handling)."
+        ),
+    )
+    pattern_bd_p.add_argument("--json", action="store_true")
+
     # Wave 207: Pattern V audit (notify alert registration)
     pattern_v_p = sub.add_parser(
         "pattern-v-audit",
@@ -30857,6 +30867,43 @@ def _cmd_pattern_as_audit(args) -> None:
         )
 
 
+def _cmd_pattern_bd_audit(args) -> None:
+    """Wave 864: cooldown UX consistency."""
+    from engines._pattern_bd_audit import run_pattern_bd_audit
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_bd_audit()
+    if as_json:
+        print(json.dumps({
+            "invariants_checked": report.invariants_checked,
+            "clean_invariants": report.clean_invariants,
+            "violations": [
+                {
+                    "invariant": v.invariant,
+                    "reason": v.reason,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern BD FAILED -- "
+            f"{len(report.violations)} broken link(s):"
+        )
+        for v in report.violations:
+            print(f"  [{v.invariant}] {v.reason}")
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern BD OK -- "
+            f"{len(report.clean_invariants)} cooldown UX "
+            "link(s) honored."
+        )
+
+
 def _cmd_pattern_bc_audit(args) -> None:
     """Wave 861: re-arm cooldown chain."""
     from engines._pattern_bc_audit import run_pattern_bc_audit
@@ -38942,6 +38989,22 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_bd":
+            from engines._pattern_bd_audit import (
+                run_pattern_bd_audit,
+            )
+            r = run_pattern_bd_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_invariants": r.clean_invariants,
+                "violations": [
+                    {
+                        "invariant": v.invariant,
+                        "reason": v.reason,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -38964,6 +39027,7 @@ _AUDIT_ORDER = (
     "pattern_ar", "pattern_as", "pattern_at", "pattern_au",
     "pattern_av", "pattern_aw", "pattern_ax", "pattern_ay",
     "pattern_az", "pattern_ba", "pattern_bb", "pattern_bc",
+    "pattern_bd",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -39016,6 +39080,7 @@ _AUDIT_LABELS = {
     "pattern_ba": "Pattern BA (notify autonomy_kinds parity)",
     "pattern_bb": "Pattern BB (auto-disarm chain integrity)",
     "pattern_bc": "Pattern BC (re-arm cooldown chain)",
+    "pattern_bd": "Pattern BD (cooldown UX consistency)",
 }
 
 
@@ -48110,6 +48175,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-bc-audit":
         _cmd_pattern_bc_audit(args)
+        return
+
+    if args.command == "pattern-bd-audit":
+        _cmd_pattern_bd_audit(args)
         return
 
     if args.command == "autonomy-env":
