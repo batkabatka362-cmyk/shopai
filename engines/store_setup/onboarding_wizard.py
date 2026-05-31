@@ -815,6 +815,7 @@ _DRY_RUN_HINTS: list[tuple[str, str]] = [
     ("go_live",
      "engines._go_live_check.run_go_live_check -- 9 gates"),
     ("schedule",
-     "emit POSIX cron template; operator can also run "
-     "`shopai cycle schedule` for platform-specific output"),
+     "emit platform-specific schedule template "
+     "(cron / windows-task auto-detected); operator can "
+     "also run `shopai cycle schedule` directly"),
 ]
