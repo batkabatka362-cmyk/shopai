@@ -39688,9 +39688,45 @@ def _cmd_shopify_webhooks_live_check(args) -> None:
     with a friendly message when the webhooks adapter isn't
     configured (dev environments without live creds).
     """
+    # W956 bugfix part 3: same root cause as scope-live-check
+    # -- env may only have URL (not KEY), so fall back to the
+    # registered store tokens catalog.
+    webhook_adapter = None
     try:
+        import os as _os
+        if not (
+            _os.environ.get("SHOPAI_SHOPIFY_URL")
+            and _os.environ.get("SHOPAI_SHOPIFY_KEY")
+        ):
+            try:
+                _path = _os.path.join(
+                    "data", ".shopify_tokens.json",
+                )
+                if _os.path.exists(_path):
+                    import json as _json
+                    with open(_path, encoding="utf-8") as _f:
+                        _tokens = _json.load(_f)
+                    if _tokens:
+                        _key = next(iter(_tokens))
+                        _tok = (
+                            _tokens[_key].get("access_token")
+                            or _tokens[_key].get("token")
+                        )
+                        if _tok:
+                            from core.adapters.shopify.webhooks \
+                                import ShopifyWebhooksAdapter
+                            webhook_adapter = (
+                                ShopifyWebhooksAdapter(
+                                    shop_url=_key,
+                                    access_token=_tok,
+                                )
+                            )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "webhook creds fallback raised: %s", exc,
+                )
         from core.feedback.webhook_health import compare_to_live
-        report = compare_to_live()
+        report = compare_to_live(adapter=webhook_adapter)
     except Exception as exc:  # noqa: BLE001
         logger.debug("webhook health check raised: %s", exc)
         report = None
