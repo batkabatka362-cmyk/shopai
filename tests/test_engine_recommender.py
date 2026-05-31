@@ -110,11 +110,13 @@ class TestRecommendEnginesPrimary:
 
     def test_returns_engines_for_active_goal(self):
         mgr = GoalManager()
+        # W937: roster grew to ~33 engines mapping to
+        # grow_customers; use high limit so canonical members
+        # always make the bucket regardless of sort order.
         result = recommend_engines(
-            goal="grow_customers", manager=mgr, limit=20,
+            goal="grow_customers", manager=mgr, limit=100,
         )
         assert result.active_goal == "grow_customers"
-        # All primary picks have goal=grow_customers + alignment=1.0
         for r in result.primary:
             assert r.goal == "grow_customers"
             assert r.alignment == 1.0
