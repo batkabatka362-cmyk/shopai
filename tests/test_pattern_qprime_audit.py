@@ -19,13 +19,17 @@ class TestPatternQPrimeLive:
             f"{[(v.domain, v.missing_fields) for v in report.violations]}"
         )
 
-    def test_probes_all_7_known_domains(self):
+    def test_probes_all_10_known_domains(self):
+        """W937 bugfix: probe expanded from 7 to 10 domains
+        (customer_outreach, catalog_quality, shipping_alert
+        were previously silently skipped via getattr None)."""
         report = run_pattern_qprime_audit()
         assert set(report.domains_probed) == {
             "customer_support", "marketing",
             "fulfillment", "inventory",
             "discount_cleanup", "order_followup",
-            "product_seo",
+            "product_seo", "customer_outreach",
+            "catalog_quality", "shipping_alert",
         }
 
     def test_canonical_fields_match_DomainSummary(self):
