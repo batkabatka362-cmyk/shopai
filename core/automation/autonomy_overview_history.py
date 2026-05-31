@@ -178,20 +178,32 @@ def recent_entries(
 def verdict_transitions(
     *,
     store_id: str | None = None,
+    window_hours: float | None = None,
+    limit: int | None = None,
     path: Path | None = None,
 ) -> list[dict]:
     """Return verdict-change events (chronological).
 
     Each entry: {at, from, to, store_id}. The very first
     history row counts as a transition from None -> verdict.
+
+    W937 bugfix: previously ignored window_hours + limit;
+    callers can now filter to recent history.
     """
     p = _resolve_path(path)
     rows = _read_raw(p)
+    cutoff = (
+        time.time() - window_hours * 3600.0
+        if window_hours and window_hours > 0 else None
+    )
     out: list[dict] = []
     prev: str | None = None
     for row in rows:
         if store_id is not None:
             if row.get("store_id") != store_id:
+                continue
+        if cutoff is not None:
+            if float(row.get("captured_at", 0)) < cutoff:
                 continue
         cur = str(row.get("verdict", ""))
         if cur != prev:
@@ -202,6 +214,8 @@ def verdict_transitions(
                 "store_id": row.get("store_id"),
             })
             prev = cur
+    if limit is not None and limit > 0 and len(out) > limit:
+        out = out[-limit:]
     return out
 
 

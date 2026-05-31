@@ -35572,6 +35572,17 @@ def _cmd_autonomy_overview_history(args) -> None:
     bucket_h = float(getattr(args, "bucket_hours", 1.0) or 1.0)
     above_only = bool(getattr(args, "above_threshold", False))
 
+    # W937 bugfix: --thrash and --transitions are mutually
+    # exclusive view modes. Pre-fix --thrash silently
+    # shadowed --transitions.
+    if thrash_view and transitions_only:
+        print(
+            "ERROR: --thrash and --transitions are mutually "
+            "exclusive view modes.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     if thrash_view:
         from core.automation.autonomy_overview_thrash import (
             compute_thrash,
@@ -35656,10 +35667,19 @@ def _cmd_autonomy_overview_history(args) -> None:
         return
 
     if transitions_only:
-        trans = verdict_transitions(store_id=store or None)
+        # W937 bugfix: forward --window-hours and --limit to
+        # verdict_transitions; previously these were silently
+        # ignored.
+        trans = verdict_transitions(
+            store_id=store or None,
+            window_hours=window if window > 0 else None,
+            limit=limit if limit > 0 else None,
+        )
         if as_json:
             print(json.dumps({
                 "store_id": store or None,
+                "window_hours": window,
+                "limit": limit,
                 "transitions": trans,
             }, indent=2, default=str))
             return

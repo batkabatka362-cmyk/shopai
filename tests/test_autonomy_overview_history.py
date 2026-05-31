@@ -142,6 +142,45 @@ class TestVerdictTransitions:
         assert len(trans_a) == 1
         assert trans_a[0]["to"] == "idle"
 
+    def test_window_hours_filter(self, tmp_path):
+        """W937 bugfix: window_hours must filter transitions."""
+        p = tmp_path / "h.json"
+        old = _snap()
+        old.captured_at = time.time() - 7200  # 2h ago
+        record_snapshot(old, path=p)
+        new = _snap(armed_total=2)  # different verdict
+        new.captured_at = time.time()
+        record_snapshot(new, path=p)
+        # Full history: 2 transitions (None->idle, idle->armed)
+        trans_full = verdict_transitions(path=p)
+        assert len(trans_full) == 2
+        # 1h window excludes old idle entry
+        trans_window = verdict_transitions(
+            path=p, window_hours=1.0,
+        )
+        assert len(trans_window) == 1
+        assert trans_window[0]["to"] == "armed"
+
+    def test_limit_caps_transitions(self, tmp_path):
+        """W937 bugfix: limit must cap transitions."""
+        p = tmp_path / "h.json"
+        verdicts = ["idle", "armed", "active",
+                    "armed", "idle"]
+        for v in verdicts:
+            s = _snap()
+            if v == "armed":
+                s.armed_total = 1
+            elif v == "active":
+                s.armed_total = 1
+                s.fires_invoked = 1
+            record_snapshot(s, path=p)
+        # 5 transitions total (None->idle + 4 flips)
+        assert len(verdict_transitions(path=p)) == 5
+        # limit=2 takes the 2 most recent
+        last2 = verdict_transitions(path=p, limit=2)
+        assert len(last2) == 2
+        assert last2[-1]["to"] == "idle"
+
 
 class TestEntryFromSnapshot:
 
