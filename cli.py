@@ -10418,6 +10418,27 @@ def _cmd_empire(args) -> None:
     except Exception:  # noqa: BLE001
         autonomy_block = None
 
+    # Wave 936: thrash block-log activity. Surfaces ONLY when
+    # at least one block fired in the last 24h.
+    thrash_blocks_block: dict | None = None
+    try:
+        from core.automation.thrash_block_log import (
+            recent_blocks,
+        )
+        rows = recent_blocks(limit=500, window_hours=24.0)
+        if rows:
+            engines_blocked = sorted({r.engine for r in rows})
+            stores_blocked = sorted({
+                r.store_id for r in rows if r.store_id
+            })
+            thrash_blocks_block = {
+                "block_count": len(rows),
+                "engines": engines_blocked,
+                "stores": stores_blocked,
+            }
+    except Exception:  # noqa: BLE001
+        thrash_blocks_block = None
+
     # Wave 928: thrash guardrail override block. Surfaces ONLY
     # stores with an active per-store override (force-on or
     # force-off vs fleet inherit).
@@ -10560,6 +10581,7 @@ def _cmd_empire(args) -> None:
             "niche_mix": niche_mix_block,
             "autonomy": autonomy_block,
             "thrash": thrash_block,
+            "thrash_blocks": thrash_blocks_block,
             "guardrail_overrides": guardrail_override_block,
             "discoverers": discoverer_block,
             "substrate_fire": substrate_fire_block,
@@ -10805,6 +10827,29 @@ def _cmd_empire(args) -> None:
             )
     except Exception as exc:  # noqa: BLE001
         logger.debug("empire thrash block raised: %s", exc)
+
+    # Wave 936: thrash blocks inline row. Surfaces ONLY when
+    # at least one block fired in window.
+    try:
+        if thrash_blocks_block:
+            count = thrash_blocks_block["block_count"]
+            es = thrash_blocks_block["engines"][:3]
+            engines_str = ", ".join(es)
+            more = (
+                f" +{len(thrash_blocks_block['engines']) - 3}"
+                f" more"
+                if len(thrash_blocks_block["engines"]) > 3
+                else ""
+            )
+            print(
+                f"    thrash blocks:      [WRN] {count} "
+                f"block(s)  engines={engines_str}{more}"
+            )
+            print(
+                "    -> shopai thrash-blocks"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("empire thrash-blocks row raised: %s", exc)
 
     # Wave 928: guardrail override inline row. Surfaces ONLY
     # when at least one store has a per-store override.
