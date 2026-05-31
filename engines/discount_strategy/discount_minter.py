@@ -155,6 +155,9 @@ def mint_strategy_code(
     except Exception:  # noqa: BLE001
         active_store_id = None
     if should_block_thrashing_store(active_store_id):
+        # W937 bugfix: forward agi_metrics for learning-loop
+        # joinability (pre-fix was metrics=None, splitting
+        # thrash blocks from the rest of the action history).
         record_writeback(
             engine="discount_strategy",
             action_type="mint_strategy_code",
@@ -162,7 +165,7 @@ def mint_strategy_code(
             params=mint_params,
             success=False,
             error=explain_thrash_block(active_store_id),
-            metrics=None,
+            metrics=agi_metrics or None,
         )
         log_thrash_block(
             engine="discount_strategy",

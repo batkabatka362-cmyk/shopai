@@ -169,6 +169,14 @@ def mint_loyalty_code(
     except Exception:  # noqa: BLE001
         active_store_id = None
     if should_block_thrashing_store(active_store_id):
+        # W937 bugfix: forward agi_metrics so the learning loop
+        # sees the same AGI context that the v2 guardrail and
+        # success paths use. Pre-fix metrics=None made thrash-
+        # blocked entries unjoinable with the rest of the
+        # action history.
+        agi_metrics_for_thrash = (
+            agi_context.get("metrics") or {}
+        )
         record_writeback(
             engine="loyalty",
             action_type="mint_loyalty_code",
@@ -176,7 +184,7 @@ def mint_loyalty_code(
             params=mint_params,
             success=False,
             error=explain_thrash_block(active_store_id),
-            metrics=None,
+            metrics=agi_metrics_for_thrash or None,
         )
         log_thrash_block(
             engine="loyalty",
