@@ -41594,7 +41594,24 @@ def _cmd_audit_all(args) -> None:
                         f"{len(r.get('violations', []))} engine(s) violate envelope"
                     )
                 else:
-                    print(f"  [FAIL] {label}")
+                    # W937 bugfix: bare [FAIL] was useless on
+                    # the 60+ newer audits. Generic violation-
+                    # count fallback works for every audit
+                    # whose run_ returns a 'violations' list.
+                    viols = r.get("violations", [])
+                    if viols:
+                        first = viols[0]
+                        first_summary = (
+                            f"{first.get('invariant') or first.get('domain') or first.get('engine') or '...'}: "
+                            f"{(first.get('reason') or '')[:80]}"
+                        )
+                        print(
+                            f"  [FAIL] {label} -- "
+                            f"{len(viols)} violation(s) "
+                            f"(first: {first_summary})"
+                        )
+                    else:
+                        print(f"  [FAIL] {label}")
     print()
     if all_ok:
         if only:
