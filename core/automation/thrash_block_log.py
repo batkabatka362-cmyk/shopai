@@ -119,6 +119,21 @@ def recent_blocks(
         if window_hours else None
     )
     for row in reversed(rows):
+        if not isinstance(row, dict):
+            continue
+        # W937 bugfix: require at minimum engine + action_type
+        # + blocked_at so malformed rows don't produce phantom
+        # BlockEntry objects with empty strings + epoch 0.
+        if not (
+            row.get("engine")
+            and row.get("action_type")
+            and row.get("blocked_at")
+        ):
+            logger.debug(
+                "skip block log row missing required fields: "
+                "%s", row,
+            )
+            continue
         if store_id is not None:
             if row.get("store_id") != store_id:
                 continue

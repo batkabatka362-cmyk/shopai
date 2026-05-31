@@ -43,16 +43,55 @@ def _get_auth_instance(shop_url: str, client_id: str, client_secret: str) -> Any
 class StoreManager:
     """Manages multiple Shopify stores for ShopAI."""
 
+    # W949: persist active store across CLI invocations
+    _ACTIVE_STORE_PATH = "data/.active_store"
+
     def __init__(self, db: Any = None) -> None:
         from data_pipeline.store.db import ShopAIDatabase
+        import os
         self._db: ShopAIDatabase = db or ShopAIDatabase()
-        self._active_store_id: str = ""
+        # W949 bugfix: load persisted active store id at init.
+        # Pre-fix: in-memory only -> every new CLI process
+        # resets to "" -> `shopai store switch X` print success
+        # but `shopai cycle verify` next invocation sees no
+        # active store.
+        try:
+            if os.path.exists(self._ACTIVE_STORE_PATH):
+                with open(
+                    self._ACTIVE_STORE_PATH, "r",
+                    encoding="utf-8",
+                ) as f:
+                    self._active_store_id = f.read().strip()
+            else:
+                self._active_store_id = ""
+        except Exception:  # noqa: BLE001
+            self._active_store_id = ""
         self._store_credentials: dict[str, dict[str, str]] = {}
         # Protects _active_store_id and _store_credentials from
         # concurrent access. Multiple API handlers can call
         # add_store / set_active_store / get_credentials in
         # parallel. Audit pass 48.
         self._lock = threading.RLock()
+
+    def _persist_active(self, store_id: str) -> None:
+        """W949: write active store id to disk so subsequent
+        CLI invocations pick it up. Best-effort -- a failure
+        does not break the in-memory operation."""
+        import os
+        try:
+            os.makedirs(
+                os.path.dirname(self._ACTIVE_STORE_PATH),
+                exist_ok=True,
+            )
+            with open(
+                self._ACTIVE_STORE_PATH, "w",
+                encoding="utf-8",
+            ) as f:
+                f.write(store_id or "")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "active store persist failed: %s", exc,
+            )
 
     # ── Store CRUD ───────────────────────────────────────────
 
@@ -88,8 +127,13 @@ class StoreManager:
                 "client_id": client_id or "",
                 "client_secret": client_secret or "",
             }
+            became_active = False
             if not self._active_store_id:
                 self._active_store_id = store_id
+                became_active = True
+        # W949: persist auto-promoted active store
+        if became_active:
+            self._persist_active(store_id)
         logger.info("Store added: %s (%s)", store_id, shop_url)
         return result
 
@@ -140,10 +184,17 @@ class StoreManager:
             (time.time(), store_id),
         )
         conn.commit()
+        new_active = None
         with self._lock:
             if self._active_store_id == store_id:
                 stores = self._db.list_stores()
-                self._active_store_id = stores[0]["store_id"] if stores else ""
+                self._active_store_id = (
+                    stores[0]["store_id"] if stores else ""
+                )
+                new_active = self._active_store_id
+        # W949: persist active change after store removal
+        if new_active is not None:
+            self._persist_active(new_active)
         return {"store_id": store_id, "status": "removed"}
 
     def get_store(self, store_id: str) -> dict[str, Any] | None:
@@ -174,6 +225,9 @@ class StoreManager:
             return {"error": f"Store {store_id} not found"}
         with self._lock:
             self._active_store_id = store_id
+        # W949 bugfix: persist to disk so next CLI process
+        # picks it up (was in-memory only).
+        self._persist_active(store_id)
         logger.info("Active store set to: %s", store_id)
         return {"active_store": store_id, "shop_url": store["shop_url"]}
 
