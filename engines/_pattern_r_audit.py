@@ -46,6 +46,11 @@ def _domain_probes():
             "Pattern R autonomy_status import raised: %s", exc,
         )
         return []
+    # Wave 937 bugfix: previously hardcoded 7 domains -- 3
+    # newer domains (customer_outreach W379, catalog_quality
+    # W436, shipping_alert W756) silently skipped DomainSummary
+    # next_action checks. Source from the live autonomy_status
+    # module's _<domain>_summary attribute set instead.
     probes = (
         ("customer_support", "_customer_support_summary"),
         ("marketing", "_marketing_summary"),
@@ -54,6 +59,9 @@ def _domain_probes():
         ("discount_cleanup", "_discount_cleanup_summary"),
         ("order_followup", "_order_followup_summary"),
         ("product_seo", "_product_seo_summary"),
+        ("customer_outreach", "_customer_outreach_summary"),
+        ("catalog_quality", "_catalog_quality_summary"),
+        ("shipping_alert", "_shipping_alert_summary"),
     )
     out = []
     for domain, fn_name in probes:

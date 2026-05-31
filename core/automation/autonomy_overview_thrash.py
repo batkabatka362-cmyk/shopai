@@ -74,11 +74,25 @@ def compute_thrash(
     bucket_hours: float = 1.0,
     store_id: str | None = None,
 ) -> ThrashReport:
-    """Compute the flip-density report from W900 history."""
+    """Compute the flip-density report from W900 history.
+
+    Wave 937 bugfix: when ``store_id`` is None (fleet-wide
+    call), each store's history is walked independently so
+    cross-store transitions don't manufacture fake flips.
+    Wave 937 bugfix: ``math.ceil`` for n_buckets so the tail
+    of the window isn't silently dropped.
+    Wave 937 bugfix: sample ``now`` ONCE at the top so the
+    bucket boundaries match the history-read window.
+    """
+    import math
+
+    now = time.time()
+    bucket_h = max(bucket_hours, 0.1)
     report = ThrashReport(
         store_id=store_id,
         window_hours=window_hours,
-        bucket_hours=max(bucket_hours, 0.1),
+        bucket_hours=bucket_h,
+        captured_at=now,
     )
     try:
         from core.automation.autonomy_overview_history import (
@@ -96,13 +110,10 @@ def compute_thrash(
     if not entries:
         return report
 
-    # Sort oldest-first for chronological flip detection.
-    chrono = sorted(entries, key=lambda e: e.captured_at)
-    now = time.time()
-    bucket_seconds = report.bucket_hours * 3600.0
-    n_buckets = int(
-        max(1, (window_hours * 3600.0) / bucket_seconds),
-    )
+    bucket_seconds = bucket_h * 3600.0
+    n_buckets = int(math.ceil(
+        max(1.0, (window_hours * 3600.0) / bucket_seconds),
+    ))
 
     buckets: list[ThrashBucket] = []
     for i in range(n_buckets):
@@ -112,27 +123,35 @@ def compute_thrash(
             start_at=start, end_at=end, flip_count=0,
         ))
 
-    # Walk chronologically, tag each entry's bucket, count
-    # flips when verdict changes between adjacent entries
-    # within the same bucket OR across buckets.
-    prev_verdict: str | None = None
-    for entry in chrono:
-        ts = entry.captured_at
-        bucket_idx = None
-        for i, b in enumerate(buckets):
-            if b.start_at <= ts < b.end_at:
-                bucket_idx = i
-                break
-        if bucket_idx is None:
-            continue
-        b = buckets[bucket_idx]
-        b.verdict_sequence.append(entry.verdict)
-        if (
-            prev_verdict is not None
-            and entry.verdict != prev_verdict
-        ):
-            b.flip_count += 1
-        prev_verdict = entry.verdict
+    # Group by store_id so fleet-wide calls don't manufacture
+    # flips at store boundaries. Per-store calls (store_id set)
+    # collapse to a single group.
+    groups: dict[str | None, list] = {}
+    for entry in entries:
+        groups.setdefault(entry.store_id, []).append(entry)
+
+    for entries_for_store in groups.values():
+        chrono = sorted(
+            entries_for_store, key=lambda e: e.captured_at,
+        )
+        prev_verdict: str | None = None
+        for entry in chrono:
+            ts = entry.captured_at
+            bucket_idx = None
+            for i, b in enumerate(buckets):
+                if b.start_at <= ts < b.end_at:
+                    bucket_idx = i
+                    break
+            if bucket_idx is None:
+                continue
+            b = buckets[bucket_idx]
+            b.verdict_sequence.append(entry.verdict)
+            if (
+                prev_verdict is not None
+                and entry.verdict != prev_verdict
+            ):
+                b.flip_count += 1
+            prev_verdict = entry.verdict
 
     report.buckets = buckets
     return report

@@ -79,6 +79,10 @@ def _domain_probes() -> list[
             "Pattern Q' autonomy_status import raised: %s", exc,
         )
         return out
+    # Wave 937 bugfix: previously hardcoded 7 domains; 3 newer
+    # domains (customer_outreach, catalog_quality,
+    # shipping_alert) silently bypassed DomainSummary-shape
+    # checks.
     probes = (
         ("customer_support", "_customer_support_summary"),
         ("marketing", "_marketing_summary"),
@@ -87,6 +91,9 @@ def _domain_probes() -> list[
         ("discount_cleanup", "_discount_cleanup_summary"),
         ("order_followup", "_order_followup_summary"),
         ("product_seo", "_product_seo_summary"),
+        ("customer_outreach", "_customer_outreach_summary"),
+        ("catalog_quality", "_catalog_quality_summary"),
+        ("shipping_alert", "_shipping_alert_summary"),
     )
     for domain, fn_name in probes:
         fn = getattr(au, fn_name, None)

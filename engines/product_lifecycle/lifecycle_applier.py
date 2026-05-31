@@ -102,7 +102,7 @@ def archive_declining_products(
         reason = explain_thrash_block(active_store_id)
         record_writeback(
             engine="product_lifecycle",
-            action_type="archive_product",
+            action_type="archive_declining_product",
             capability="SHOPIFY_UPDATE_PRODUCT",
             params={"lifecycle_count": len(lifecycle)},
             success=False,
@@ -110,7 +110,7 @@ def archive_declining_products(
         )
         log_thrash_block(
             engine="product_lifecycle",
-            action_type="archive_product",
+            action_type="archive_declining_product",
             capability="SHOPIFY_UPDATE_PRODUCT",
             store_id=active_store_id,
         )

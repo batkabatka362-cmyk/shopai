@@ -167,3 +167,70 @@ class TestLatestThrashVerdict:
         p = tmp_path / "h.json"
         with _patch_history(p):
             assert latest_thrash_verdict() == "calm"
+
+
+class TestCrossStorePollutionFix:
+    """W937 bugfix: fleet-wide call must NOT manufacture flips
+    at store boundaries."""
+
+    def test_fleet_call_does_not_inflate_cross_store_flips(
+        self, tmp_path,
+    ):
+        p = tmp_path / "h.json"
+        now = time.time()
+        # Store A: 3 consecutive idle snapshots
+        for i in range(3):
+            _seed(p, "idle", now - 1800 + i * 60,
+                  store_id="store-a")
+        # Store B: 3 consecutive armed snapshots
+        for i in range(3):
+            _seed(p, "armed", now - 1500 + i * 60,
+                  store_id="store-b")
+        # Fleet-wide call -- bug would count idle->armed flip
+        # at store boundary. With fix: 0 flips per store.
+        with _patch_history(p):
+            r = compute_thrash(window_hours=1.0)
+        assert r.total_flips == 0, (
+            f"fleet-wide call manufactured {r.total_flips} "
+            "phantom flip(s) at store boundary"
+        )
+
+    def test_per_store_flip_still_detected(self, tmp_path):
+        p = tmp_path / "h.json"
+        now = time.time()
+        # Store A: 4 verdict flips
+        verdicts = ["idle", "armed", "idle", "armed", "idle"]
+        for i, v in enumerate(verdicts):
+            _seed(p, v, now - 1500 + i * 60,
+                  store_id="store-a")
+        # Store B: 0 flips
+        for i in range(2):
+            _seed(p, "idle", now - 1500 + i * 60,
+                  store_id="store-b")
+        with _patch_history(p):
+            r = compute_thrash(window_hours=1.0)
+        # 4 real flips from store A; none manufactured
+        assert r.total_flips == 4
+
+
+class TestTruncatedBucketFix:
+    """W937 bugfix: window_hours=1.5 / bucket_hours=1.0 must
+    cover the full 1.5h tail, not silently truncate."""
+
+    def test_fractional_window_covers_full_range(
+        self, tmp_path,
+    ):
+        p = tmp_path / "h.json"
+        now = time.time()
+        # Entry 70 min ago (would be dropped pre-fix when
+        # n_buckets = int(1.5) = 1, covering only last 60min).
+        _seed(p, "idle", now - 70 * 60)
+        _seed(p, "armed", now - 30 * 60)
+        with _patch_history(p):
+            r = compute_thrash(
+                window_hours=1.5, bucket_hours=1.0,
+            )
+        # 2 buckets now cover [-2h, -1h) and [-1h, 0); both
+        # entries fit, 1 flip detected.
+        assert r.total_flips == 1
+        assert len(r.buckets) == 2
