@@ -3650,17 +3650,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     audit_p.add_argument(
         "--only", default=None,
-        choices=[
-            "pattern_k", "oauth", "pattern_y",
-            "pattern_i", "pattern_j", "pattern_z",
-            "pattern_q", "wireup_resolve",
-            "cluster_topology",
-        ],
+        # W937 bugfix: choices was a stale hardcoded list of 9
+        # names; 60+ newer audits (pattern_n through pattern_bz
+        # + pattern_bl) errored under --only. Drop the choices
+        # gate and validate inside _cmd_audit_all where we
+        # already raise a clear error for unknown names.
         metavar="NAME",
         help=(
-            "Run a single named audit instead of all five. "
-            "Useful for fast pre-commit checks targeting one "
-            "concern."
+            "Run a single named audit instead of all. Useful "
+            "for fast pre-commit checks targeting one concern."
         ),
     )
 
@@ -41359,6 +41357,31 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     }
                     for v in r.violations
                 ],
+            }
+        if name == "pattern_bl":
+            # W937 bugfix: pattern_bl is informational
+            # (legacy alias inventory). Surface it via
+            # --only without erroring; always OK.
+            from engines._pattern_bl_audit import (
+                run_pattern_bl_audit,
+            )
+            r = run_pattern_bl_audit()
+            return {
+                "ok": not r.has_violations,
+                "aliases": [
+                    {
+                        "discoverer": a.discoverer,
+                        "knob": a.knob,
+                        "standard_env": a.standard_env,
+                        "legacy_env": a.legacy_env,
+                        "standard_set": a.standard_set,
+                        "legacy_set": a.legacy_set,
+                    }
+                    for a in r.aliases
+                ],
+                "migrated_count": r.migrated_count,
+                "legacy_only_count": r.legacy_only_count,
+                "both_set_count": r.both_set_count,
             }
         if name == "pattern_bz":
             from engines._pattern_bz_audit import (
