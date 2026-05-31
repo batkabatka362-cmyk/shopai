@@ -24,12 +24,22 @@ class TestLive:
 
     def test_expected_kinds_present(self):
         r = run_pattern_ba_audit()
-        # 10 domains x 2 kinds = 20 expected entries
-        assert len(r.expected_kinds) == 20
+        # W937: 10 domains x 2 kinds + system-level
+        # (autonomy_thrash + autonomy_thrash_elevated)
+        assert len(r.expected_kinds) >= 20
         assert "refund_paused" in r.expected_kinds
         assert "shipping_alert_health_critical" in (
             r.expected_kinds
         )
+
+    def test_system_level_kinds_included(self):
+        """W937: thrash alerts are system-level (not per
+        domain) but must be in the coalesce set so a thrash
+        storm rolls into autonomy_degraded along with per-
+        domain pauses."""
+        r = run_pattern_ba_audit()
+        assert "autonomy_thrash" in r.expected_kinds
+        assert "autonomy_thrash_elevated" in r.expected_kinds
 
 
 class TestExpectedKinds:

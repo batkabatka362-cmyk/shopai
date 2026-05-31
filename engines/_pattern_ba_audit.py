@@ -52,6 +52,17 @@ class PatternBAReport:
         return len(self.violations) > 0
 
 
+# W937: system-level alert kinds that legitimately live in
+# the coalesce set but are NOT owned by a per-domain probe.
+# Adding to this set means the audit will tolerate the kind
+# in autonomy_kinds without expecting a corresponding domain.
+_SYSTEM_LEVEL_KINDS = {
+    # W907 verdict-flip thrash alerts (operator-wide)
+    "autonomy_thrash",
+    "autonomy_thrash_elevated",
+}
+
+
 def _expected_kinds() -> set[str]:
     """Build (paused, health_critical) pairs per autonomy
     domain. Domain key mappings mirror the per-domain notify
@@ -74,6 +85,8 @@ def _expected_kinds() -> set[str]:
         prefix = aliases.get(domain, domain)
         out.add(f"{prefix}_paused")
         out.add(f"{prefix}_health_critical")
+    # System-level kinds are always expected
+    out |= _SYSTEM_LEVEL_KINDS
     return out
 
 

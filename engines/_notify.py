@@ -859,6 +859,11 @@ def collect_alerts() -> list[NotifyAlert]:
             "catalog_quality_health_critical",
             "shipping_alert_paused",
             "shipping_alert_health_critical",
+            # W937 bugfix: W907 thrash alerts were not in the
+            # coalesce set, so a fleet thrash storm would emit
+            # 1 thrash + (N domain pauses) instead of rolling
+            # all into one autonomy_degraded alert.
+            "autonomy_thrash", "autonomy_thrash_elevated",
         }
         autonomy_alerts = [
             a for a in alerts if a.kind in autonomy_kinds
