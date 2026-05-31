@@ -80,9 +80,11 @@ class TestThrashReportVerdict:
         assert ThrashReport().verdict == "calm"
 
     def test_below_threshold_calm(self):
+        # W937: verdict uses sliding-window pair sum. Need both
+        # buckets low enough that the pair sum is still < 3.
         r = ThrashReport()
         r.buckets = [
-            ThrashBucket(0, 1, 1), ThrashBucket(1, 2, 2),
+            ThrashBucket(0, 1, 1), ThrashBucket(1, 2, 1),
         ]
         assert r.verdict == "calm"
 
@@ -98,6 +100,27 @@ class TestThrashReportVerdict:
         r.buckets = [
             ThrashBucket(0, 1, 1), ThrashBucket(1, 2, 7),
         ]
+        assert r.verdict == "thrashing"
+
+    def test_sliding_window_catches_cross_boundary_burst(self):
+        """W937 bugfix: 3+3 flips across adjacent buckets =
+        6 flips in 1 window-spanning hour = thrashing.
+        Pre-fix peak_flips=3 -> elevated (wrong)."""
+        r = ThrashReport()
+        r.buckets = [
+            ThrashBucket(0, 1, 3), ThrashBucket(1, 2, 3),
+        ]
+        # Old peak_flips = 3 (elevated). New sliding_peak = 6
+        # (thrashing).
+        assert r.peak_flips == 3
+        assert r.sliding_peak == 6
+        assert r.verdict == "thrashing"
+
+    def test_single_bucket_sliding_peak_falls_back(self):
+        """Single bucket: sliding_peak == peak_flips."""
+        r = ThrashReport()
+        r.buckets = [ThrashBucket(0, 1, 5)]
+        assert r.sliding_peak == 5
         assert r.verdict == "thrashing"
 
 

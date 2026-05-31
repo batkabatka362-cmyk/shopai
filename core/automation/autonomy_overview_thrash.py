@@ -60,10 +60,33 @@ class ThrashReport:
         return max(b.flip_count for b in self.buckets)
 
     @property
+    def sliding_peak(self) -> int:
+        """W937 bugfix: sliding-window sum across adjacent
+        bucket pairs catches cross-boundary flip bursts.
+
+        With per-hour buckets, a 6-flip burst spanning two
+        buckets (3 in last 5min of bucket N + 3 in first
+        5min of bucket N+1) would show peak_flips=3
+        (elevated) but the operator's actual "verdict flipped
+        6x in 1 hour" reality is thrashing. sliding_peak
+        catches this.
+        """
+        if len(self.buckets) < 2:
+            return self.peak_flips
+        return max(
+            self.buckets[i].flip_count
+            + self.buckets[i + 1].flip_count
+            for i in range(len(self.buckets) - 1)
+        )
+
+    @property
     def verdict(self) -> str:
-        if self.peak_flips >= _THRASHING_THRESHOLD:
+        # Use sliding_peak (>= peak_flips by construction)
+        # so cross-bucket bursts don't escape detection.
+        sp = self.sliding_peak
+        if sp >= _THRASHING_THRESHOLD:
             return "thrashing"
-        if self.peak_flips >= _ELEVATED_THRESHOLD:
+        if sp >= _ELEVATED_THRESHOLD:
             return "elevated"
         return "calm"
 
