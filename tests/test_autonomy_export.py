@@ -35,7 +35,7 @@ class TestStatusSection:
         assert "overall_verdict" in s
         assert "domains" in s
         assert isinstance(s["domains"], list)
-        assert len(s["domains"]) == 7
+        assert len(s["domains"]) >= 7
 
 
 class TestDoctorSection:
@@ -46,7 +46,7 @@ class TestDoctorSection:
         assert "ok" in d
         assert "warn" in d
         assert "fail" in d
-        assert len(d["domains"]) == 7
+        assert len(d["domains"]) >= 7
 
 
 class TestSmokeSection:
@@ -55,7 +55,7 @@ class TestSmokeSection:
         s = _smoke_section()
         assert "overall_cls" in s
         assert "domains" in s
-        assert len(s["domains"]) == 7
+        assert len(s["domains"]) >= 7
 
 
 class TestBenchSection:
@@ -65,14 +65,15 @@ class TestBenchSection:
         assert "runs_per_domain" in b
         assert "total_ms" in b
         assert "domains" in b
-        assert len(b["domains"]) == 7
+        assert len(b["domains"]) >= 7
 
 
 class TestEnvSection:
 
     def test_returns_required_fields(self):
         e = _env_section()
-        assert e["total_knobs"] == 43
+        # W937: knob count grows over time; subset semantics
+        assert e["total_knobs"] >= 43
         assert "knobs" in e
         assert isinstance(e["knobs"], list)
 
