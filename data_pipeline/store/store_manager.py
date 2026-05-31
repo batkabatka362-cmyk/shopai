@@ -51,21 +51,25 @@ class StoreManager:
         import os
         self._db: ShopAIDatabase = db or ShopAIDatabase()
         # W949 bugfix: load persisted active store id at init.
-        # Pre-fix: in-memory only -> every new CLI process
-        # resets to "" -> `shopai store switch X` print success
-        # but `shopai cycle verify` next invocation sees no
-        # active store.
-        try:
-            if os.path.exists(self._ACTIVE_STORE_PATH):
-                with open(
-                    self._ACTIVE_STORE_PATH, "r",
-                    encoding="utf-8",
-                ) as f:
-                    self._active_store_id = f.read().strip()
-            else:
-                self._active_store_id = ""
-        except Exception:  # noqa: BLE001
+        # W951 (Pattern J): under pytest, never read from the
+        # persistence file -- tests need clean state per
+        # fixture, not cross-test leakage.
+        if os.environ.get("PYTEST_CURRENT_TEST"):
             self._active_store_id = ""
+        else:
+            try:
+                if os.path.exists(self._ACTIVE_STORE_PATH):
+                    with open(
+                        self._ACTIVE_STORE_PATH, "r",
+                        encoding="utf-8",
+                    ) as f:
+                        self._active_store_id = (
+                            f.read().strip()
+                        )
+                else:
+                    self._active_store_id = ""
+            except Exception:  # noqa: BLE001
+                self._active_store_id = ""
         self._store_credentials: dict[str, dict[str, str]] = {}
         # Protects _active_store_id and _store_credentials from
         # concurrent access. Multiple API handlers can call
@@ -76,8 +80,15 @@ class StoreManager:
     def _persist_active(self, store_id: str) -> None:
         """W949: write active store id to disk so subsequent
         CLI invocations pick it up. Best-effort -- a failure
-        does not break the in-memory operation."""
+        does not break the in-memory operation.
+
+        W951 (Pattern J): short-circuit under pytest so tests
+        with their own StoreManager fixtures don't see
+        cross-test leakage from this disk file.
+        """
         import os
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return
         try:
             os.makedirs(
                 os.path.dirname(self._ACTIVE_STORE_PATH),
