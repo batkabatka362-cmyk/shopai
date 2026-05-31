@@ -39526,9 +39526,56 @@ def _cmd_shopify_scopes_live_check(args) -> None:
     adapter isn't configured — local dev sees the message
     rather than an opaque crash.
     """
+    # W956 bugfix: pull credentials from the active store if
+    # the SHOPAI_SHOPIFY_URL env var isn't set. Pre-fix, this
+    # silently returned None and operators saw "Live scope
+    # check unavailable" even though credentials WERE present
+    # in their registered store catalog.
+    adapter = None
     try:
+        import os as _os
+        # W956 bugfix part 2: fall back when EITHER url OR key
+        # is missing. Pre-fix only checked url; .env files
+        # typically set URL only -> auto-construct silently
+        # failed on missing key.
+        if not (
+            _os.environ.get("SHOPAI_SHOPIFY_URL")
+            and _os.environ.get("SHOPAI_SHOPIFY_KEY")
+        ):
+            try:
+                from core.multi_store.store_manager import (
+                    MultiStoreManager,
+                )
+                from data_pipeline.store.store_manager import (
+                    StoreManager,
+                )
+                # Try the multi-store / legacy stores in turn.
+                _path = _os.path.join(
+                    "data", ".shopify_tokens.json",
+                )
+                if _os.path.exists(_path):
+                    import json as _json
+                    with open(_path, encoding="utf-8") as _f:
+                        _tokens = _json.load(_f)
+                    if _tokens:
+                        _key = next(iter(_tokens))
+                        _tok = (
+                            _tokens[_key].get("access_token")
+                            or _tokens[_key].get("token")
+                        )
+                        if _tok:
+                            from core.adapters.shopify.apps \
+                                import ShopifyAppsAdapter
+                            adapter = ShopifyAppsAdapter(
+                                shop_url=_key,
+                                access_token=_tok,
+                            )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "store creds fallback raised: %s", exc,
+                )
         from core.adapters.shopify.scope_health import compare_to_live
-        report = compare_to_live()
+        report = compare_to_live(adapter=adapter)
     except Exception as exc:  # noqa: BLE001
         logger.debug("scope health check raised: %s", exc)
         report = None
