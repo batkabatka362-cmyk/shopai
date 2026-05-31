@@ -21498,6 +21498,34 @@ class TestShopifyOrderLifecycleAdapter:
         assert result.data["job_id"] == "gid://shopify/Job/77"
         assert result.data["job_done"] is False
 
+    def test_refund_method_preserves_explicit_false(self):
+        """W937 bugfix: pre-fix `or` short-circuit silently
+        dropped explicit ``original_payment_methods: False``
+        ("do NOT refund to original card") because False is
+        falsy. Caller's intent was lost in the GraphQL
+        variables. Sentinel-based lookup now preserves the
+        explicit False signal."""
+        from core.adapters.shopify.order_lifecycle import (
+            ShopifyOrderLifecycleAdapter,
+        )
+        a = ShopifyOrderLifecycleAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a._build_refund_method({
+            "original_payment_methods": False,
+            "store_credit": {
+                "amount": {"amount": "10.00",
+                           "currencyCode": "USD"},
+            },
+        })
+        # Pre-fix: this key would be absent entirely.
+        assert "originalPaymentMethodsRefund" in result
+        assert result["originalPaymentMethodsRefund"] is False
+        # storeCreditRefund still works correctly.
+        assert result["storeCreditRefund"]["amount"][
+            "amount"
+        ] == "10.00"
+
     def test_cancel_user_errors_fail_fast(self):
         from core.adapters.shopify.order_lifecycle import (
             ShopifyOrderLifecycleAdapter,

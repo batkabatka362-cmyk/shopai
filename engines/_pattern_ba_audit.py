@@ -52,30 +52,24 @@ class PatternBAReport:
         return len(self.violations) > 0
 
 
-# W937: system-level alert kinds that legitimately live in
-# the coalesce set but are NOT owned by a per-domain probe.
-# Adding to this set means the audit will tolerate the kind
-# in autonomy_kinds without expecting a corresponding domain.
-_SYSTEM_LEVEL_KINDS = {
-    # W907 verdict-flip thrash alerts (operator-wide)
-    "autonomy_thrash",
-    "autonomy_thrash_elevated",
-}
-
-
 def _expected_kinds() -> set[str]:
     """Build (paused, health_critical) pairs per autonomy
     domain. Domain key mappings mirror the per-domain notify
     probe sections (refund + budget aliases live alongside
-    the canonical names)."""
+    the canonical names).
+
+    Per W937 audit: meta-rollup alerts (autonomy_thrash,
+    substrate_fire_warns, etc.) are INTENTIONALLY excluded
+    from this set -- they're distinct signal classes, not
+    per-domain pauses. The coalesce path scopes to
+    per-domain alerts only by design.
+    """
     try:
         from core.automation.autonomy_armed import (
             DOMAIN_APPLY_FLAGS,
         )
     except Exception:  # noqa: BLE001
         return set()
-    # The notify probe uses a few shortened names where they
-    # differ from the canonical domain key. Match those.
     aliases = {
         "customer_support": "refund",
         "marketing": "budget",
@@ -85,8 +79,6 @@ def _expected_kinds() -> set[str]:
         prefix = aliases.get(domain, domain)
         out.add(f"{prefix}_paused")
         out.add(f"{prefix}_health_critical")
-    # System-level kinds are always expected
-    out |= _SYSTEM_LEVEL_KINDS
     return out
 
 

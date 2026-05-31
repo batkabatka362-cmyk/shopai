@@ -282,21 +282,31 @@ class ShopifyOrderLifecycleAdapter(ShopifyBaseAdapter):
             raise AdapterValidationError(
                 self.name,
                 "'refund_method' must be a dict — one of "
-                "{original_payment_methods: True} / "
+                "{original_payment_methods: True/False} / "
                 "{store_credit: {...}}",
             )
         out: dict[str, Any] = {}
-        original = (
-            raw.get("original_payment_methods")
-            or raw.get("originalPaymentMethodsRefund")
-        )
-        if original is not None:
+        # W937 bugfix: previously used `or` short-circuit
+        # which silently dropped explicit `False` ("do NOT
+        # refund to original card") — caller's intent was
+        # lost when the camelCase alias was absent. Sentinel
+        # lookup preserves False vs absence.
+        _MISSING = object()
+        original = raw.get("original_payment_methods", _MISSING)
+        if original is _MISSING:
+            original = raw.get(
+                "originalPaymentMethodsRefund", _MISSING,
+            )
+        if original is not _MISSING:
             out["originalPaymentMethodsRefund"] = bool(original)
 
-        store_credit = (
-            raw.get("store_credit")
-            or raw.get("storeCreditRefund")
-        )
+        store_credit = raw.get("store_credit", _MISSING)
+        if store_credit is _MISSING:
+            store_credit = raw.get(
+                "storeCreditRefund", _MISSING,
+            )
+        if store_credit is _MISSING:
+            store_credit = None
         if store_credit is not None:
             if not isinstance(store_credit, dict):
                 raise AdapterValidationError(

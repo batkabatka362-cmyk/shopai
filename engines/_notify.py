@@ -841,6 +841,14 @@ def collect_alerts() -> list[NotifyAlert]:
     if os.environ.get("SHOPAI_NOTIFY_AUTONOMY_COALESCE", "") in (
         "1", "true", "yes",
     ):
+        # NOTE (W937 audit reversal): W907 thrash alerts are
+        # INTENTIONALLY OUT of this set. They're meta-rollups
+        # (fire ≤1x per check; distinct operator-action
+        # signal class). Coalescing them with per-domain
+        # pauses would hide the thrash-rate signal under a
+        # generic autonomy_degraded message. Operators want
+        # to see "verdict flipped 6x/hr" alongside the
+        # rollup, not buried inside it.
         autonomy_kinds = {
             "refund_paused", "refund_health_critical",
             "budget_paused", "budget_health_critical",
@@ -859,11 +867,6 @@ def collect_alerts() -> list[NotifyAlert]:
             "catalog_quality_health_critical",
             "shipping_alert_paused",
             "shipping_alert_health_critical",
-            # W937 bugfix: W907 thrash alerts were not in the
-            # coalesce set, so a fleet thrash storm would emit
-            # 1 thrash + (N domain pauses) instead of rolling
-            # all into one autonomy_degraded alert.
-            "autonomy_thrash", "autonomy_thrash_elevated",
         }
         autonomy_alerts = [
             a for a in alerts if a.kind in autonomy_kinds
