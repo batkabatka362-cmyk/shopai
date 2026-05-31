@@ -2243,9 +2243,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="How often to run (default hourly)",
     )
     cycle_schedule_p.add_argument(
-        "--platform", default="cron",
+        # W959 bugfix: default=None lets the handler auto-
+        # detect the host OS (cron on Linux/Mac, windows-task
+        # on Windows). Pre-fix default="cron" silently emitted
+        # Linux syntax to Windows operators.
+        "--platform", default=None,
         choices=["cron", "systemd", "windows-task", "powershell"],
-        help="Target platform for the schedule line",
+        help=(
+            "Target platform for the schedule line "
+            "(default: auto-detect from host OS)"
+        ),
     )
     cycle_schedule_p.add_argument(
         "--log-file", default=None, metavar="PATH",
@@ -23074,7 +23081,18 @@ def _cmd_cycle_schedule(args) -> None:
     """Print ready-to-paste schedule config for the empire cycle."""
     import os as _os
     freq = (getattr(args, "frequency", None) or "hourly").strip()
-    platform = (getattr(args, "platform", None) or "cron").strip()
+    # W959 bugfix: auto-detect platform if user didn't specify.
+    # Pre-fix the default was "cron" regardless of host OS, so
+    # Windows operators got Linux/Mac syntax that wouldn't work.
+    raw_platform = getattr(args, "platform", None)
+    if raw_platform:
+        platform = raw_platform.strip()
+    else:
+        import sys as _sys
+        platform = (
+            "windows-task" if _sys.platform == "win32"
+            else "cron"
+        )
     log_file = getattr(args, "log_file", None)
 
     repo_root = _os.path.dirname(_os.path.abspath(__file__))
