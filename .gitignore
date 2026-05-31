@@ -37,6 +37,13 @@ vault/.shopai_import_state.json
 # Local scratch files
 .claude/
 codex.md
+
+# W958: shopify.app.toml is operator-generated via
+# `shopai shopify-prepare-deploy` -- contains YOUR_APP_HOST
+# placeholders that operators replace before deploy.
+# Never source-controlled (would otherwise mask operator's
+# real deploy state vs. template state).
+shopify.app.toml
 codexrule.md
 codexplan.md
 
