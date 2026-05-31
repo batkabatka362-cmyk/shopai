@@ -218,8 +218,11 @@ def _cooldown_hours(domain: str | None = None) -> float:
         if per_domain:
             try:
                 return max(0.0, float(per_domain))
-            except (TypeError, ValueError):
-                pass
+            except (TypeError, ValueError) as exc:
+                logger.debug(
+                    "per-domain cooldown env unparseable "
+                    "for %s: %s", domain, exc,
+                )
     raw = os.environ.get(
         "SHOPAI_AUTO_DISARM_COOLDOWN_HOURS", "12.0",
     )

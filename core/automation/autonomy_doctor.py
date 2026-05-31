@@ -147,8 +147,11 @@ def _wiring_checks(
             out["wiring_reasons"].append(
                 "cycle hook not wired",
             )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "pattern_u probe raised for %s: %s",
+            domain_key, exc,
+        )
     # Pattern V
     try:
         from engines._pattern_v_audit import run_pattern_v_audit
@@ -160,8 +163,11 @@ def _wiring_checks(
             out["wiring_reasons"].append(
                 "notify alert kinds missing",
             )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "pattern_v probe raised for %s: %s",
+            domain_key, exc,
+        )
     # Pattern W
     try:
         from engines._pattern_w_audit import run_pattern_w_audit
@@ -171,8 +177,11 @@ def _wiring_checks(
             out["wiring_reasons"].append(
                 "env-prefix gate not enforced",
             )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "pattern_w probe raised for %s: %s",
+            domain_key, exc,
+        )
     # Pattern Y'
     try:
         from engines._pattern_yprime_audit import (
@@ -184,8 +193,11 @@ def _wiring_checks(
             out["wiring_reasons"].append(
                 "5-piece template incomplete",
             )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "pattern_yprime probe raised for %s: %s",
+            domain_key, exc,
+        )
     return out
 
 

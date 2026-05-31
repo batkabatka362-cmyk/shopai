@@ -26,9 +26,13 @@ class TestPatternULive:
         assert isinstance(report, PatternUReport)
         assert report.has_violations is False
 
-    def test_scans_all_7_domains(self):
+    def test_scans_all_domains(self):
+        # W937: roster grew over time; subset semantics
         report = run_pattern_u_audit()
-        assert len(report.domains_scanned) == 7
+        assert len(report.domains_scanned) >= 7
+        assert len(report.domains_scanned) == len(
+            _DOMAIN_BRIDGES,
+        )
 
     def test_all_known_bridges_referenced(self):
         report = run_pattern_u_audit()
@@ -43,9 +47,10 @@ class TestPatternUMissingCliPath:
     ):
         fake_path = tmp_path / "no_such_cli.py"
         report = run_pattern_u_audit(cli_path=fake_path)
-        # 7 domains all flagged
+        # All known domains flagged (count grows with the
+        # roster).
         assert report.has_violations
-        assert len(report.violations) == 7
+        assert len(report.violations) == len(_DOMAIN_BRIDGES)
 
 
 class TestPatternUViolation:
@@ -67,9 +72,13 @@ class TestPatternVLive:
         assert isinstance(report, PatternVReport)
         assert report.has_violations is False
 
-    def test_scans_all_7_domains(self):
+    def test_scans_all_domains(self):
+        # W937: roster grew; subset semantics
         report = run_pattern_v_audit()
-        assert len(report.domains_scanned) == 7
+        assert len(report.domains_scanned) >= 7
+        assert len(report.domains_scanned) == len(
+            _DOMAIN_ALERT_KINDS,
+        )
 
     def test_alert_kinds_canonical(self):
         # Each domain has exactly 2 alert kinds
@@ -89,8 +98,11 @@ class TestPatternVMissingNotifyPath:
     ):
         fake_path = tmp_path / "no_such_notify.py"
         report = run_pattern_v_audit(notify_path=fake_path)
+        # W937: roster grew; subset semantics
         assert report.has_violations
-        assert len(report.violations) == 7
+        assert len(report.violations) == len(
+            _DOMAIN_ALERT_KINDS,
+        )
 
 
 class TestPatternVViolation:

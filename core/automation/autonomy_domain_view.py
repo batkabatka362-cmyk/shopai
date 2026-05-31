@@ -21,8 +21,11 @@ domain):
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 # Aliases → canonical domain key
@@ -117,8 +120,10 @@ def _status_block(canonical: str) -> dict[str, Any]:
                         d.health_failure_ratio
                     ),
                 }
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "domain summary probe raised: %s", exc,
+        )
     return {}
 
 
@@ -196,8 +201,11 @@ def _wiring_cls(canonical: str) -> str:
         for d in r.domains:
             if d.name == status_name:
                 return d.cls
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "doctor probe raised for %s: %s",
+            canonical, exc,
+        )
     return ""
 
 
