@@ -41926,6 +41926,38 @@ def _collect_doctor_sections(args) -> tuple[bool, dict[str, Any]]:
             "error": str(exc),
         }
 
+    # W956 helper: load credentials from the registered stores
+    # catalog when .env only has URL (not KEY).
+    def _load_creds_from_tokens_file():
+        import os as _os
+        import json as _json
+        if (
+            _os.environ.get("SHOPAI_SHOPIFY_URL")
+            and _os.environ.get("SHOPAI_SHOPIFY_KEY")
+        ):
+            return None, None
+        _path = _os.path.join(
+            "data", ".shopify_tokens.json",
+        )
+        if not _os.path.exists(_path):
+            return None, None
+        try:
+            with open(_path, encoding="utf-8") as _f:
+                _tokens = _json.load(_f)
+            if not _tokens:
+                return None, None
+            _key = next(iter(_tokens))
+            _tok = (
+                _tokens[_key].get("access_token")
+                or _tokens[_key].get("token")
+            )
+            return (_key, _tok) if _tok else (None, None)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "tokens file load raised: %s", exc,
+            )
+            return None, None
+
     # ── Live scope drift ─────────────────────────────────────
     if getattr(args, "skip_live", False):
         sections["live_scope_drift"] = {
@@ -41935,7 +41967,18 @@ def _collect_doctor_sections(args) -> tuple[bool, dict[str, Any]]:
     else:
         try:
             from core.adapters.shopify.scope_health import compare_to_live
-            health_report = compare_to_live()
+            _shop, _tok = _load_creds_from_tokens_file()
+            scope_adapter = None
+            if _shop and _tok:
+                from core.adapters.shopify.apps import (
+                    ShopifyAppsAdapter,
+                )
+                scope_adapter = ShopifyAppsAdapter(
+                    shop_url=_shop, access_token=_tok,
+                )
+            health_report = compare_to_live(
+                adapter=scope_adapter,
+            )
             if health_report is None:
                 sections["live_scope_drift"] = {
                     "status": "skipped",
@@ -41983,7 +42026,18 @@ def _collect_doctor_sections(args) -> tuple[bool, dict[str, Any]]:
             from core.feedback.webhook_health import (
                 compare_to_live as webhook_compare_to_live,
             )
-            wh_report = webhook_compare_to_live()
+            _shop, _tok = _load_creds_from_tokens_file()
+            wh_adapter = None
+            if _shop and _tok:
+                from core.adapters.shopify.webhooks import (
+                    ShopifyWebhooksAdapter,
+                )
+                wh_adapter = ShopifyWebhooksAdapter(
+                    shop_url=_shop, access_token=_tok,
+                )
+            wh_report = webhook_compare_to_live(
+                adapter=wh_adapter,
+            )
             if wh_report is None:
                 sections["live_webhook_drift"] = {
                     "status": "skipped",

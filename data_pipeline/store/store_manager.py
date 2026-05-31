@@ -63,9 +63,26 @@ class StoreManager:
                         self._ACTIVE_STORE_PATH, "r",
                         encoding="utf-8",
                     ) as f:
-                        self._active_store_id = (
-                            f.read().strip()
-                        )
+                        candidate = f.read().strip()
+                    # W958 bugfix: validate the persisted
+                    # active store still exists in the DB.
+                    # Stale .active_store from pre-W953 test
+                    # leakage (e.g. "store2") used to crash
+                    # downstream consumers with FK constraint
+                    # failures.
+                    if candidate and self._db.get_store(
+                        candidate,
+                    ):
+                        self._active_store_id = candidate
+                    else:
+                        self._active_store_id = ""
+                        if candidate:
+                            logger.info(
+                                "persisted active store %r "
+                                "not found in registry; "
+                                "ignoring stale value",
+                                candidate,
+                            )
                 else:
                     self._active_store_id = ""
             except Exception:  # noqa: BLE001
