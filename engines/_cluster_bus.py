@@ -121,7 +121,14 @@ def emit_event(
     payload: dict[str, Any] | None = None,
     store_id: str | None = None,
 ) -> ClusterEvent:
-    """Emit one event to the bus. Append-only persistence."""
+    """Emit one event to the bus. Append-only persistence.
+
+    Pattern J note: tests SHOULD override SHOPAI_DATA_DIR via
+    monkeypatch so writes land in tmp_path (see
+    tests/test_cluster_bus.py:isolated_bus fixture). Pattern J
+    short-circuit not applied here because the bus needs to
+    actually persist within tests for cross-call semantics.
+    """
     event = ClusterEvent(
         emitter_cluster=emitter_cluster,
         topic=topic,

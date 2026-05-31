@@ -176,6 +176,11 @@ def record_cycle_run(
         total_errors=total_errors,
         per_store=list(per_store or []),
     )
+    # Pattern J note: tests SHOULD override SHOPAI_DATA_DIR via
+    # monkeypatch so writes land in tmp_path (see existing
+    # test_empire_cycle_history.py pattern). No blanket
+    # short-circuit because the recorder needs to actually
+    # persist within tests for cross-call verification.
     runs = _load()
     runs.append(run)
     # Bound history to most-recent 200
