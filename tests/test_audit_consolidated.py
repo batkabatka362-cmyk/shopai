@@ -68,10 +68,10 @@ class TestDefaultMode:
     def test_unified_verdict_on_pass(self, cli):
         out, code = _capture(cli._cmd_audit_all, _ns())
         assert code == 0
-        # Each audit shows [pass] (8 audits total: 7 patterns
-        # + wireup_resolve runtime gate).
+        # The roster grows over time -- at least every base
+        # audit must pass. Count grows as Patterns expand.
         passes = out.count("[pass]")
-        assert passes == 8
+        assert passes >= 8, f"got {passes} passes, expected >= 8"
 
 
 # ─── --only NAME ──────────────────────────────────────────────
@@ -113,11 +113,15 @@ class TestJson:
         assert code == 0
         data = json.loads(out)
         assert data["ok"] is True
-        assert set(data["audits"].keys()) == {
+        # The roster grows over time; assert the base 8 audits
+        # are still present (as a subset) rather than pinning
+        # to exactly those keys.
+        base = {
             "pattern_k", "oauth", "pattern_y",
             "pattern_i", "pattern_j", "pattern_z",
             "pattern_q", "wireup_resolve",
         }
+        assert base <= set(data["audits"].keys())
         # Each audit has at least an ok field
         for audit in data["audits"].values():
             assert "ok" in audit
@@ -197,8 +201,11 @@ class TestResilience:
         # Pattern K renders as [??] (error/unavailable)
         assert "[??]" in out
         assert "module broken" in out
-        # Other 7 still passed (8 audits total - 1 broken)
-        assert out.count("[pass]") == 7
+        # Other audits still pass; only Pattern K flipped.
+        # Roster grows over time -- assert "no other audit
+        # broke" instead of pinning the count.
+        assert out.count("[??]") == 1
+        assert out.count("[pass]") >= 7
         # Overall flipped to FAILED
         assert code == 1
 
