@@ -162,13 +162,31 @@ def _fetch_levels(
             "inventory discoverer: router unavail: %s", exc,
         )
         return []
-    # Try a few capability names depending on adapter
+    # W962-4 bugfix: the 3 fallback capability names below
+    # don't exist in the enum (SHOPIFY_LIST_INVENTORY_LEVELS,
+    # SHOPIFY_FETCH_INVENTORY, SHOPIFY_INVENTORY). The
+    # discoverer silently returned empty on EVERY call --
+    # inventory autonomy was dead-on-arrival.
+    #
+    # Fix: collapse SHOPIFY_LIST_PRODUCTS rows into a
+    # product-level pseudo-inventory. Each product gets one
+    # synthetic "level" with sku=product_id, total_inventory
+    # from the LIST normaliser. Real per-variant + per-
+    # location breakdown still requires SHOPIFY_FETCH_PRODUCTS
+    # (out of scope for the cheap LIST path).
     cap = (
         getattr(Capability, "SHOPIFY_LIST_INVENTORY_LEVELS", None)
         or getattr(Capability, "SHOPIFY_FETCH_INVENTORY", None)
         or getattr(Capability, "SHOPIFY_INVENTORY", None)
+        or getattr(Capability, "SHOPIFY_LIST_PRODUCTS", None)
     )
     if cap is None:
+        logger.warning(
+            "inventory discoverer: no inventory capability "
+            "registered -- discoverer will return empty. "
+            "If new enum members exist, update this fallback "
+            "chain."
+        )
         return []
     try:
         res = router.execute(cap, {"limit": _limit(store_id)})
@@ -182,13 +200,40 @@ def _fetch_levels(
     data = getattr(res, "data", None) or {}
     if not isinstance(data, dict):
         return []
+    # Direct inventory levels paths
     levels = (
         data.get("inventory_levels") or data.get("levels")
         or data.get("inventory") or []
     )
-    if not isinstance(levels, list):
-        return []
-    return levels
+    if isinstance(levels, list) and levels:
+        return levels
+    # W962-4 fallback: collapse SHOPIFY_LIST_PRODUCTS into
+    # pseudo-levels (1 per product).
+    products = data.get("products") or []
+    if isinstance(products, list) and products:
+        pseudo_levels = []
+        for p in products:
+            if not isinstance(p, dict):
+                continue
+            pid = str(p.get("id", "") or "").strip()
+            if not pid:
+                continue
+            qty = p.get("total_inventory")
+            if qty is None:
+                qty = p.get("totalInventory") or 0
+            try:
+                qty = int(qty or 0)
+            except (TypeError, ValueError):
+                qty = 0
+            pseudo_levels.append({
+                "sku": pid,
+                "product_id": pid,
+                "title": p.get("title", "") or "",
+                "available": qty,
+                "location_id": "primary",
+            })
+        return pseudo_levels
+    return []
 
 
 def discover_inventory(*, store_id: str | None = None) -> DiscoveryResult:
