@@ -44,12 +44,21 @@ logger = get_logger("engines._engine_capability_audit")
 
 @dataclass(frozen=True)
 class EngineCapabilityRef:
-    """One ``capability_name=...`` literal found in an engine file."""
+    """One capability reference found in an engine file.
+
+    Two source patterns are tracked:
+      * ``capability_name=...`` keyword arg (hydrator framework).
+      * W962-17: direct ``router.execute(Capability.X, ...)``
+        (bypasses the hydrator -- callers like
+        _revenue_attribution / inventory_checker / fraud_screener
+        used to be invisible to the audit).
+    """
 
     engine: str            # engine package name (loyalty, dynamic_pricing, ...)
     file: str              # relative path from engines/ root
     lineno: int            # line where the keyword appears
     capability_name: str   # the string literal value
+    via: str = "capability_name_kwarg"  # or "router_execute"
 
 
 @dataclass(frozen=True)
@@ -98,6 +107,7 @@ def _collect_refs(
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
+            # Pattern (1): capability_name="X" kwarg
             for kw in node.keywords:
                 if kw.arg != "capability_name":
                     continue
@@ -111,6 +121,44 @@ def _collect_refs(
                     file=str(rel).replace(os.sep, "/"),
                     lineno=node.lineno,
                     capability_name=value,
+                    via="capability_name_kwarg",
+                ))
+            # W962-17 Pattern (2): direct router.execute(
+            # Capability.X, ...) — bypasses the hydrator. Look
+            # for an ast.Attribute(attr="execute") whose first
+            # positional arg is Capability.<NAME>.
+            func = node.func
+            if not isinstance(func, ast.Attribute):
+                continue
+            if func.attr != "execute":
+                continue
+            # Restrict to call sites where the receiver looks
+            # like a router (router.execute / self.router.execute
+            # / self._router.execute). Otherwise we false-positive
+            # on every .execute() call in the codebase.
+            recv = func.value
+            recv_name = None
+            if isinstance(recv, ast.Name):
+                recv_name = recv.id
+            elif isinstance(recv, ast.Attribute):
+                recv_name = recv.attr
+            if recv_name not in ("router", "_router", "smart_router"):
+                continue
+            if not node.args:
+                continue
+            first = node.args[0]
+            # Capability.X
+            if (
+                isinstance(first, ast.Attribute)
+                and isinstance(first.value, ast.Name)
+                and first.value.id == "Capability"
+            ):
+                refs.append(EngineCapabilityRef(
+                    engine=engine_name,
+                    file=str(rel).replace(os.sep, "/"),
+                    lineno=node.lineno,
+                    capability_name=first.attr,
+                    via="router_execute",
                 ))
     return tuple(refs)
 
@@ -158,6 +206,37 @@ def audit_engine_capabilities(
                     claimed.add(name)
     except Exception as exc:  # noqa: BLE001
         logger.debug("adapter bootstrap unavailable: %s", exc)
+
+    # W962-17: secondary adapter packages (ads / search / email
+    # / llm / shipping) also claim capabilities. The router-execute
+    # extension surfaces those too, so we need their claims to
+    # avoid false positives like WEB_SEARCH (claimed by search/).
+    for pkg_name in ("ads", "search", "email", "llm", "shipping"):
+        try:
+            pkg = __import__(
+                f"core.adapters.{pkg_name}.bootstrap",
+                fromlist=["*"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "secondary bootstrap %s unavailable: %s",
+                pkg_name, exc,
+            )
+            continue
+        # Bootstraps follow a convention of registering classes
+        # in a module-level list; the names vary. Walk module
+        # attrs and find any class with a `capabilities` set.
+        for attr_name in dir(pkg):
+            obj = getattr(pkg, attr_name, None)
+            if isinstance(obj, (list, tuple, set)):
+                for cls in obj:
+                    caps = getattr(cls, "capabilities", None)
+                    if not isinstance(caps, (set, frozenset, list, tuple)):
+                        continue
+                    for cap in caps:
+                        name = getattr(cap, "name", None)
+                        if name:
+                            claimed.add(name)
 
     unknown: list[EngineCapabilityRef] = []
     unclaimed: list[EngineCapabilityRef] = []

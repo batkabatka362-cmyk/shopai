@@ -170,6 +170,61 @@ class TestSyntheticTree:
         # stays silent rather than flagging a false positive
         assert report.total_refs == 0
 
+    def test_router_execute_pattern_caught(self, tmp_path):
+        """W962-17: direct router.execute(Capability.X, ...) is
+        now caught by the audit, not just capability_name= kwargs."""
+        self._make_engine(
+            tmp_path, "direct_router_engine",
+            'def x(router):\n'
+            '    return router.execute(\n'
+            '        Capability.SHOPIFY_LIST_ORDERS, {}\n'
+            '    )\n',
+        )
+        from engines._engine_capability_audit import (
+            audit_engine_capabilities,
+        )
+        report = audit_engine_capabilities(engines_root=tmp_path)
+        assert report.total_refs == 1
+        assert report.refs[0].via == "router_execute"
+        assert (
+            report.refs[0].capability_name == "SHOPIFY_LIST_ORDERS"
+        )
+
+    def test_router_execute_typo_caught(self, tmp_path):
+        """W962-17: typo via router.execute path surfaces same as
+        the kwarg path."""
+        self._make_engine(
+            tmp_path, "router_typo",
+            'def x(router):\n'
+            '    return router.execute(\n'
+            '        Capability.SHOPIFY_NOT_REAL, {}\n'
+            '    )\n',
+        )
+        from engines._engine_capability_audit import (
+            audit_engine_capabilities,
+        )
+        report = audit_engine_capabilities(engines_root=tmp_path)
+        assert len(report.unknown_enum_member) == 1
+        ref = report.unknown_enum_member[0]
+        assert ref.via == "router_execute"
+        assert ref.capability_name == "SHOPIFY_NOT_REAL"
+
+    def test_unrelated_execute_ignored(self, tmp_path):
+        """W962-17 false-positive guard: only router.execute /
+        _router.execute trigger the AST pattern."""
+        self._make_engine(
+            tmp_path, "unrelated_execute",
+            'def x(thread):\n'
+            '    return thread.execute(\n'
+            '        Capability.SHOPIFY_LIST_ORDERS\n'
+            '    )\n',
+        )
+        from engines._engine_capability_audit import (
+            audit_engine_capabilities,
+        )
+        report = audit_engine_capabilities(engines_root=tmp_path)
+        assert report.total_refs == 0
+
     def test_empty_tree_returns_empty(self, tmp_path):
         from engines._engine_capability_audit import (
             audit_engine_capabilities,
