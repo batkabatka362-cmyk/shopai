@@ -46137,7 +46137,26 @@ def _cmd_approvals_quarantine(args) -> None:
     """
     from core.approval import quarantine as qm
 
+    # W962-22 bugfix: --release and --exempt are classifier
+    # bypass vectors -- they actively disable the quarantine
+    # safety floor. Require env-gate so an unattended agent
+    # can't silently re-enable a known-bad engine.
+    import os as _os
+    _qbypass_confirm = _os.environ.get(
+        "SHOPAI_QUARANTINE_BYPASS_CONFIRM", "",
+    ) in ("1", "true", "yes")
+
     if args.release:
+        if not _qbypass_confirm:
+            print(
+                "ERROR: --release requires "
+                "SHOPAI_QUARANTINE_BYPASS_CONFIRM=1. "
+                "Releasing an engine re-enables it after "
+                "automated safety blocked it -- confirm "
+                "intent.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         s = qm.release_engine(args.release)
         if getattr(args, "json", False):
             print(json.dumps({
@@ -46166,6 +46185,15 @@ def _cmd_approvals_quarantine(args) -> None:
         return
 
     if args.exempt:
+        if not _qbypass_confirm:
+            print(
+                "ERROR: --exempt requires "
+                "SHOPAI_QUARANTINE_BYPASS_CONFIRM=1. "
+                "Exempting an engine PERMANENTLY removes "
+                "the safety floor for it.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         s = qm.exempt_engine(args.exempt)
         if getattr(args, "json", False):
             print(json.dumps({
