@@ -190,13 +190,24 @@ def _build_existing_tags_from_orders(
     empty list if not present -- the merge step will just add
     the new defect tag.
     """
+    # W962-7 bugfix: orders adapter normalises line items
+    # under the key `line_items`, NOT `items`. Pre-fix the
+    # builder always returned {} and the downstream
+    # productUpdate REPLACED tags with [new_tag] only --
+    # wiping operator-set tags + other engines' tags.
+    # Sentinel cascade tolerates both shapes for compat.
     out: dict[str, list[str]] = {}
     if not isinstance(orders, list):
         return out
     for order in orders:
         if not isinstance(order, dict):
             continue
-        for item in order.get("items", []) or []:
+        line_items = (
+            order.get("line_items")
+            or order.get("items")
+            or []
+        )
+        for item in line_items:
             if not isinstance(item, dict):
                 continue
             pid = str(item.get("product_id", "")).strip()

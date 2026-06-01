@@ -109,13 +109,14 @@ class TestSEOApplier:
         assert out[0]["status"] == "recorded"
 
 
-class TestAutonomyStatusSevenDomains:
+class TestAutonomyStatusIncludesDomain:
 
     def test_includes_product_seo_domain(self):
+        # W937: roster grew; subset semantics
         from core.automation.autonomy_status import (
             get_autonomy_status,
         )
         report = get_autonomy_status()
         names = {d.name for d in report.domains}
         assert "product_seo" in names
-        assert len(names) == 7
+        assert len(names) >= 7

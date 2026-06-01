@@ -54,16 +54,33 @@ def _limit(store_id: str | None = None) -> int:
 
 def _classify_product(prod: dict[str, Any]) -> str | None:
     """Map a Shopify product dict to one quality tag. None
-    means "skip this product" (no signal)."""
+    means "skip this product" (no signal).
+
+    W962-8 bugfix: pre-fix read prod['images']/['variants']
+    which the LIST normaliser doesn't emit. Every product
+    was always tagged 'needs-images'. Now reads image_count
+    + variant_count from the W962-extended normaliser.
+    Legacy nested shapes still tolerated.
+    """
     if not isinstance(prod, dict):
         return None
-    images = prod.get("images") or []
-    if isinstance(images, list) and len(images) == 0:
+    # W962-8: image_count from extended normaliser; legacy
+    # `images` list shape tolerated.
+    image_count = prod.get("image_count")
+    if image_count is None:
+        images = prod.get("images") or []
+        image_count = (
+            len(images) if isinstance(images, list) else 0
+        )
+    if int(image_count or 0) == 0:
         return "shopai-quality-needs-images"
 
-    desc = str(prod.get("body_html") or prod.get(
-        "description",
-    ) or "")
+    desc = str(
+        prod.get("description_html")
+        or prod.get("body_html")
+        or prod.get("description")
+        or ""
+    )
     # Strip simple HTML so we measure visible text length.
     visible = (
         desc.replace("<p>", "")
@@ -74,15 +91,23 @@ def _classify_product(prod: dict[str, Any]) -> str | None:
     if len(visible) < _THIN_DESC_CHARS:
         return "shopai-quality-thin-description"
 
-    variants = prod.get("variants") or []
-    if isinstance(variants, list):
-        non_default = [
-            v for v in variants
-            if isinstance(v, dict) and v.get("title") not in (
-                None, "", "Default Title",
-            )
-        ]
-        if not non_default:
+    # W962-8: variant_count from extended normaliser; legacy
+    # `variants` list shape tolerated. variantsCount counts
+    # the default variant too, so "only-default" = 1.
+    variant_count = prod.get("variant_count")
+    if variant_count is None:
+        variants = prod.get("variants") or []
+        if isinstance(variants, list):
+            non_default = [
+                v for v in variants
+                if isinstance(v, dict) and v.get("title") not in (
+                    None, "", "Default Title",
+                )
+            ]
+            if not non_default:
+                return "shopai-quality-no-variants"
+    else:
+        if int(variant_count or 0) <= 1:
             return "shopai-quality-no-variants"
 
     status = str(prod.get("status") or "").lower()

@@ -79,6 +79,9 @@ priceRangeV2 {
   minVariantPrice { amount currencyCode }
   maxVariantPrice { amount currencyCode }
 }
+seo { title description }
+images(first: 1) { edges { node { id } } }
+variantsCount { count }
 """.strip()
 
 
@@ -631,6 +634,18 @@ class ShopifyProductsAdapter(ShopifyBaseAdapter):
         price_range = node.get("priceRangeV2") or {}
         min_p = price_range.get("minVariantPrice") or {}
         max_p = price_range.get("maxVariantPrice") or {}
+        # W962-8/9 bugfix: emit image_count + variant_count +
+        # seo so catalog_quality / product_seo discoverers can
+        # operate on LIST results instead of needing per-
+        # product SHOPIFY_FETCH_PRODUCTS (catalog_quality
+        # was always tagging "needs-images" because the field
+        # was absent; product_seo was always proposing both
+        # meta fields and CLOBBERING merchant-set SEO).
+        image_edges = (
+            (node.get("images") or {}).get("edges") or []
+        )
+        variants_count_raw = node.get("variantsCount") or {}
+        seo_raw = node.get("seo") or {}
         return {
             "id": node.get("id", "") or "",
             "title": node.get("title", "") or "",
@@ -651,6 +666,16 @@ class ShopifyProductsAdapter(ShopifyBaseAdapter):
                 or max_p.get("currencyCode", "")
                 or ""
             ),
+            "image_count": len(image_edges),
+            "variant_count": int(
+                variants_count_raw.get("count", 0) or 0
+            ),
+            "seo": {
+                "title": seo_raw.get("title", "") or "",
+                "description": seo_raw.get(
+                    "description", "",
+                ) or "",
+            },
         }
 
     @classmethod
