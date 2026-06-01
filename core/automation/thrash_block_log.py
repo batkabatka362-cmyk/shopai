@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,23 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_PATH = Path("data") / "thrash_block_log.json"
 _MAX_ENTRIES = 500
+
+# W962 race fix: record_block did _read + append + _write
+# unlocked. Concurrent thrash-guardrail blocks (one per
+# blocked engine per cycle, 10+ engines firing in parallel)
+# could drop entries.
+_PATH_LOCKS: dict[str, threading.RLock] = {}
+_LOCKS_MUTEX = threading.Lock()
+
+
+def _lock_for(path: Path) -> threading.RLock:
+    key = str(path.resolve()) if path.exists() else str(path)
+    with _LOCKS_MUTEX:
+        lock = _PATH_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _PATH_LOCKS[key] = lock
+        return lock
 
 
 def _is_test_environment() -> bool:
@@ -68,12 +86,15 @@ def _read(path: Path) -> list[dict]:
 
 
 def _write(path: Path, rows: list[dict]) -> None:
+    """Atomic write via temp + os.replace."""
     path.parent.mkdir(parents=True, exist_ok=True)
     bounded = rows[-_MAX_ENTRIES:]
-    path.write_text(
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+    tmp.write_text(
         json.dumps(bounded, indent=2, default=str),
         encoding="utf-8",
     )
+    os.replace(tmp, path)
 
 
 def record_block(
@@ -89,7 +110,6 @@ def record_block(
     if _is_test_environment():
         return
     p = _resolve(path)
-    rows = _read(p)
     entry = BlockEntry(
         blocked_at=time.time(),
         engine=engine,
@@ -98,8 +118,13 @@ def record_block(
         store_id=store_id,
         reason=reason,
     )
-    rows.append(entry.to_dict())
-    _write(p, rows)
+    # W962: span the lock across read+append+write so two
+    # concurrent blocked-writeback events don't clobber each
+    # other.
+    with _lock_for(p):
+        rows = _read(p)
+        rows.append(entry.to_dict())
+        _write(p, rows)
 
 
 def recent_blocks(

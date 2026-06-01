@@ -136,16 +136,22 @@ def clear_history(domain: str) -> int:
 
     Pattern J test-env guard: under pytest the file write
     short-circuits but the return value still reflects what
-    WOULD have been removed."""
+    WOULD have been removed.
+
+    W962 race fix: holds the same path lock action_log uses
+    for record_event so a concurrent record + clear can't
+    drop the in-flight append.
+    """
     from core.automation.action_log import (  # noqa
-        is_test_environment, load_log, save_log,
+        is_test_environment, load_log, path_lock, save_log,
     )
-    rows = load_log(_LOG_PATH)
-    keep = [
-        r for r in rows
-        if not isinstance(r, dict) or r.get("domain") != domain
-    ]
-    removed = len(rows) - len(keep)
-    if removed > 0 and not is_test_environment():
-        save_log(_LOG_PATH, keep)
-    return removed
+    with path_lock(_LOG_PATH):
+        rows = load_log(_LOG_PATH)
+        keep = [
+            r for r in rows
+            if not isinstance(r, dict) or r.get("domain") != domain
+        ]
+        removed = len(rows) - len(keep)
+        if removed > 0 and not is_test_environment():
+            save_log(_LOG_PATH, keep)
+        return removed

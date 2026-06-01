@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,22 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_PATH = Path("data") / "autonomy_overview_history.json"
 _MAX_ENTRIES = 500
+
+# W962 race fix: per-path lock + atomic write so concurrent
+# overview snapshots (cron daily-brief + empire CLI + ops
+# dashboard refresh) don't clobber each other's append.
+_PATH_LOCKS: dict[str, threading.RLock] = {}
+_LOCKS_MUTEX = threading.Lock()
+
+
+def _lock_for(path: Path) -> threading.RLock:
+    key = str(path.resolve()) if path.exists() else str(path)
+    with _LOCKS_MUTEX:
+        lock = _PATH_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _PATH_LOCKS[key] = lock
+        return lock
 
 
 def _is_test_environment() -> bool:
@@ -96,12 +113,15 @@ def _read_raw(path: Path) -> list[dict]:
 
 
 def _write_raw(path: Path, entries: list[dict]) -> None:
+    """Atomic write via temp + os.replace."""
     path.parent.mkdir(parents=True, exist_ok=True)
     bounded = entries[-_MAX_ENTRIES:]
-    path.write_text(
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+    tmp.write_text(
         json.dumps(bounded, indent=2, default=str),
         encoding="utf-8",
     )
+    os.replace(tmp, path)
 
 
 def record_snapshot(
@@ -113,10 +133,13 @@ def record_snapshot(
     if _is_test_environment():
         return
     p = _resolve_path(path)
-    rows = _read_raw(p)
     entry = OverviewHistoryEntry.from_snapshot(snap)
-    rows.append(entry.to_dict())
-    _write_raw(p, rows)
+    # W962: span read+append+write so concurrent overview
+    # snapshots don't clobber each other's append.
+    with _lock_for(p):
+        rows = _read_raw(p)
+        rows.append(entry.to_dict())
+        _write_raw(p, rows)
 
 
 def recent_entries(

@@ -50,6 +50,13 @@ def _lock_for(path: Path) -> threading.RLock:
         return lock
 
 
+# Public alias so other modules that need to span a custom
+# load+modify+save (e.g. substrate_fire_disarm_log.clear_
+# history) share the same lock keyed on the same path.
+def path_lock(path: Path) -> threading.RLock:
+    return _lock_for(path)
+
+
 def is_test_environment() -> bool:
     """Pattern J accessor. Re-exported so domain modules can
     consult it directly if they wrap record_event."""
