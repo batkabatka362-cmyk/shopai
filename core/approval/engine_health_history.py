@@ -46,7 +46,12 @@ _DEFAULT_STATE_PATH = (
     Path(__file__).resolve().parents[2]
     / "data" / "engine_health_history.json"
 )
-_LOCK = threading.Lock()
+# W962 race fix: must span the full load+modify+save.
+# _LOCK was previously inside _save_events only, which
+# only protected the write -- two concurrent record_score
+# callers could both load the same `existing` list and
+# the second save would clobber the first's append.
+_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -116,16 +121,24 @@ def _load_raw_events() -> list[ScoreEvent]:
 
 def _save_events(events: list[ScoreEvent]) -> None:
     """Atomic write via temp + rename so a crash mid-write
-    can't leave a half-truncated file."""
+    can't leave a half-truncated file.
+
+    Caller MUST hold ``_LOCK`` -- the lock is acquired by
+    record_score / record_scores / prune wrapping their
+    load+modify+save sequence. Doing the load outside the
+    lock and the save inside it (the original pattern) lets
+    two concurrent writers clobber each other's append.
+    """
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    # Per-pid temp suffix so concurrent processes don't
+    # collide on the rename target.
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
     payload = [asdict(e) for e in events]
-    with _LOCK:
-        tmp.write_text(
-            json.dumps(payload, indent=2), encoding="utf-8",
-        )
-        tmp.replace(path)
+    tmp.write_text(
+        json.dumps(payload, indent=2), encoding="utf-8",
+    )
+    tmp.replace(path)
 
 
 def record_score(
@@ -162,8 +175,9 @@ def record_score(
         score=int(score),
         verdict=verdict,
     )
-    existing = _load_raw_events()
-    _save_events(existing + [event])
+    with _LOCK:
+        existing = _load_raw_events()
+        _save_events(existing + [event])
     return True
 
 
@@ -208,8 +222,9 @@ def record_scores(
             continue
     if not new_events:
         return 0
-    existing = _load_raw_events()
-    _save_events(existing + new_events)
+    with _LOCK:
+        existing = _load_raw_events()
+        _save_events(existing + new_events)
     return len(new_events)
 
 
@@ -288,11 +303,12 @@ def prune(
     if now is None:
         now = time.time()
     cutoff = now - max(0.0, float(older_than_seconds))
-    events = _load_raw_events()
-    kept = [e for e in events if e.recorded_at >= cutoff]
-    dropped = len(events) - len(kept)
-    if dropped:
-        _save_events(kept)
+    with _LOCK:
+        events = _load_raw_events()
+        kept = [e for e in events if e.recorded_at >= cutoff]
+        dropped = len(events) - len(kept)
+        if dropped:
+            _save_events(kept)
     return dropped
 
 
