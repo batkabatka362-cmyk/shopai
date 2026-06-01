@@ -20076,7 +20076,69 @@ def _cmd_engine_ranking(args) -> None:
         return
 
     if not top:
+        # Empty-state UX: tell the operator WHY there's nothing
+        # to rank + what to try next. Bare "No engine activity"
+        # leaves them stuck.
+        # Probe the queue for any historical activity so we can
+        # distinguish "fresh install / never ran" from "ran but
+        # not in this window".
+        ever_ran = 0
+        try:
+            with queue._conn:
+                row = queue._conn.execute(
+                    "SELECT COUNT(*) AS n FROM pending_actions "
+                    "WHERE status = 'executed'",
+                ).fetchone()
+            ever_ran = int(row["n"]) if row else 0
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "engine ranking empty-probe raised: %s", exc,
+            )
         print(f"No engine activity in last {window_hours}h.")
+        if ever_ran == 0:
+            print()
+            print(
+                "  No executed actions in the approval queue yet."
+            )
+            print("  Likely cause: autonomous cycle hasn't fired.")
+            print()
+            print("  Next steps:")
+            print(
+                "    * shopai cycle verify        "
+                "(preflight check)"
+            )
+            print(
+                "    * shopai cycle run --yes     "
+                "(run one cycle live)"
+            )
+            print(
+                "    * shopai autonomy-status     "
+                "(what's armed / fires today)"
+            )
+            print(
+                "    * shopai go-live             "
+                "(am I ready to schedule cron?)"
+            )
+        else:
+            print()
+            print(
+                f"  {ever_ran} historical executed action(s) "
+                "exist; try a wider window."
+            )
+            print()
+            print("  Next steps:")
+            print(
+                "    * shopai engine ranking "
+                "--window-hours 720    (30 days)"
+            )
+            print(
+                "    * shopai engine ranking "
+                "--window-hours 2160   (90 days)"
+            )
+            print(
+                "    * shopai daily-brief         "
+                "(yesterday's rollup)"
+            )
         return
 
     print(
