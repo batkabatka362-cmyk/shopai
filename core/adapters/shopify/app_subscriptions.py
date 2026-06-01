@@ -278,8 +278,16 @@ class ShopifyAppSubscriptionsAdapter(ShopifyBaseAdapter):
         if test is not None:
             variables["test"] = bool(test)
 
-        trial_days = params.get("trial_days") or params.get("trialDays")
-        if trial_days is not None:
+        # W962-12: sentinel-cascade so explicit `trial_days=0`
+        # (no trial) survives instead of being dropped to None
+        # by `or` short-circuit. Pre-fix, Shopify defaulted to
+        # 14-day trial on the absent field, costing billable
+        # revenue.
+        _MISSING = object()
+        trial_days = params.get("trial_days", _MISSING)
+        if trial_days is _MISSING:
+            trial_days = params.get("trialDays", _MISSING)
+        if trial_days is not _MISSING:
             try:
                 variables["trialDays"] = int(trial_days)
             except (TypeError, ValueError) as exc:

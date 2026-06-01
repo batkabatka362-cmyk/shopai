@@ -48,6 +48,17 @@ class FraudDetectionEngine:
         Returns:
             FraudOutput dict.
         """
+        # W962-13: top-level guard so malformed non-empty
+        # payloads don't escape Pattern Q envelope -- mirror
+        # of churn_prediction:53-59.
+        try:
+            return self._run_inner(input_payload)
+        except Exception as exc:  # noqa: BLE001
+            return self._fail(
+                f"unhandled exception: {exc!s:.200}", 0.0,
+            )
+
+    def _run_inner(self, input_payload: dict[str, Any]) -> dict[str, Any]:
         start = time.monotonic()
 
         # ---- Stage 0: Input validation (no mutation) ----

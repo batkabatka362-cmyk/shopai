@@ -52,6 +52,18 @@ class ContentGenerationEngine:
         Returns:
             ContentGenerationOutput dict.
         """
+        # W962-14: top-level guard so malformed non-empty
+        # payloads don't escape Pattern Q envelope (e.g.
+        # `float(data.get('min_apply_seo_score'))` on
+        # operator-supplied string would raise uncaught).
+        try:
+            return self._run_inner(input_payload)
+        except Exception as exc:  # noqa: BLE001
+            return self._fail(
+                f"unhandled exception: {exc!s:.200}", 0.0,
+            )
+
+    def _run_inner(self, input_payload: dict[str, Any]) -> dict[str, Any]:
         start = time.monotonic()
 
         # ---- Stage 0: Input validation ----
