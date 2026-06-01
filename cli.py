@@ -35354,6 +35354,53 @@ def _cmd_autonomy_arm(args) -> None:
     print("  Disarm via: shopai autonomy-disarm " + domain)
 
 
+def _gate_autonomy_resume(
+    domain: str,
+    state_obj,
+    *,
+    as_json: bool = False,
+) -> bool:
+    """W962-24: refuse to clear an auto-set pause unless the
+    operator confirms via SHOPAI_AUTONOMY_RESUME_CONFIRM=1.
+
+    Auto-pause = the bridge (health analyzer / regression
+    detector / alert quarantine) flagged the domain. Resuming
+    without acknowledgement re-enables a known-bad domain.
+    Manually-paused domains (operator-set reason) skip the
+    gate -- the operator clearly intends to resume their own
+    pause.
+
+    Returns True when the caller should ABORT (gate failed).
+    Returns False when the resume should proceed.
+    """
+    if not getattr(state_obj, "paused", False):
+        return False  # not paused -> nothing to gate
+    reason = (getattr(state_obj, "reason", "") or "").lower()
+    auto = (
+        reason.startswith("auto")
+        or "bridge" in reason
+        or "health_" in reason
+        or "alert" in reason
+    )
+    if not auto:
+        return False
+    if os.environ.get("SHOPAI_AUTONOMY_RESUME_CONFIRM"):
+        return False
+    msg = (
+        f"Refusing: {domain} is auto-paused "
+        f"(reason={reason!r}). The bridge flagged this "
+        f"domain. Set SHOPAI_AUTONOMY_RESUME_CONFIRM=1 to "
+        "acknowledge you've investigated + want to resume."
+    )
+    if as_json:
+        print(json.dumps({
+            "ok": False, "domain": domain, "error": msg,
+        }, indent=2))
+    else:
+        print(msg)
+    return True
+
+
 def _cmd_autonomy_disarm(args) -> None:
     """Wave 812 + W870: disarm a domain (per-store optional)."""
     from core.automation.autonomy_armed import (
@@ -35366,6 +35413,23 @@ def _cmd_autonomy_disarm(args) -> None:
     domain_all = bool(getattr(args, "domain_all", False))
     as_json = bool(getattr(args, "json", False))
     if all_flag:
+        # W962-25: --all wipes every armed entry in one command;
+        # sibling autonomy-bulk-pause is already env-gated via
+        # SHOPAI_AUTONOMY_BULK_HALT_CONFIRM. Apply the same gate
+        # here so disarming the empire requires explicit intent.
+        if not os.environ.get(
+            "SHOPAI_AUTONOMY_BULK_HALT_CONFIRM",
+        ):
+            msg = (
+                "Refusing: --all disarms every domain across "
+                "every store. Set SHOPAI_AUTONOMY_BULK_HALT_"
+                "CONFIRM=1 to authorise this empire-wide halt."
+            )
+            if as_json:
+                print(json.dumps({"ok": False, "error": msg}))
+            else:
+                print(msg)
+            sys.exit(1)
         count = disarm_all()
         if as_json:
             print(json.dumps({
@@ -36784,8 +36848,14 @@ def _cmd_seo_pause(args) -> None:
 
 
 def _cmd_seo_resume(args) -> None:
-    from engines.product_seo_autonomy.seo_state import resume
+    from engines.product_seo_autonomy.seo_state import (
+        get_state, resume,
+    )
     as_json = bool(getattr(args, "json", False))
+    if _gate_autonomy_resume(
+        "product_seo", get_state(), as_json=as_json,
+    ):
+        return
     state = resume()
     if as_json:
         print(json.dumps({
@@ -36971,9 +37041,13 @@ def _cmd_followup_pause(args) -> None:
 
 def _cmd_followup_resume(args) -> None:
     from engines.order_followup_autonomy.followup_state import (
-        resume,
+        get_state, resume,
     )
     as_json = bool(getattr(args, "json", False))
+    if _gate_autonomy_resume(
+        "order_followup", get_state(), as_json=as_json,
+    ):
+        return
     state = resume()
     if as_json:
         print(json.dumps({
@@ -37177,9 +37251,13 @@ def _cmd_customer_outreach_pause(args) -> None:
 
 def _cmd_customer_outreach_resume(args) -> None:
     from engines.customer_outreach_autonomy.outreach_state import (  # noqa: E501
-        resume,
+        get_state, resume,
     )
     as_json = bool(getattr(args, "json", False))
+    if _gate_autonomy_resume(
+        "customer_outreach", get_state(), as_json=as_json,
+    ):
+        return
     state = resume()
     if as_json:
         print(json.dumps({
@@ -37383,9 +37461,13 @@ def _cmd_catalog_quality_pause(args) -> None:
 
 def _cmd_catalog_quality_resume(args) -> None:
     from engines.catalog_quality_autonomy.quality_state import (  # noqa: E501
-        resume,
+        get_state, resume,
     )
     as_json = bool(getattr(args, "json", False))
+    if _gate_autonomy_resume(
+        "catalog_quality", get_state(), as_json=as_json,
+    ):
+        return
     state = resume()
     if as_json:
         print(json.dumps({
@@ -37569,9 +37651,13 @@ def _cmd_shipping_alert_pause(args) -> None:
 
 def _cmd_shipping_alert_resume(args) -> None:
     from engines.shipping_alert_autonomy.shipping_state import (  # noqa: E501
-        resume,
+        get_state, resume,
     )
     as_json = bool(getattr(args, "json", False))
+    if _gate_autonomy_resume(
+        "shipping_alert", get_state(), as_json=as_json,
+    ):
+        return
     state = resume()
     if as_json:
         print(json.dumps({
@@ -37747,9 +37833,13 @@ def _cmd_cleanup_pause(args) -> None:
 
 def _cmd_cleanup_resume(args) -> None:
     from engines.discount_cleanup_autonomy.cleanup_state import (
-        resume,
+        get_state, resume,
     )
     as_json = bool(getattr(args, "json", False))
+    if _gate_autonomy_resume(
+        "discount_cleanup", get_state(), as_json=as_json,
+    ):
+        return
     state = resume()
     if as_json:
         print(json.dumps({
@@ -37929,9 +38019,13 @@ def _cmd_inventory_pause(args) -> None:
 
 def _cmd_inventory_resume(args) -> None:
     from engines.inventory_autonomy.inventory_state import (
-        resume,
+        get_state, resume,
     )
     as_json = bool(getattr(args, "json", False))
+    if _gate_autonomy_resume(
+        "inventory", get_state(), as_json=as_json,
+    ):
+        return
     state = resume()
     if as_json:
         print(json.dumps({
@@ -38106,9 +38200,13 @@ def _cmd_fulfillment_pause(args) -> None:
 
 def _cmd_fulfillment_resume(args) -> None:
     from engines.fulfillment_autonomy.fulfillment_state import (
-        resume,
+        get_state, resume,
     )
     as_json = bool(getattr(args, "json", False))
+    if _gate_autonomy_resume(
+        "fulfillment", get_state(), as_json=as_json,
+    ):
+        return
     state = resume()
     if as_json:
         print(json.dumps({
@@ -38296,8 +38394,14 @@ def _cmd_marketing_pause(args) -> None:
 
 def _cmd_marketing_resume(args) -> None:
     """Wave 111: clear the budget pause flag."""
-    from engines.roas_guardrails.budget_state import resume
+    from engines.roas_guardrails.budget_state import (
+        get_state, resume,
+    )
     as_json = bool(getattr(args, "json", False))
+    if _gate_autonomy_resume(
+        "marketing", get_state(), as_json=as_json,
+    ):
+        return
     state = resume()
     if as_json:
         print(json.dumps({
@@ -38537,9 +38641,15 @@ def _cmd_refund_pause(args) -> None:
 
 def _cmd_refund_resume(args) -> None:
     """Wave 103: clear the refund pause flag."""
-    from engines.returns_management.refund_state import resume
+    from engines.returns_management.refund_state import (
+        get_state, resume,
+    )
 
     as_json = bool(getattr(args, "json", False))
+    if _gate_autonomy_resume(
+        "refund", get_state(), as_json=as_json,
+    ):
+        return
     state = resume()
     if as_json:
         print(json.dumps({
@@ -46227,6 +46337,22 @@ def _cmd_approvals_quarantine(args) -> None:
         release_all = bool(
             getattr(args, "release_alert_all", False),
         )
+        # W962-23: --release-alert-all carpet-bombs every
+        # per-store pause for the engine. Quarantines exist
+        # because the engine was failing -- silently re-enabling
+        # all of them at once is a classifier bypass. Gate on
+        # the same SHOPAI_QUARANTINE_BYPASS_CONFIRM env-var
+        # that W962-22 added to --release + --exempt.
+        if release_all and not os.environ.get(
+            "SHOPAI_QUARANTINE_BYPASS_CONFIRM",
+        ):
+            print(
+                "Refusing: --release-alert-all clears EVERY "
+                f"per-store pause for {engine!r} at once. Set "
+                "SHOPAI_QUARANTINE_BYPASS_CONFIRM=1 to confirm "
+                "this is an authorised operator action."
+            )
+            return
         if release_all:
             s = qm.clear_all_alert_pauses_for_engine(engine)
         else:
