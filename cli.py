@@ -1804,10 +1804,32 @@ def build_parser() -> argparse.ArgumentParser:
             "Persist a new auto-execute reliability "
             "threshold (0.0-1.0). Survives restarts; the "
             "controller's _compute_auto_execute_eligibility "
-            "reads this BEFORE the env var. Use to relax "
-            "when low_advance_rate has been firing."
+            "reads this BEFORE the env var. W962-5: now "
+            "requires --yes + SHOPAI_AUTONOMOUS_SET_THRESHOLD_"
+            "CONFIRM=1; values < 0.50 also need --force."
         ),
     )
+    # W962-5 confirm flags. argparse on this subparser
+    # already had --yes; mark --force as new.
+    if not any(
+        a.dest == "yes" for a in autonomous_p._actions
+    ):
+        autonomous_p.add_argument(
+            "--yes", action="store_true",
+            help=(
+                "Required to perform --set-threshold (W962-5)"
+            ),
+        )
+    if not any(
+        a.dest == "force" for a in autonomous_p._actions
+    ):
+        autonomous_p.add_argument(
+            "--force", action="store_true",
+            help=(
+                "Required to set --set-threshold below 0.50 "
+                "(reputational risk; W962-5)"
+            ),
+        )
     autonomous_p.add_argument(
         "--clear-threshold", action="store_true",
         dest="clear_threshold",
@@ -27739,6 +27761,45 @@ def _cmd_autonomous_cycle(args) -> None:
             )
             sys.exit(1)
             return
+        # W962-5 bugfix: lowering the auto-execute threshold
+        # is a classifier bypass -- without these guards, an
+        # operator (or runaway agent) could drop the floor
+        # silently. Now require --yes + env-gate; hard floor
+        # at 0.50 requires --force as well.
+        import os as _os
+        _yes = bool(getattr(args, "yes", False))
+        _force = bool(getattr(args, "force", False))
+        _confirm = (
+            _os.environ.get(
+                "SHOPAI_AUTONOMOUS_SET_THRESHOLD_CONFIRM", "",
+            ) in ("1", "true", "yes")
+        )
+        _HARD_FLOOR = 0.50
+        if not _yes:
+            print(
+                "ERROR: --set-threshold requires --yes. "
+                "Pass --yes after verifying intent.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if not _confirm:
+            print(
+                "ERROR: set SHOPAI_AUTONOMOUS_SET_THRESHOLD_"
+                "CONFIRM=1 to lower the auto-execute "
+                "reliability floor.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if new_val < _HARD_FLOOR and not _force:
+            print(
+                f"ERROR: requested {new_val} below hard "
+                f"floor {_HARD_FLOOR}. Pass --force to "
+                "override (carries reputational risk -- "
+                "agents below 50% reliability will execute "
+                "irreversible mutations).",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         try:
             from core.autonomous import (
                 cycle_overrides as _co,
@@ -36398,6 +36459,27 @@ def _cmd_autonomy_fire(args) -> None:
         else:
             print(f"ERROR: {msg}")
         sys.exit(1)
+
+    # W962-6 bugfix: mirror cycle-run's env-gate so
+    # `autonomy-fire --yes` can't carpet-bomb 10 domains
+    # without explicit operator confirmation. Pre-fix only
+    # --yes was required; this matches the SHOPAI_CYCLE_RUN_
+    # CONFIRM safety pattern.
+    if yes:
+        import os as _os
+        if not _os.environ.get(
+            "SHOPAI_AUTONOMY_FIRE_CONFIRM", "",
+        ) in ("1", "true", "yes"):
+            msg = (
+                "ERROR: live autonomy-fire requires "
+                "SHOPAI_AUTONOMY_FIRE_CONFIRM=1 in addition "
+                "to --yes. Mirror of cycle-run safety."
+            )
+            if as_json:
+                print(json.dumps({"ok": False, "error": msg}))
+            else:
+                print(msg, file=sys.stderr)
+            sys.exit(2)
 
     result = fire(domain, payload, dry_run=not yes)
 
