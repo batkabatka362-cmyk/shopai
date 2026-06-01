@@ -147,7 +147,13 @@ class TestCleanupApplierSafety:
 
 
 class TestAutonomyStatusFiveDomains:
-    """get_autonomy_status now rolls up 5 domains."""
+    """get_autonomy_status now rolls up >=5 domains.
+
+    W937 convention: roster grows over time (Phase 18-35 added
+    product_seo, customer_outreach, order_followup, shipping_
+    alert, catalog_quality). Original five must remain present;
+    superset additions are allowed.
+    """
 
     def test_includes_discount_cleanup_domain(self):
         from core.automation.autonomy_status import (
@@ -155,8 +161,10 @@ class TestAutonomyStatusFiveDomains:
         )
         report = get_autonomy_status()
         names = {d.name for d in report.domains}
-        assert names == {
+        expected = {
             "customer_support", "marketing",
             "fulfillment", "inventory",
             "discount_cleanup",
         }
+        assert expected.issubset(names)
+        assert len(names) >= 5

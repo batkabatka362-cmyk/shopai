@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -30,6 +31,23 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_ENTRIES = 1000
+
+# W962-19 race fix: load + append + save in record_event used
+# to happen unlocked; two writers (e.g. cycle-run thread +
+# daily-brief) could clobber each other's appends. Per-path
+# RLocks serialize the read-modify-write.
+_PATH_LOCKS: dict[str, threading.RLock] = {}
+_LOCKS_MUTEX = threading.Lock()
+
+
+def _lock_for(path: Path) -> threading.RLock:
+    key = str(path.resolve()) if path.exists() else str(path)
+    with _LOCKS_MUTEX:
+        lock = _PATH_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _PATH_LOCKS[key] = lock
+        return lock
 
 
 def is_test_environment() -> bool:
@@ -87,17 +105,18 @@ def record_event(
         return
     if not is_dataclass(event):
         return
-    # Auto-populate recorded_at if the dataclass has the field
-    # but it's still the default 0
-    rows = load_log(path)
-    payload = asdict(event)
-    if (
-        "recorded_at" in payload
-        and not payload["recorded_at"]
-    ):
-        payload["recorded_at"] = time.time()
-    rows.append(payload)
-    save_log(path, rows, max_entries=max_entries)
+    # W962-19: hold the per-path lock across read+append+save
+    # so concurrent producers don't lose updates.
+    with _lock_for(path):
+        rows = load_log(path)
+        payload = asdict(event)
+        if (
+            "recorded_at" in payload
+            and not payload["recorded_at"]
+        ):
+            payload["recorded_at"] = time.time()
+        rows.append(payload)
+        save_log(path, rows, max_entries=max_entries)
 
 
 def recent_events(

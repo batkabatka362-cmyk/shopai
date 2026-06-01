@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -77,6 +78,13 @@ class ClusterEvent:
         )
 
 
+# W962-20 race fix: emit_event used to load + append + save
+# unlocked; concurrent captains across clusters would race
+# and lose events. Module-level RLock serialises every
+# read-modify-write through the bus path.
+_BUS_LOCK = threading.RLock()
+
+
 def _bus_path() -> Path:
     """Default path for the JSON-backed event bus."""
     data_dir = Path(
@@ -100,15 +108,19 @@ def _load_events() -> list[ClusterEvent]:
 
 
 def _save_events(events: list[ClusterEvent]) -> bool:
+    """Atomic write: temp file + os.replace so a crash
+    mid-write doesn't corrupt the bus."""
     path = _bus_path()
     try:
-        path.write_text(
+        tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+        tmp.write_text(
             json.dumps(
                 [e.to_dict() for e in events],
                 indent=2, default=str,
             ),
             encoding="utf-8",
         )
+        os.replace(tmp, path)
         return True
     except OSError:
         return False
@@ -135,12 +147,15 @@ def emit_event(
         payload=payload or {},
         store_id=store_id,
     )
-    events = _load_events()
-    events.append(event)
-    # Keep only the most recent 5000 events to bound disk
-    if len(events) > 5000:
-        events = events[-5000:]
-    _save_events(events)
+    # W962-20: lock the full read-modify-write so concurrent
+    # captain emit calls don't lose events.
+    with _BUS_LOCK:
+        events = _load_events()
+        events.append(event)
+        # Keep only the most recent 5000 events to bound disk
+        if len(events) > 5000:
+            events = events[-5000:]
+        _save_events(events)
     return event
 
 
@@ -238,7 +253,8 @@ def cross_cluster_signals(
 
 def clear_bus() -> bool:
     """Wipe the bus -- useful for tests / operator reset."""
-    return _save_events([])
+    with _BUS_LOCK:
+        return _save_events([])
 
 
 def bus_stats(

@@ -15,11 +15,28 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# W962-21 race fix: serialise per-path read-modify-write
+# (auto-resume + pause + resume can race with each other
+# and with parallel domain probes).
+_PATH_LOCKS: dict[str, threading.RLock] = {}
+_LOCKS_MUTEX = threading.Lock()
+
+
+def _lock_for(path: Path) -> threading.RLock:
+    key = str(path.resolve()) if path.exists() else str(path)
+    with _LOCKS_MUTEX:
+        lock = _PATH_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _PATH_LOCKS[key] = lock
+        return lock
 
 
 @dataclass
@@ -59,10 +76,20 @@ def load_state(path: Path) -> PauseState:
 def save_state(path: Path, state: PauseState) -> None:
     if is_test_environment():
         return
+    # W962-21: atomic write — temp file in the same directory
+    # then os.replace. A crash mid-write no longer leaves a
+    # partial JSON file that load_state would reject.
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as f:
+        tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+        with tmp.open("w", encoding="utf-8") as f:
             json.dump(asdict(state), f, indent=2)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, path)
     except Exception as exc:  # noqa: BLE001
         logger.debug("pause_state save raised: %s", exc)
 
@@ -70,18 +97,19 @@ def save_state(path: Path, state: PauseState) -> None:
 def get_state(path: Path) -> PauseState:
     """Read pause state. Auto-resume clears the flag when the
     deadline has passed + persists the cleared state."""
-    state = load_state(path)
-    if (
-        state.paused
-        and state.auto_resume_after > 0
-        and time.time() >= state.auto_resume_after
-    ):
-        state.paused = False
-        state.reason = ""
-        state.paused_at = 0.0
-        state.auto_resume_after = 0.0
-        save_state(path, state)
-    return state
+    with _lock_for(path):
+        state = load_state(path)
+        if (
+            state.paused
+            and state.auto_resume_after > 0
+            and time.time() >= state.auto_resume_after
+        ):
+            state.paused = False
+            state.reason = ""
+            state.paused_at = 0.0
+            state.auto_resume_after = 0.0
+            save_state(path, state)
+        return state
 
 
 def is_paused(path: Path) -> bool:
@@ -95,18 +123,20 @@ def pause(
     auto_resume_after: float = 0.0,
 ) -> PauseState:
     """Set the pause flag."""
-    state = PauseState(
-        paused=True,
-        reason=reason,
-        paused_at=time.time(),
-        auto_resume_after=auto_resume_after,
-    )
-    save_state(path, state)
-    return state
+    with _lock_for(path):
+        state = PauseState(
+            paused=True,
+            reason=reason,
+            paused_at=time.time(),
+            auto_resume_after=auto_resume_after,
+        )
+        save_state(path, state)
+        return state
 
 
 def resume(path: Path) -> PauseState:
     """Clear the pause flag."""
-    state = PauseState()
-    save_state(path, state)
-    return state
+    with _lock_for(path):
+        state = PauseState()
+        save_state(path, state)
+        return state
