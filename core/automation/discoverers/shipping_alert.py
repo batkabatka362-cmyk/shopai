@@ -71,13 +71,20 @@ def _classify_order(order: dict[str, Any]) -> str | None:
     if fulfilment != "fulfilled":
         return None
 
+    # W962-2 bugfix: orders normaliser emits `display_status`
+    # (and `delivered_at`); the older `status` key is kept
+    # as fallback for compat with full-fetch responses.
     delivered = False
     for fulfillment in (order.get("fulfillments") or []):
         if not isinstance(fulfillment, dict):
             continue
+        status = str(
+            fulfillment.get("display_status")
+            or fulfillment.get("status")
+            or "",
+        ).lower()
         if (
-            str(fulfillment.get("status") or "").lower()
-            == "delivered"
+            status == "delivered"
             or fulfillment.get("delivered_at")
         ):
             delivered = True

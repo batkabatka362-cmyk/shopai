@@ -163,7 +163,18 @@ def _lookup_parent_transaction(
     if not getattr(res, "ok", False):
         return None, "order_lookup_failed"
     data = getattr(res, "data", None) or {}
-    txs = data.get("transactions") or []
+    # W962-1 bugfix: SHOPIFY_GET_ORDER normalises the response
+    # to {"order": {...transactions: [...]}}; pre-fix the
+    # applier read top-level data['transactions'] which never
+    # existed and EVERY refund silently skipped with
+    # no_parent_transaction. Read the nested + fall back to
+    # the legacy top-level shape for compat with any caller
+    # that already unwrapped.
+    txs = (
+        data.get("transactions")
+        or (data.get("order") or {}).get("transactions")
+        or []
+    )
     if not isinstance(txs, list):
         return None, "no_parent_transaction"
     for tx in txs:

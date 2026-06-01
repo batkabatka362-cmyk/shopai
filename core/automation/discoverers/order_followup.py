@@ -61,15 +61,22 @@ def _classify_order(order: dict[str, Any]) -> str | None:
     fulfilment = str(
         order.get("fulfillment_status") or "",
     ).lower()
+    # W962-3 bugfix: orders normaliser now emits
+    # `display_status` (new) + `status` (legacy fallback);
+    # refunds + customer.tags also populated via W962-1/2/10.
     fulfillments = order.get("fulfillments") or []
     delivered = False
     if isinstance(fulfillments, list):
         for fulfillment in fulfillments:
             if not isinstance(fulfillment, dict):
                 continue
+            status = str(
+                fulfillment.get("display_status")
+                or fulfillment.get("status")
+                or "",
+            ).lower()
             if (
-                str(fulfillment.get("status") or "").lower()
-                == "delivered"
+                status == "delivered"
                 or fulfillment.get("delivered_at")
             ):
                 delivered = True
