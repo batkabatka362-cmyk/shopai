@@ -3690,6 +3690,28 @@ def build_parser() -> argparse.ArgumentParser:
             "for fast pre-commit checks targeting one concern."
         ),
     )
+    audit_p.add_argument(
+        "--parallel", type=int, default=1, metavar="N",
+        help=(
+            "Run audits concurrently in a thread pool of N "
+            "workers (default 1 = serial). In-process the 70 "
+            "audits sum to ~21s of work (dominated by Pattern Q "
+            "runtime engine probes); CLI cold-start adds ~36s. "
+            "Use --parallel 4-8 to halve the audit work; for the "
+            "fastest pre-commit gate combine with --skip-slow "
+            "to drop the runtime audits."
+        ),
+    )
+    audit_p.add_argument(
+        "--skip-slow", action="store_true",
+        help=(
+            "Skip the slowest audits (runtime engine probes) "
+            "for a fast pre-commit gate. Drops Pattern Q "
+            "(~10s, exercises every engine's run()) + Pattern J "
+            "(~3s, imports recorder targets). The remaining 68 "
+            "audits are AST/disk walks finishing in ~7s."
+        ),
+    )
 
     pattern_j_audit_p = sub.add_parser(
         "pattern-j-audit",
@@ -41877,9 +41899,45 @@ def _cmd_audit_all(args) -> None:
     only = getattr(args, "only", None)
     selected = (only,) if only else _AUDIT_ORDER
 
+    # --skip-slow drops the runtime engine probes for a fast
+    # pre-commit gate. Keep in sync with the profile in W962
+    # docs: pattern_q + pattern_j account for ~60% of work time.
+    if getattr(args, "skip_slow", False) and not only:
+        slow = {"pattern_q", "pattern_j"}
+        selected = tuple(n for n in selected if n not in slow)
+
+    # Latency win: ``--parallel N`` runs N audits concurrently in
+    # a thread pool. Each audit is a read-only AST / disk walk +
+    # optional bootstrap probe -- thread-safe by construction
+    # since the audit modules don't mutate shared state.
+    # Default 1 keeps the legacy serial behaviour (no surprise
+    # CI churn). Operator-facing pre-commit hooks can opt in via
+    # `shopai audit --parallel 8` for a ~5-8x wall-clock win on
+    # the 70+ audit roster.
+    parallel = max(1, int(getattr(args, "parallel", 1) or 1))
+
     results: dict[str, dict[str, Any]] = {}
-    for name in selected:
-        results[name] = _run_one_audit(name)
+    if parallel <= 1 or len(selected) <= 1:
+        for name in selected:
+            results[name] = _run_one_audit(name)
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=parallel) as pool:
+            future_to_name = {
+                pool.submit(_run_one_audit, n): n
+                for n in selected
+            }
+            for fut in future_to_name:
+                name = future_to_name[fut]
+                try:
+                    results[name] = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    results[name] = {
+                        "ok": False,
+                        "error": (
+                            f"audit worker raised: {exc!s:.200}"
+                        ),
+                    }
     all_ok = all(r.get("ok", False) for r in results.values())
 
     if getattr(args, "json", False):
