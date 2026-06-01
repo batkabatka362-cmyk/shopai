@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -39,6 +40,12 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _STATE_PATH = Path("data") / "autonomy_armed.json"
+
+# W962-18: arm / disarm / disarm_all used to load + mutate +
+# save unlocked. Two concurrent CLI calls (or operator + bridge)
+# could lose an arm. Module-level RLock serialises every
+# read-modify-write.
+_STATE_LOCK = threading.RLock()
 
 
 def _is_test_environment() -> bool:
@@ -154,14 +161,20 @@ def _load_state() -> ArmedState:
 def _save_state(state: ArmedState) -> None:
     if _is_test_environment():
         return
+    # W962-18: atomic write via temp + os.replace. Crash mid-
+    # write no longer leaves a corrupt autonomy_armed.json.
     _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _STATE_PATH.write_text(
+    tmp = _STATE_PATH.with_suffix(
+        _STATE_PATH.suffix + f".tmp.{os.getpid()}"
+    )
+    tmp.write_text(
         json.dumps(
             {"entries": [asdict(e) for e in state.entries]},
             indent=2,
         ),
         encoding="utf-8",
     )
+    os.replace(tmp, _STATE_PATH)
 
 
 def is_armed(domain: str, store_id: str = "") -> bool:
@@ -288,19 +301,23 @@ def arm(
                     domain=domain,
                     hours_remaining=cooldown - elapsed,
                 )
-    state = _load_state()
-    existing = state.get(domain, sid)
-    if existing is not None:
-        return existing
-    entry = ArmedEntry(
-        domain=domain,
-        armed_at=time.time(),
-        reason=reason,
-        store_id=sid,
-    )
-    state.entries.append(entry)
-    _save_state(state)
-    return entry
+    # W962-18: read-modify-write under the state lock so
+    # concurrent operators can't both pass the existing-check
+    # and append duplicate entries.
+    with _STATE_LOCK:
+        state = _load_state()
+        existing = state.get(domain, sid)
+        if existing is not None:
+            return existing
+        entry = ArmedEntry(
+            domain=domain,
+            armed_at=time.time(),
+            reason=reason,
+            store_id=sid,
+        )
+        state.entries.append(entry)
+        _save_state(state)
+        return entry
 
 
 def disarm(domain: str, store_id: str = "") -> bool:
@@ -315,44 +332,49 @@ def disarm(domain: str, store_id: str = "") -> bool:
     call ``disarm_domain_all(domain)``.
     """
     sid = store_id or ""
-    state = _load_state()
-    if not state.is_armed(domain, sid):
-        return False
-    state.entries = [
-        e for e in state.entries
-        if not (
-            e.domain == domain
-            and (e.store_id or "") == sid
-        )
-    ]
-    _save_state(state)
-    return True
+    # W962-18: serialise check-then-write so a concurrent arm
+    # can't slip in between the membership test and the save.
+    with _STATE_LOCK:
+        state = _load_state()
+        if not state.is_armed(domain, sid):
+            return False
+        state.entries = [
+            e for e in state.entries
+            if not (
+                e.domain == domain
+                and (e.store_id or "") == sid
+            )
+        ]
+        _save_state(state)
+        return True
 
 
 def disarm_domain_all(domain: str) -> int:
     """Remove every armed entry for ``domain`` regardless of
     store_id. Returns the count of entries removed."""
-    state = _load_state()
-    before = len(state.entries)
-    state.entries = [
-        e for e in state.entries if e.domain != domain
-    ]
-    removed = before - len(state.entries)
-    if removed > 0:
-        _save_state(state)
-    return removed
+    with _STATE_LOCK:
+        state = _load_state()
+        before = len(state.entries)
+        state.entries = [
+            e for e in state.entries if e.domain != domain
+        ]
+        removed = before - len(state.entries)
+        if removed > 0:
+            _save_state(state)
+        return removed
 
 
 def disarm_all() -> int:
     """Emergency disarm -- remove every armed entry. Returns the
     count of entries removed."""
-    state = _load_state()
-    count = len(state.entries)
-    if count == 0:
-        return 0
-    state.entries = []
-    _save_state(state)
-    return count
+    with _STATE_LOCK:
+        state = _load_state()
+        count = len(state.entries)
+        if count == 0:
+            return 0
+        state.entries = []
+        _save_state(state)
+        return count
 
 
 def apply_flags_for_domain(domain: str) -> tuple[str, ...]:
