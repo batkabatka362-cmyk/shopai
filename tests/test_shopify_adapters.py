@@ -149,6 +149,73 @@ class TestShopifyBaseAdapter:
             a._gql("query { x }")
         assert "GraphQL errors" in str(exc.value)
 
+    def test_error_classifier_does_not_match_bare_5(
+        self, monkeypatch,
+    ):
+        """W962-37 regression guard: the old `"5" in msg` check
+        misclassified ANY error message containing digit 5 as
+        AdapterUnavailable (e.g. 'order 50 not found' would
+        route to the unavailable branch). The fix matches
+        500/502/503/504/5xx explicitly + leading-space '5XX'."""
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        from core.adapters.errors import (
+            AdapterError, AdapterUnavailable,
+        )
+        a = ShopifyRiskAdapter(shop_url="x", access_token="y")
+
+        # Case 1: bare digit 5 in a non-HTTP error message
+        # should NOT route to Unavailable.
+        def make_bare5():
+            class _C:
+                def query(self, q, v):
+                    raise RuntimeError("order 5 not found")
+            return _C()
+        monkeypatch.setattr(a, "_make_client", make_bare5)
+        with pytest.raises(AdapterError) as exc:
+            a._gql("query { x }")
+        # Plain AdapterError, NOT AdapterUnavailable
+        assert not isinstance(exc.value, AdapterUnavailable)
+
+    def test_error_classifier_matches_5xx(self, monkeypatch):
+        """W962-37: explicit 5xx HTTP codes still route to
+        AdapterUnavailable."""
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        from core.adapters.errors import AdapterUnavailable
+        a = ShopifyRiskAdapter(shop_url="x", access_token="y")
+
+        for status_code in ("500", "502", "503", "504"):
+            def make_5xx(code=status_code):
+                class _C:
+                    def query(self, q, v):
+                        raise RuntimeError(
+                            f"HTTP Error {code}: Server failed",
+                        )
+                return _C()
+            monkeypatch.setattr(a, "_make_client", make_5xx)
+            with pytest.raises(AdapterUnavailable):
+                a._gql("query { x }")
+
+    def test_error_classifier_routes_auth_correctly(
+        self, monkeypatch,
+    ):
+        """W962-37: 401/403 still route to AdapterAuthError
+        (regression guard against the order-of-checks)."""
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        from core.adapters.errors import AdapterAuthError
+        a = ShopifyRiskAdapter(shop_url="x", access_token="y")
+
+        for status_code in ("401", "403"):
+            def make_auth(code=status_code):
+                class _C:
+                    def query(self, q, v):
+                        raise RuntimeError(
+                            f"HTTP Error {code}: Unauthorized",
+                        )
+                return _C()
+            monkeypatch.setattr(a, "_make_client", make_auth)
+            with pytest.raises(AdapterAuthError):
+                a._gql("query { x }")
+
 
 # ── ShopifyRiskAdapter ───────────────────────────────────────
 

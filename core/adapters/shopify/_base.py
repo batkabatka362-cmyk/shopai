@@ -195,7 +195,24 @@ class ShopifyBaseAdapter(BaseAdapter):
                 raise AdapterAuthError(self.name, msg) from exc
             if "429" in msg:
                 raise AdapterRateLimited(self.name, msg) from exc
-            if any(s in msg for s in ("5", "Network", "timeout", "Timeout")):
+            # W962-37 bugfix: the original check was
+            #   any(s in msg for s in ("5", "Network", ...))
+            # The bare "5" substring matched ANY error message
+            # containing the digit 5 (e.g. "order 5 not found"
+            # -> Unavailable). The intent was 5xx HTTP codes,
+            # so match those concretely via a regex for a
+            # 5xx triple at a word boundary.
+            import re as _re
+            msg_lower = msg.lower()
+            is_5xx = bool(
+                _re.search(r"\b5\d{2}\b", msg)
+                or "5xx" in msg_lower
+            )
+            if (
+                is_5xx
+                or "network" in msg_lower
+                or "timeout" in msg_lower
+            ):
                 raise AdapterUnavailable(self.name, msg) from exc
             raise AdapterError(self.name, msg) from exc
 
