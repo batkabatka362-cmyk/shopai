@@ -60,10 +60,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+# W962-46: span the load+update+save in check() so concurrent
+# notify probes (cron + ad-hoc CLI + dashboard refresh) don't
+# clobber each other's cooldown state and accidentally re-fire
+# alerts that just got muted.
+_LOCK = threading.RLock()
 
 logger = logging.getLogger(__name__)
 
@@ -136,14 +143,20 @@ def _load_state() -> dict[str, float]:
 
 
 def _save_state(state: dict[str, float]) -> None:
+    """W962-46: atomic write via temp + os.replace."""
     p = _state_path()
     try:
-        p.write_text(
+        tmp = p.with_suffix(p.suffix + f".tmp.{os.getpid()}")
+        tmp.write_text(
             json.dumps(state, indent=2),
             encoding="utf-8",
         )
-    except OSError:
-        pass
+        os.replace(tmp, p)
+    except OSError as exc:
+        # Best-effort persistence; cooldown might re-fire one
+        # alert if the next probe doesn't see the save, but
+        # the alert itself already went out. Log at debug.
+        logger.debug("_notify save_state failed: %s", exc)
 
 
 def collect_alerts() -> list[NotifyAlert]:
@@ -952,10 +965,26 @@ def notify_check() -> dict[str, Any]:
 
     alerts = collect_alerts()
     now = time.time()
-    state = _load_state()
-    fireable = _filter_by_cooldown(
-        alerts, state, now, cooldown,
-    )
+    # W962-46: race fix. Pre-fix two concurrent check() calls
+    # could both load the same state, both find a kind fireable,
+    # and both post the same alert. Claim the cooldown UNDER
+    # the lock (load + filter + immediate save) so the second
+    # caller sees the claim and skips the duplicate post.
+    with _LOCK:
+        state = _load_state()
+        fireable = _filter_by_cooldown(
+            alerts, state, now, cooldown,
+        )
+        # Pre-commit the cooldown: if we have fireable kinds,
+        # mark them with `now` BEFORE the network call. If the
+        # post fails the alert will simply re-fire after the
+        # cooldown elapses (the alternative -- losing the
+        # cooldown claim entirely -- would let a hung post on
+        # one call double-fire the same alert from another).
+        if fireable:
+            for a in fireable:
+                state[a.kind] = now
+            _save_state(state)
 
     result: dict[str, Any] = {
         "url_configured": bool(url),
@@ -1016,10 +1045,9 @@ def notify_check() -> dict[str, Any]:
     ok = _post_webhook(url, payload)
     result["posted"] = ok
 
-    if ok:
-        # Update cooldown state for fired alert kinds
-        for a in fireable:
-            state[a.kind] = now
-        _save_state(state)
+    # W962-46: cooldown state was already claimed under the
+    # lock above (pre-commit). Don't re-save here -- a second
+    # save would be redundant + could clobber concurrent
+    # claims that came in after this call's lock release.
 
     return result
