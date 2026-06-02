@@ -195,6 +195,32 @@ class TestShopifyBaseAdapter:
             with pytest.raises(AdapterUnavailable):
                 a._gql("query { x }")
 
+    def test_error_classifier_does_not_match_embedded_4xx(
+        self, monkeypatch,
+    ):
+        """W962-37: '401' as a substring of '4010' must not
+        trigger AuthError; '429' as substring of '4290' must not
+        trigger RateLimited. Word-boundary regex prevents this."""
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        from core.adapters.errors import (
+            AdapterAuthError, AdapterRateLimited,
+        )
+        a = ShopifyRiskAdapter(shop_url="x", access_token="y")
+
+        for substring in ("4010", "4030", "4290"):
+            def make_embedded(s=substring):
+                class _C:
+                    def query(self, q, v):
+                        raise RuntimeError(
+                            f"order {s} not found",
+                        )
+                return _C()
+            monkeypatch.setattr(a, "_make_client", make_embedded)
+            with pytest.raises(Exception) as exc:
+                a._gql("query { x }")
+            assert not isinstance(exc.value, AdapterAuthError)
+            assert not isinstance(exc.value, AdapterRateLimited)
+
     def test_error_classifier_routes_auth_correctly(
         self, monkeypatch,
     ):

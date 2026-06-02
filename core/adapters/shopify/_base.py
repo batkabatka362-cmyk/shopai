@@ -191,9 +191,13 @@ class ShopifyBaseAdapter(BaseAdapter):
             # is rare in practice (token would be rejected at
             # OAuth time) but we still distinguish it.
             msg = str(exc)
-            if "401" in msg or "403" in msg:
+            # W962-37: word-boundary HTTP code matching so
+            # "order 4010 not found" doesn't false-positive on
+            # the 401 substring. Same logic as the 5xx branch.
+            import re as _re
+            if _re.search(r"\b(401|403)\b", msg):
                 raise AdapterAuthError(self.name, msg) from exc
-            if "429" in msg:
+            if _re.search(r"\b429\b", msg):
                 raise AdapterRateLimited(self.name, msg) from exc
             # W962-37 bugfix: the original check was
             #   any(s in msg for s in ("5", "Network", ...))
@@ -202,7 +206,6 @@ class ShopifyBaseAdapter(BaseAdapter):
             # -> Unavailable). The intent was 5xx HTTP codes,
             # so match those concretely via a regex for a
             # 5xx triple at a word boundary.
-            import re as _re
             msg_lower = msg.lower()
             is_5xx = bool(
                 _re.search(r"\b5\d{2}\b", msg)
