@@ -229,7 +229,9 @@ class TestRealisticStates:
             }},
         })
         assert result["data"]["verdict"] == "cold_start"
-        assert "Seed catalog" in result["data"]["next_action"]
+        # Should point at the live product-candidates command
+        # (W963-2 wired the engine; W963-1's hint now leads here).
+        assert "product-candidates" in result["data"]["next_action"]
 
     def test_well_running_store_growing(self):
         with patch(

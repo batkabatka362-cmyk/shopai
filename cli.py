@@ -1463,6 +1463,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view",
     )
 
+    # W963-2: product-candidates — cold-start product list
+    # generator. Reads from a curated niche → 20 candidates
+    # catalog; future revision will swap to AI / supplier-API.
+    product_candidates_p = sub.add_parser(
+        "product-candidates",
+        help=(
+            "Generate N product candidates for a niche. Cold-"
+            "start unblocker for empty Shopify catalogs. "
+            "Niches: beauty / fashion / home / tech / food. "
+            "Read-only — no Shopify writes."
+        ),
+    )
+    product_candidates_p.add_argument(
+        "--niche", default=None,
+        help=(
+            "beauty | fashion | home | tech | food. Omit to "
+            "list catalog summary."
+        ),
+    )
+    product_candidates_p.add_argument(
+        "--count", type=int, default=20,
+        help="How many candidates to return (default 20).",
+    )
+    product_candidates_p.add_argument(
+        "--price-max", type=float, default=None,
+        help=(
+            "Filter to candidates whose price_min is below this "
+            "USD ceiling."
+        ),
+    )
+    product_candidates_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view",
+    )
+
     # W963-1: revenue-readiness diagnostic. Examines a store
     # and reports which of 6 earning-gates it passes.
     revenue_readiness_p = sub.add_parser(
@@ -9885,6 +9920,80 @@ def _cmd_niche(args) -> None:
     print(
         "  Stores: `shopai niche --by-store` -- per-store tags"
     )
+
+
+def _cmd_product_candidates(args) -> None:
+    """W963-2: cold-start product candidate generator.
+
+    Read-only. Emits N candidates for the operator to review.
+    A future Phase 2 will wire SHOPIFY_CREATE_PRODUCT (status=
+    DRAFT) behind the approval queue with a --apply flag.
+    """
+    from engines.product_sourcer import ProductSourcerEngine
+
+    niche = getattr(args, "niche", None)
+    count = int(getattr(args, "count", 20) or 20)
+    price_max = getattr(args, "price_max", None)
+    as_json = bool(getattr(args, "json", False))
+
+    payload: dict[str, Any] = {"data": {}}
+    if niche:
+        payload["data"]["niche"] = niche
+    if count:
+        payload["data"]["count"] = count
+    if price_max is not None:
+        payload["data"]["price_max"] = price_max
+
+    result = ProductSourcerEngine().run(payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success" or not data:
+        err = result.get("error") or "unknown error"
+        print(f"product-candidates: ERROR  {err}")
+        return
+
+    niche_out = data.get("niche") or ""
+    returned = data.get("count_returned", 0)
+    requested = data.get("count_requested", 0)
+    candidates = data.get("candidates", [])
+    next_action = data.get("next_action", "")
+
+    if not niche_out:
+        print(f"Product-candidates  {next_action}")
+        return
+
+    print(
+        f"Product-candidates  niche={niche_out}  "
+        f"returned={returned}/{requested}"
+    )
+    print()
+    if not candidates:
+        print(f"  (no candidates)  -> {next_action}")
+        return
+    for i, c in enumerate(candidates, 1):
+        price = c.get("suggested_price", 0)
+        name = c.get("name", "(unnamed)")
+        cat = c.get("category", "")
+        tags = ", ".join((c.get("tags") or [])[:3])
+        print(f"  {i:>2}. {name}")
+        print(
+            f"      ${price:>6.2f}  [{cat}]  "
+            f"price_range=${c.get('price_min', 0):.0f}-"
+            f"${c.get('price_max', 0):.0f}  "
+            f"tags={tags}"
+        )
+        desc = c.get("description", "")
+        if desc:
+            print(f"      \"{desc}\"")
+        vendor = c.get("vendor_hint", "")
+        if vendor:
+            print(f"      vendor: {vendor}")
+        print()
+    print(f"  NEXT: {next_action}")
 
 
 def _cmd_revenue_readiness(args) -> None:
@@ -51203,6 +51312,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "revenue-readiness":
         _cmd_revenue_readiness(args)
+        return
+
+    if args.command == "product-candidates":
+        _cmd_product_candidates(args)
         return
 
     if args.command == "niche":

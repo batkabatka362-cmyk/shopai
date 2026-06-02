@@ -67,7 +67,7 @@ def _gate_products(stats: dict[str, Any]) -> Gate:
     else:
         status = "missing"
         action = (
-            "Seed catalog: shopai onboard ... + shopai product-candidates"
+            "Seed catalog: shopai product-candidates --niche <niche>"
         )
     return Gate(
         name="has_products",
