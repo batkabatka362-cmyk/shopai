@@ -1463,6 +1463,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view",
     )
 
+    # W963-1: revenue-readiness diagnostic. Examines a store
+    # and reports which of 6 earning-gates it passes.
+    revenue_readiness_p = sub.add_parser(
+        "revenue-readiness",
+        help=(
+            "Diagnostic: 6 gates across products / orders / "
+            "customers / attribution / ad-spend / repeat-buyers. "
+            "Returns verdict (cold_start / building_traction / "
+            "growing / earning_active) + the single highest-impact "
+            "next CLI action. Read-only."
+        ),
+    )
+    revenue_readiness_p.add_argument(
+        "--store", dest="store_id", default=None,
+        help="Per-store readiness. Omit for fleet-default.",
+    )
+    revenue_readiness_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view",
+    )
+
     # Wave 53: external notification webhook fan-out
     notify_p = sub.add_parser(
         "notify",
@@ -9866,6 +9887,69 @@ def _cmd_niche(args) -> None:
     )
 
 
+def _cmd_revenue_readiness(args) -> None:
+    """W963-1: revenue-readiness diagnostic.
+
+    Returns the 6-gate verdict for the supplied --store (or the
+    fleet-default zero-stats baseline when omitted). The
+    diagnostic is read-only — no Shopify writes.
+    """
+    from engines.revenue_readiness import RevenueReadinessEngine
+
+    store_id = getattr(args, "store_id", None)
+    as_json = bool(getattr(args, "json", False))
+
+    payload = {"data": {"store_id": store_id} if store_id else {}}
+    result = RevenueReadinessEngine().run(payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success" or not data:
+        err = result.get("error") or "unknown error"
+        print(f"revenue-readiness: ERROR  {err}")
+        return
+
+    verdict = data.get("verdict") or "unknown"
+    passed = data.get("passed", 0)
+    total = data.get("total", 0)
+    sid = data.get("store_id") or "(fleet)"
+
+    verdict_marker = {
+        "earning_active": "[$$]",
+        "growing":         "[>>]",
+        "building_traction": "[+ ]",
+        "cold_start":      "[..]",
+        "unknown":         "[ ?]",
+    }.get(verdict, "[ ?]")
+
+    print(
+        f"Revenue-readiness  store={sid}  "
+        f"{verdict_marker} {verdict}  ({passed}/{total} gates)"
+    )
+    print()
+    for g in data.get("gates", []):
+        marker = {
+            "ready":   "[OK ]",
+            "partial": "[~~]",
+            "missing": "[XX]",
+        }.get(g.get("status"), "[ ?]")
+        name = g.get("name", "?")
+        detail = g.get("detail", "")
+        print(f"  {marker} {name:<22} {detail}")
+        action = g.get("next_action") or ""
+        if action and g.get("status") != "ready":
+            print(f"    -> {action}")
+    print()
+    next_action = data.get("next_action") or ""
+    if next_action:
+        print(f"  NEXT: {next_action}")
+    else:
+        print("  All gates passed — monitor + iterate.")
+
+
 def _cmd_go_live(args) -> None:
     """Wave 55: go-live readiness pre-flight."""
     from engines._go_live_check import (
@@ -12534,6 +12618,37 @@ def _cmd_daily_brief(args) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "daily-brief autonomy-overview block raised: %s",
+            exc,
+        )
+
+    # W963-1: revenue-readiness row. Surfaces only when the
+    # diagnostic returns a non-trivial verdict (anything other
+    # than earning_active). Silent when fully ready.
+    try:
+        from engines.revenue_readiness import RevenueReadinessEngine
+        rr_result = RevenueReadinessEngine().run({})
+        rr_data = rr_result.get("data") or {}
+        rr_verdict = rr_data.get("verdict") or "unknown"
+        if rr_verdict and rr_verdict != "earning_active":
+            rr_mk = {
+                "earning_active": "[$$]",
+                "growing":        "[>>]",
+                "building_traction": "[+ ]",
+                "cold_start":     "[..]",
+                "unknown":        "[ ?]",
+            }.get(rr_verdict, "[ ?]")
+            print(
+                f"  Earning gate: {rr_mk} "
+                f"verdict={rr_verdict}  "
+                f"gates={rr_data.get('passed', 0)}/"
+                f"{rr_data.get('total', 0)}"
+            )
+            next_a = rr_data.get("next_action") or ""
+            if next_a:
+                print(f"    -> {next_a}")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief revenue-readiness block raised: %s",
             exc,
         )
 
@@ -42425,10 +42540,17 @@ def _cmd_audit_all(args) -> None:
                     viols = r.get("violations", [])
                     if viols:
                         first = viols[0]
-                        first_summary = (
-                            f"{first.get('invariant') or first.get('domain') or first.get('engine') or '...'}: "
-                            f"{(first.get('reason') or '')[:80]}"
-                        )
+                        # W963-1: some audits emit string
+                        # violations ("DOMAIN: reason") instead
+                        # of dicts. Default to repr(first)[:80]
+                        # when .get isn't available.
+                        if isinstance(first, dict):
+                            first_summary = (
+                                f"{first.get('invariant') or first.get('domain') or first.get('engine') or '...'}: "
+                                f"{(first.get('reason') or '')[:80]}"
+                            )
+                        else:
+                            first_summary = str(first)[:120]
                         print(
                             f"  [FAIL] {label} -- "
                             f"{len(viols)} violation(s) "
@@ -51077,6 +51199,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "go-live":
         _cmd_go_live(args)
+        return
+
+    if args.command == "revenue-readiness":
+        _cmd_revenue_readiness(args)
         return
 
     if args.command == "niche":

@@ -388,6 +388,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "gift_card",             # Cross-cluster promo (could move into acquisition)
     "roas_guardrails",       # Cross-cluster ad guardrail
     "selection_decision",    # Already in merchandising (alias)
+    "revenue_readiness",     # W963-1: cross-cutting diagnostic
 })
 
 

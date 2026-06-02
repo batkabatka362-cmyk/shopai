@@ -406,7 +406,62 @@ def run_go_live_check() -> list[CheckResult]:
         _check_ai_strategy(),
         _check_store_niches(),  # Wave 76
         _check_autonomy_substrate(),  # Wave 245
+        _check_revenue_readiness(),  # W963-1
     ]
+
+
+def _check_revenue_readiness() -> CheckResult:
+    """W963-1: revenue-readiness gate.
+
+    Reports a warning when the fleet baseline diagnostic surfaces
+    a cold_start / building_traction verdict. Doesn't BLOCK
+    go-live (operator may intentionally go live on a cold store
+    that they'll seed via day-one bootstrap), but the warning
+    surfaces the gap loudly so the next action is obvious.
+    """
+    try:
+        from engines.revenue_readiness import RevenueReadinessEngine
+        result = RevenueReadinessEngine().run({})
+        data = result.get("data") or {}
+        if not data:
+            return CheckResult(
+                name="revenue_readiness",
+                status="warn",
+                detail="diagnostic returned no data",
+                fix="shopai revenue-readiness --json",
+            )
+        verdict = data.get("verdict", "unknown")
+        passed = data.get("passed", 0)
+        total = data.get("total", 0)
+        next_action = data.get("next_action") or ""
+        if verdict == "earning_active":
+            return CheckResult(
+                name="revenue_readiness",
+                status="pass",
+                detail=f"earning_active ({passed}/{total} gates)",
+            )
+        if verdict == "growing":
+            return CheckResult(
+                name="revenue_readiness",
+                status="pass",
+                detail=f"growing ({passed}/{total} gates)",
+            )
+        return CheckResult(
+            name="revenue_readiness",
+            status="warn",
+            detail=f"{verdict} ({passed}/{total} gates)",
+            fix=next_action or (
+                "shopai revenue-readiness "
+                "(run for per-gate detail)"
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult(
+            name="revenue_readiness",
+            status="warn",
+            detail=f"check raised: {type(exc).__name__}",
+            fix="shopai revenue-readiness --json",
+        )
 
 
 def _check_autonomy_substrate() -> CheckResult:
