@@ -1463,6 +1463,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view",
     )
 
+    # W963-5: earn-bootstrap — one-command cold-start chain
+    # that wraps revenue-readiness + product-candidates.
+    earn_bootstrap_p = sub.add_parser(
+        "earn-bootstrap",
+        help=(
+            "Day-1 chain: diagnose -> seed products -> queue. "
+            "One command that takes a cold store from \"0 "
+            "products\" to \"20 DRAFT products in approval queue\". "
+            "Default preview; --yes commits to the queue."
+        ),
+    )
+    earn_bootstrap_p.add_argument(
+        "--niche", default=None,
+        help=(
+            "beauty | fashion | home | tech | food. Required "
+            "when the store has zero products."
+        ),
+    )
+    earn_bootstrap_p.add_argument(
+        "--count", type=int, default=20,
+        help="How many candidates to seed (default 20).",
+    )
+    earn_bootstrap_p.add_argument(
+        "--store", dest="store_id", default=None,
+        help="Per-store bootstrap. Omit for fleet-default.",
+    )
+    earn_bootstrap_p.add_argument(
+        "--yes", action="store_true",
+        help=(
+            "Commit: enqueue candidates to the approval queue. "
+            "Without --yes the chain previews only."
+        ),
+    )
+    earn_bootstrap_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view",
+    )
+
     # W963-4: earnings — output-side measurement.
     earnings_p = sub.add_parser(
         "earnings",
@@ -9966,6 +10004,97 @@ def _cmd_niche(args) -> None:
     print(
         "  Stores: `shopai niche --by-store` -- per-store tags"
     )
+
+
+def _cmd_earn_bootstrap(args) -> None:
+    """W963-5: one-command cold-start chain orchestrator."""
+    from engines.earn_bootstrap import EarnBootstrapEngine
+
+    niche = getattr(args, "niche", None)
+    count = int(getattr(args, "count", 20) or 20)
+    store_id = getattr(args, "store_id", None)
+    yes_flag = bool(getattr(args, "yes", False))
+    as_json = bool(getattr(args, "json", False))
+
+    payload: dict[str, Any] = {"data": {"count": count}}
+    if niche:
+        payload["data"]["niche"] = niche
+    if store_id:
+        payload["data"]["store_id"] = store_id
+    if yes_flag:
+        payload["data"]["apply"] = True
+
+    result = EarnBootstrapEngine().run(payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success" or not data:
+        err = result.get("error") or "unknown error"
+        print(f"earn-bootstrap: ERROR  {err}")
+        return
+
+    chain_v = data.get("chain_verdict", "unknown")
+    diag = data.get("diagnostic") or {}
+    summary = data.get("candidates_summary") or {}
+    pending = data.get("pending_actions") or []
+    next_steps = data.get("next_steps") or []
+
+    verdict_mk = {
+        "ready":        "[$$]",
+        "cold_seeded":  "[>>]",
+        "cold_pending": "[..]",
+        "cold_skipped": "[X ]",
+        "partial":      "[~~]",
+        "unknown":      "[ ?]",
+    }.get(chain_v, "[ ?]")
+
+    print(
+        f"Earn-Bootstrap  niche={niche or '(none)'}  "
+        f"{verdict_mk} {chain_v}"
+    )
+    print()
+    print("  Diagnostic:")
+    print(
+        f"    verdict={diag.get('verdict', '?')}  "
+        f"gates={diag.get('passed', 0)}/{diag.get('total', 0)}"
+    )
+    next_a = diag.get("next_action", "")
+    if next_a:
+        print(f"    -> {next_a}")
+    print()
+
+    if summary:
+        top = summary.get("top_names") or []
+        print(
+            f"  Candidates generated: {summary.get('count', 0)}"
+        )
+        for n in top[:3]:
+            print(f"    - {n}")
+        pr = summary.get("price_range") or {}
+        if pr:
+            print(
+                f"    price range: ${pr.get('min', 0):.0f} - "
+                f"${pr.get('max', 0):.0f}"
+            )
+        print()
+
+    if pending:
+        print(f"  Enqueued {len(pending)} pending action(s):")
+        for p in pending[:3]:
+            print(
+                f"    - {p.get('pending_action_id', '?')}: "
+                f"{p.get('narrative', '')[:60]}"
+            )
+        if len(pending) > 3:
+            print(f"    ... and {len(pending) - 3} more")
+        print()
+
+    print("  Next steps:")
+    for step in next_steps:
+        print(f"    {step}")
 
 
 def _cmd_earnings(args) -> None:
@@ -51525,6 +51654,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "earnings":
         _cmd_earnings(args)
+        return
+
+    if args.command == "earn-bootstrap":
+        _cmd_earn_bootstrap(args)
         return
 
     if args.command == "product-candidates":
