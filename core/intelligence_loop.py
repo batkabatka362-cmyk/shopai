@@ -31,36 +31,57 @@ except Exception:
     _WEIGHTS_PATH = "/tmp/shopai_learned_weights.json"
 _learned_weights: dict[str, float] = {}
 _weights_loaded = False
+# W962-63: shared lock for concurrent _stage_learn /
+# _update_weight / _decay_weight EMA updates. Pre-fix two
+# concurrent IntelligenceLoop.run() calls could read the
+# same weight, both apply the EMA, and silently lose one
+# adjustment.
+import threading as _w_threading
+_WEIGHTS_LOCK = _w_threading.RLock()
 
 
 def _load_weights() -> None:
     """Load learned weights from disk on first access."""
     global _learned_weights, _weights_loaded
-    if _weights_loaded:
-        return
-    _weights_loaded = True
-    try:
-        import json
-        import os
-        if os.path.exists(_WEIGHTS_PATH):
-            with open(_WEIGHTS_PATH) as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    _learned_weights.update(data)
-                    logger.info("Loaded %d learned weights from disk", len(data))
-    except Exception as exc:
-        logger.warning("Failed to load learned weights: %s", exc)
+    with _WEIGHTS_LOCK:
+        if _weights_loaded:
+            return
+        _weights_loaded = True
+        try:
+            import json
+            import os
+            if os.path.exists(_WEIGHTS_PATH):
+                # W962-62: utf-8 + ensure_ascii=False.
+                with open(_WEIGHTS_PATH, encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        _learned_weights.update(data)
+                        logger.info(
+                            "Loaded %d learned weights from disk",
+                            len(data),
+                        )
+        except Exception as exc:
+            logger.warning(
+                "Failed to load learned weights: %s", exc,
+            )
 
 
 def _save_weights() -> None:
-    """Save learned weights to disk (atomic write)."""
+    """Save learned weights to disk (atomic write).
+
+    W962-63: caller may already hold _WEIGHTS_LOCK (via
+    _update_weight). RLock acquired here for the cases
+    where save runs from a path that didn't lock."""
     try:
         import json
         import os
-        tmp = _WEIGHTS_PATH + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(_learned_weights, f)
-        os.replace(tmp, _WEIGHTS_PATH)
+        with _WEIGHTS_LOCK:
+            tmp = _WEIGHTS_PATH + ".tmp." + str(os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(
+                    _learned_weights, f, ensure_ascii=False,
+                )
+            os.replace(tmp, _WEIGHTS_PATH)
     except Exception as exc:
         logger.warning("Failed to save learned weights: %s", exc)
 
@@ -834,18 +855,22 @@ class IntelligenceLoop:
                     self._decay_weight(factor)
 
             # Pattern-based meta-learning
-            for p in patterns.get("patterns", []):
-                if p.get("pattern") == "high_confidence_wins":
-                    _learned_weights["confidence_boost"] = min(
-                        _learned_weights.get("confidence_boost", 0) + 0.02, 0.2
-                    )
-                    adjustments.append("High confidence → success: boosting confidence factor")
+            # W962-63: span the lock across the read-modify-
+            # write so concurrent _stage_learn calls don't lose
+            # adjustments.
+            with _WEIGHTS_LOCK:
+                for p in patterns.get("patterns", []):
+                    if p.get("pattern") == "high_confidence_wins":
+                        _learned_weights["confidence_boost"] = min(
+                            _learned_weights.get("confidence_boost", 0) + 0.02, 0.2
+                        )
+                        adjustments.append("High confidence → success: boosting confidence factor")
 
-                if p.get("pattern") == "quality_matters":
-                    _learned_weights["quality_gate"] = min(
-                        _learned_weights.get("quality_gate", 40) + 2, 70
-                    )
-                    adjustments.append("Data quality matters: raising quality threshold")
+                    if p.get("pattern") == "quality_matters":
+                        _learned_weights["quality_gate"] = min(
+                            _learned_weights.get("quality_gate", 40) + 2, 70
+                        )
+                        adjustments.append("Data quality matters: raising quality threshold")
 
             # Persist all weight changes
             if adjustments or outcomes:
@@ -919,18 +944,28 @@ class IntelligenceLoop:
 
     @classmethod
     def _update_weight(cls, factor: str, direction: int) -> None:
-        """Bayesian incremental weight update: small steps, bounded."""
-        current = _learned_weights.get(factor, 0.0)
-        current *= cls.DECAY  # Decay old learning
-        current += cls.LEARNING_RATE * direction  # Add new signal
-        _learned_weights[factor] = max(-cls.MAX_ADJUSTMENT, min(cls.MAX_ADJUSTMENT, round(current, 4)))
+        """Bayesian incremental weight update: small steps, bounded.
+
+        W962-63: span the lock across the read-modify-write so
+        concurrent cycles don't lose EMA adjustments."""
+        with _WEIGHTS_LOCK:
+            current = _learned_weights.get(factor, 0.0)
+            current *= cls.DECAY  # Decay old learning
+            current += cls.LEARNING_RATE * direction  # Add new signal
+            _learned_weights[factor] = max(
+                -cls.MAX_ADJUSTMENT,
+                min(cls.MAX_ADJUSTMENT, round(current, 4)),
+            )
 
     @classmethod
     def _decay_weight(cls, factor: str) -> None:
         """Decay weight toward zero when no clear signal."""
-        current = _learned_weights.get(factor, 0.0)
-        if abs(current) > 0.001:
-            _learned_weights[factor] = round(current * cls.DECAY, 4)
+        with _WEIGHTS_LOCK:
+            current = _learned_weights.get(factor, 0.0)
+            if abs(current) > 0.001:
+                _learned_weights[factor] = round(
+                    current * cls.DECAY, 4,
+                )
 
     @staticmethod
     def _avg_decision_field(entries: list[dict], field: str) -> float | None:

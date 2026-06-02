@@ -9,19 +9,28 @@ All math is real. No faking, no random numbers.
 from __future__ import annotations
 
 import copy
+import threading
 import time
 from typing import Any
 
 
+# W962-63: counter race fix. Bare `_PO_COUNTER += 1` is NOT
+# atomic in Python (separate LOAD, ADD, STORE bytecodes). Two
+# concurrent generate_purchase_orders calls could read the
+# same _PO_COUNTER value + emit colliding PO ids (PO-YYYYMMDD-
+# 0001 twice). Lock the increment.
 _PO_COUNTER = 0
+_PO_LOCK = threading.Lock()
 
 
 def _next_po_id() -> str:
     """Generate a sequential PO identifier."""
     global _PO_COUNTER
-    _PO_COUNTER += 1
+    with _PO_LOCK:
+        _PO_COUNTER += 1
+        n = _PO_COUNTER
     date_str = time.strftime("%Y%m%d", time.gmtime())
-    return f"PO-{date_str}-{_PO_COUNTER:04d}"
+    return f"PO-{date_str}-{n:04d}"
 
 
 def generate_purchase_orders(
