@@ -21,10 +21,22 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+# W962-41: cycle history was racy.
+#   - _load() + append + _save() ran unlocked; two concurrent
+#     cycles (multi-store run_cycle could be parallelised in
+#     future) would lose appends.
+#   - _SEQ_LOCK_BARRIER[0] += 1 was not atomic between threads,
+#     so two concurrent records could both compute the same
+#     sequence and produce colliding run_ids.
+#   - _save was non-atomic (direct write_text); a crash mid-
+#     write leaves a corrupt JSON file _load can't parse.
+_HISTORY_LOCK = threading.RLock()
 
 
 @dataclass
@@ -116,15 +128,18 @@ def _load() -> list[CycleRun]:
 
 
 def _save(runs: list[CycleRun]) -> bool:
+    """Atomic write via temp + os.replace + per-pid suffix."""
     path = _history_path()
     try:
-        path.write_text(
+        tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+        tmp.write_text(
             json.dumps(
                 [r.to_dict() for r in runs],
                 indent=2, default=str,
             ),
             encoding="utf-8",
         )
+        os.replace(tmp, path)
         return True
     except OSError:
         return False
@@ -138,12 +153,18 @@ def _short_id() -> str:
 # Process-wide monotonic sequence so two record_cycle_run calls
 # within the same time.time_ns() tick (Windows has ~15ms
 # granularity on time.time_ns) still sort deterministically.
+# W962-41: must be locked. The bare `+=` is NOT atomic in
+# Python (separate LOAD, ADD, STORE bytecodes); two concurrent
+# producers could read the same value and emit the same
+# sequence.
 _SEQ_LOCK_BARRIER = [0]
+_SEQ_LOCK = threading.Lock()
 
 
 def _next_seq() -> int:
-    _SEQ_LOCK_BARRIER[0] += 1
-    return _SEQ_LOCK_BARRIER[0]
+    with _SEQ_LOCK:
+        _SEQ_LOCK_BARRIER[0] += 1
+        return _SEQ_LOCK_BARRIER[0]
 
 
 def record_cycle_run(
@@ -181,12 +202,14 @@ def record_cycle_run(
     # test_empire_cycle_history.py pattern). No blanket
     # short-circuit because the recorder needs to actually
     # persist within tests for cross-call verification.
-    runs = _load()
-    runs.append(run)
-    # Bound history to most-recent 200
-    if len(runs) > 200:
-        runs = runs[-200:]
-    _save(runs)
+    # W962-41: span load+append+save under the history lock.
+    with _HISTORY_LOCK:
+        runs = _load()
+        runs.append(run)
+        # Bound history to most-recent 200
+        if len(runs) > 200:
+            runs = runs[-200:]
+        _save(runs)
     return run
 
 

@@ -55,6 +55,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -73,6 +74,10 @@ _HISTORY_PATH = Path(
         "data/plan_history.json",
     )
 )
+
+# W962-41: span load+modify+write so concurrent
+# record_plan_invocation + record_outcome don't lose updates.
+_HISTORY_LOCK = threading.RLock()
 
 
 @dataclass
@@ -235,14 +240,18 @@ def record_plan_invocation(
         pre_stats=dict(pre_stats or {}),
     )
 
-    events = _load_history()
-    events.append(event.to_dict())
-    # Keep history bounded -- last 1000 events. The learning
-    # loop's window is days/weeks, not months/years, so
-    # capping prevents the file growing unbounded.
-    if len(events) > 1000:
-        events = events[-1000:]
-    _atomic_write(events)
+    # W962-41: span the lock so a concurrent record_outcome
+    # call doesn't overwrite our append (or vice versa).
+    with _HISTORY_LOCK:
+        events = _load_history()
+        events.append(event.to_dict())
+        # Keep history bounded -- last 1000 events. The
+        # learning loop's window is days/weeks, not months/
+        # years, so capping prevents the file growing
+        # unbounded.
+        if len(events) > 1000:
+            events = events[-1000:]
+        _atomic_write(events)
     return event_id
 
 
@@ -263,19 +272,21 @@ def record_outcome(
     """
     if _is_test_environment() or not event_id:
         return False
-    events = _load_history()
-    found = False
-    for e in events:
-        if e.get("event_id") == event_id:
-            e["outcome"] = str(outcome or "")
-            if notes:
-                e["notes"] = str(notes)
-            found = True
-            break
-    if not found:
-        return False
-    _atomic_write(events)
-    return True
+    # W962-41: lock-spanning read-modify-write.
+    with _HISTORY_LOCK:
+        events = _load_history()
+        found = False
+        for e in events:
+            if e.get("event_id") == event_id:
+                e["outcome"] = str(outcome or "")
+                if notes:
+                    e["notes"] = str(notes)
+                found = True
+                break
+        if not found:
+            return False
+        _atomic_write(events)
+        return True
 
 
 def recent_history(

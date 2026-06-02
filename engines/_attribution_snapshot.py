@@ -134,15 +134,19 @@ def _load() -> list[AttributionSnapshot]:
 
 
 def _save(snapshots: list[AttributionSnapshot]) -> None:
+    """W962-41: atomic write via temp + os.replace so a crash
+    mid-write can't leave a corrupt JSON file."""
     p = _path()
     try:
-        p.write_text(
+        tmp = p.with_suffix(p.suffix + f".tmp.{os.getpid()}")
+        tmp.write_text(
             json.dumps(
                 [s.to_dict() for s in snapshots],
                 indent=2, default=str,
             ),
             encoding="utf-8",
         )
+        os.replace(tmp, p)
     except OSError:
         pass
 
@@ -155,12 +159,18 @@ def _is_test_environment() -> bool:
 # within the same time.time_ns() tick (Windows has ~15ms
 # granularity) still sort deterministically. Same pattern as
 # engines/_cycle_history.py.
+# W962-41: must be locked. Bare `+=` is not atomic between
+# Python threads (separate LOAD, ADD, STORE bytecodes).
+import threading as _threading
 _SEQ = [0]
+_SEQ_LOCK = _threading.Lock()
+_SNAPSHOT_LOCK = _threading.RLock()
 
 
 def _next_seq() -> int:
-    _SEQ[0] += 1
-    return _SEQ[0]
+    with _SEQ_LOCK:
+        _SEQ[0] += 1
+        return _SEQ[0]
 
 
 def record_snapshot(
@@ -222,11 +232,14 @@ def record_snapshot(
         ],
         cycle_run_id=cycle_run_id,
     )
-    snapshots = _load()
-    snapshots.append(snapshot)
-    if len(snapshots) > 200:
-        snapshots = snapshots[-200:]
-    _save(snapshots)
+    # W962-41: span load+append+save so concurrent records
+    # don't clobber each other's append.
+    with _SNAPSHOT_LOCK:
+        snapshots = _load()
+        snapshots.append(snapshot)
+        if len(snapshots) > 200:
+            snapshots = snapshots[-200:]
+        _save(snapshots)
     return snapshot
 
 
