@@ -10,11 +10,21 @@ from __future__ import annotations
 import copy
 import json
 import os
+import tempfile
+import threading
 import time
 from typing import Any
 
 
 _MEMORY_DIR = os.path.join(os.path.dirname(__file__), ".memory")
+
+# W962-74: process-local lock guarding the read+update+write
+# race in MemoryStore.read on the access_count counter.
+# Pre-fix two concurrent reads of the same entry could both
+# load access_count=N, both compute N+1, both save N+1 -- a
+# silent undercount that distorts which records the recommender
+# treats as "frequently accessed".
+_MEMORY_LOCK = threading.RLock()
 
 
 class MemoryStore:
@@ -64,23 +74,52 @@ class MemoryStore:
             }
 
     def read(self, entry_id: str) -> dict[str, Any] | None:
-        """Read a single record by ID and update access metadata."""
+        """Read a single record by ID and update access metadata.
+
+        W962-74: load + mutate + write happens under
+        ``_MEMORY_LOCK`` and via atomic temp+rename so:
+        - Two concurrent reads of the same entry cannot both
+          undercount access_count.
+        - A crash mid-write cannot leave a partial / empty JSON
+          file that the except clause silently swallows.
+        """
         fpath = os.path.join(_MEMORY_DIR, f"{entry_id}.json")
         if not os.path.isfile(fpath):
             return None
         try:
-            with open(fpath, "r", encoding="utf-8") as fh:
-                record = json.load(fh)
-            if not isinstance(record, dict):
-                return None
+            with _MEMORY_LOCK:
+                with open(fpath, "r", encoding="utf-8") as fh:
+                    record = json.load(fh)
+                if not isinstance(record, dict):
+                    return None
 
-            # Update access metadata
-            record["access_count"] = record.get("access_count", 0) + 1
-            record["last_accessed"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            with open(fpath, "w", encoding="utf-8") as fh:
-                json.dump(record, fh, indent=2, default=str)
+                # Update access metadata
+                record["access_count"] = record.get("access_count", 0) + 1
+                record["last_accessed"] = time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(),
+                )
 
-            return copy.deepcopy(record)
+                # Atomic write via temp + rename so a crash
+                # mid-write doesn't leave a half-flushed JSON
+                # file that the except clause below would
+                # silently surface as None.
+                fd, tmp_path = tempfile.mkstemp(
+                    prefix=f".{entry_id}_",
+                    suffix=".json.tmp",
+                    dir=_MEMORY_DIR,
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        json.dump(record, fh, indent=2, default=str)
+                    os.replace(tmp_path, fpath)
+                except Exception:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise
+
+                return copy.deepcopy(record)
         except (json.JSONDecodeError, OSError):
             return None
 

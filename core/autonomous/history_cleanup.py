@@ -113,6 +113,67 @@ def _is_test_environment() -> bool:
     return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 
+# W962-74: map prune labels to the owning module's lock so the
+# prune read+write happens INSIDE that module's _LOCK / _HISTORY_LOCK.
+# Pre-fix, prune_all read each file outside the owning module's
+# lock and wrote via os.replace -- a recorder could append a new
+# event between the read and the write, and the prune's
+# kept-list (missing the just-appended event) would wipe it.
+# These imports are deferred (called inside _label_lock) so this
+# module can still load without circular-import drama.
+def _label_lock(label: str):
+    """Return a context manager that holds the owning module's
+    lock for the duration of the prune of ``label``. Falls back
+    to a no-op context manager when the lock can't be resolved
+    (e.g. a label without a corresponding module yet)."""
+    import contextlib
+    try:
+        if label == "cycle_history":
+            from core.autonomous import cycle_history as _m
+            return _m._LOCK
+        if label == "cycle_alert_history":
+            from core.autonomous import cycle_alert_history as _m
+            return _m._LOCK
+        if label == "cycle_pause_history":
+            from core.autonomous import cycle_pause as _m
+            return _m._LOCK
+        if label == "auto_demote_history":
+            from core.capability_planner import auto_demote_history as _m
+            return _m._LOCK
+        if label == "auto_promote_history":
+            from core.capability_planner import auto_promote_history as _m
+            return _m._LOCK
+        if label == "auto_relax_history":
+            from core.autonomous import auto_relax_history as _m
+            return _m._LOCK
+        if label == "transfer_history":
+            from core.autonomous import transfer_history as _m
+            return _m._LOCK
+        if label == "cycle_revenue_history":
+            from core.autonomous import cycle_revenue_history as _m
+            return _m._LOCK
+        if label == "plan_history":
+            from core.capability_planner import plan_history as _m
+            return _m._HISTORY_LOCK
+        if label == "engine_health_history":
+            from core.approval import engine_health_history as _m
+            return _m._LOCK
+        if label == "health_score_history":
+            from core.autonomous import health_score_history as _m
+            return _m._LOCK
+        if label == "alert_history":
+            from core.approval import alert_history as _m
+            return _m._LOCK
+    except (ImportError, AttributeError) as exc:
+        logger.debug(
+            "history_cleanup: lock import for %s failed (%s)",
+            label, exc,
+        )
+    # Best-effort no-op when the owning module's lock isn't
+    # discoverable.
+    return contextlib.nullcontext()
+
+
 def _resolve_path(env_var: str, default: str) -> Path:
     return Path(os.environ.get(env_var, default))
 
@@ -217,48 +278,54 @@ def prune_all(
                 # paths.
                 out["files"].append(entry)
                 continue
-            with path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-            if not isinstance(data, list):
-                entry["error"] = (
-                    f"unexpected shape "
-                    f"{type(data).__name__}"
-                )
-                out["files"].append(entry)
-                continue
-            entry["total"] = len(data)
-            kept: list[dict[str, Any]] = []
-            pruned_count = 0
-            for row in data:
-                if not isinstance(row, dict):
-                    kept.append(row)
+            # W962-74: read + write under the owning module's
+            # lock. Pre-fix, a concurrent recorder thread could
+            # append a new event after our read but before our
+            # os.replace, silently wiping the just-recorded
+            # event.
+            with _label_lock(label):
+                with path.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, list):
+                    entry["error"] = (
+                        f"unexpected shape "
+                        f"{type(data).__name__}"
+                    )
+                    out["files"].append(entry)
                     continue
-                ts = float(
-                    row.get("recorded_at", 0) or 0,
-                )
-                if ts < cutoff:
-                    pruned_count += 1
-                else:
-                    kept.append(row)
-            entry["kept"] = len(kept)
-            entry["pruned"] = pruned_count
-            # Estimate the pruned byte size as
-            # proportional to row count -- not exact, but
-            # gives the operator a sense of scale.
-            try:
-                total_size = path.stat().st_size
-                entry["pruned_size_bytes"] = int(
-                    total_size * pruned_count
-                    / max(1, entry["total"]),
-                )
-            except OSError as exc:
-                logger.debug(
-                    "history_cleanup: stat failed (%s)", exc,
-                )
+                entry["total"] = len(data)
+                kept: list[dict[str, Any]] = []
+                pruned_count = 0
+                for row in data:
+                    if not isinstance(row, dict):
+                        kept.append(row)
+                        continue
+                    ts = float(
+                        row.get("recorded_at", 0) or 0,
+                    )
+                    if ts < cutoff:
+                        pruned_count += 1
+                    else:
+                        kept.append(row)
+                entry["kept"] = len(kept)
+                entry["pruned"] = pruned_count
+                # Estimate the pruned byte size as
+                # proportional to row count -- not exact, but
+                # gives the operator a sense of scale.
+                try:
+                    total_size = path.stat().st_size
+                    entry["pruned_size_bytes"] = int(
+                        total_size * pruned_count
+                        / max(1, entry["total"]),
+                    )
+                except OSError as exc:
+                    logger.debug(
+                        "history_cleanup: stat failed (%s)", exc,
+                    )
 
-            if pruned_count > 0 and apply_writes:
-                _atomic_write_list(path, kept)
-            out["total_pruned"] += pruned_count
+                if pruned_count > 0 and apply_writes:
+                    _atomic_write_list(path, kept)
+                out["total_pruned"] += pruned_count
         except json.JSONDecodeError as exc:
             entry["error"] = f"json_decode: {exc}"
         except OSError as exc:
