@@ -72,7 +72,19 @@ class DataEnricher:
             stats["price_min"] = round(sorted_prices[0], 2)
             stats["price_max"] = round(sorted_prices[-1], 2)
             stats["price_avg"] = round(sum(prices) / n, 2)
-            stats["price_median"] = round(sorted_prices[n // 2], 2)
+            # W962-76: median for even-count sets is the AVERAGE
+            # of the two middle elements, not just the
+            # upper-middle one. For n=4, sorted_prices[n//2] = [2]
+            # which is the THIRD element; true median is
+            # (sorted[1] + sorted[2]) / 2.
+            if n % 2 == 0:
+                stats["price_median"] = round(
+                    (sorted_prices[n // 2 - 1]
+                     + sorted_prices[n // 2]) / 2.0,
+                    2,
+                )
+            else:
+                stats["price_median"] = round(sorted_prices[n // 2], 2)
             stats["price_p25"] = round(sorted_prices[max(0, n // 4)], 2)
             stats["price_p75"] = round(sorted_prices[min(n - 1, 3 * n // 4)], 2)
 

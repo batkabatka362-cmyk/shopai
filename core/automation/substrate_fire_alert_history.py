@@ -136,4 +136,7 @@ def consecutive_critical_days(
             "%Y-%m-%d", time.gmtime(float(ts)),
         )
         seen_days.add(day)
-    return len(seen_days)
+    # W962-76: cap at window_days. A 7*24-hour window straddling
+    # UTC midnight can touch up to 8 distinct UTC days. Operators
+    # interpret this as "N consecutive days," so clamp to N.
+    return min(len(seen_days), max(1, int(window_days)))
