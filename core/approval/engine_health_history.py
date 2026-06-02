@@ -53,6 +53,13 @@ _DEFAULT_STATE_PATH = (
 # the second save would clobber the first's append.
 _LOCK = threading.RLock()
 
+# W962-36: bound the persisted history. 150 engines x 365
+# days = 55K events/year if daily-brief runs nightly. Cap
+# at 50K to keep the JSON file under ~10MB without losing a
+# year+ of trend data. prune() is the operator's explicit
+# nuclear option; this is the silent backstop.
+_MAX_EVENTS = 50_000
+
 
 @dataclass(frozen=True)
 class ScoreEvent:
@@ -128,9 +135,17 @@ def _save_events(events: list[ScoreEvent]) -> None:
     load+modify+save sequence. Doing the load outside the
     lock and the save inside it (the original pattern) lets
     two concurrent writers clobber each other's append.
+
+    W962-36: applies the _MAX_EVENTS bound so the on-disk
+    file can't grow without limit.
     """
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    # W962-36 silent backstop: drop the oldest entries past
+    # the cap. Operator-driven prune() is the explicit
+    # window-based eviction path.
+    if len(events) > _MAX_EVENTS:
+        events = events[-_MAX_EVENTS:]
     # Per-pid temp suffix so concurrent processes don't
     # collide on the rename target.
     tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
