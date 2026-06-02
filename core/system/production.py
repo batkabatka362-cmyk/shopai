@@ -207,7 +207,16 @@ class AuditTrail:
     def _load(self):
         try:
             if _AUDIT_PATH.exists():
-                self._entries = json.loads(_AUDIT_PATH.read_text())
+                # W962-75: defend against malformed JSON that
+                # parses to non-list. Without this, self._entries
+                # could become a dict/scalar and the next .append
+                # would raise AttributeError, killing the audit
+                # trail silently.
+                parsed = json.loads(_AUDIT_PATH.read_text())
+                if isinstance(parsed, list):
+                    self._entries = parsed
+                else:
+                    self._entries = []
         except Exception:
             self._entries = []
 

@@ -272,7 +272,13 @@ class ShopifyOrdersAdapter(ShopifyBaseAdapter):
             Capability.SHOPIFY_LIST_ORDERS,
             Capability.SHOPIFY_FETCH_ORDERS,
         ):
-            return self._list(params)
+            # W962-75: pass the caller's capability through so
+            # the response envelope echoes the asked-for value
+            # instead of always SHOPIFY_LIST_ORDERS. Downstream
+            # consumers (router/audit/AGI loop) match envelopes
+            # by capability; a drift here masquerades as a
+            # different capability returning data.
+            return self._list(params, capability=capability)
         if capability == Capability.SHOPIFY_GET_ORDER:
             return self._get(params)
         if capability == Capability.SHOPIFY_UPDATE_ORDER:
@@ -289,7 +295,12 @@ class ShopifyOrdersAdapter(ShopifyBaseAdapter):
 
     # ── List ───────────────────────────────────────────────────────
 
-    def _list(self, params: dict[str, Any]) -> Any:
+    def _list(
+        self,
+        params: dict[str, Any],
+        *,
+        capability: Capability = Capability.SHOPIFY_LIST_ORDERS,
+    ) -> Any:
         limit = params.get("limit", _DEFAULT_LIST_LIMIT)
         try:
             limit = int(limit)
@@ -335,7 +346,7 @@ class ShopifyOrdersAdapter(ShopifyBaseAdapter):
             for edge in edges if isinstance(edge, dict)
         ]
         return self._success(
-            Capability.SHOPIFY_LIST_ORDERS,
+            capability,
             data={
                 "orders": orders,
                 "count": len(orders),

@@ -153,6 +153,18 @@ def _load_state() -> ArmedState:
             _STATE_PATH, exc,
         )
         return ArmedState()
+    # W962-75: defend against malformed-but-parseable JSON
+    # (list / scalar / None) before .get on raw.
+    if not isinstance(raw, dict):
+        logger.warning(
+            "autonomy_armed %s top-level is %s, not dict; "
+            "ALL armed entries lost.",
+            _STATE_PATH, type(raw).__name__,
+        )
+        return ArmedState()
+    raw_entries = raw.get("entries", [])
+    if not isinstance(raw_entries, list):
+        raw_entries = []
     entries = [
         ArmedEntry(
             domain=e["domain"],
@@ -162,7 +174,7 @@ def _load_state() -> ArmedState:
             # store_id; default to fleet-wide empty string.
             store_id=str(e.get("store_id", "") or ""),
         )
-        for e in raw.get("entries", [])
+        for e in raw_entries
         if isinstance(e, dict) and "domain" in e
     ]
     return ArmedState(entries=entries)

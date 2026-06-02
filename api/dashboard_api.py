@@ -202,7 +202,15 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
         elif path == "/api/stores":
             # POST /api/stores — register new store
             try:
-                payload = json.loads(body) if body else {}
+                # W962-75: defend against non-dict JSON bodies
+                # (list / scalar / None) before calling .get.
+                parsed = json.loads(body) if body else {}
+                if not isinstance(parsed, dict):
+                    self._json_response(
+                        {"error": "request body must be a JSON object"}, 400,
+                    )
+                    return
+                payload = parsed
                 shop_url, err = validate_shop_url(payload.get("url", ""))
                 if err:
                     self._json_response({"error": err}, 400)

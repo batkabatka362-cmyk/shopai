@@ -174,10 +174,14 @@ class ShopifyFlow:
         # Audit each product as a page
         audits = []
         for p in products[:10]:
+            # W962-75: p.get("name", "") returns None when the
+            # key exists with explicit None value; (.lower) on
+            # None raises AttributeError. Coerce via `or ""`.
+            name = p.get("name", "") or ""
             page = {
-                "title": p.get("name", ""),
-                "url": f"/products/{p.get('name', '').lower().replace(' ', '-')}",
-                "keyword": p.get("category", "product"),
+                "title": name,
+                "url": f"/products/{name.lower().replace(' ', '-')}",
+                "keyword": p.get("category", "product") or "product",
             }
             audit = si.audit_page(page)
             audits.append({
