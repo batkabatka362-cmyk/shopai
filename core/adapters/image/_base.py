@@ -248,54 +248,15 @@ class ImageBaseAdapter(BaseAdapter):
         body: dict[str, Any],
         headers: dict[str, str],
     ) -> Any:
-        if not _REQUESTS_AVAILABLE:
-            raise AdapterUnavailable(
-                self.name, "'requests' library not installed",
-            )
-        try:
-            response = _requests.post(
-                url, json=body, headers=headers, timeout=self.timeout,
-            )
-        except _requests.Timeout as exc:  # type: ignore[union-attr]
-            raise AdapterTimeout(
-                self.name, f"timeout after {self.timeout}s: {exc}",
-            ) from exc
-        except _requests.ConnectionError as exc:  # type: ignore[union-attr]
-            raise AdapterUnavailable(
-                self.name, f"connection error: {exc}",
-            ) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise AdapterError(
-                self.name,
-                f"http post failed: {type(exc).__name__}: {exc}",
-            ) from exc
-
-        status = getattr(response, "status_code", 0)
-        if status >= 400:
-            snippet = (getattr(response, "text", "") or "")[:200]
-            if status in (401, 403):
-                raise AdapterAuthError(
-                    self.name,
-                    f"vendor rejected credentials ({status}): {snippet}",
-                )
-            if status == 429:
-                raise AdapterRateLimited(
-                    self.name, f"rate limit (429): {snippet}",
-                )
-            if 500 <= status < 600:
-                raise AdapterUnavailable(
-                    self.name,
-                    f"vendor 5xx ({status}): {snippet}",
-                )
-            raise AdapterError(
-                self.name,
-                f"vendor returned {status}: {snippet}",
-            )
-
-        try:
-            text = getattr(response, "text", "") or ""
-            return response.json() if text else {}
-        except ValueError as exc:
-            raise AdapterError(
-                self.name, f"invalid JSON response: {exc}",
-            ) from exc
+        """W962-65: delegates to shared core.adapters._http_retry
+        which implements 3x retry on 429/5xx/transient transport
+        errors with exponential backoff + Retry-After honoring."""
+        from core.adapters._http_retry import http_retry
+        return http_retry(
+            lambda: _requests.post(
+                url, json=body, headers=headers,
+                timeout=self.timeout,
+            ),
+            adapter_name=self.name,
+            timeout=self.timeout,
+        )

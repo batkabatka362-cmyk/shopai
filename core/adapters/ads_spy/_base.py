@@ -362,63 +362,23 @@ class AdsSpyBaseAdapter(BaseAdapter):
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ) -> Any:
-        if not _REQUESTS_AVAILABLE:
-            raise AdapterUnavailable(
-                self.name, "'requests' library not installed",
-            )
+        """W962-65: shared retry helper."""
+        from core.adapters._http_retry import http_retry
         hdrs = headers or self._auth_headers()
-        try:
+
+        def _do_call():
             if method.upper() == "GET":
-                response = _requests.get(
-                    url, headers=hdrs, params=params, timeout=self.timeout,
-                )
-            else:
-                response = _requests.post(
-                    url, json=body, headers=hdrs, params=params,
+                return _requests.get(
+                    url, headers=hdrs, params=params,
                     timeout=self.timeout,
                 )
-        except _requests.Timeout as exc:  # type: ignore[union-attr]
-            raise AdapterTimeout(
-                self.name, f"timeout after {self.timeout}s: {exc}",
-            ) from exc
-        except _requests.ConnectionError as exc:  # type: ignore[union-attr]
-            raise AdapterUnavailable(
-                self.name, f"connection error: {exc}",
-            ) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise AdapterError(
-                self.name,
-                f"HTTP {method} failed: {type(exc).__name__}: {exc}",
-            ) from exc
-
-        status = getattr(response, "status_code", 0)
-        if status >= 400:
-            snippet = (getattr(response, "text", "") or "")[:200]
-            if status in (401, 403):
-                raise AdapterAuthError(
-                    self.name,
-                    f"vendor rejected credentials ({status}): {snippet}",
-                )
-            if status == 429:
-                raise AdapterRateLimited(
-                    self.name, f"rate limit (429): {snippet}",
-                )
-            if 500 <= status < 600:
-                raise AdapterUnavailable(
-                    self.name, f"vendor 5xx ({status}): {snippet}",
-                )
-            raise AdapterError(
-                self.name, f"vendor returned {status}: {snippet}",
+            return _requests.post(
+                url, json=body, headers=hdrs, params=params,
+                timeout=self.timeout,
             )
 
-        try:
-            text = getattr(response, "text", "") or ""
-            return response.json() if text else {}
-        except ValueError as exc:
-            # Some public endpoints (FB Ads Library HTML scrape)
-            # return HTML; concrete adapters override _http_request
-            # in that case so this path only hits misconfigured
-            # JSON endpoints.
-            raise AdapterError(
-                self.name, f"invalid JSON response: {exc}",
-            ) from exc
+        return http_retry(
+            _do_call,
+            adapter_name=self.name,
+            timeout=self.timeout,
+        )

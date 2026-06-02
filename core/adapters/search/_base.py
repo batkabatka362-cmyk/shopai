@@ -219,40 +219,19 @@ class SearchBaseAdapter(BaseAdapter):
         url: str,
         headers: dict[str, str] | None = None,
     ) -> Any:
-        """GET *url*, translate vendor errors into typed
-        ``AdapterError`` subclasses, and return the parsed JSON
-        body. Falls back to raw text when the response is not
-        JSON (HTML scrapers).
-        """
-        if not _REQUESTS_AVAILABLE:
-            raise AdapterUnavailable(
-                self.name, "'requests' library not installed",
-            )
-
-        try:
-            response = _requests.get(
-                url,
-                headers=headers or {},
+        """GET *url* with W962-65 shared retry helper. Returns
+        parsed JSON when possible; falls back to raw text for
+        HTML scrapers."""
+        from core.adapters._http_retry import http_retry
+        response = http_retry(
+            lambda: _requests.get(
+                url, headers=headers or {},
                 timeout=self.timeout,
-            )
-        except _requests.Timeout as exc:  # type: ignore[union-attr]
-            raise AdapterTimeout(
-                self.name, f"timeout after {self.timeout}s: {exc}",
-            ) from exc
-        except _requests.ConnectionError as exc:  # type: ignore[union-attr]
-            raise AdapterUnavailable(
-                self.name, f"connection error: {exc}",
-            ) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise AdapterError(
-                self.name,
-                f"http get failed: {type(exc).__name__}: {exc}",
-            ) from exc
-
-        if response.status_code >= 400:
-            self._raise_for_status(response.status_code, getattr(response, "text", "") or "")
-
-        # Try JSON first; fall back to raw text for HTML scrapers.
+            ),
+            adapter_name=self.name,
+            timeout=self.timeout,
+            parse_json=False,
+        )
         try:
             return response.json()
         except ValueError:

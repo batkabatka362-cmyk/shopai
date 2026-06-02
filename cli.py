@@ -5369,6 +5369,36 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # W962-65: Pattern HTTP-Auth audit (missing auth gate,
+    # ADVISORY)
+    pattern_httpauth_p = sub.add_parser(
+        "pattern-httpauth-audit",
+        help=(
+            "W962-65: AST scan for BaseHTTPRequestHandler "
+            "do_POST/PUT/PATCH/DELETE handlers that don't "
+            "call an auth helper. Would have prevented "
+            "W962-50. ADVISORY only."
+        ),
+    )
+    pattern_httpauth_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # W962-65: Pattern Adapter-Retry audit (missing retry on
+    # 429+5xx, ADVISORY)
+    pattern_adapterretry_p = sub.add_parser(
+        "pattern-adapterretry-audit",
+        help=(
+            "W962-65: AST scan for core/adapters/*/_base.py "
+            "HTTP helpers that don't implement 429+5xx retry "
+            "with backoff. Would have prevented W962-64. "
+            "ADVISORY only."
+        ),
+    )
+    pattern_adapterretry_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 195-202: product SEO autonomy surfaces
     seo_status_p = sub.add_parser(
         "product-seo-status",
@@ -36993,6 +37023,107 @@ def _cmd_pattern_atomicwrite_audit(args) -> None:
         )
 
 
+def _cmd_pattern_httpauth_audit(args) -> None:
+    """W962-65: Pattern HTTP-Auth AST audit.
+
+    Walks every BaseHTTPRequestHandler subclass and flags
+    destructive HTTP handlers (do_POST/PUT/PATCH/DELETE) that
+    don't call an auth helper. Would have prevented W962-50.
+    Advisory.
+    """
+    from engines._pattern_httpauth_audit import (
+        audit_pattern_httpauth,
+    )
+    as_json = bool(getattr(args, "json", False))
+    report = audit_pattern_httpauth()
+    if as_json:
+        print(json.dumps({
+            "scanned_files": report.scanned_files,
+            "scanned_handlers": report.scanned_handlers,
+            "violations": [
+                {
+                    "file": v.file,
+                    "class_name": v.class_name,
+                    "function": v.function,
+                    "lineno": v.lineno,
+                    "description": v.description,
+                }
+                for v in report.violations
+            ],
+            "violation_count": len(report.violations),
+        }, indent=2, default=str))
+        return
+    if report.violations:
+        print(
+            f"Pattern HTTP-Auth ADVISORY -- "
+            f"{len(report.violations)} candidate(s):"
+        )
+        for v in report.violations:
+            print(
+                f"  {v.file}:{v.lineno}  "
+                f"{v.class_name}.{v.function}"
+            )
+    else:
+        print(
+            f"Pattern HTTP-Auth clean -- 0 candidates across "
+            f"{report.scanned_handlers} destructive HTTP "
+            "handler(s)."
+        )
+
+
+def _cmd_pattern_adapterretry_audit(args) -> None:
+    """W962-65: Pattern Adapter-Retry AST audit.
+
+    Walks every core/adapters/*/_base.py and flags HTTP helpers
+    that don't have a retry loop on 429 + 5xx + transient
+    transport errors. Would have prevented the W962-64 retry
+    gaps from regressing as new adapter classes land.
+    Advisory.
+    """
+    from engines._pattern_adapterretry_audit import (
+        audit_pattern_adapterretry,
+    )
+    as_json = bool(getattr(args, "json", False))
+    report = audit_pattern_adapterretry()
+    if as_json:
+        print(json.dumps({
+            "scanned_files": report.scanned_files,
+            "scanned_http_methods": report.scanned_http_methods,
+            "violations": [
+                {
+                    "file": v.file,
+                    "function": v.function,
+                    "lineno": v.lineno,
+                    "description": v.description,
+                }
+                for v in report.violations
+            ],
+            "violation_count": len(report.violations),
+        }, indent=2, default=str))
+        return
+    if report.violations:
+        print(
+            f"Pattern Adapter-Retry ADVISORY -- "
+            f"{len(report.violations)} candidate(s):"
+        )
+        for v in report.violations:
+            print(
+                f"  {v.file}:{v.lineno}  {v.function}"
+            )
+        print()
+        print(
+            "  Each lacks: for-loop on attempt counter + "
+            "time.sleep + 429 check + 5xx check. Mirror the "
+            "core/adapters/ads/_base.py post-W962-64 pattern."
+        )
+    else:
+        print(
+            f"Pattern Adapter-Retry clean -- 0 candidates "
+            f"across {report.scanned_http_methods} HTTP "
+            f"method(s) in {report.scanned_files} base(s)."
+        )
+
+
 def _cmd_pattern_n_audit(args) -> None:
     """Wave 121: niche-merge preservation audit."""
     from engines._pattern_n_audit import run_pattern_n_audit
@@ -51306,6 +51437,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-atomicwrite-audit":
         _cmd_pattern_atomicwrite_audit(args)
+        return
+
+    if args.command == "pattern-httpauth-audit":
+        _cmd_pattern_httpauth_audit(args)
+        return
+
+    if args.command == "pattern-adapterretry-audit":
+        _cmd_pattern_adapterretry_audit(args)
         return
 
     if args.command == "pattern-o-audit":
