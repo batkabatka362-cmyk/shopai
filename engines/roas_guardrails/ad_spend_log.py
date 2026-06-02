@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -25,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 _LOG_PATH = Path("data") / "ad_spend_log.json"
 _MAX_ENTRIES = 1000
+
+# W962-45: spanning lock for concurrent record_ad_spend_event.
+_LOCK = threading.RLock()
 
 
 @dataclass
@@ -76,9 +80,11 @@ def record_ad_spend_event(event: AdSpendEvent) -> None:
         return
     if not isinstance(event, AdSpendEvent):
         return
-    rows = _load()
-    rows.append(asdict(event))
-    _save(rows)
+    # W962-45: span load+append+save.
+    with _LOCK:
+        rows = _load()
+        rows.append(asdict(event))
+        _save(rows)
 
 
 def recent_events(

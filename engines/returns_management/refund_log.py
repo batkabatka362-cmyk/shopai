@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -32,6 +33,9 @@ logger = logging.getLogger(__name__)
 
 _LOG_PATH = Path("data") / "refund_log.json"
 _MAX_ENTRIES = 1000
+
+# W962-45: spanning lock for concurrent record_refund calls.
+_LOCK = threading.RLock()
 
 
 @dataclass
@@ -83,9 +87,11 @@ def record_refund(entry: RefundLogEntry) -> None:
         return
     if not isinstance(entry, RefundLogEntry):
         return
-    rows = _load()
-    rows.append(asdict(entry))
-    _save(rows)
+    # W962-45: span load+append+save.
+    with _LOCK:
+        rows = _load()
+        rows.append(asdict(entry))
+        _save(rows)
 
 
 def recent_refunds(

@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -30,6 +31,11 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _STATE_PATH = Path("data") / "refund_state.json"
+
+# W962-45: spanning lock for get_state's auto-resume +
+# pause/resume. Concurrent operator resume + auto-resume
+# would race otherwise.
+_LOCK = threading.RLock()
 
 
 @dataclass
@@ -65,12 +71,18 @@ def _load() -> RefundPauseState:
 
 
 def _save(state: RefundPauseState) -> None:
+    """W962-45: atomic write via temp + os.replace so a crash
+    mid-write can't leave a corrupt JSON file."""
     if _is_test_environment():
         return
     try:
         _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _STATE_PATH.open("w", encoding="utf-8") as f:
+        tmp = _STATE_PATH.with_suffix(
+            _STATE_PATH.suffix + f".tmp.{os.getpid()}"
+        )
+        with tmp.open("w", encoding="utf-8") as f:
             json.dump(asdict(state), f, indent=2)
+        os.replace(tmp, _STATE_PATH)
     except Exception as exc:  # noqa: BLE001
         logger.debug("refund_state save raised: %s", exc)
 
@@ -79,18 +91,21 @@ def get_state() -> RefundPauseState:
     """Read the current pause state. Honors ``auto_resume_after``
     -- when set + when the deadline has passed, transparently
     flips the state back to unpaused."""
-    state = _load()
-    if (
-        state.paused
-        and state.auto_resume_after > 0
-        and time.time() >= state.auto_resume_after
-    ):
-        state.paused = False
-        state.reason = ""
-        state.paused_at = 0.0
-        state.auto_resume_after = 0.0
-        _save(state)
-    return state
+    # W962-45: span the read+auto-resume+save so concurrent
+    # pause/resume can't slip in.
+    with _LOCK:
+        state = _load()
+        if (
+            state.paused
+            and state.auto_resume_after > 0
+            and time.time() >= state.auto_resume_after
+        ):
+            state.paused = False
+            state.reason = ""
+            state.paused_at = 0.0
+            state.auto_resume_after = 0.0
+            _save(state)
+        return state
 
 
 def is_paused() -> bool:
@@ -113,12 +128,14 @@ def pause(
         paused_at=time.time(),
         auto_resume_after=auto_resume_after,
     )
-    _save(state)
+    with _LOCK:
+        _save(state)
     return state
 
 
 def resume() -> RefundPauseState:
     """Operator-initiated unpause."""
     state = RefundPauseState()  # all defaults = unpaused
-    _save(state)
+    with _LOCK:
+        _save(state)
     return state

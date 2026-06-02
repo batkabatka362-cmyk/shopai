@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -26,6 +27,10 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _STATE_PATH = Path("data") / "budget_state.json"
+
+# W962-45: spanning lock for get_state's auto-resume +
+# pause/resume races.
+_LOCK = threading.RLock()
 
 
 @dataclass
@@ -61,30 +66,37 @@ def _load() -> BudgetPauseState:
 
 
 def _save(state: BudgetPauseState) -> None:
+    """W962-45: atomic write via temp + os.replace."""
     if _is_test_environment():
         return
     try:
         _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _STATE_PATH.open("w", encoding="utf-8") as f:
+        tmp = _STATE_PATH.with_suffix(
+            _STATE_PATH.suffix + f".tmp.{os.getpid()}"
+        )
+        with tmp.open("w", encoding="utf-8") as f:
             json.dump(asdict(state), f, indent=2)
+        os.replace(tmp, _STATE_PATH)
     except Exception as exc:  # noqa: BLE001
         logger.debug("budget_state save raised: %s", exc)
 
 
 def get_state() -> BudgetPauseState:
     """Read pause state. Honors auto_resume_after deadlines."""
-    state = _load()
-    if (
-        state.paused
-        and state.auto_resume_after > 0
-        and time.time() >= state.auto_resume_after
-    ):
-        state.paused = False
-        state.reason = ""
-        state.paused_at = 0.0
-        state.auto_resume_after = 0.0
-        _save(state)
-    return state
+    # W962-45: span auto-resume read-modify-write.
+    with _LOCK:
+        state = _load()
+        if (
+            state.paused
+            and state.auto_resume_after > 0
+            and time.time() >= state.auto_resume_after
+        ):
+            state.paused = False
+            state.reason = ""
+            state.paused_at = 0.0
+            state.auto_resume_after = 0.0
+            _save(state)
+        return state
 
 
 def is_paused() -> bool:
@@ -102,11 +114,13 @@ def pause(
         paused_at=time.time(),
         auto_resume_after=auto_resume_after,
     )
-    _save(state)
+    with _LOCK:
+        _save(state)
     return state
 
 
 def resume() -> BudgetPauseState:
     state = BudgetPauseState()
-    _save(state)
+    with _LOCK:
+        _save(state)
     return state
