@@ -5324,6 +5324,51 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # W962-48: Pattern Lock-Span audit (lost-update race
+    # detection, ADVISORY)
+    pattern_lockspan_p = sub.add_parser(
+        "pattern-lockspan-audit",
+        help=(
+            "W962-48: AST scan for functions that call _load_X "
+            "AND _save_X without holding a Lock/RLock spanning "
+            "both. Would have prevented the W962-15..46 race "
+            "fix family. ADVISORY only."
+        ),
+    )
+    pattern_lockspan_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # W962-40: Pattern Body-Cap audit (HTTP body-size DoS,
+    # ADVISORY)
+    pattern_bodycap_p = sub.add_parser(
+        "pattern-bodycap-audit",
+        help=(
+            "W962-40: AST scan for BaseHTTPRequestHandler "
+            "do_POST handlers that read self.rfile.read without "
+            "a Content-Length bound check. Would have prevented "
+            "W962-40. ADVISORY only."
+        ),
+    )
+    pattern_bodycap_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    # W962-47: Pattern Atomic-Write audit (non-atomic JSON
+    # write, ADVISORY)
+    pattern_atomic_p = sub.add_parser(
+        "pattern-atomicwrite-audit",
+        help=(
+            "W962-47: AST scan for functions that write JSON "
+            "via path.write_text or open(w)+json.dump without "
+            "os.replace. Would have caught every audit-level "
+            "non-atomic write in W962-15..47. ADVISORY only."
+        ),
+    )
+    pattern_atomic_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 195-202: product SEO autonomy surfaces
     seo_status_p = sub.add_parser(
         "product-seo-status",
@@ -36808,6 +36853,146 @@ def _cmd_pattern_g_audit(args) -> None:
         )
 
 
+def _cmd_pattern_lockspan_audit(args) -> None:
+    """W962-48: Pattern Lock-Span AST audit.
+
+    Walks every module and flags functions that call _load_X
+    AND _save_X without holding a Lock/RLock spanning both.
+    Would have prevented W962-15 through W962-46. Advisory --
+    surfaces candidates for human triage.
+    """
+    from engines._pattern_lockspan_audit import (
+        audit_pattern_lockspan,
+    )
+    as_json = bool(getattr(args, "json", False))
+    report = audit_pattern_lockspan()
+    if as_json:
+        print(json.dumps({
+            "scanned_files": report.scanned_files,
+            "scanned_functions": report.scanned_functions,
+            "violations": [
+                {
+                    "file": v.file,
+                    "function": v.function,
+                    "lineno": v.lineno,
+                    "description": v.description,
+                }
+                for v in report.violations
+            ],
+            "violation_count": len(report.violations),
+        }, indent=2, default=str))
+        return
+    if report.violations:
+        print(
+            f"Pattern Lock-Span ADVISORY -- "
+            f"{len(report.violations)} candidate(s):"
+        )
+        for v in report.violations:
+            print(
+                f"  {v.file}:{v.lineno}  "
+                f"{v.function}"
+            )
+    else:
+        print(
+            f"Pattern Lock-Span clean -- 0 candidates across "
+            f"{report.scanned_files} files."
+        )
+
+
+def _cmd_pattern_bodycap_audit(args) -> None:
+    """W962-40: Pattern Body-Cap AST audit.
+
+    Walks every BaseHTTPRequestHandler subclass and flags
+    do_POST/do_PUT/do_PATCH handlers that read self.rfile.read
+    without a preceding size-bound check. Would have prevented
+    W962-40. Advisory.
+    """
+    from engines._pattern_bodycap_audit import (
+        audit_pattern_bodycap,
+    )
+    as_json = bool(getattr(args, "json", False))
+    report = audit_pattern_bodycap()
+    if as_json:
+        print(json.dumps({
+            "scanned_files": report.scanned_files,
+            "scanned_handlers": report.scanned_handlers,
+            "violations": [
+                {
+                    "file": v.file,
+                    "class_name": v.class_name,
+                    "function": v.function,
+                    "lineno": v.lineno,
+                    "description": v.description,
+                }
+                for v in report.violations
+            ],
+            "violation_count": len(report.violations),
+        }, indent=2, default=str))
+        return
+    if report.violations:
+        print(
+            f"Pattern Body-Cap ADVISORY -- "
+            f"{len(report.violations)} candidate(s):"
+        )
+        for v in report.violations:
+            print(
+                f"  {v.file}:{v.lineno}  "
+                f"{v.class_name}.{v.function}"
+            )
+    else:
+        print(
+            f"Pattern Body-Cap clean -- 0 candidates across "
+            f"{report.scanned_handlers} HTTP handler(s)."
+        )
+
+
+def _cmd_pattern_atomicwrite_audit(args) -> None:
+    """W962-47: Pattern Atomic-Write AST audit.
+
+    Walks every module and flags functions that write JSON via
+    path.write_text or open(w) + json.dump WITHOUT a subsequent
+    os.replace (the atomic-rename pattern). Would have caught
+    every audit-level non-atomic write fixed in W962-47.
+    Advisory.
+    """
+    from engines._pattern_atomicwrite_audit import (
+        audit_pattern_atomicwrite,
+    )
+    as_json = bool(getattr(args, "json", False))
+    report = audit_pattern_atomicwrite()
+    if as_json:
+        print(json.dumps({
+            "scanned_files": report.scanned_files,
+            "scanned_functions": report.scanned_functions,
+            "violations": [
+                {
+                    "file": v.file,
+                    "function": v.function,
+                    "lineno": v.lineno,
+                    "description": v.description,
+                }
+                for v in report.violations
+            ],
+            "violation_count": len(report.violations),
+        }, indent=2, default=str))
+        return
+    if report.violations:
+        print(
+            f"Pattern Atomic-Write ADVISORY -- "
+            f"{len(report.violations)} candidate(s):"
+        )
+        for v in report.violations:
+            print(
+                f"  {v.file}:{v.lineno}  "
+                f"{v.function}"
+            )
+    else:
+        print(
+            f"Pattern Atomic-Write clean -- 0 candidates across "
+            f"{report.scanned_files} files."
+        )
+
+
 def _cmd_pattern_n_audit(args) -> None:
     """Wave 121: niche-merge preservation audit."""
     from engines._pattern_n_audit import run_pattern_n_audit
@@ -51109,6 +51294,18 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-g-audit":
         _cmd_pattern_g_audit(args)
+        return
+
+    if args.command == "pattern-lockspan-audit":
+        _cmd_pattern_lockspan_audit(args)
+        return
+
+    if args.command == "pattern-bodycap-audit":
+        _cmd_pattern_bodycap_audit(args)
+        return
+
+    if args.command == "pattern-atomicwrite-audit":
+        _cmd_pattern_atomicwrite_audit(args)
         return
 
     if args.command == "pattern-o-audit":

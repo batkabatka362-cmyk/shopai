@@ -92,6 +92,12 @@ _EMPTY_INPUT: dict[str, Any] = {
 #     or int() raise -- the W962-13/14 bug class)
 #   - meta is a list (engines that try meta.get raise)
 #   - The whole input is None
+# W962-54: extended with two more aggressive probes:
+#   - products/customers as list-of-ints (engines that do
+#     `for p in products: p.get(...)` raise AttributeError)
+#   - very large stringified numerics + Infinity (engines
+#     that don't bound int()/float() inputs raise OverflowError
+#     or InvalidOperation)
 # A clean Pattern Q engine catches ANY exception in its
 # run() body via top-level try/except and returns
 # status="error" + the four-key envelope. Engines that raise
@@ -119,6 +125,20 @@ _MALFORMED_INPUTS: tuple[dict[str, Any], ...] = (
         "status": "success",
         "data": {},
         "meta": ["should", "be", "dict"],
+        "error": None,
+    },
+    {  # W962-54: list elements are wrong type
+        "status": "success",
+        "data": {
+            "products": [1, 2, 3],
+            "customers": [None, None, None],
+            "items": ["str", "str", "str"],
+            "tags": [None, 123, True],
+            "discount_pct": -100,
+            "discount_amount": None,
+            "apply_X": True,
+        },
+        "meta": {},
         "error": None,
     },
 )
