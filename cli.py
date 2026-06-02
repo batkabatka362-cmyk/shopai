@@ -5298,6 +5298,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # W962-32: Pattern G audit (or-coercion silent drop, ADVISORY)
+    pattern_g_p = sub.add_parser(
+        "pattern-g-audit",
+        help=(
+            "W962-32: AST scan for `X.get(\"k\") or DEFAULT` "
+            "patterns that silently drop falsy values (the W947 "
+            "/ W962-11 / W962-12 trap). ADVISORY only -- surfaces "
+            "candidates for human review; does not fail CI."
+        ),
+    )
+    pattern_g_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 195-202: product SEO autonomy surfaces
     seo_status_p = sub.add_parser(
         "product-seo-status",
@@ -36714,6 +36728,74 @@ def _cmd_pattern_o_audit(args) -> None:
         )
 
 
+def _cmd_pattern_g_audit(args) -> None:
+    """W962-32: Pattern G (or-coercion silent drop) AST scan.
+
+    Advisory-only: surfaces candidates where ``X.get("k") or
+    DEFAULT`` may silently drop falsy values like 0 / "" /
+    False. Most hits are intentional defaults (country, video
+    duration); some are real bugs (W947, W962-11, W962-12).
+    Operators triage by inspecting the snippet + classification.
+
+    Exit code: 0 always (does NOT fail CI). The intent is
+    discovery, not enforcement. A future stricter variant could
+    enforce a baseline + fail on growth.
+    """
+    from engines._pattern_g_audit import audit_pattern_g
+
+    as_json = bool(getattr(args, "json", False))
+    report = audit_pattern_g()
+    if as_json:
+        print(json.dumps({
+            "scanned_files": report.scanned_files,
+            "violations": [
+                {
+                    "file": v.file,
+                    "lineno": v.lineno,
+                    "key": v.key,
+                    "default": v.default,
+                    "classification": v.classification,
+                    "snippet": v.snippet,
+                }
+                for v in report.violations
+            ],
+            "violation_count": len(report.violations),
+            "advisory": True,
+        }, indent=2, default=str))
+        return
+    if report.violations:
+        print(
+            f"Pattern G ADVISORY -- {len(report.violations)} "
+            f"candidate(s) across {report.scanned_files} file(s):"
+        )
+        print(
+            "  (each is a `X.get(\"k\") or DEFAULT` pattern; "
+            "review whether 0 / \"\" / False are legitimate "
+            "values for the key)"
+        )
+        print()
+        for v in report.violations:
+            print(
+                f"  {v.file}:{v.lineno}  "
+                f"{v.key!r} or {v.default}  "
+                f"({v.classification})"
+            )
+            if v.snippet:
+                print(f"    {v.snippet}")
+        print()
+        print(
+            "  Fix template: use sentinel cascade "
+            "(SENTINEL = object(); v = data.get('k', SENTINEL); "
+            "if v is SENTINEL: v = DEFAULT) or "
+            "explicit None-check."
+        )
+    else:
+        print(
+            f"Pattern G clean -- 0 candidates across "
+            f"{report.scanned_files} files."
+        )
+
+
 def _cmd_pattern_n_audit(args) -> None:
     """Wave 121: niche-merge preservation audit."""
     from engines._pattern_n_audit import run_pattern_n_audit
@@ -50971,6 +51053,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-n-audit":
         _cmd_pattern_n_audit(args)
+        return
+
+    if args.command == "pattern-g-audit":
+        _cmd_pattern_g_audit(args)
         return
 
     if args.command == "pattern-o-audit":
