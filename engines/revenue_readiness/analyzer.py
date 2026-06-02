@@ -82,14 +82,19 @@ def _gate_orders_recent(stats: dict[str, Any]) -> Gate:
     # Use total_orders as a coarse proxy. A real-time
     # recent-orders probe would require SHOPIFY_FETCH_ORDERS;
     # WorldModel already aggregates total order count which is
-    # enough to tell "any sales yet" vs "cold".
+    # enough to tell "any sales yet" vs "cold". For real-time
+    # "did we earn today" the operator runs `shopai earnings`
+    # (W963-4 sibling diagnostic).
     orders = int(stats.get("orders", 0) or 0)
     if orders >= 10:
         status = "ready"
         action = ""
     elif orders > 0:
         status = "partial"
-        action = "Build traffic: shopai marketing-status + ads connect"
+        action = (
+            "Build traffic: `shopai earnings` to see today's "
+            "revenue + `shopai marketing-status` for ad wireup"
+        )
     else:
         status = "missing"
         action = (

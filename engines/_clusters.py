@@ -390,6 +390,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "selection_decision",    # Already in merchandising (alias)
     "revenue_readiness",     # W963-1: cross-cutting diagnostic
     "product_sourcer",       # W963-2: cold-start seed generator
+    "earnings_report",       # W963-4: output-side measurement
 })
 
 

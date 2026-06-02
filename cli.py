@@ -1463,6 +1463,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view",
     )
 
+    # W963-4: earnings — output-side measurement.
+    earnings_p = sub.add_parser(
+        "earnings",
+        help=(
+            "How much money came in. Reads recent Shopify "
+            "orders, computes current-window net revenue + "
+            "delta vs the previous same-size window. Verdict: "
+            "earning / flat / declining / cold."
+        ),
+    )
+    earnings_p.add_argument(
+        "--days", type=float, default=1.0,
+        help="Window size in days (default 1.0 = last 24h).",
+    )
+    earnings_p.add_argument(
+        "--hours", type=float, default=None,
+        help="Window size in hours (overrides --days).",
+    )
+    earnings_p.add_argument(
+        "--store", dest="store_id", default=None,
+        help="Per-store earnings. Omit for default credentials.",
+    )
+    earnings_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view",
+    )
+
     # W963-2: product-candidates — cold-start product list
     # generator. Reads from a curated niche → 20 candidates
     # catalog; future revision will swap to AI / supplier-API.
@@ -9941,6 +9968,97 @@ def _cmd_niche(args) -> None:
     )
 
 
+def _cmd_earnings(args) -> None:
+    """W963-4: shopai earnings — output-side measurement."""
+    from engines.earnings_report import EarningsReportEngine
+
+    hours = getattr(args, "hours", None)
+    days = float(getattr(args, "days", 1.0) or 1.0)
+    window_hours = float(hours) if hours is not None else days * 24.0
+    store_id = getattr(args, "store_id", None)
+    as_json = bool(getattr(args, "json", False))
+
+    payload: dict[str, Any] = {
+        "data": {"window_hours": window_hours},
+    }
+    if store_id:
+        payload["data"]["store_id"] = store_id
+
+    result = EarningsReportEngine().run(payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success" or not data:
+        err = result.get("error") or "unknown error"
+        print(f"earnings: ERROR  {err}")
+        return
+
+    sid = data.get("store_id") or "(default)"
+    wh = data.get("window_hours", 0.0)
+    current = data.get("current") or {}
+    previous = data.get("previous") or {}
+    verdict = data.get("verdict", "unknown")
+    delta = data.get("delta", 0.0)
+    delta_pct = data.get("delta_pct", 0.0)
+    cur_rev = current.get("revenue", 0.0)
+    prev_rev = previous.get("revenue", 0.0)
+    cur_count = current.get("order_count", 0)
+    prev_count = previous.get("order_count", 0)
+    cur_aov = current.get("avg_order_value", 0.0)
+    currency = (
+        current.get("currency")
+        or previous.get("currency")
+        or "USD"
+    )
+
+    verdict_mk = {
+        "earning":   "[$$]",
+        "flat":      "[~~]",
+        "declining": "[\\\\]",
+        "cold":      "[..]",
+        "unknown":   "[ ?]",
+    }.get(verdict, "[ ?]")
+
+    delta_sign = "+" if delta >= 0 else ""
+    print(
+        f"Earnings  store={sid}  window={wh:g}h  "
+        f"{verdict_mk} {verdict}"
+    )
+    print()
+    print(
+        f"  Current window:  "
+        f"{currency} {cur_rev:>9.2f}  "
+        f"{cur_count:>3} order(s)  AOV={cur_aov:.2f}"
+    )
+    print(
+        f"  Previous window: "
+        f"{currency} {prev_rev:>9.2f}  "
+        f"{prev_count:>3} order(s)"
+    )
+    print(
+        f"  Delta:           "
+        f"{currency} {delta_sign}{delta:>8.2f}  "
+        f"({delta_sign}{delta_pct:.1f}%)"
+    )
+    print()
+    if verdict == "cold":
+        print(
+            "  Cold — no orders. Check: products exist?  "
+            "(`shopai revenue-readiness`)  Ads firing?  "
+            "(`shopai marketing-status`)"
+        )
+    elif verdict == "declining":
+        print(
+            "  Declining — investigate: "
+            "`shopai engine alerts` + `shopai cycle status`"
+        )
+    elif verdict == "earning":
+        print("  Money in. Keep the cycle going.")
+
+
 def _cmd_product_candidates(args) -> None:
     """W963-2: cold-start product candidate generator.
 
@@ -12789,6 +12907,36 @@ def _cmd_daily_brief(args) -> None:
         logger.debug(
             "daily-brief autonomy-overview block raised: %s",
             exc,
+        )
+
+    # W963-4: earnings row. Always-on — operators want to see
+    # "did money come in?" every day even when verdict is cold.
+    try:
+        from engines.earnings_report import EarningsReportEngine
+        er_result = EarningsReportEngine().run({
+            "data": {"window_hours": 24.0},
+        })
+        er_data = er_result.get("data") or {}
+        if er_data:
+            er_v = er_data.get("verdict", "unknown")
+            er_mk = {
+                "earning":   "[$$]",
+                "flat":      "[~~]",
+                "declining": "[\\\\]",
+                "cold":      "[..]",
+                "unknown":   "[ ?]",
+            }.get(er_v, "[ ?]")
+            cur = er_data.get("current") or {}
+            currency = cur.get("currency") or "USD"
+            print(
+                f"  Earnings 24h: {er_mk} "
+                f"{currency} {cur.get('revenue', 0.0):.2f}  "
+                f"orders={cur.get('order_count', 0)}  "
+                f"delta={er_data.get('delta_pct', 0.0):+.1f}%"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief earnings block raised: %s", exc,
         )
 
     # W963-1: revenue-readiness row. Surfaces only when the
@@ -51373,6 +51521,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "revenue-readiness":
         _cmd_revenue_readiness(args)
+        return
+
+    if args.command == "earnings":
+        _cmd_earnings(args)
         return
 
     if args.command == "product-candidates":
