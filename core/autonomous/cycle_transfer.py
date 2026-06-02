@@ -158,13 +158,12 @@ def find_transfer_candidates(
     )
 
     if fleet_store_ids is None:
-        try:
-            from core.adapters.shopify.bootstrap import (
-                _get_store_manager_for_tests,
-            )
-            sm = _get_store_manager_for_tests()
-        except ImportError:
-            sm = None
+        # W962-72: the previous test-seam import
+        # (_get_store_manager_for_tests) never existed in this
+        # branch, so the try/except ImportError was always
+        # taken. Removed the dead seam; the fallback below is
+        # the only real path.
+        sm = None
         if sm is None:
             try:
                 # Most callers will pass fleet_store_ids
