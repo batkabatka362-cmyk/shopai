@@ -307,13 +307,12 @@ def revenue_trend(
 def clear() -> None:
     if _is_test_environment():
         return
-    if _HISTORY_PATH.exists():
-        try:
-            _HISTORY_PATH.unlink()
-        except OSError as exc:
-            logger.debug(
-                "cycle_revenue_history: unlink "
-                "raised: %s", exc,
+    try:
+        _HISTORY_PATH.unlink(missing_ok=True)  # W962-68 TOCTOU
+    except OSError as exc:
+        logger.debug(
+        "cycle_revenue_history: unlink "
+         "raised: %s", exc,
             )
 
 

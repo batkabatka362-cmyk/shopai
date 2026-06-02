@@ -340,8 +340,7 @@ class ShopifyAuth:
                 # Clean up half-written tmp.
                 try:
                     tmp_path = _TOKEN_CACHE_FILE.with_suffix(_TOKEN_CACHE_FILE.suffix + ".tmp")
-                    if tmp_path.exists():
-                        tmp_path.unlink()
+                    tmp_path.unlink(missing_ok=True)  # W962-68 TOCTOU
                 except OSError as exc:
                     logger.debug("credential tmp file cleanup failed: %s", exc)
 

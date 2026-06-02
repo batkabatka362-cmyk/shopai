@@ -250,13 +250,12 @@ class NotesStore:
             )
             os.replace(tmp, self._path)
         finally:
-            if tmp.exists():
-                try:
-                    tmp.unlink()
-                except OSError as exc:
-                    logger.debug(
-                        "tmp file cleanup failed: %s", exc,
-                    )
+            try:
+                tmp.unlink(missing_ok=True)  # W962-68 TOCTOU
+            except OSError as exc:
+                logger.debug(
+                "tmp file cleanup failed: %s", exc,
+                )
 
 
 # Module-level singleton used by importer + future readers.

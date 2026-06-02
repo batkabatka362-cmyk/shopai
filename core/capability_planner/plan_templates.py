@@ -207,13 +207,12 @@ def delete_template(name: str) -> bool:
 def clear() -> None:
     if _is_test_environment():
         return
-    if _TEMPLATES_PATH.exists():
-        try:
-            _TEMPLATES_PATH.unlink()
-        except OSError as exc:
-            logger.debug(
-                "plan_templates: unlink raised: %s", exc,
-            )
+    try:
+        _TEMPLATES_PATH.unlink(missing_ok=True)  # W962-68 TOCTOU
+    except OSError as exc:
+        logger.debug(
+        "plan_templates: unlink raised: %s", exc,
+        )
 
 
 def _reset_for_tests(path: Path | None = None) -> None:

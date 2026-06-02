@@ -510,13 +510,12 @@ def get_pause_state(
 def clear() -> None:
     if _is_test_environment():
         return
-    if _PAUSE_PATH.exists():
-        try:
-            _PAUSE_PATH.unlink()
-        except OSError as exc:
-            logger.debug(
-                "cycle_pause: unlink raised: %s", exc,
-            )
+    try:
+        _PAUSE_PATH.unlink(missing_ok=True)  # W962-68 TOCTOU
+    except OSError as exc:
+        logger.debug(
+        "cycle_pause: unlink raised: %s", exc,
+        )
 
 
 def clear_history() -> None:
@@ -524,13 +523,12 @@ def clear_history() -> None:
     Pattern J short-circuits under pytest."""
     if _is_test_environment():
         return
-    if _PAUSE_HISTORY_PATH.exists():
-        try:
-            _PAUSE_HISTORY_PATH.unlink()
-        except OSError as exc:
-            logger.debug(
-                "cycle_pause history: unlink raised: %s", exc,
-            )
+    try:
+        _PAUSE_HISTORY_PATH.unlink(missing_ok=True)  # W962-68 TOCTOU
+    except OSError as exc:
+        logger.debug(
+        "cycle_pause history: unlink raised: %s", exc,
+        )
 
 
 def _reset_for_tests(

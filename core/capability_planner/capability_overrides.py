@@ -273,13 +273,12 @@ def clear_all() -> None:
     """Operator escape hatch -- wipe every override."""
     if _is_test_environment():
         return
-    if _OVERRIDES_PATH.exists():
-        try:
-            _OVERRIDES_PATH.unlink()
-        except OSError as exc:
-            logger.debug(
-                "capability_overrides: unlink raised: %s",
-                exc,
+    try:
+        _OVERRIDES_PATH.unlink(missing_ok=True)  # W962-68 TOCTOU
+    except OSError as exc:
+        logger.debug(
+        "capability_overrides: unlink raised: %s",
+         exc,
             )
 
 

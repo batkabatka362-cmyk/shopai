@@ -817,13 +817,12 @@ def clear() -> None:
     cleanup."""
     if _is_test_environment():
         return
-    if _HISTORY_PATH.exists():
-        try:
-            _HISTORY_PATH.unlink()
-        except OSError as exc:
-            logger.debug(
-                "plan_history: unlink failed (%s)", exc,
-            )
+    try:
+        _HISTORY_PATH.unlink(missing_ok=True)  # W962-68 TOCTOU
+    except OSError as exc:
+        logger.debug(
+        "plan_history: unlink failed (%s)", exc,
+        )
 
 
 def correlate_outcome_by_stats(

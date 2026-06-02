@@ -296,8 +296,7 @@ def clear() -> None:
     """
     path = _state_path()
     try:
-        if path.exists():
-            path.unlink()
+        path.unlink(missing_ok=True)  # W962-68 TOCTOU
     except OSError as exc:
         logger.debug(
             "engine_health_history.clear failed: %s", exc,
