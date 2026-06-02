@@ -200,21 +200,39 @@ class ShopifyAuth:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
+            # W962-57: don't interpolate raw response body into
+            # the exception. Shopify error responses can echo
+            # back the submitted client_id / client_secret and
+            # the exception message propagates via str(exc) into
+            # HTTP 500 responses + logs + crash reporters.
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+                logger.debug(
+                    "Shopify token request failed body: %s", body,
+                )
+            except Exception:  # noqa: BLE001
+                pass
             raise RuntimeError(
-                f"Shopify token request failed ({exc.code}): {body}"
+                f"Shopify token request failed: HTTP {exc.code}"
             ) from exc
 
         try:
             data = json.loads(raw)
         except ValueError as exc:
-            raise RuntimeError(f"Shopify token response was not JSON: {exc}") from exc
+            raise RuntimeError(
+                "Shopify token response was not JSON"
+            ) from exc
         if not isinstance(data, dict):
             raise RuntimeError(
-                f"Shopify token response is {type(data).__name__}, expected dict"
+                f"Shopify token response is "
+                f"{type(data).__name__}, expected dict"
             )
         if "access_token" not in data or not data["access_token"]:
-            raise ValueError(f"No access_token in response: {data}")
+            # W962-57: list keys only, never the raw dict.
+            raise ValueError(
+                "Shopify token response missing access_token; "
+                f"keys={sorted(data.keys())}"
+            )
         return data
 
     def get_auth_url(self, scopes: str = "", redirect_uri: str = "") -> str:
@@ -259,7 +277,13 @@ class ShopifyAuth:
             data = json.loads(resp.read().decode("utf-8"))
 
         if "access_token" not in data:
-            raise ValueError(f"No access_token: {data}")
+            # W962-57: keys-only error so the access_token
+            # (or other secrets) never leak into the exception
+            # string.
+            raise ValueError(
+                "Shopify code-exchange response missing "
+                f"access_token; keys={sorted(data.keys())}"
+            )
 
         self._access_token = data["access_token"]
         # New Shopify tokens may or may not expire

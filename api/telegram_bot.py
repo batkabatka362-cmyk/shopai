@@ -233,8 +233,16 @@ class TelegramBot:
 
 
 _instance = None
+_instance_lock = threading.Lock()
+
+
 def get_telegram_bot():
+    """W962-58: double-checked locking. Two concurrent calls
+    could each create TelegramBot() and split _chat_ids /
+    _running state across instances."""
     global _instance
     if _instance is None:
-        _instance = TelegramBot()
+        with _instance_lock:
+            if _instance is None:
+                _instance = TelegramBot()
     return _instance

@@ -6,11 +6,14 @@ Uses only the Python standard library (urllib.request).
 from __future__ import annotations
 
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -172,12 +175,20 @@ class CampaignManager:
         credentials: dict[str, Any],
     ) -> dict[str, Any]:
         if platform == "facebook":
+            # W962-60: access_token moved from URL query string
+            # to Authorization: Bearer header. Pre-fix the URL
+            # was logged by HTTP clients, proxies, audit logs,
+            # and the W962-57 raise-on-HTTPError pattern echoed
+            # the full URL (including secret) back to callers.
             access_token = credentials.get("access_token", "")
             url = (
                 f"{_fb_campaign_url(campaign_id)}"
-                f"?fields=id,name,status,effective_status&access_token={access_token}"
+                "?fields=id,name,status,effective_status"
             )
-            return self._make_request("GET", url, {})
+            return self._make_request(
+                "GET", url,
+                {"Authorization": f"Bearer {access_token}"},
+            )
 
         if platform == "google":
             customer_id = credentials.get("customer_id", "")
@@ -357,15 +368,18 @@ class CampaignManager:
         end = date_range.get("end", "")
 
         if platform == "facebook":
+            # W962-60: access_token moved from URL to header.
             access_token = credentials.get("access_token", "")
             fields = "impressions,clicks,spend,actions,action_values"
             url = (
                 f"{_fb_campaign_url(campaign_id)}/insights"
                 f"?fields={fields}"
                 f"&time_range={{\"since\":\"{start}\",\"until\":\"{end}\"}}"
-                f"&access_token={access_token}"
             )
-            return self._make_request("GET", url, {})
+            return self._make_request(
+                "GET", url,
+                {"Authorization": f"Bearer {access_token}"},
+            )
 
         if platform == "google":
             customer_id = credentials.get("customer_id", "").replace("-", "")
@@ -504,9 +518,23 @@ class CampaignManager:
                     time.sleep(retry_after)
                     delay *= 2
                     continue
-                body = exc.read().decode("utf-8", errors="replace")
+                # W962-60: log body server-side at DEBUG only.
+                # Pre-fix the body was interpolated into the
+                # exception message, which propagated up the
+                # call stack into str(exc) -> HTTP 500 / logs /
+                # crash reporters. Vendor error bodies often
+                # echo the URL + headers, so leaking them
+                # leaked the secret back.
+                try:
+                    body = exc.read().decode("utf-8", errors="replace")
+                    logger.debug(
+                        "campaign_manager %s body: %s",
+                        exc.code, body[:500],
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
                 raise urllib.error.HTTPError(
-                    url, exc.code, f"{exc.reason} — {body}", exc.headers, None
+                    url, exc.code, exc.reason, exc.headers, None,
                 ) from exc
             except urllib.error.URLError:
                 if attempt < max_retries:

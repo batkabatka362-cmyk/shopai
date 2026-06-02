@@ -27,6 +27,25 @@ from api.validation import validate_shop_url, validate_string, validate_webhook_
 logger = get_logger("api.dashboard")
 
 
+def _sanitize_error(exc: Exception, max_len: int = 200) -> str:
+    """W962-61: scrub known secret patterns before emitting an
+    exception to clients. Mirrors api/server.py helper."""
+    import re
+    raw = str(exc) or type(exc).__name__
+    raw = re.sub(r"shp[ap]t_[A-Za-z0-9]+", "shpXt_REDACTED", raw)
+    raw = re.sub(r"shpss_[A-Za-z0-9]+", "shpss_REDACTED", raw)
+    raw = re.sub(
+        r"Bearer\s+[A-Za-z0-9._-]+", "Bearer REDACTED", raw,
+    )
+    raw = re.sub(
+        r"\b[A-Za-z0-9]{32,}\b", "REDACTED_KEY", raw,
+    )
+    raw = re.sub(
+        r"C:\\Users\\[^\\]+", r"C:\\Users\\<user>", raw,
+    )
+    return raw[:max_len]
+
+
 def _api_auth_ok(handler) -> bool:
     """W962-50: validate operator auth on destructive POST.
 
@@ -179,7 +198,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 self._json_response(result)
             except Exception as exc:
                 logger.warning("webhook processing failed: %s", exc)
-                self._json_response({"error": str(exc)[:100]}, 500)
+                self._json_response({"error": _sanitize_error(exc, max_len=100)}, 500)
         elif path == "/api/stores":
             # POST /api/stores — register new store
             try:
@@ -208,7 +227,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 self._json_response({"error": f"Invalid JSON body: {exc}"}, 400)
             except Exception as exc:
                 logger.warning("store registration failed: %s", exc)
-                self._json_response({"error": str(exc)[:100]}, 500)
+                self._json_response({"error": _sanitize_error(exc, max_len=100)}, 500)
         else:
             self._json_response({"error": "not_found"}, 404)
 
@@ -232,7 +251,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             reg = get_store_registry()
             return {"stores": reg.list_stores(), "stats": reg.get_stats()}
         except Exception as exc:
-            return {"error": str(exc)[:100]}
+            return {"error": _sanitize_error(exc, max_len=100)}
 
     @staticmethod
     def _get_status() -> dict:
@@ -403,7 +422,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             report["timestamp"] = time.time()
             return report
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)[:200]}
+            return {"error": _sanitize_error(exc, max_len=200)}
 
     @staticmethod
     def _get_satellite_stats() -> dict:
@@ -423,7 +442,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "timestamp": time.time(),
             }
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)[:200]}
+            return {"error": _sanitize_error(exc, max_len=200)}
 
     @staticmethod
     def _get_policy_audit(limit: int = 20) -> dict:
@@ -445,7 +464,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "timestamp": time.time(),
             }
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)[:200]}
+            return {"error": _sanitize_error(exc, max_len=200)}
 
     @staticmethod
     def _get_belief_snapshot(limit: int = 50) -> dict:
@@ -478,7 +497,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             store = get_default_belief_store()
             snap = store.snapshot()
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)[:200]}
+            return {"error": _sanitize_error(exc, max_len=200)}
 
         now = time.time()
         rows: list[dict[str, Any]] = []
@@ -559,7 +578,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             synth = get_default_synthesizer()
             rows = synth.snapshot()
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)[:200]}
+            return {"error": _sanitize_error(exc, max_len=200)}
 
         # Wave 6 #8: enrich each pattern with activation stats from
         # the default policy store so operators can tell a useful
@@ -694,7 +713,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "timestamp": time.time(),
             }
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)[:200]}
+            return {"error": _sanitize_error(exc, max_len=200)}
 
     @staticmethod
     def _get_dashboard() -> dict:
@@ -702,7 +721,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             from core.system.dashboard import get_dashboard
             return get_dashboard().generate()
         except Exception as exc:
-            return {"error": str(exc)[:100]}
+            return {"error": _sanitize_error(exc, max_len=100)}
 
     @staticmethod
     def _run_cycle() -> dict:
@@ -710,7 +729,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             from core.system.auto_scheduler import get_scheduler
             return get_scheduler().run_once()
         except Exception as exc:
-            return {"error": str(exc)[:100]}
+            return {"error": _sanitize_error(exc, max_len=100)}
 
     @staticmethod
     def _get_alerts() -> dict:
@@ -750,7 +769,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "meta": mi.get_meta_stats(),
             }
         except Exception as exc:
-            return {"error": str(exc)[:100]}
+            return {"error": _sanitize_error(exc, max_len=100)}
 
     def log_message(self, format, *args):
         pass  # Suppress default logging

@@ -22,6 +22,42 @@ from api.validation import (
 logger = get_logger("api.server")
 
 
+def _sanitize_error(exc: Exception, max_len: int = 200) -> str:
+    """W962-61: scrub known secret patterns + truncate before
+    emitting an exception to clients.
+
+    Pre-fix `str(exc)` flowed into HTTP 500 responses verbatim,
+    potentially leaking:
+      - Shopify shpat_/shpss_ tokens via chained exceptions
+      - HTTPError response bodies that echoed client_id /
+        client_secret
+      - File system paths (incl. Windows username)
+      - Bearer tokens from Authorization headers
+
+    Rule of thumb: log the full string server-side, return a
+    sanitized + truncated version to the client.
+    """
+    import re
+    raw = str(exc) or type(exc).__name__
+    # Scrub Shopify access tokens
+    raw = re.sub(r"shp[ap]t_[A-Za-z0-9]+", "shpXt_REDACTED", raw)
+    raw = re.sub(r"shpss_[A-Za-z0-9]+", "shpss_REDACTED", raw)
+    # Scrub Bearer tokens
+    raw = re.sub(
+        r"Bearer\s+[A-Za-z0-9._-]+", "Bearer REDACTED", raw,
+    )
+    # Scrub generic api-key-like blobs (32+ char alnum)
+    raw = re.sub(
+        r"\b[A-Za-z0-9]{32,}\b", "REDACTED_KEY", raw,
+    )
+    # Scrub Windows home directory paths (PII: operator
+    # username)
+    raw = re.sub(
+        r"C:\\Users\\[^\\]+", r"C:\\Users\\<user>", raw,
+    )
+    return raw[:max_len]
+
+
 def _api_auth_ok(handler) -> bool:
     """W962-50: operator token check for destructive POST.
 
@@ -340,7 +376,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(200, payload)
         except Exception as exc:
             logger.warning("engine info failed: %s", exc)
-            self._json_response(500, {"error": str(exc)})
+            self._json_response(500, {"error": _sanitize_error(exc)})
 
     def _get_goal(self) -> None:
         """GET /api/goal — brain-stack goal state.
@@ -582,7 +618,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(200, exp.get_knowledge_summary())
         except Exception as exc:
             logger.warning("experience summary failed: %s", exc)
-            self._json_response(500, {"error": str(exc)})
+            self._json_response(500, {"error": _sanitize_error(exc)})
 
     def _list_webhooks(self) -> None:
         from core.webhooks import ShopifyWebhookHandler
@@ -647,7 +683,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             })
         except Exception as exc:
             logger.warning("list pending actions failed: %s", exc)
-            self._json_response(500, {"error": str(exc)})
+            self._json_response(500, {"error": _sanitize_error(exc)})
 
     def _pending_actions_stats(self) -> None:
         """GET /api/pending-actions/stats — counts per status."""
@@ -656,7 +692,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(200, get_approval_queue().stats())
         except Exception as exc:
             logger.warning("approval queue stats failed: %s", exc)
-            self._json_response(500, {"error": str(exc)})
+            self._json_response(500, {"error": _sanitize_error(exc)})
 
     def _list_recommendations(self) -> None:
         """GET /api/recommendations — orchestration-brain v1 surface.
@@ -704,7 +740,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(200, result.to_dict())
         except Exception as exc:
             logger.warning("recommendations failed: %s", exc)
-            self._json_response(500, {"error": str(exc)})
+            self._json_response(500, {"error": _sanitize_error(exc)})
 
     def _get_pending_action(self, action_id: str, _params: dict) -> None:
         """GET /api/pending-actions/<id> — fetch a single action.
@@ -920,7 +956,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(200, result)
         except Exception as exc:
             logger.warning("store sync failed for %s: %s", store_id, exc)
-            self._json_response(500, {"error": str(exc)})
+            self._json_response(500, {"error": _sanitize_error(exc)})
 
     def _approve_pending_action(self, action_id: str, body: dict) -> None:
         """POST /api/pending-actions/<id>/approve — sign off on a pending action.
