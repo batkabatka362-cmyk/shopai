@@ -1234,8 +1234,26 @@ class ShopAIHandler(BaseHTTPRequestHandler):
     # --- Helpers ---
 
     def _read_body(self) -> dict | None:
+        # W962-40: cap body at 1 MB. Pre-fix self.rfile.read
+        # would allocate up to Content-Length bytes (untrusted
+        # client input) so an attacker could DoS the API server
+        # with Content-Length: 9999999999. Catch invalid
+        # Content-Length headers too -- pre-fix int() would
+        # raise ValueError on "abc" and propagate up.
+        MAX_BODY_BYTES = 1_048_576
         try:
             length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            self._json_response(
+                400, {"error": "invalid Content-Length"},
+            )
+            return None
+        if length > MAX_BODY_BYTES:
+            self._json_response(
+                413, {"error": "payload too large"},
+            )
+            return None
+        try:
             raw = self.rfile.read(length)
             # Stash the raw bytes so handlers that need them
             # (Shopify webhook HMAC verification) can read them
