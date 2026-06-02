@@ -198,6 +198,9 @@ class AuditTrail:
     """Logs every Shopify change for accountability."""
 
     def __init__(self):
+        # W962-47: per-instance lock spans log() append + _save()
+        # so concurrent audit-trail writes don't lose entries.
+        self._lock = threading.RLock()
         self._entries: list[dict] = []
         self._load()
 
@@ -218,15 +221,22 @@ class AuditTrail:
             "timestamp": time.time(),
             "time_str": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
-        self._entries.append(entry)
-        self._save()
+        with self._lock:
+            self._entries.append(entry)
+            self._save()
 
     def _save(self):
+        """W962-47: atomic write via temp + os.replace.
+        Caller MUST hold self._lock (log() wraps it)."""
         try:
             _AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
             if len(self._entries) > AUDIT_LOG_MAX_ENTRIES:
                 self._entries = self._entries[-AUDIT_LOG_MAX_ENTRIES:]
-            _AUDIT_PATH.write_text(json.dumps(self._entries, indent=2))
+            tmp = _AUDIT_PATH.with_suffix(
+                _AUDIT_PATH.suffix + ".tmp." + str(os.getpid())
+            )
+            tmp.write_text(json.dumps(self._entries, indent=2))
+            os.replace(tmp, _AUDIT_PATH)
         except Exception as exc:
             logger.debug("audit write failed: %s", exc)
 

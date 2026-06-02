@@ -84,15 +84,26 @@ def save_log(
     *,
     max_entries: int = _DEFAULT_MAX_ENTRIES,
 ) -> None:
-    """Save the entries to disk. Bounded by max_entries."""
+    """Save the entries to disk. Bounded by max_entries.
+
+    W962-47: atomic write via temp + os.replace + per-pid
+    suffix. Pre-fix a crash mid-write would corrupt the log
+    file silently (load_log would catch the JSONDecodeError
+    + return []), effectively dropping every persisted
+    record. Lock at record_event spans load+save, but the
+    atomic-write upgrade closes the crash-mid-write window."""
     if is_test_environment():
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         if len(entries) > max_entries:
             entries = entries[-max_entries:]
-        with path.open("w", encoding="utf-8") as f:
+        tmp = path.with_suffix(
+            path.suffix + ".tmp." + str(os.getpid())
+        )
+        with tmp.open("w", encoding="utf-8") as f:
             json.dump(entries, f, indent=2, default=str)
+        os.replace(tmp, path)
     except Exception as exc:  # noqa: BLE001
         logger.debug("action_log save raised: %s", exc)
 

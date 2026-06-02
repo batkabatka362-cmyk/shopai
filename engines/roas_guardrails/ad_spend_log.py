@@ -64,12 +64,17 @@ def _load() -> list[dict[str, Any]]:
 
 
 def _save(entries: list[dict[str, Any]]) -> None:
+    """W962-47: atomic write via temp + os.replace."""
     try:
         _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         if len(entries) > _MAX_ENTRIES:
             entries = entries[-_MAX_ENTRIES:]
-        with _LOG_PATH.open("w", encoding="utf-8") as f:
+        tmp = _LOG_PATH.with_suffix(
+            _LOG_PATH.suffix + ".tmp." + str(os.getpid())
+        )
+        with tmp.open("w", encoding="utf-8") as f:
             json.dump(entries, f, indent=2, default=str)
+        os.replace(tmp, _LOG_PATH)
     except Exception as exc:  # noqa: BLE001
         logger.debug("ad_spend_log save raised: %s", exc)
 
