@@ -26,6 +26,12 @@ def cli():
 @pytest.fixture
 def quarantine_data_dir(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("SHOPAI_DATA_DIR", str(tmp_path))
+    # W962-22/23 added classifier-bypass gates on
+    # --release, --exempt, --release-alert-all. Tests that
+    # exercise those flags need the operator-confirm env-var
+    # set; doing it in the data_dir fixture keeps every test
+    # consistent with the post-W962-22 CLI contract.
+    monkeypatch.setenv("SHOPAI_QUARANTINE_BYPASS_CONFIRM", "1")
     yield tmp_path
 
 
