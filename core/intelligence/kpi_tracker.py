@@ -27,11 +27,24 @@ except Exception:
     _KPI_DIR = "/tmp/shopai_kpi"
 
 
+# W962-51: SHARED module-level lock across all KPITracker
+# instances. The verifier confirmed multiple instances each
+# get their own self._lock, but they all write to the same
+# files in _KPI_DIR. Per-instance locks gave no protection
+# against the inter-instance race that the 6 caller sites
+# create. Hoisted to a module-level lock used by every
+# instance.
+_GLOBAL_LOCK = threading.RLock()
+
+
 class KPITracker:
     """Tracks business KPIs and decision quality metrics."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        # W962-51: alias to the global lock so existing
+        # `with self._lock:` blocks continue to work; the
+        # actual mutex is shared across all instances now.
+        self._lock = _GLOBAL_LOCK
         os.makedirs(_KPI_DIR, exist_ok=True)
 
     def record_decision_outcome(self, decision_id: str, decision_type: str,
@@ -219,7 +232,9 @@ class KPITracker:
             entries.append(entry)
             if len(entries) > 5000:
                 entries = entries[-5000:]
-            tmp = path + ".tmp"
+            # W962-51: per-pid temp suffix so concurrent
+            # processes don't collide on the rename target.
+            tmp = path + ".tmp." + str(os.getpid())
             try:
                 with open(tmp, "w") as f:
                     json.dump(entries, f)

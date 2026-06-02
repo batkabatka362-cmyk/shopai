@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from typing import Any
 
@@ -54,6 +55,13 @@ class StrategyOptimizer:
     """Auto-adjusts decision strategy weights from outcome data."""
 
     def __init__(self, *, llm: Any = None) -> None:
+        # W962-48: spanning lock for concurrent
+        # update_from_outcomes + get_adjusted_weights +
+        # _load + _save. Multiple instances are constructed
+        # per cycle so the lock guards in-instance races; the
+        # file write is atomic so cross-instance races
+        # converge on the last writer.
+        self._lock = threading.RLock()
         self._adjustments: dict[str, dict[str, float]] = {}
         self._llm = llm
         self._load()
@@ -68,55 +76,60 @@ class StrategyOptimizer:
         return base
 
     def update_from_outcomes(self) -> dict[str, Any]:
-        """Pull outcome data and adjust strategy weights."""
+        """Pull outcome data and adjust strategy weights.
+
+        W962-48: span self._lock across the full read-modify-
+        write so concurrent calls don't corrupt the nested
+        adjustments dict."""
         try:
             from core.learning.outcome_tracker import OutcomeTracker
             ot = OutcomeTracker()
             changes = []
 
-            for engine_key in ("intelligence_loop", "full_system_loop"):
-                entries = ot._load(engine_key)
-                outcomes = [e for e in entries if e.get("outcome") is not None]
+            with self._lock:
+                for engine_key in ("intelligence_loop", "full_system_loop"):
+                    entries = ot._load(engine_key)
+                    outcomes = [e for e in entries if e.get("outcome") is not None]
 
-                # Group by decision_type
-                by_type: dict[str, dict] = {}
-                for e in outcomes:
-                    dt = e.get("decision", {}).get("decision_type", "unknown")
-                    if dt == "unknown":
-                        continue
-                    if dt not in by_type:
-                        by_type[dt] = {"success": 0, "fail": 0}
-                    if e.get("success"):
-                        by_type[dt]["success"] += 1
-                    else:
-                        by_type[dt]["fail"] += 1
+                    # Group by decision_type
+                    by_type: dict[str, dict] = {}
+                    for e in outcomes:
+                        dt = e.get("decision", {}).get("decision_type", "unknown")
+                        if dt == "unknown":
+                            continue
+                        if dt not in by_type:
+                            by_type[dt] = {"success": 0, "fail": 0}
+                        if e.get("success"):
+                            by_type[dt]["success"] += 1
+                        else:
+                            by_type[dt]["fail"] += 1
 
-                # Adjust weights based on success rates
-                for dt, counts in by_type.items():
-                    total = counts["success"] + counts["fail"]
-                    if total < 2:
-                        continue
-                    rate = counts["success"] / total
+                    # Adjust weights based on success rates
+                    for dt, counts in by_type.items():
+                        total = counts["success"] + counts["fail"]
+                        if total < 2:
+                            continue
+                        rate = counts["success"] / total
 
-                    # Determine adjustment
-                    if rate > 0.7:
-                        delta = 0.1  # Boost winning strategy
-                        changes.append(f"{dt}: success rate {rate:.0%} → boost +0.1")
-                    elif rate < 0.3:
-                        delta = -0.15  # Reduce failing strategy
-                        changes.append(f"{dt}: success rate {rate:.0%} → reduce -0.15")
-                    else:
-                        delta = 0.0
+                        # Determine adjustment
+                        if rate > 0.7:
+                            delta = 0.1  # Boost winning strategy
+                            changes.append(f"{dt}: success rate {rate:.0%} → boost +0.1")
+                        elif rate < 0.3:
+                            delta = -0.15  # Reduce failing strategy
+                            changes.append(f"{dt}: success rate {rate:.0%} → reduce -0.15")
+                        else:
+                            delta = 0.0
 
-                    if delta != 0:
-                        for goal in _DEFAULT_WEIGHTS:
-                            if goal not in self._adjustments:
-                                self._adjustments[goal] = {}
-                            current = self._adjustments[goal].get(dt, 0)
-                            self._adjustments[goal][dt] = round(max(-0.5, min(0.5, current + delta)), 2)
+                        if delta != 0:
+                            for goal in _DEFAULT_WEIGHTS:
+                                if goal not in self._adjustments:
+                                    self._adjustments[goal] = {}
+                                current = self._adjustments[goal].get(dt, 0)
+                                self._adjustments[goal][dt] = round(max(-0.5, min(0.5, current + delta)), 2)
 
-            self._save()
-            return {"changes": changes, "adjustments": self._adjustments}
+                self._save()
+                return {"changes": changes, "adjustments": self._adjustments}
 
         except Exception as exc:
             logger.warning("Strategy update failed: %s", exc)
@@ -197,9 +210,11 @@ class StrategyOptimizer:
                 logger.debug("strategy adjustments load failed: %s", exc)
 
     def _save(self) -> None:
+        """W962-48: per-pid temp suffix so concurrent
+        processes don't collide on the rename target."""
         try:
             os.makedirs(os.path.dirname(_STRATEGY_PATH), exist_ok=True)
-            tmp = _STRATEGY_PATH + ".tmp"
+            tmp = _STRATEGY_PATH + ".tmp." + str(os.getpid())
             with open(tmp, "w") as f:
                 json.dump(self._adjustments, f)
             os.replace(tmp, _STRATEGY_PATH)

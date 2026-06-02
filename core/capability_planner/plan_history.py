@@ -854,79 +854,84 @@ def correlate_outcome_by_stats(
     if not event_id:
         return {"error": "missing_event_id"}
 
-    events = _load_history()
-    target = None
-    for e in events:
-        if e.get("event_id") == event_id:
-            target = e
-            break
-    if target is None:
-        return {"error": "event_not_found"}
+    # W962-48: span load+modify+save under the history lock
+    # so concurrent correlate calls + record_outcome don't
+    # clobber each other. Using `with` so the audit detects
+    # the lock + early-return paths still release correctly.
+    with _HISTORY_LOCK:
+        events = _load_history()
+        target = None
+        for e in events:
+            if e.get("event_id") == event_id:
+                target = e
+                break
+        if target is None:
+            return {"error": "event_not_found"}
 
-    pre = target.get("pre_stats") or {}
-    if not pre:
-        return {"error": "no_pre_stats_baseline"}
+        pre = target.get("pre_stats") or {}
+        if not pre:
+            return {"error": "no_pre_stats_baseline"}
 
-    def _f(d: dict[str, Any], k: str) -> float:
-        try:
-            return float(d.get(k, 0) or 0)
-        except (ValueError, TypeError):
-            return 0.0
+        def _f(d: dict[str, Any], k: str) -> float:
+            try:
+                return float(d.get(k, 0) or 0)
+            except (ValueError, TypeError):
+                return 0.0
 
-    pre_rev = _f(pre, "total_revenue") or _f(pre, "revenue")
-    cur_rev = (
-        _f(current_stats, "total_revenue")
-        or _f(current_stats, "revenue")
-    )
-    pre_orders = _f(pre, "orders")
-    cur_orders = _f(current_stats, "orders")
-    pre_products = _f(pre, "products")
-    cur_products = _f(current_stats, "products")
+        pre_rev = _f(pre, "total_revenue") or _f(pre, "revenue")
+        cur_rev = (
+            _f(current_stats, "total_revenue")
+            or _f(current_stats, "revenue")
+        )
+        pre_orders = _f(pre, "orders")
+        cur_orders = _f(current_stats, "orders")
+        pre_products = _f(pre, "products")
+        cur_products = _f(current_stats, "products")
 
-    rev_delta = cur_rev - pre_rev
-    if pre_rev > 0:
-        rev_delta_pct = (rev_delta / pre_rev) * 100
-    elif cur_rev > 0:
-        rev_delta_pct = 100.0  # 0 -> N is +100%
-    else:
-        rev_delta_pct = 0.0
+        rev_delta = cur_rev - pre_rev
+        if pre_rev > 0:
+            rev_delta_pct = (rev_delta / pre_rev) * 100
+        elif cur_rev > 0:
+            rev_delta_pct = 100.0  # 0 -> N is +100%
+        else:
+            rev_delta_pct = 0.0
 
-    # Bucket the outcome by revenue trajectory. 1%
-    # threshold separates "real movement" from noise.
-    if rev_delta_pct >= 1.0:
-        outcome = "revenue_up"
-    elif rev_delta_pct <= -1.0:
-        outcome = "revenue_down"
-    else:
-        outcome = "revenue_flat"
+        # Bucket the outcome by revenue trajectory. 1%
+        # threshold separates "real movement" from noise.
+        if rev_delta_pct >= 1.0:
+            outcome = "revenue_up"
+        elif rev_delta_pct <= -1.0:
+            outcome = "revenue_down"
+        else:
+            outcome = "revenue_flat"
 
-    notes = (
-        f"revenue: ${pre_rev:,.2f} -> ${cur_rev:,.2f} "
-        f"({rev_delta_pct:+.1f}%); "
-        f"orders: {pre_orders:.0f} -> {cur_orders:.0f}; "
-        f"products: {pre_products:.0f} -> "
-        f"{cur_products:.0f}"
-    )
+        notes = (
+            f"revenue: ${pre_rev:,.2f} -> ${cur_rev:,.2f} "
+            f"({rev_delta_pct:+.1f}%); "
+            f"orders: {pre_orders:.0f} -> {cur_orders:.0f}; "
+            f"products: {pre_products:.0f} -> "
+            f"{cur_products:.0f}"
+        )
 
-    # Persist the new outcome + notes. Idempotent overwrite.
-    target["outcome"] = outcome
-    target["notes"] = notes
-    # Structured revenue delta so per-capability revenue
-    # impact can be aggregated without parsing notes strings.
-    target["revenue_delta"] = rev_delta
-    target["revenue_delta_pct"] = round(rev_delta_pct, 2)
-    if not _is_test_environment():
-        _atomic_write(events)
+        # Persist the new outcome + notes. Idempotent overwrite.
+        target["outcome"] = outcome
+        target["notes"] = notes
+        # Structured revenue delta so per-capability revenue
+        # impact can be aggregated without parsing notes strings.
+        target["revenue_delta"] = rev_delta
+        target["revenue_delta_pct"] = round(rev_delta_pct, 2)
+        if not _is_test_environment():
+            _atomic_write(events)
 
-    return {
-        "ok": True,
-        "outcome": outcome,
-        "revenue_delta": rev_delta,
-        "revenue_delta_pct": round(rev_delta_pct, 2),
-        "orders_delta": cur_orders - pre_orders,
-        "products_delta": cur_products - pre_products,
-        "notes": notes,
-    }
+        return {
+            "ok": True,
+            "outcome": outcome,
+            "revenue_delta": rev_delta,
+            "revenue_delta_pct": round(rev_delta_pct, 2),
+            "orders_delta": cur_orders - pre_orders,
+            "products_delta": cur_products - pre_products,
+            "notes": notes,
+        }
 
 
 def _reset_for_tests(path: Path | None = None) -> None:

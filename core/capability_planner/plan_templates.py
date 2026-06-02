@@ -27,12 +27,16 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# W962-48: spanning lock for concurrent save+delete.
+_LOCK = threading.RLock()
 
 
 _TEMPLATES_PATH = Path(
@@ -126,23 +130,25 @@ def save_template(
         return False
     if _is_test_environment():
         return False
-    data = _load_raw()
-    if name not in data and len(data) >= _MAX_TEMPLATES:
-        logger.debug(
-            "plan_templates: cap %d reached, refusing",
-            _MAX_TEMPLATES,
-        )
-        return False
-    data[name] = {
-        "name": name,
-        "goal": goal,
-        "description": description or "",
-        "created_at": (
-            data.get(name, {}).get("created_at")
-            or time.time()
-        ),
-    }
-    _atomic_write(data)
+    # W962-48: lock-spanning load+modify+save.
+    with _LOCK:
+        data = _load_raw()
+        if name not in data and len(data) >= _MAX_TEMPLATES:
+            logger.debug(
+                "plan_templates: cap %d reached, refusing",
+                _MAX_TEMPLATES,
+            )
+            return False
+        data[name] = {
+            "name": name,
+            "goal": goal,
+            "description": description or "",
+            "created_at": (
+                data.get(name, {}).get("created_at")
+                or time.time()
+            ),
+        }
+        _atomic_write(data)
     return True
 
 
@@ -188,11 +194,13 @@ def delete_template(name: str) -> bool:
         return False
     if _is_test_environment():
         return False
-    data = _load_raw()
-    if name not in data:
-        return False
-    del data[name]
-    _atomic_write(data)
+    # W962-48: lock-spanning load+modify+save.
+    with _LOCK:
+        data = _load_raw()
+        if name not in data:
+            return False
+        del data[name]
+        _atomic_write(data)
     return True
 
 

@@ -23,11 +23,20 @@ except Exception:
     _REVENUE_DIR = "/tmp/shopai_revenue"
 
 
+# W962-51: SHARED module-level lock. Multiple RevenueTracker
+# instances each used their own self._lock, but all wrote to
+# the same files in _REVENUE_DIR. Inter-instance races lost
+# revenue entries. Hoisted to module-level.
+_GLOBAL_LOCK = threading.RLock()
+
+
 class RevenueTracker:
     """Tracks revenue impact from ShopAI decisions."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        # W962-51: alias to shared lock so existing
+        # `with self._lock:` blocks keep working unchanged.
+        self._lock = _GLOBAL_LOCK
         os.makedirs(_REVENUE_DIR, exist_ok=True)
 
     def record_action(self, action_type: str, product: str, details: dict[str, Any]) -> str:
@@ -160,9 +169,12 @@ class RevenueTracker:
             self._save_unlocked(name, entries)
 
     def _save_unlocked(self, name: str, entries: list[dict]) -> None:
-        """Save without acquiring lock — caller must hold lock. Atomic write."""
+        """Save without acquiring lock — caller must hold lock. Atomic write.
+
+        W962-51: per-pid temp suffix so concurrent processes
+        don't collide on the rename target."""
         path = os.path.join(_REVENUE_DIR, f"{name}.json")
-        tmp_path = path + ".tmp"
+        tmp_path = path + ".tmp." + str(os.getpid())
         try:
             with open(tmp_path, "w") as f:
                 json.dump(entries, f)
