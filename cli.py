@@ -3740,6 +3740,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="Emit raw JSON instead of the text view",
     )
+    pattern_q_audit_p.add_argument(
+        "--strict", action="store_true",
+        help=(
+            "W962-33: also probe every engine with malformed "
+            "input (string-where-dict-expected, nonsense "
+            "numeric strings, list-where-dict-expected). "
+            "Catches the W962-13/14 class -- engines missing "
+            "a top-level try/except in run() that catches bad "
+            "operator input. Opt-in for periodic sweeps; "
+            "default CI behaviour unchanged."
+        ),
+    )
 
     pattern_z_audit_p = sub.add_parser(
         "pattern-z-audit",
@@ -40635,11 +40647,12 @@ def _cmd_pattern_q_audit(args) -> None:
 
     Exit 0 = clean. Exit 1 = at least one engine violates.
     """
+    strict = bool(getattr(args, "strict", False))
     try:
         from engines._output_schema_audit import (
             audit_engine_output_schema,
         )
-        report = audit_engine_output_schema()
+        report = audit_engine_output_schema(strict=strict)
     except Exception as exc:  # noqa: BLE001
         logger.debug("pattern Q audit raised: %s", exc)
         if getattr(args, "json", False):
