@@ -248,9 +248,13 @@ class EpisodicMemory:
                 self._episodes = self._episodes[-5000:]
 
             path = os.path.join(self._dir, "episodes.json")
-            tmp = path + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(self._episodes, f, default=str)
+            # W962-62: per-pid temp + utf-8 + ensure_ascii=False.
+            tmp = path + ".tmp." + str(os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(
+                    self._episodes, f, default=str,
+                    ensure_ascii=False,
+                )
             os.replace(tmp, path)
         except Exception as exc:
             logger.warning("Failed to persist episodes: %s", exc)
@@ -260,7 +264,9 @@ class EpisodicMemory:
         path = os.path.join(self._dir, "episodes.json")
         try:
             if os.path.exists(path):
-                with open(path) as f:
+                # W962-62: utf-8 so cp1252 doesn't mojibake
+                # episodes written by another process.
+                with open(path, encoding="utf-8") as f:
                     self._episodes = json.load(f)
                 logger.info("Episodic memory loaded: %d episodes", len(self._episodes))
         except Exception as exc:

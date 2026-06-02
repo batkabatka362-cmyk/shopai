@@ -218,7 +218,10 @@ class KPITracker:
             entries: list = []
             if os.path.exists(path):
                 try:
-                    with open(path) as f:
+                    # W962-62: utf-8 so corrupted-file recovery
+                    # doesn't mistake encoding mismatch for
+                    # corruption + move the only copy aside.
+                    with open(path, encoding="utf-8") as f:
                         loaded = json.load(f)
                     entries = loaded if isinstance(loaded, list) else []
                     if not isinstance(loaded, list):
@@ -226,7 +229,9 @@ class KPITracker:
                         # it up, start fresh.
                         self._backup_corrupted(path)
                         entries = []
-                except (json.JSONDecodeError, OSError):
+                except (
+                    json.JSONDecodeError, OSError, UnicodeError,
+                ):
                     self._backup_corrupted(path)
                     entries = []
             entries.append(entry)
@@ -236,10 +241,10 @@ class KPITracker:
             # processes don't collide on the rename target.
             tmp = path + ".tmp." + str(os.getpid())
             try:
-                with open(tmp, "w") as f:
-                    json.dump(entries, f)
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(entries, f, ensure_ascii=False)
                 os.replace(tmp, path)
-            except OSError as exc:
+            except (OSError, UnicodeError) as exc:
                 logger.warning("kpi_tracker: failed to write %s: %s", path, exc)
                 # Best-effort cleanup of the tmp file so we
                 # don't leave garbage behind.
@@ -255,9 +260,13 @@ class KPITracker:
             if not os.path.exists(path):
                 return []
             try:
-                with open(path) as f:
+                # W962-62: utf-8 so cp1252 doesn't reject
+                # UTF-8 content written by another process.
+                with open(path, encoding="utf-8") as f:
                     data = json.load(f)
-            except (json.JSONDecodeError, OSError):
+            except (
+                json.JSONDecodeError, OSError, UnicodeError,
+            ):
                 self._backup_corrupted(path)
                 return []
             if not isinstance(data, list):

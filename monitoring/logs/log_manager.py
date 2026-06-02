@@ -78,18 +78,25 @@ class LogManager:
         }
 
     def export(self, filepath: str, format: str = "json") -> None:
-        """Export logs to a file."""
+        """Export logs to a file.
+
+        W962-62: explicit utf-8 + ensure_ascii=False. Pre-fix
+        Windows default cp1252 would raise UnicodeEncodeError
+        on any non-Latin-1 char (em-dash, emoji, CJK customer
+        name) in any log entry, crashing the export mid-write."""
         if format == "json":
-            with open(filepath, "w") as f:
-                json.dump(self._logs, f, indent=2)
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(
+                    self._logs, f, indent=2, ensure_ascii=False,
+                )
         elif format == "csv":
-            with open(filepath, "w") as f:
+            with open(filepath, "w", encoding="utf-8") as f:
                 f.write("id,level,timestamp,source,message\n")
                 for entry in self._logs:
                     msg = entry["message"].replace('"', '""')
                     f.write(f'{entry["id"]},{entry["level"]},{entry["timestamp"]},{entry["source"]},"{msg}"\n')
         else:
-            with open(filepath, "w") as f:
+            with open(filepath, "w", encoding="utf-8") as f:
                 for entry in self._logs:
                     f.write(f'[{entry["timestamp"]}] {entry["level"]} - {entry["message"]}\n')
 
@@ -108,7 +115,16 @@ class LogManager:
 
     def _append_to_file(self, entry: dict) -> None:
         try:
-            with open(self._persist_path, "a") as f:
-                f.write(json.dumps(entry) + "\n")
-        except OSError:
+            # W962-62: utf-8 + ensure_ascii=False. Pre-fix the
+            # bare OSError catch let UnicodeEncodeError ESCAPE
+            # because it's not an OSError -- the persistent log
+            # silently stopped accumulating any entry containing
+            # non-Latin-1 chars.
+            with open(
+                self._persist_path, "a", encoding="utf-8",
+            ) as f:
+                f.write(
+                    json.dumps(entry, ensure_ascii=False) + "\n",
+                )
+        except (OSError, UnicodeError):
             pass

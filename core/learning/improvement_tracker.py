@@ -148,12 +148,16 @@ class ImprovementTracker:
         parent = os.path.dirname(self._path)
         if parent:
             os.makedirs(parent, exist_ok=True)
-        tmp = self._path + ".tmp"
+        # W962-62: per-pid temp + utf-8 + ensure_ascii=False.
+        tmp = self._path + ".tmp." + str(os.getpid())
         try:
-            with open(tmp, "w") as f:
-                json.dump(self._improvements[-10000:], f)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(
+                    self._improvements[-10000:], f,
+                    ensure_ascii=False,
+                )
             os.replace(tmp, self._path)
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             logger.warning("Failed to persist improvements: %s", exc)
             try:
                 if os.path.exists(tmp):
@@ -167,14 +171,19 @@ class ImprovementTracker:
         if not os.path.exists(self._path):
             return
         try:
-            with open(self._path) as f:
+            # W962-62: utf-8 so corrupted-file recovery
+            # doesn't mistake encoding mismatch for corruption.
+            with open(self._path, encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, list):
                 raise ValueError(
                     f"improvements file is {type(data).__name__}, expected list"
                 )
             self._improvements = data
-        except (json.JSONDecodeError, OSError, ValueError) as exc:
+        except (
+            json.JSONDecodeError, OSError, ValueError,
+            UnicodeError,
+        ) as exc:
             backup = f"{self._path}.corrupted.{int(time.time())}"
             try:
                 os.replace(self._path, backup)

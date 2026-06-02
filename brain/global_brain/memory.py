@@ -214,9 +214,21 @@ class GlobalBrainMemory:
             self._knowledge = self._knowledge[-10000:]
         try:
             path = os.path.join(self._dir, "knowledge.json")
-            tmp = path + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump({"knowledge": self._knowledge, "patterns": self._patterns}, f, default=str)
+            # W962-62: per-pid temp suffix + utf-8 +
+            # ensure_ascii=False. Pre-fix Shopify product names
+            # / customer notes / engine narratives with non-ASCII
+            # would raise UnicodeEncodeError on Windows; the
+            # bare Exception catch swallowed it so the brain
+            # silently stopped persisting.
+            tmp = path + ".tmp." + str(os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "knowledge": self._knowledge,
+                        "patterns": self._patterns,
+                    },
+                    f, default=str, ensure_ascii=False,
+                )
             os.replace(tmp, path)
         except Exception:
             pass
@@ -225,7 +237,9 @@ class GlobalBrainMemory:
         try:
             path = os.path.join(self._dir, "knowledge.json")
             if os.path.exists(path):
-                with open(path) as f:
+                # W962-62: utf-8 so cp1252 doesn't reject
+                # UTF-8 content written by other processes.
+                with open(path, encoding="utf-8") as f:
                     data = json.load(f)
                 self._knowledge = data.get("knowledge", [])
                 self._patterns = data.get("patterns", [])

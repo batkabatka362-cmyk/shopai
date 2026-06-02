@@ -334,14 +334,23 @@ class OutcomeTracker:
         if not os.path.exists(path):
             return []
         try:
-            with open(path) as f:
+            # W962-59: explicit utf-8 encoding. Pre-fix Windows
+            # used cp1252 default + a single non-cp1252 char
+            # (em-dash in a product title, customer name) would
+            # raise UnicodeDecodeError. The except below treated
+            # that as corruption + RENAMED the file to
+            # .corrupted.<ts> -- silent data loss.
+            with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, list):
                 raise ValueError(
                     f"outcome file is {type(data).__name__}, expected list"
                 )
             return data
-        except (json.JSONDecodeError, OSError, ValueError) as exc:
+        except (
+            json.JSONDecodeError, OSError, ValueError,
+            UnicodeError,
+        ) as exc:
             backup = f"{path}.corrupted.{int(time.time())}"
             try:
                 os.replace(path, backup)
@@ -361,14 +370,18 @@ class OutcomeTracker:
             self._save_unlocked(engine, entries)
 
     def _save_unlocked(self, engine: str, entries: list[dict]) -> None:
-        """Save without acquiring lock — caller must hold lock."""
+        """Save without acquiring lock — caller must hold lock.
+
+        W962-59: explicit utf-8 + ensure_ascii=False so
+        non-ASCII engine narratives + Shopify entity data
+        round-trip cleanly across platforms."""
         if not _valid_engine_name(engine):
             return
         path = os.path.join(_OUTCOME_DIR, f"{engine}.json")
-        tmp_path = path + ".tmp"
+        tmp_path = path + ".tmp." + str(os.getpid())
         try:
-            with open(tmp_path, "w") as f:
-                json.dump(entries, f)
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(entries, f, ensure_ascii=False)
             os.replace(tmp_path, path)  # Atomic on POSIX
         except OSError as exc:
             logger.error("Failed to save outcomes for %s: %s", engine, exc)

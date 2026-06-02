@@ -222,15 +222,24 @@ class FeedbackStore:
         from audit passes 20 / 22.
         """
         path = os.path.join(self._store_dir, f"{engine_name}.json")
-        tmp = path + ".tmp"
+        # W962-59: per-pid temp + utf-8 encoding + ensure_ascii
+        # False. Pre-fix Windows default cp1252 raised
+        # UnicodeEncodeError on Shopify body_html / product
+        # titles / AI narratives; the bare OSError catch let
+        # UnicodeEncodeError escape AND wedged feedback
+        # persistence silently.
+        tmp = path + ".tmp." + str(os.getpid())
         try:
-            with open(tmp, "w") as f:
-                json.dump(self._memory[engine_name][-5000:], f)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(
+                    self._memory[engine_name][-5000:], f,
+                    ensure_ascii=False,
+                )
             os.replace(tmp, path)
             # Successful persist clears any prior error for this
             # engine.
             self._persist_errors.pop(engine_name, None)
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             self._persist_errors[engine_name] = f"{type(exc).__name__}: {exc}"
             logger.warning("Failed to persist feedback for %s: %s", engine_name, exc)
             # Best-effort cleanup of the half-written tmp file so
@@ -257,14 +266,20 @@ class FeedbackStore:
         if not os.path.exists(path):
             return []
         try:
-            with open(path) as f:
+            # W962-59: explicit utf-8 so the corrupted-file
+            # recovery path doesn't mistake encoding mismatch
+            # for corruption + move the only copy aside.
+            with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, list):
                 raise ValueError(
                     f"feedback file is {type(data).__name__}, expected list"
                 )
             return data
-        except (json.JSONDecodeError, OSError, ValueError) as exc:
+        except (
+            json.JSONDecodeError, OSError, ValueError,
+            UnicodeError,
+        ) as exc:
             backup = f"{path}.corrupted.{int(time.time())}"
             try:
                 os.replace(path, backup)
