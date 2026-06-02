@@ -471,7 +471,36 @@ def _normalise_applied_discount(
             "shopify_draft_orders",
             f"{where} 'applied_discount' must be a dict",
         )
-    value_type = raw.get("value_type") or raw.get("valueType") or "PERCENTAGE"
+    # W962-66 Pattern G monetary fix: distinguish missing key
+    # from explicit empty value. Pre-fix `raw.get("value_type")
+    # or raw.get("valueType") or "PERCENTAGE"` would silently
+    # flip an explicit empty-string value to PERCENTAGE (i.e.
+    # 10 / 100 = 10% off instead of $10 off -- 10x revenue
+    # impact difference). Now: explicit empty string raises;
+    # only truly-missing key defaults.
+    _MISSING = object()
+    vt_snake = raw.get("value_type", _MISSING)
+    vt_camel = raw.get("valueType", _MISSING)
+    if vt_snake is _MISSING and vt_camel is _MISSING:
+        value_type = "PERCENTAGE"
+    elif vt_snake is not _MISSING and vt_snake == "":
+        raise AdapterValidationError(
+            "shopify_draft_orders",
+            f"{where} 'applied_discount.value_type' was "
+            "explicit empty string. Provide PERCENTAGE or "
+            "FIXED_AMOUNT, or omit the key for the default.",
+        )
+    elif vt_camel is not _MISSING and vt_camel == "":
+        raise AdapterValidationError(
+            "shopify_draft_orders",
+            f"{where} 'applied_discount.valueType' was "
+            "explicit empty string. Provide PERCENTAGE or "
+            "FIXED_AMOUNT, or omit the key for the default.",
+        )
+    else:
+        value_type = (
+            vt_snake if vt_snake is not _MISSING else vt_camel
+        )
     if not isinstance(value_type, str):
         raise AdapterValidationError(
             "shopify_draft_orders",
