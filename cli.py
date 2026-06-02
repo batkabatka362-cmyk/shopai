@@ -44498,6 +44498,21 @@ def _cmd_actions(args) -> None:
             print(f"✓ Action {args.action_id} executed: {result.get('status')}")
 
     elif args.action_cmd == "approve-all":
+        # W962-34: actions approve-all executes EVERY pending
+        # action across every store/engine in one call. Same
+        # blast radius as cycle-run --yes; gate on a confirm
+        # env-var so an accidental invocation doesn't burn
+        # the whole queue.
+        if not os.environ.get(
+            "SHOPAI_APPROVE_ALL_CONFIRM",
+        ):
+            print(
+                "Refusing: `actions approve-all` executes "
+                "EVERY pending action across every store. "
+                "Set SHOPAI_APPROVE_ALL_CONFIRM=1 to confirm "
+                "the blast radius."
+            )
+            return
         results = executor.approve_all()
         print(f"✓ Approved {len(results)} actions")
 
@@ -50160,6 +50175,30 @@ def _cmd_approvals_approve_all(args) -> None:
             filt.append(f"min_confidence={args.min_confidence}")
         suffix = f" ({', '.join(filt)})" if filt else ""
         print(f"No PENDING actions matched{suffix}.")
+        return
+
+    # W962-34: bulk-approve with NO filters operates on every
+    # engine + every store at once. Operator-supplied filters
+    # narrow blast radius (engine restrict + min-confidence
+    # floor); when both are absent, require an env-var confirm
+    # so an accidental run can't carpet-approve the empire's
+    # whole queue.
+    unscoped = (
+        not args.engine
+        and args.min_confidence is None
+        and not args.dry_run
+    )
+    if unscoped and not os.environ.get(
+        "SHOPAI_APPROVE_ALL_CONFIRM",
+    ):
+        print(
+            f"Refusing: bulk approve-all without --engine OR "
+            f"--min-confidence would execute {len(candidates)} "
+            "action(s) across every engine + store. Set "
+            "SHOPAI_APPROVE_ALL_CONFIRM=1 to confirm, or add "
+            "--engine X / --min-confidence N to scope, or "
+            "preview with --dry-run."
+        )
         return
 
     if args.dry_run:

@@ -115,7 +115,10 @@ class TestPending:
             _ns(engine=None, limit=20),
         )
         assert code == 0
-        assert "Pending actions (1)" in out
+        # Format gained a `; sort=N` qualifier post-original
+        # write; substring check is enough to verify the header
+        # renders.
+        assert "Pending actions (1" in out
         assert action.id in out
         assert "cart_recovery/mint_cart_recovery_code" in out
         assert "conf=0.85" in out

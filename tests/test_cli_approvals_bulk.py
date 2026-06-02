@@ -37,6 +37,11 @@ def isolated_queue(tmp_path: Path, monkeypatch):
 
     fresh = ApprovalQueue(db_path=tmp_path / "approval.db")
     monkeypatch.setattr(q, "_INSTANCE", fresh)
+    # W962-34: bulk approve-all without filters needs an
+    # operator confirm env-var. Set it for every bulk test so
+    # the existing flow tests keep working; tests that
+    # exercise the guard verify it explicitly by clearing it.
+    monkeypatch.setenv("SHOPAI_APPROVE_ALL_CONFIRM", "1")
     yield fresh
     fresh._conn.close()
 
