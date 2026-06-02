@@ -96,7 +96,15 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 payload = json.loads(body)
                 from core.system.webhook_handler import get_webhook_handler
                 wh = get_webhook_handler()
-                result = wh.process(topic, payload, hmac_header)
+                # W962-39: pass the RAW request body through to
+                # the handler so HMAC verification matches what
+                # Shopify signed. Re-serializing the parsed
+                # payload (the pre-fix behaviour) produced
+                # different bytes -> every real webhook rejected.
+                result = wh.process(
+                    topic, payload, hmac_header,
+                    raw_body=body,
+                )
                 self._json_response(result)
             except Exception as exc:
                 logger.warning("webhook processing failed: %s", exc)

@@ -27,11 +27,43 @@ class WebhookHandler:
         self._handlers.setdefault(topic, []).append(handler)
 
     def process(self, topic: str, payload: dict,
-                hmac_header: str = "") -> dict[str, Any]:
-        """Process an incoming webhook."""
-        # Verify HMAC if secret is set
-        if self._secret and hmac_header:
-            if not self._verify_hmac(json.dumps(payload), hmac_header):
+                hmac_header: str = "",
+                raw_body: bytes | str | None = None) -> dict[str, Any]:
+        """Process an incoming webhook.
+
+        W962-39: hardened HMAC verification.
+          - When the handler has a secret, the request MUST carry
+            a valid HMAC header (fail-closed). Previously a missing
+            header silently bypassed verification.
+          - HMAC is computed over the RAW REQUEST BODY, not a
+            re-serialized payload dict. Pre-fix the json.dumps
+            round-trip produced different bytes than Shopify
+            signed -> every real webhook rejected.
+          - When the handler has NO secret, verification is
+            still skipped (dev / test path); operators are
+            expected to set the secret before going live.
+        """
+        if self._secret:
+            if not hmac_header:
+                return {
+                    "status": "rejected",
+                    "reason": "missing_hmac_header",
+                }
+            # Prefer raw bytes when the caller supplied them
+            # (HTTP server passes them through). Fall back to
+            # re-serializing the payload only if no raw body is
+            # available (legacy callers / tests).
+            verify_body: bytes
+            if raw_body is not None:
+                verify_body = (
+                    raw_body if isinstance(raw_body, bytes)
+                    else raw_body.encode("utf-8")
+                )
+            else:
+                verify_body = json.dumps(
+                    payload,
+                ).encode("utf-8")
+            if not self._verify_hmac_bytes(verify_body, hmac_header):
                 return {"status": "rejected", "reason": "invalid_hmac"}
 
         event = {
@@ -136,8 +168,42 @@ class WebhookHandler:
         return {"action": "customer_recorded", "customer_id": cid}
 
     def _verify_hmac(self, body: str, header: str) -> bool:
-        digest = hmac.new(self._secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+        """Legacy hex-digest verification kept for back-compat
+        with any caller that still uses the old signature.
+
+        W962-39: real Shopify webhooks use BASE64-encoded
+        HMAC-SHA256 (verified via _verify_hmac_bytes /
+        core.feedback.webhook_security.verify_hmac). The hex
+        variant here was wrong against Shopify out of the box;
+        production traffic goes through process(... raw_body=)
+        which routes to the production verifier.
+        """
+        digest = hmac.new(
+            self._secret.encode(), body.encode(), hashlib.sha256,
+        ).hexdigest()
         return hmac.compare_digest(digest, header)
+
+    def _verify_hmac_bytes(
+        self, body: bytes, header: str,
+    ) -> bool:
+        """W962-39: delegate to the production base64 verifier
+        from W57. Same secret + raw body contract Shopify ships."""
+        try:
+            from core.feedback.webhook_security import (
+                verify_hmac,
+            )
+        except Exception:  # noqa: BLE001
+            # Last-ditch fallback to inline base64 compute so the
+            # handler never silently passes on broken imports.
+            import base64 as _b64
+            digest = hmac.new(
+                self._secret.encode(), body, hashlib.sha256,
+            ).digest()
+            expected = _b64.b64encode(digest).decode("utf-8")
+            return hmac.compare_digest(
+                expected.strip(), (header or "").strip(),
+            )
+        return verify_hmac(body, header, self._secret)
 
     def get_events(self, limit: int = 50) -> list[dict]:
         return self._events[-limit:]
