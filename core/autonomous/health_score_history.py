@@ -26,12 +26,16 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# W962-43: spanning lock for concurrent record_snapshot calls.
+_LOCK = threading.RLock()
 
 
 _HISTORY_PATH = Path(
@@ -141,11 +145,13 @@ def record_snapshot(
         verdict=verdict,
         recorded_at=time.time(),
     )
-    entries = _load_raw()
-    entries.append(asdict(event))
-    if len(entries) > _MAX_EVENTS:
-        entries = entries[-_MAX_EVENTS:]
-    _atomic_write(entries)
+    # W962-43: span load+append+write.
+    with _LOCK:
+        entries = _load_raw()
+        entries.append(asdict(event))
+        if len(entries) > _MAX_EVENTS:
+            entries = entries[-_MAX_EVENTS:]
+        _atomic_write(entries)
     return True
 
 

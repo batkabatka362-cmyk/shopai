@@ -43,12 +43,17 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# W962-43: spanning lock for concurrent record_demote /
+# record_release calls.
+_LOCK = threading.RLock()
 
 
 _HISTORY_PATH = Path(
@@ -142,12 +147,14 @@ def _atomic_write(entries: list[dict[str, Any]]) -> None:
 def _append_event(event: AutoDemoteEvent) -> bool:
     if _is_test_environment():
         return False
-    entries = _load_raw()
-    entries.append(asdict(event))
-    # Cap at MAX_EVENTS oldest-first
-    if len(entries) > _MAX_EVENTS:
-        entries = entries[-_MAX_EVENTS:]
-    _atomic_write(entries)
+    # W962-43: span load+append+write.
+    with _LOCK:
+        entries = _load_raw()
+        entries.append(asdict(event))
+        # Cap at MAX_EVENTS oldest-first
+        if len(entries) > _MAX_EVENTS:
+            entries = entries[-_MAX_EVENTS:]
+        _atomic_write(entries)
     return True
 
 

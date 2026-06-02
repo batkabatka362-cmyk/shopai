@@ -44,12 +44,17 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# W962-43: spanning lock for concurrent promote / demote / clear.
+# Real exposure: operator + automation flipping the same name.
+_LOCK = threading.RLock()
 
 
 _OVERRIDES_PATH = Path(
@@ -215,20 +220,22 @@ def _set_override(
         return False
     if _is_test_environment():
         return False
-    entries = _load_raw()
-    # Strip any existing entry for this name (both kinds);
-    # we add the new one at the end.
-    entries = [
-        e for e in entries
-        if str(e.get("name", "")) != name
-    ]
-    entries.append({
-        "name": name,
-        "kind": kind,
-        "reason": reason,
-        "recorded_at": time.time(),
-    })
-    _atomic_write(entries)
+    # W962-43: span load+strip+append+write.
+    with _LOCK:
+        entries = _load_raw()
+        # Strip any existing entry for this name (both kinds);
+        # we add the new one at the end.
+        entries = [
+            e for e in entries
+            if str(e.get("name", "")) != name
+        ]
+        entries.append({
+            "name": name,
+            "kind": kind,
+            "reason": reason,
+            "recorded_at": time.time(),
+        })
+        _atomic_write(entries)
     return True
 
 
@@ -248,15 +255,17 @@ def clear(name: str) -> bool:
     test-env / I/O error."""
     if not name or _is_test_environment():
         return False
-    entries = _load_raw()
-    before = len(entries)
-    entries = [
-        e for e in entries
-        if str(e.get("name", "")) != name
-    ]
-    if len(entries) == before:
-        return False
-    _atomic_write(entries)
+    # W962-43: span load+strip+write.
+    with _LOCK:
+        entries = _load_raw()
+        before = len(entries)
+        entries = [
+            e for e in entries
+            if str(e.get("name", "")) != name
+        ]
+        if len(entries) == before:
+            return False
+        _atomic_write(entries)
     return True
 
 
