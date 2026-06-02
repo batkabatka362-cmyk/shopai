@@ -271,6 +271,28 @@ def _extract_tag_literals(tree: ast.AST) -> set[str]:
                 if prefix not in error_prefixes:
                     out.add(elt.value)
 
+    # Pass 3b: tag-literals inside ast.Set (e.g. literal `{tag1,
+    # tag2}` or `frozenset({tag1, tag2})`). The autonomy domains
+    # (order_followup / customer_outreach / shipping_alert / ...)
+    # ship a CURATED frozenset of allowed dash-style tags --
+    # passes 1+3 missed these, so the catalog showed the engines
+    # as tagless. Now scanned the same way as list/tuple.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Set):
+            continue
+        for elt in node.elts:
+            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                lit = elt.value
+                # Accept both colon-style ("ns:value") and dash-
+                # style ("shopai-followup-*") tags.
+                if (
+                    _TAG_PATTERN.match(lit)
+                    or _TAG_DASH_PATTERN.match(lit)
+                ):
+                    prefix = lit.split(":", 1)[0].split("-")[0]
+                    if prefix not in error_prefixes:
+                        out.add(lit)
+
     # Pass 4: tag-literals passed as arguments to function calls
     # (e.g. tags.append("fraud-review") inside a helper). Restricted
     # to dash-style tags with 2+ dashes to avoid false positives

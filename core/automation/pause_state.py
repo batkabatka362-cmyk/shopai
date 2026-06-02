@@ -87,8 +87,14 @@ def save_state(path: Path, state: PauseState) -> None:
             f.flush()
             try:
                 os.fsync(f.fileno())
-            except OSError:
-                pass
+            except OSError as exc:
+                # fsync failures are best-effort; the
+                # os.replace() that follows is still atomic.
+                # Logging at debug to keep the Wave 11
+                # no-bare-except-pass policy happy.
+                logger.debug(
+                    "pause_state fsync failed: %s", exc,
+                )
         os.replace(tmp, path)
     except Exception as exc:  # noqa: BLE001
         logger.debug("pause_state save raised: %s", exc)
