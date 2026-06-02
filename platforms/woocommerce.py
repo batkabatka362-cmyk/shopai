@@ -45,13 +45,39 @@ class WooCommerceAdapter:
     def update_product(self, product_id: str, fields: dict) -> dict:
         return self._put("products/{}".format(product_id), fields)
 
-    @staticmethod
-    def _normalize_product(p: dict) -> dict:
+    # W962-71: meta keys WooCommerce plugins use to record
+    # cost-of-goods. The naive `meta_data[0]` read would grab
+    # whatever happens to be first (rating, review count, plugin
+    # tracker, ...) and silently miscast it as cost, feeding the
+    # ROAS report + dynamic-pricing applier garbage.
+    _COG_META_KEYS = (
+        "_wc_cog_cost",        # Cost of Goods plugin
+        "_wc_cog_cost_meta",   # Cost of Goods plugin (variants)
+        "cost",
+    )
+
+    @classmethod
+    def _extract_cost(cls, p: dict) -> float:
+        meta = p.get("meta_data") or []
+        if not isinstance(meta, list):
+            return 0.0
+        for entry in meta:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("key") in cls._COG_META_KEYS:
+                try:
+                    return float(entry.get("value", 0) or 0)
+                except (TypeError, ValueError):
+                    return 0.0
+        return 0.0
+
+    @classmethod
+    def _normalize_product(cls, p: dict) -> dict:
         return {
             "id": str(p.get("id", "")),
             "name": p.get("name", ""),
             "price": float(p.get("price", 0) or 0),
-            "cost": float(p.get("meta_data", [{}])[0].get("value", 0) if p.get("meta_data") else 0),
+            "cost": cls._extract_cost(p),
             "description": p.get("description", ""),
             "tags": ", ".join(t.get("name", "") for t in p.get("tags", [])),
             "category": p.get("categories", [{}])[0].get("name", "") if p.get("categories") else "",

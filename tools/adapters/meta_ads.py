@@ -129,7 +129,10 @@ class MetaAdsAdapter(BaseToolAdapter):
             "name": params["name"],
             "objective": params["objective"],
             "status": "ACTIVE",
-            "daily_budget": int(params["daily_budget"] * 100),
+            # W962-71: round, don't truncate. int(float * 100)
+            # drops sub-cent on IEEE-754 artifacts (10.99 ->
+            # 1098 instead of 1099) -> systematic underbudget.
+            "daily_budget": int(round(params["daily_budget"] * 100)),
             "special_ad_categories": params.get("special_ad_categories", []),
         }
         return {
@@ -162,7 +165,8 @@ class MetaAdsAdapter(BaseToolAdapter):
         return {
             "endpoint": f"/{self._api_version}/{params['campaign_id']}",
             "method": "POST",
-            "payload": {"daily_budget": int(params["daily_budget"] * 100)},
+            # W962-71: round, don't truncate.
+            "payload": {"daily_budget": int(round(params["daily_budget"] * 100))},
         }
 
     def _get_metrics(self, params: dict) -> dict:

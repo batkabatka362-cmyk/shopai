@@ -305,7 +305,8 @@ class CampaignManager:
             url = _fb_campaign_url(campaign_id)
             data = urllib.parse.urlencode(
                 {
-                    "daily_budget": int(new_budget * 100),
+                    # W962-71: round, don't truncate.
+                    "daily_budget": int(round(new_budget * 100)),
                     "access_token": access_token,
                 }
             ).encode()
@@ -321,7 +322,8 @@ class CampaignManager:
                 "Authorization": f"Bearer {credentials.get('access_token', '')}",
                 "developer-token": credentials.get("developer_token", ""),
             }
-            budget_micros = int(new_budget * 1_000_000)
+            # W962-71: round, don't truncate.
+            budget_micros = int(round(new_budget * 1_000_000))
             payload = {
                 "operations": [
                     {

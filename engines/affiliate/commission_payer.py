@@ -404,11 +404,25 @@ def _build_gift_card_params(
     currency: str,
 ) -> dict[str, Any]:
     """Build the SHOPIFY_CREATE_GIFT_CARD friendly call shape."""
-    amount = float(commission.get("commission_amount", 0.0))
+    # W962-71: use Decimal for the gift-card face value to
+    # avoid IEEE-754 binary drift on commission_amount =
+    # revenue * rate. Float ops upstream may have introduced
+    # tiny artifacts (e.g. 0.1+0.2 = 0.300000000000000004);
+    # quantizing in Decimal with ROUND_HALF_UP produces the
+    # cent value a human accountant expects.
+    from decimal import Decimal, ROUND_HALF_UP
+    raw_amount = commission.get("commission_amount", 0.0)
+    try:
+        amount_dec = Decimal(str(raw_amount)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP,
+        )
+    except (ValueError, ArithmeticError):
+        amount_dec = Decimal("0.00")
+    amount = float(amount_dec)
     period_sales = commission.get("period_sales", 0.0)
 
     params: dict[str, Any] = {
-        "initial_value": round(amount, 2),
+        "initial_value": amount,
         "currency": currency,
         "note": (
             f"{_NOTE_PREFIX}: ${period_sales} in sales × "
