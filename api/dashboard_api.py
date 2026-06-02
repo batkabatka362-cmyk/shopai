@@ -87,9 +87,28 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0]
-        if path == "/api/webhook":
+        # W962-40: read the body ONCE, bounded, before dispatch.
+        # Pre-fix the body was only read inside the
+        # /api/webhook branch; POST /api/stores referenced
+        # `body` -> NameError on every store-registration POST.
+        # Also enforce a 1 MB cap so a malicious client can't
+        # DoS the receiver via Content-Length: 999999999.
+        MAX_BODY_BYTES = 1_048_576
+        try:
             length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length) if length else b"{}"
+        except (TypeError, ValueError):
+            self._json_response(
+                {"error": "invalid Content-Length"}, 400,
+            )
+            return
+        if length > MAX_BODY_BYTES:
+            self._json_response(
+                {"error": "payload too large"}, 413,
+            )
+            return
+        body = self.rfile.read(length) if length else b"{}"
+
+        if path == "/api/webhook":
             topic = self.headers.get("X-Shopify-Topic", "unknown")
             hmac_header = self.headers.get("X-Shopify-Hmac-Sha256", "")
             try:
