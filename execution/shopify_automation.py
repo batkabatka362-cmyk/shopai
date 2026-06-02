@@ -268,12 +268,26 @@ class ShopifyAutomation:
 
     # == HELPERS ===================================================
 
+    # W962-69: cap response reads. Shopify Admin responses are
+    # typically < 100 KB; 16 MB is generous slack while still
+    # OOM-proofing against MITM / misrouted endpoints.
+    _MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+
+    def _read_bounded(self, resp):
+        raw = resp.read(self._MAX_RESPONSE_BYTES + 1)
+        if len(raw) > self._MAX_RESPONSE_BYTES:
+            raise ValueError(
+                "shopify response exceeded "
+                f"{self._MAX_RESPONSE_BYTES} bytes"
+            )
+        return raw
+
     def _get(self, path):
         req = urllib.request.Request(
             "https://{}/admin/api/2024-01/{}".format(self._shop, path),
             headers={"X-Shopify-Access-Token": self._token})
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())
+            return json.loads(self._read_bounded(resp))
 
     def _post(self, path, payload):
         url = "https://{}/admin/api/2024-01/{}".format(self._shop, path)
@@ -283,7 +297,7 @@ class ShopifyAutomation:
                      "Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
-                return json.loads(resp.read())
+                return json.loads(self._read_bounded(resp))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode()[:200]
             return {"error": "HTTP {} {}".format(exc.code, body)}
@@ -296,7 +310,7 @@ class ShopifyAutomation:
                      "Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
-                return json.loads(resp.read())
+                return json.loads(self._read_bounded(resp))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode()[:200]
             return {"error": "HTTP {} {}".format(exc.code, body)}

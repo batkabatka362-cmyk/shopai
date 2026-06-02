@@ -12,6 +12,17 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+# W962-69: response-size ceiling. Without this, a hostile or
+# misbehaving upstream returning a multi-GB body would OOM the
+# process. 16 MB is plenty for any Shopify Admin / ads-API
+# response we ever see in production; a real response that hits
+# this cap is the bug to investigate, not the cap to raise.
+_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+
+
+class ResponseTooLarge(Exception):
+    """Raised when an HTTP response exceeds ``_MAX_RESPONSE_BYTES``."""
+
 
 class CircuitOpen(Exception):
     """Raised when the circuit breaker is open and requests are short-circuited."""
@@ -133,7 +144,14 @@ class SharedHTTPClient:
         )
 
         resp = urllib.request.urlopen(req, timeout=timeout)
-        body = resp.read().decode("utf-8", errors="replace")
+        # W962-69: cap response size. Read ONE extra byte so we
+        # can distinguish "at exactly the limit" from "exceeded".
+        raw = resp.read(_MAX_RESPONSE_BYTES + 1)
+        if len(raw) > _MAX_RESPONSE_BYTES:
+            raise ResponseTooLarge(
+                f"response exceeded {_MAX_RESPONSE_BYTES} bytes from {url}"
+            )
+        body = raw.decode("utf-8", errors="replace")
         resp_headers = {k: v for k, v in resp.getheaders()}
 
         parsed_json = None

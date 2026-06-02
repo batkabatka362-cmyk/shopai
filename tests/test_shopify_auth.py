@@ -272,7 +272,7 @@ class TestExchangeCode:
         class _FakeResp:
             def __enter__(self): return self
             def __exit__(self, *a): pass
-            def read(self):
+            def read(self, _size=-1):
                 return json.dumps({"access_token": "xch_tok", "expires_in": 1800}).encode()
 
         with patch.object(sa.urllib.request, "urlopen", return_value=_FakeResp()), \
@@ -289,7 +289,7 @@ class TestExchangeCode:
         class _FakeResp:
             def __enter__(self): return self
             def __exit__(self, *a): pass
-            def read(self):
+            def read(self, _size=-1):
                 return json.dumps({"error": "invalid_code"}).encode()
 
         with patch.object(sa.urllib.request, "urlopen", return_value=_FakeResp()):
@@ -469,7 +469,7 @@ class TestRequestTokenWireFormat:
         class _R:
             def __enter__(self): return self
             def __exit__(self, *a): pass
-            def read(self_inner):
+            def read(self_inner, _size=-1):
                 return json.dumps(payload).encode()
         return _R()
 

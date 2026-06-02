@@ -101,6 +101,17 @@ def write_env(env_path: Path, shop: str, client_id: str, client_secret: str) -> 
         if key not in seen:
             lines.append(f"{key}={value}")
     env_path.write_text("\n".join(lines) + "\n")
+    # W962-70: tighten perms on .env after writing the
+    # OAuth client_secret. Default umask leaves the file
+    # 0o644 (world-readable) on POSIX. chmod 0o600 mirrors
+    # the pattern at core/auth/shopify_auth.py:335. Best-
+    # effort on Windows where POSIX mode bits are largely
+    # ignored; the call is harmless there.
+    import os as _os
+    try:
+        _os.chmod(env_path, 0o600)
+    except OSError:
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:

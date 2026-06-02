@@ -197,8 +197,18 @@ class ShopifyAuth:
         )
 
         try:
+            # W962-69: cap the response. A client_credentials
+            # response is < 4 KB in practice; 1 MB defensive
+            # ceiling against MITM / proxy-injected payloads.
+            _OAUTH_RESPONSE_MAX = 1 * 1024 * 1024
             with urllib.request.urlopen(req, timeout=30) as resp:
-                raw = resp.read().decode("utf-8")
+                raw_bytes = resp.read(_OAUTH_RESPONSE_MAX + 1)
+            if len(raw_bytes) > _OAUTH_RESPONSE_MAX:
+                raise RuntimeError(
+                    "Shopify client_credentials response exceeded "
+                    f"{_OAUTH_RESPONSE_MAX} bytes; refusing to parse."
+                )
+            raw = raw_bytes.decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             # W962-57: don't interpolate raw response body into
             # the exception. Shopify error responses can echo
@@ -273,8 +283,25 @@ class ShopifyAuth:
             method="POST",
         )
 
+        # W962-69: cap the OAuth response read. A token-exchange
+        # response is < 4 KB in practice; 1 MB is a defensive
+        # ceiling that catches MITM / proxy-injection of nonsense
+        # bodies without burning operator memory.
+        _OAUTH_RESPONSE_MAX = 1 * 1024 * 1024
         with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            raw = resp.read(_OAUTH_RESPONSE_MAX + 1)
+        if len(raw) > _OAUTH_RESPONSE_MAX:
+            raise ValueError(
+                "Shopify code-exchange response exceeded "
+                f"{_OAUTH_RESPONSE_MAX} bytes; refusing to parse."
+            )
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"Shopify code-exchange response not valid JSON: "
+                f"{type(exc).__name__}"
+            ) from None
 
         if "access_token" not in data:
             # W962-57: keys-only error so the access_token
@@ -326,11 +353,38 @@ class ShopifyAuth:
                     "expires_at": self._expires_at,
                     "client_id": self._client_id[:8] + "..." if self._client_id else "",
                 }
-                tmp = _TOKEN_CACHE_FILE.with_suffix(_TOKEN_CACHE_FILE.suffix + ".tmp")
-                tmp.write_text(json.dumps(cache, indent=2))
-                os.replace(str(tmp), str(_TOKEN_CACHE_FILE))
-                # Restrict file permissions — tokens are
-                # sensitive. 0600 = owner read/write only.
+                # W962-70: write via tempfile.mkstemp so the
+                # tmp file is born with mode 0o600 (the stdlib
+                # contract) and a random unique name (defeats
+                # the symlink-attack race on a deterministic
+                # tmp name). The fd is opened with O_EXCL by
+                # mkstemp itself.
+                # Why this matters: pre-fix wrote plaintext
+                # tokens to a deterministic `.tmp` path with
+                # default umask (typically 0o644), THEN renamed
+                # + chmod'd. During the write window the tokens
+                # were world-readable on POSIX. mkstemp closes
+                # that window.
+                import tempfile as _tempfile
+                payload = json.dumps(cache, indent=2).encode("utf-8")
+                fd, tmp_str = _tempfile.mkstemp(
+                    prefix=".shopify_tokens_",
+                    suffix=".tmp",
+                    dir=str(_TOKEN_CACHE_DIR),
+                )
+                try:
+                    with os.fdopen(fd, "wb") as f:
+                        f.write(payload)
+                    os.replace(tmp_str, str(_TOKEN_CACHE_FILE))
+                except Exception:
+                    try:
+                        os.unlink(tmp_str)
+                    except OSError:
+                        pass
+                    raise
+                # Belt-and-suspenders chmod on the final path
+                # in case os.replace transferred a default mode
+                # on some FS implementations.
                 try:
                     os.chmod(str(_TOKEN_CACHE_FILE), 0o600)
                 except OSError as exc:

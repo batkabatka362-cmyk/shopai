@@ -238,10 +238,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         self._json_response(200, data)
 
+    # W962-69: cap HTTP body size to prevent attacker-controlled
+    # Content-Length headers from triggering multi-GB allocations.
+    # 1 MB is plenty for dashboard JSON payloads; the bare except
+    # below would have masked the OOM AFTER allocation, not before.
+    _MAX_BODY_BYTES = 1 * 1024 * 1024
+
     def _read_body(self):
         try:
             length = int(self.headers.get("Content-Length", 0))
-            return json.loads(self.rfile.read(length)) if length else {}
+            if length <= 0:
+                return {}
+            if length > self._MAX_BODY_BYTES:
+                # Refuse oversized payloads before allocating.
+                return {}
+            raw = self.rfile.read(length)
+            return json.loads(raw)
         except Exception:
             return {}
 
