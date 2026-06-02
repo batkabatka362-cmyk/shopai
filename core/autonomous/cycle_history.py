@@ -26,9 +26,15 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+# W962-42: span load+modify+save so concurrent record_cycle
+# calls don't lose appends. _atomic_write is already atomic;
+# the lock fixes the read-modify-write race.
+_LOCK = threading.RLock()
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -143,11 +149,14 @@ def record_cycle(
         correlate=dict(correlate or {}),
         flags=dict(flags or {}),
     )
-    entries = _load_raw()
-    entries.append(asdict(event))
-    if len(entries) > _MAX_EVENTS:
-        entries = entries[-_MAX_EVENTS:]
-    _atomic_write(entries)
+    # W962-42: span load+append+write so concurrent
+    # record_cycle calls don't clobber each other.
+    with _LOCK:
+        entries = _load_raw()
+        entries.append(asdict(event))
+        if len(entries) > _MAX_EVENTS:
+            entries = entries[-_MAX_EVENTS:]
+        _atomic_write(entries)
     return True
 
 

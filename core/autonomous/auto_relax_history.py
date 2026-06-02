@@ -28,9 +28,14 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+# W962-42: span load+modify+save under one lock so concurrent
+# record_action invocations don't lose appends.
+_LOCK = threading.RLock()
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -146,11 +151,13 @@ def record_action(
         recorded_at=time.time(),
         metrics=dict(metrics or {}),
     )
-    entries = _load_raw()
-    entries.append(asdict(event))
-    if len(entries) > _MAX_EVENTS:
-        entries = entries[-_MAX_EVENTS:]
-    _atomic_write(entries)
+    # W962-42: lock spans load+append+write.
+    with _LOCK:
+        entries = _load_raw()
+        entries.append(asdict(event))
+        if len(entries) > _MAX_EVENTS:
+            entries = entries[-_MAX_EVENTS:]
+        _atomic_write(entries)
     return True
 
 

@@ -32,10 +32,16 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+
+# W962-42: span load+extend+write under one lock so concurrent
+# record_alerts invocations (from cycle controller + daily-
+# brief + ops dashboard) don't lose appends.
+_LOCK = threading.RLock()
 
 logger = logging.getLogger(__name__)
 
@@ -160,11 +166,13 @@ def record_alerts(alerts: Iterable[Any]) -> bool:
         )))
     if not rows:
         return False
-    entries = _load_raw()
-    entries.extend(rows)
-    if len(entries) > _MAX_EVENTS:
-        entries = entries[-_MAX_EVENTS:]
-    _atomic_write(entries)
+    # W962-42: lock spans load+extend+write.
+    with _LOCK:
+        entries = _load_raw()
+        entries.extend(rows)
+        if len(entries) > _MAX_EVENTS:
+            entries = entries[-_MAX_EVENTS:]
+        _atomic_write(entries)
     return True
 
 

@@ -35,9 +35,18 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
+
+# W962-42: pause/extend/resume + _append_history_event do
+# load+modify+save without a spanning lock. Concurrent
+# operator + cycle controller invocations could lose updates
+# (extend reads same base, overwrites earlier extend; history
+# append clobbers a parallel append). Module-level RLock so
+# all four mutators serialise.
+_LOCK = threading.RLock()
 
 logger = logging.getLogger(__name__)
 
@@ -199,17 +208,19 @@ def _append_history_event(
     short-circuits. Never raises."""
     if _is_test_environment():
         return
+    # W962-42: span the lock so concurrent appends don't lose.
     try:
-        entries = _load_history()
-        entries.append({
-            "kind": kind,  # pause | resume | extend
-            "reason": reason,
-            "paused_until_at": paused_until_at,
-            "recorded_at": time.time(),
-        })
-        if len(entries) > _MAX_HISTORY:
-            entries = entries[-_MAX_HISTORY:]
-        _write_history(entries)
+        with _LOCK:
+            entries = _load_history()
+            entries.append({
+                "kind": kind,  # pause | resume | extend
+                "reason": reason,
+                "paused_until_at": paused_until_at,
+                "recorded_at": time.time(),
+            })
+            if len(entries) > _MAX_HISTORY:
+                entries = entries[-_MAX_HISTORY:]
+            _write_history(entries)
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "cycle_pause history append raised: %s", exc,
@@ -380,16 +391,19 @@ def pause(
             _MAX_PAUSE_FUTURE_SECONDS // 86400,
         )
         return False
-    _atomic_write({
-        "paused_until_at": float(until_at),
-        "reason": reason or "",
-        "paused_at": now,
-    })
-    _append_history_event(
-        kind="pause",
-        reason=reason or "",
-        paused_until_at=float(until_at),
-    )
+    # W962-42: serialise the write + history append so
+    # pause/extend/resume don't interleave.
+    with _LOCK:
+        _atomic_write({
+            "paused_until_at": float(until_at),
+            "reason": reason or "",
+            "paused_at": now,
+        })
+        _append_history_event(
+            kind="pause",
+            reason=reason or "",
+            paused_until_at=float(until_at),
+        )
     return True
 
 
@@ -400,33 +414,37 @@ def extend(*, additional_hours: float) -> bool:
         return False
     if additional_hours <= 0:
         return False
-    state = get_pause_state()
-    if not state.get("active"):
-        return False
-    new_until = (
-        float(state["paused_until_at"])
-        + additional_hours * 3600.0
-    )
-    now = time.time()
-    if new_until - now > _MAX_PAUSE_FUTURE_SECONDS:
-        logger.debug(
-            "cycle_pause: rejecting extend (>%dd "
-            "in the future)",
-            _MAX_PAUSE_FUTURE_SECONDS // 86400,
+    # W962-42: span the lock around the read+modify+write so
+    # two concurrent extends don't read the same base and
+    # clobber each other.
+    with _LOCK:
+        state = get_pause_state()
+        if not state.get("active"):
+            return False
+        new_until = (
+            float(state["paused_until_at"])
+            + additional_hours * 3600.0
         )
-        return False
-    _atomic_write({
-        "paused_until_at": new_until,
-        "reason": state.get("reason", ""),
-        "paused_at": state.get(
-            "paused_at", time.time(),
-        ),
-    })
-    _append_history_event(
-        kind="extend",
-        reason=state.get("reason", "") or "",
-        paused_until_at=new_until,
-    )
+        now = time.time()
+        if new_until - now > _MAX_PAUSE_FUTURE_SECONDS:
+            logger.debug(
+                "cycle_pause: rejecting extend (>%dd "
+                "in the future)",
+                _MAX_PAUSE_FUTURE_SECONDS // 86400,
+            )
+            return False
+        _atomic_write({
+            "paused_until_at": new_until,
+            "reason": state.get("reason", ""),
+            "paused_at": state.get(
+                "paused_at", time.time(),
+            ),
+        })
+        _append_history_event(
+            kind="extend",
+            reason=state.get("reason", "") or "",
+            paused_until_at=new_until,
+        )
     return True
 
 
@@ -437,10 +455,12 @@ def resume() -> bool:
         return False
     if not _PAUSE_PATH.exists():
         return False
+    # W962-42: serialise the unlink + history append.
     try:
-        _PAUSE_PATH.unlink()
-        _append_history_event(kind="resume")
-        return True
+        with _LOCK:
+            _PAUSE_PATH.unlink()
+            _append_history_event(kind="resume")
+            return True
     except OSError as exc:
         logger.debug(
             "cycle_pause: unlink raised: %s", exc,

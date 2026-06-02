@@ -34,6 +34,11 @@ import json
 import logging
 import os
 import tempfile
+import threading
+
+# W962-42: span load+modify+save so concurrent set/clear
+# don't lose updates.
+_LOCK = threading.RLock()
 from pathlib import Path
 from typing import Any
 
@@ -148,9 +153,11 @@ def set_override(key: str, value: Any) -> bool:
             value = int(value)
         except (TypeError, ValueError):
             return False
-    data = _load_raw()
-    data[key] = value
-    _atomic_write(data)
+    # W962-42: serialise the read+update+write.
+    with _LOCK:
+        data = _load_raw()
+        data[key] = value
+        _atomic_write(data)
     return True
 
 
@@ -159,11 +166,13 @@ def clear_override(key: str) -> bool:
     when a key was removed."""
     if _is_test_environment():
         return False
-    data = _load_raw()
-    if key not in data:
-        return False
-    del data[key]
-    _atomic_write(data)
+    # W962-42: serialise the read+modify+write.
+    with _LOCK:
+        data = _load_raw()
+        if key not in data:
+            return False
+        del data[key]
+        _atomic_write(data)
     return True
 
 
