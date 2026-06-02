@@ -92,6 +92,14 @@ class WebhookHandler:
 
         event["responses"] = responses
         self._events.append(event)
+        # W962-49: bound the in-memory event log so long-running
+        # servers don't OOM. Real Shopify stores can fire 100+
+        # webhooks/hour; a multi-day uptime would accumulate
+        # tens of thousands of dict entries with no eviction.
+        # Cap at 500 most-recent — operators wanting longer
+        # history use the persistent log surfaces.
+        if len(self._events) > 500:
+            self._events = self._events[-500:]
 
         return {
             "status": "processed" if event["processed"] else "unhandled",
@@ -222,9 +230,30 @@ _instance_lock = _threading.Lock()
 
 
 def get_webhook_handler():
+    """W962-52: singleton resolved with the env-var secret so
+    the default path (no constructor arg) actually enforces
+    HMAC instead of silently bypassing.
+
+    Reads SHOPIFY_WEBHOOK_SECRET / SHOPAI_WEBHOOK_SECRET (in
+    that order). When neither is set, logs a one-time warning
+    so operators know they're running in unauthenticated
+    mode; production deployments should always set one.
+    """
     global _instance
     if _instance is None:
         with _instance_lock:
             if _instance is None:
-                _instance = WebhookHandler()
+                import os as _os
+                secret = (
+                    _os.environ.get("SHOPIFY_WEBHOOK_SECRET", "")
+                    or _os.environ.get("SHOPAI_WEBHOOK_SECRET", "")
+                )
+                if not secret:
+                    logger.warning(
+                        "Webhook handler initialised with NO secret -- "
+                        "every incoming webhook will be accepted as "
+                        "valid. Set SHOPIFY_WEBHOOK_SECRET to enable "
+                        "HMAC verification."
+                    )
+                _instance = WebhookHandler(secret=secret)
     return _instance

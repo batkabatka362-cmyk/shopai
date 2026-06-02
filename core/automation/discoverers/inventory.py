@@ -191,11 +191,25 @@ def _fetch_levels(
     try:
         res = router.execute(cap, {"limit": _limit(store_id)})
     except Exception as exc:  # noqa: BLE001
-        logger.debug(
-            "inventory discoverer: execute raised: %s", exc,
+        # W962-53: surface adapter failures at WARN level so
+        # operators can distinguish "adapter failed" from
+        # "store legitimately has 0 inventory levels". Pre-fix
+        # the DEBUG log was invisible in production.
+        logger.warning(
+            "inventory discoverer: execute raised: %s "
+            "(store=%s) -- returning empty (NOT a real "
+            "empty inventory)",
+            exc, store_id,
         )
         return []
     if not getattr(res, "ok", False):
+        err = getattr(getattr(res, "error", None), "reason", "?")
+        logger.warning(
+            "inventory discoverer: adapter returned "
+            "ok=False (error=%s, store=%s) -- returning "
+            "empty (NOT a real empty inventory)",
+            err, store_id,
+        )
         return []
     data = getattr(res, "data", None) or {}
     if not isinstance(data, dict):

@@ -17,6 +17,7 @@ Endpoints:
 """
 from __future__ import annotations
 import json
+import os
 import time
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -24,6 +25,45 @@ from typing import Any
 from utils.logger import get_logger
 from api.validation import validate_shop_url, validate_string, validate_webhook_topic
 logger = get_logger("api.dashboard")
+
+
+def _api_auth_ok(handler) -> bool:
+    """W962-50: validate operator auth on destructive POST.
+
+    Token check policy (in order):
+      1. SHOPAI_API_NO_AUTH=1 -> always allow (dev mode).
+      2. No SHOPAI_API_TOKEN configured -> always allow but
+         emit a one-time warning (legacy back-compat for
+         local dev that ran the server before this gate
+         existed).
+      3. Authorization: Bearer <token> header matches
+         SHOPAI_API_TOKEN -> allow.
+      4. X-Api-Token header matches -> allow.
+      5. Otherwise -> reject.
+    """
+    if os.environ.get("SHOPAI_API_NO_AUTH") == "1":
+        return True
+    expected = os.environ.get("SHOPAI_API_TOKEN", "")
+    if not expected:
+        # No token configured -- legacy back-compat. Log a
+        # warning so operators know to set the env-var.
+        logger.warning(
+            "SHOPAI_API_TOKEN not set; allowing unauthenticated "
+            "POST. Set SHOPAI_API_NO_AUTH=1 to silence this "
+            "warning, or set SHOPAI_API_TOKEN to require a "
+            "bearer token."
+        )
+        return True
+    # Check Authorization: Bearer <token>
+    auth_hdr = handler.headers.get("Authorization", "")
+    if auth_hdr.startswith("Bearer "):
+        if auth_hdr[len("Bearer "):].strip() == expected:
+            return True
+    # Check X-Api-Token header
+    api_tok = handler.headers.get("X-Api-Token", "")
+    if api_tok and api_tok.strip() == expected:
+        return True
+    return False
 
 
 class DashboardAPIHandler(BaseHTTPRequestHandler):
@@ -87,6 +127,18 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0]
+        # W962-50: auth gate. Destructive POST routes (store
+        # registration, webhook) must require a token unless
+        # the operator explicitly opted into no-auth dev mode
+        # via SHOPAI_API_NO_AUTH=1. The webhook endpoint
+        # validates separately via HMAC; allow it to proceed
+        # so production Shopify can still post.
+        if path != "/api/webhook":
+            if not _api_auth_ok(self):
+                self._json_response(
+                    {"error": "unauthorized"}, 401,
+                )
+                return
         # W962-40: read the body ONCE, bounded, before dispatch.
         # Pre-fix the body was only read inside the
         # /api/webhook branch; POST /api/stores referenced

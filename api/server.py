@@ -6,6 +6,7 @@ No flask/fastapi dependency — pure stdlib http.server.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any
@@ -19,6 +20,38 @@ from api.validation import (
 )
 
 logger = get_logger("api.server")
+
+
+def _api_auth_ok(handler) -> bool:
+    """W962-50: operator token check for destructive POST.
+
+    Policy:
+      - SHOPAI_API_NO_AUTH=1 -> always allow.
+      - SHOPAI_API_TOKEN unset -> allow + warn (legacy
+        back-compat for local dev that ran the server before
+        the gate existed).
+      - Otherwise require Authorization: Bearer <token> OR
+        X-Api-Token header matching SHOPAI_API_TOKEN.
+    """
+    if os.environ.get("SHOPAI_API_NO_AUTH") == "1":
+        return True
+    expected = os.environ.get("SHOPAI_API_TOKEN", "")
+    if not expected:
+        logger.warning(
+            "SHOPAI_API_TOKEN not set; allowing unauthenticated "
+            "POST. Set SHOPAI_API_NO_AUTH=1 to silence this "
+            "warning, or set SHOPAI_API_TOKEN to require a "
+            "bearer token."
+        )
+        return True
+    auth_hdr = handler.headers.get("Authorization", "")
+    if auth_hdr.startswith("Bearer "):
+        if auth_hdr[len("Bearer "):].strip() == expected:
+            return True
+    api_tok = handler.headers.get("X-Api-Token", "")
+    if api_tok and api_tok.strip() == expected:
+        return True
+    return False
 
 # Approval action ids are minted by ``core.approval.queue.enqueue``
 # as ``appr_<ms-epoch>_<8-hex>``. The allowed character set is
@@ -142,6 +175,15 @@ class ShopAIHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+
+        # W962-50: auth gate. Webhook endpoints verify HMAC
+        # separately; non-webhook POST routes require the
+        # operator token unless explicitly disabled via
+        # SHOPAI_API_NO_AUTH=1.
+        if not path.startswith("/api/webhook"):
+            if not _api_auth_ok(self):
+                self._json_response(401, {"error": "unauthorized"})
+                return
 
         body = self._read_body()
         if body is None:
