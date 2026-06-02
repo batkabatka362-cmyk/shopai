@@ -469,9 +469,17 @@ def main() -> int:
                         f"{type(exc).__name__}: {str(exc)[:120]}"
                     ),
                 )
+                # W962-73: don't leak full traceback to debug
+                # log -- it carries the same Windows home path
+                # + module layout the envelope was scrubbing.
+                # If a future operator needs full trace they can
+                # re-run under `python -X dev` or set
+                # logging.getLogger().setLevel(logging.DEBUG)
+                # AND the path-aware formatter; the default
+                # behaviour matches the envelope's redaction.
                 logger.debug(
-                    "empire_smoke %s raised: %s",
-                    label, traceback.format_exc(),
+                    "empire_smoke %s raised: %s: %s",
+                    label, type(exc).__name__, str(exc)[:120],
                 )
         results.append(result)
 

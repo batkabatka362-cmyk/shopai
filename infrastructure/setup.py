@@ -67,6 +67,15 @@ class ShopAISetup:
 
         content = "\n".join(lines) + "\n"
         self._env_path.write_text(content)
+        # W962-73: tighten perms on .env after writing the
+        # Shopify Admin API key(s). Default umask leaves the
+        # file 0o644 (world-readable) on POSIX. Mirrors
+        # core/auth/shopify_auth.py:_save_cached_token and
+        # scripts/get_shopify_token.py:write_env.
+        try:
+            os.chmod(self._env_path, 0o600)
+        except OSError as exc:
+            logger.debug(".env chmod failed (%s)", exc)
         logger.info("Created .env at %s", self._env_path)
         return str(self._env_path)
 

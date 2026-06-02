@@ -210,15 +210,27 @@ class ShopifyAuth:
                 )
             raw = raw_bytes.decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
-            # W962-57: don't interpolate raw response body into
-            # the exception. Shopify error responses can echo
-            # back the submitted client_id / client_secret and
-            # the exception message propagates via str(exc) into
-            # HTTP 500 responses + logs + crash reporters.
+            # W962-57 / W962-73: don't interpolate raw response
+            # body into the exception OR the debug log. Shopify
+            # error responses can echo back the submitted
+            # client_id / client_secret in the
+            # error_description / parameter field, and a debug
+            # log line carrying that body would persist credentials
+            # to log sinks + crash reporters even when debug
+            # logging is enabled for unrelated reasons.
             try:
                 body = exc.read().decode("utf-8", errors="replace")
+                # Log only the structural shape (status + length
+                # + first 80 chars stripped of obvious creds);
+                # never the full body.
+                preview = body[:80].replace(
+                    "client_secret", "[REDACTED]",
+                ).replace(
+                    "access_token", "[REDACTED]",
+                )
                 logger.debug(
-                    "Shopify token request failed body: %s", body,
+                    "Shopify token request HTTP %d len=%d preview=%r",
+                    exc.code, len(body), preview,
                 )
             except Exception:  # noqa: BLE001
                 pass
