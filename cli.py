@@ -1493,6 +1493,25 @@ def build_parser() -> argparse.ArgumentParser:
             "USD ceiling."
         ),
     )
+    # W963-3: write-side. --apply enqueues every candidate to
+    # the approval queue; operator approves one-by-one via
+    # `shopai approvals approve <id>`. Default is read-only.
+    product_candidates_p.add_argument(
+        "--apply", action="store_true",
+        help=(
+            "W963-3: enqueue every candidate as a pending "
+            "DRAFT-product create. Default safe path "
+            "(approval queue, not direct Shopify write)."
+        ),
+    )
+    product_candidates_p.add_argument(
+        "--mint-direct", action="store_true",
+        help=(
+            "W963-3: skip approval queue, mint DRAFT products "
+            "immediately. Use only for dev / seed flows. "
+            "Requires --apply."
+        ),
+    )
     product_candidates_p.add_argument(
         "--json", action="store_true",
         help="Emit raw JSON instead of text view",
@@ -9935,6 +9954,14 @@ def _cmd_product_candidates(args) -> None:
     count = int(getattr(args, "count", 20) or 20)
     price_max = getattr(args, "price_max", None)
     as_json = bool(getattr(args, "json", False))
+    apply_flag = bool(getattr(args, "apply", False))
+    mint_direct = bool(getattr(args, "mint_direct", False))
+
+    if mint_direct and not apply_flag:
+        print(
+            "product-candidates: --mint-direct requires --apply"
+        )
+        return
 
     payload: dict[str, Any] = {"data": {}}
     if niche:
@@ -9943,6 +9970,11 @@ def _cmd_product_candidates(args) -> None:
         payload["data"]["count"] = count
     if price_max is not None:
         payload["data"]["price_max"] = price_max
+    if apply_flag:
+        payload["data"]["apply_candidates"] = True
+        # Default: require_approval=True (queue path). Only flip
+        # to False when operator explicitly passed --mint-direct.
+        payload["data"]["require_approval"] = not mint_direct
 
     result = ProductSourcerEngine().run(payload)
 
@@ -9966,9 +9998,14 @@ def _cmd_product_candidates(args) -> None:
         print(f"Product-candidates  {next_action}")
         return
 
+    pending = data.get("pending_actions") or []
+    minted = data.get("minted_drafts") or []
+
     print(
         f"Product-candidates  niche={niche_out}  "
         f"returned={returned}/{requested}"
+        + (f"  pending={len(pending)}" if pending else "")
+        + (f"  minted={len(minted)}" if minted else "")
     )
     print()
     if not candidates:
@@ -9992,6 +10029,30 @@ def _cmd_product_candidates(args) -> None:
         vendor = c.get("vendor_hint", "")
         if vendor:
             print(f"      vendor: {vendor}")
+        print()
+    if pending:
+        print(f"  Enqueued {len(pending)} pending action(s):")
+        for p in pending[:5]:
+            print(
+                f"    - {p.get('pending_action_id', '?')}: "
+                f"{p.get('narrative', '')[:70]}"
+            )
+        if len(pending) > 5:
+            print(f"    ... and {len(pending) - 5} more")
+        print()
+    if minted:
+        ok = sum(1 for m in minted if m.get("status") == "minted")
+        err = sum(1 for m in minted if m.get("status") == "error")
+        print(f"  Mint results: {ok} created, {err} failed")
+        for m in minted[:3]:
+            status = m.get("status", "?")
+            name = m.get("params", {}).get("title", "?")
+            err_text = m.get("error", "") or ""
+            tail = (
+                f" ({err_text[:50]})"
+                if status == "error" else ""
+            )
+            print(f"    - {status}: {name[:40]}{tail}")
         print()
     print(f"  NEXT: {next_action}")
 

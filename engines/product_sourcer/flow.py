@@ -43,6 +43,10 @@ from .catalogs import (
     catalog_summary,
     get_catalog,
 )
+from .draft_creator import (
+    enqueue_drafts_for_approval,
+    mint_drafts_immediately,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +176,63 @@ class ProductSourcerEngine:
         # ── Stage 3: slice ─────────────────────────────────
         slice_size = min(count, len(catalog))
         candidates = catalog[:slice_size]
+        serialized = [_serialize(c) for c in candidates]
+
+        # ── Stage 4: optional draft creation ───────────────
+        # Default OFF — operators stay in pure-recommendation
+        # mode unless they explicitly opt in via
+        # data.apply_candidates=True.
+        #
+        # Two opt-in modes:
+        #   apply_candidates + require_approval (default True):
+        #     enqueue each candidate to ApprovalQueue. Operator
+        #     reviews via `shopai approvals pending` and approves
+        #     one-by-one. SAFE for empire-scale runs.
+        #   apply_candidates + require_approval=False:
+        #     mint immediately via SHOPIFY_CREATE_PRODUCT. Use
+        #     only for dev / seed flows.
+        pending_actions: list[dict[str, Any]] = []
+        minted_drafts: list[dict[str, Any]] = []
+        if data.get("apply_candidates") is True:
+            # Default to require_approval=True unless caller
+            # explicitly opts out — safer-by-default.
+            require_approval = data.get(
+                "require_approval", True,
+            )
+            if require_approval:
+                pending_actions = enqueue_drafts_for_approval(
+                    serialized, niche=niche,
+                )
+            else:
+                minted_drafts = mint_drafts_immediately(
+                    serialized, niche=niche,
+                )
+
+        # Tailor next_action based on what just happened.
+        if pending_actions:
+            next_action = (
+                f"{len(pending_actions)} candidate(s) "
+                "enqueued. Review: `shopai approvals pending` "
+                "+ approve via `shopai approvals approve <id>`."
+            )
+        elif minted_drafts:
+            ok = sum(
+                1 for m in minted_drafts
+                if m.get("status") == "minted"
+            )
+            failed = len(minted_drafts) - ok
+            next_action = (
+                f"{ok} draft(s) created in Shopify "
+                f"({failed} failed). Visit Shopify Admin -> "
+                "Products to review + activate."
+            )
+        else:
+            next_action = (
+                "Review the candidates. To enqueue all as "
+                "DRAFT products for approval, re-run with "
+                "--apply (writes to approval queue, not "
+                "Shopify directly)."
+            )
 
         elapsed = time.monotonic() - start
         return {
@@ -180,14 +241,10 @@ class ProductSourcerEngine:
                 "niche": niche,
                 "count_requested": count,
                 "count_returned": slice_size,
-                "candidates": [_serialize(c) for c in candidates],
-                "next_action": (
-                    "Review the candidates. To publish: copy "
-                    "name + suggested_price into the Shopify "
-                    "Admin (Phase 2 will automate via "
-                    "SHOPIFY_CREATE_PRODUCT draft + approval "
-                    "queue)."
-                ),
+                "candidates": serialized,
+                "pending_actions": pending_actions,
+                "minted_drafts": minted_drafts,
+                "next_action": next_action,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
@@ -221,6 +278,8 @@ class ProductSourcerEngine:
                 "count_requested": 0,
                 "count_returned": 0,
                 "candidates": [],
+                "pending_actions": [],
+                "minted_drafts": [],
                 "next_action": (
                     f"Specify a niche: {', '.join(SUPPORTED_NICHES)}. "
                     "Catalog totals: "
@@ -252,6 +311,8 @@ class ProductSourcerEngine:
                 "count_requested": count,
                 "count_returned": 0,
                 "candidates": [],
+                "pending_actions": [],
+                "minted_drafts": [],
                 "next_action": (
                     f"{reason}. Raise --price-max or pick "
                     "a different niche."

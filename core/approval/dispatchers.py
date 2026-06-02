@@ -687,3 +687,34 @@ def _apply_bundle_product_dispatch(
     if not isinstance(adapter_params, dict) or not adapter_params:
         return False, {"error": "missing_adapter_params"}
     return _router_call("SHOPIFY_CREATE_PRODUCT", adapter_params)
+
+
+# ── product_sourcer → SHOPIFY_CREATE_PRODUCT (draft seed) ────────
+
+
+@register_dispatcher("create_draft_product")
+def _create_draft_product_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """W963-3: replay product_sourcer's DRAFT product creation.
+
+    The product_sourcer engine enqueues each candidate with the
+    full friendly call shape (title + description + status=DRAFT
+    + vendor + product_type + tags). The internal _metadata key
+    carries source-tracking info (niche + suggested_price band)
+    but is NOT a Shopify-recognised field — strip it before the
+    GraphQL hop.
+
+    The DRAFT status is enforced at enqueue time; the dispatcher
+    trusts it. Operators who explicitly want to publish an active
+    product should change `status` to ACTIVE in the queue entry's
+    params before approving (or use a future ``--publish`` flag).
+    """
+    title = str(params.get("title", "")).strip()
+    if not title:
+        return False, {"error": "missing_title"}
+    adapter_params = {
+        k: v for k, v in params.items()
+        if not k.startswith("_")
+    }
+    return _router_call("SHOPIFY_CREATE_PRODUCT", adapter_params)
