@@ -51,6 +51,11 @@ def _is_test_environment() -> bool:
 
 
 def _load() -> RefundPauseState:
+    """W962-55: fail-closed on corruption. Refund is real-money;
+    treating an unparseable state file as "not paused" would
+    let real-money refunds resume firing. Instead remain
+    paused with a synthetic reason so the applier loop skips
+    until the operator inspects + clears."""
     if not _STATE_PATH.exists():
         return RefundPauseState()
     try:
@@ -65,9 +70,22 @@ def _load() -> RefundPauseState:
                     raw.get("auto_resume_after", 0) or 0,
                 ),
             )
+        logger.warning(
+            "refund_state contains non-dict JSON; "
+            "FAIL-CLOSED to paused=True until operator clears",
+        )
     except Exception as exc:  # noqa: BLE001
-        logger.debug("refund_state load raised: %s", exc)
-    return RefundPauseState()
+        logger.warning(
+            "refund_state load raised %s; FAIL-CLOSED to "
+            "paused=True until operator inspects + clears",
+            exc,
+        )
+    return RefundPauseState(
+        paused=True,
+        reason="auto_paused_corrupt_state_file",
+        paused_at=time.time(),
+        auto_resume_after=0.0,
+    )
 
 
 def _save(state: RefundPauseState) -> None:

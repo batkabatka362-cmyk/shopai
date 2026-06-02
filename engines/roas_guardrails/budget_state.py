@@ -46,6 +46,9 @@ def _is_test_environment() -> bool:
 
 
 def _load() -> BudgetPauseState:
+    """W962-55: fail-closed on corruption. Budget mutations are
+    real-money; unparseable state file -> remain paused until
+    operator inspects + clears."""
     if not _STATE_PATH.exists():
         return BudgetPauseState()
     try:
@@ -60,9 +63,22 @@ def _load() -> BudgetPauseState:
                     raw.get("auto_resume_after", 0) or 0,
                 ),
             )
+        logger.warning(
+            "budget_state contains non-dict JSON; "
+            "FAIL-CLOSED to paused=True until operator clears",
+        )
     except Exception as exc:  # noqa: BLE001
-        logger.debug("budget_state load raised: %s", exc)
-    return BudgetPauseState()
+        logger.warning(
+            "budget_state load raised %s; FAIL-CLOSED to "
+            "paused=True until operator inspects + clears",
+            exc,
+        )
+    return BudgetPauseState(
+        paused=True,
+        reason="auto_paused_corrupt_state_file",
+        paused_at=time.time(),
+        auto_resume_after=0.0,
+    )
 
 
 def _save(state: BudgetPauseState) -> None:

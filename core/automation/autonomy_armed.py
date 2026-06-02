@@ -134,6 +134,11 @@ class ArmedState:
 
 
 def _load_state() -> ArmedState:
+    """W962-55: surface corruption visibly. Empty-armed is the
+    safer default (no domains fire) but the OPERATOR'S intent
+    to arm specific domains is silently lost. Upgrade the
+    parse-failure log from DEBUG to WARN so operators see
+    they've lost arm state + need to re-arm."""
     if not _STATE_PATH.exists():
         return ArmedState()
     try:
@@ -141,7 +146,12 @@ def _load_state() -> ArmedState:
             _STATE_PATH.read_text(encoding="utf-8"),
         )
     except Exception as exc:  # noqa: BLE001
-        logger.debug("autonomy_armed: load raised: %s", exc)
+        logger.warning(
+            "autonomy_armed %s load raised %s; ALL armed "
+            "entries lost. Re-arm via `shopai autonomy-arm "
+            "<domain>` after fixing the file.",
+            _STATE_PATH, exc,
+        )
         return ArmedState()
     entries = [
         ArmedEntry(

@@ -154,6 +154,13 @@ def _fetch_products(
         )
         return []
     if not getattr(res, "ok", False):
+        # W962-53: surface adapter failures at WARN.
+        err = getattr(getattr(res, "error", None), "reason", "?")
+        logger.warning(
+            "product_seo discoverer: adapter returned "
+            "ok=False (error=%s, store=%s) -- returning empty",
+            err, store_id,
+        )
         return []
     data = getattr(res, "data", None) or {}
     products = (

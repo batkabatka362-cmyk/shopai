@@ -21,8 +21,11 @@ case for limits) or ``float`` for ratios.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
+
+logger = logging.getLogger(__name__)
 
 _SAFE = re.compile(r"[^A-Z0-9_]")
 
@@ -100,6 +103,16 @@ def resolve_int(
         try:
             out = int(raw)
         except (TypeError, ValueError):
+            # W962-56: surface operator-typo at WARN. Pre-fix
+            # the bad value silently fell back to default, so
+            # `SHOPAI_FOO_DISCOVER_LIMIT=fifty` produced the
+            # default behaviour with no visible signal.
+            logger.warning(
+                "discoverer_env: int parse failed for "
+                "domain=%s knob=%s store=%s raw=%r -> "
+                "falling back to default=%d",
+                domain, knob, store_id, raw, default,
+            )
             out = default
     if min_value is not None and out < min_value:
         out = min_value
@@ -122,4 +135,11 @@ def resolve_float(
     try:
         return float(raw)
     except (TypeError, ValueError):
+        # W962-56: surface operator-typo at WARN.
+        logger.warning(
+            "discoverer_env: float parse failed for "
+            "domain=%s knob=%s store=%s raw=%r -> "
+            "falling back to default=%g",
+            domain, knob, store_id, raw, default,
+        )
         return default

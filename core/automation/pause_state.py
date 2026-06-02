@@ -52,8 +52,22 @@ def is_test_environment() -> bool:
 
 
 def load_state(path: Path) -> PauseState:
-    """Load + return the pause state. Empty default when file
-    missing OR corrupt."""
+    """Load + return the pause state.
+
+    W962-55 fail-closed semantics: if the file is MISSING, the
+    domain has never been paused -> return PauseState() with
+    paused=False (correct default). But if the file EXISTS and
+    fails to parse, we cannot know whether the operator paused
+    or auto-pause bridge fired -- treating it as unpaused
+    would let real-money mutations resume. Instead return
+    paused=True with a synthetic reason so the applier loop
+    skips until the operator inspects + clears.
+
+    Pre-fix corruption silently un-paused. With atomic writes
+    (W962-21) corruption from crashes is rare, but external
+    tampering, disk failure, or pre-W962-21 partial writes
+    are still real failure modes. Fail-closed treats the
+    uncertain state as safer-not-riskier."""
     if not path.exists():
         return PauseState()
     try:
@@ -68,9 +82,24 @@ def load_state(path: Path) -> PauseState:
                     raw.get("auto_resume_after", 0) or 0,
                 ),
             )
+        # Non-dict raw -> treat as corrupted
+        logger.warning(
+            "pause_state %s contains non-dict JSON %r; "
+            "FAIL-CLOSED to paused=True until operator clears",
+            path, type(raw).__name__,
+        )
     except Exception as exc:  # noqa: BLE001
-        logger.debug("pause_state load raised: %s", exc)
-    return PauseState()
+        logger.warning(
+            "pause_state %s load raised %s; FAIL-CLOSED to "
+            "paused=True until operator inspects + clears",
+            path, exc,
+        )
+    return PauseState(
+        paused=True,
+        reason="auto_paused_corrupt_state_file",
+        paused_at=time.time(),
+        auto_resume_after=0.0,
+    )
 
 
 def save_state(path: Path, state: PauseState) -> None:

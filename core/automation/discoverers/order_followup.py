@@ -146,6 +146,13 @@ def _fetch_orders(
         )
         return []
     if not getattr(res, "ok", False):
+        # W962-53: surface adapter failures at WARN.
+        err = getattr(getattr(res, "error", None), "reason", "?")
+        logger.warning(
+            "order_followup discoverer: adapter returned "
+            "ok=False (error=%s, store=%s) -- returning empty",
+            err, store_id,
+        )
         return []
     data = getattr(res, "data", None) or {}
     orders = data.get("orders") if isinstance(data, dict) else None
