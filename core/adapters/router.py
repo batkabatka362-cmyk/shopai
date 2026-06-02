@@ -29,6 +29,7 @@ from utils.logger import get_logger
 
 from .base import AdapterResult, BaseAdapter, Capability
 from .errors import (
+    AdapterAuthError,
     AdapterError,
     AdapterNotConfigured,
     AdapterRateLimited,
@@ -225,6 +226,22 @@ class SmartRouter:
             # Some failures are non-retryable: the next adapter
             # would hit the same caller bug, so just bail.
             if isinstance(result.error, AdapterValidationError):
+                break
+            # W962-38: AdapterAuthError likewise short-circuits
+            # -- every Shopify adapter shares the same access
+            # token, so the next adapter will hit the same 401.
+            # Pre-fix the router would fallback through every
+            # adapter on a closed-store / revoked-token error,
+            # producing N log spam lines per call + N round-trip
+            # latency for no recovery. Same is true for any
+            # caller-supplied credential bug.
+            if isinstance(result.error, AdapterAuthError):
+                logger.warning(
+                    "router: %s failed (AdapterAuthError); "
+                    "credentials shared across adapters, "
+                    "skipping fallback",
+                    adapter.name,
+                )
                 break
             logger.warning(
                 "router fallback: %s failed (%s), trying next",
