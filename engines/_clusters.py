@@ -393,6 +393,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "earnings_report",       # W963-4: output-side measurement
     "earn_bootstrap",        # W963-5: one-command cold-start chain
     "content_publisher",     # W963-6: SEO blog content seed
+    "ads_launcher",          # W963-7: ad-platform credential + launch wrapper
 })
 
 

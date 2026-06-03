@@ -1528,6 +1528,70 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view",
     )
 
+    # W963-7: ads — Meta/Google Ads launcher substrate.
+    ads_p = sub.add_parser(
+        "ads",
+        help=(
+            "Meta/Google Ads launcher: connect credentials, "
+            "check readiness, fire first PAUSED campaign. "
+            "Always PAUSED at launch -- operator activates in "
+            "platform Manager."
+        ),
+    )
+    ads_sub = ads_p.add_subparsers(dest="ads_action")
+
+    ads_status_p = ads_sub.add_parser(
+        "status",
+        help="Check ad platform readiness (meta / google).",
+    )
+    ads_status_p.add_argument("--json", action="store_true")
+
+    ads_connect_p = ads_sub.add_parser(
+        "connect",
+        help="Save ad platform credentials to .env.",
+    )
+    ads_connect_p.add_argument(
+        "platform", choices=["meta", "google"],
+    )
+    ads_connect_p.add_argument(
+        "--token", required=True, dest="access_token",
+        help="OAuth access token from platform dashboard.",
+    )
+    ads_connect_p.add_argument(
+        "--account-id", required=True, dest="account_id",
+        help=(
+            "Meta: act_XXX (or just the digits). "
+            "Google: customer_id without dashes."
+        ),
+    )
+    ads_connect_p.add_argument("--json", action="store_true")
+
+    ads_launch_p = ads_sub.add_parser(
+        "launch",
+        help=(
+            "Fire the first PAUSED campaign. Operator MUST "
+            "activate in platform Manager to start spending."
+        ),
+    )
+    ads_launch_p.add_argument(
+        "--platform", default="meta",
+        choices=["meta", "google"],
+    )
+    ads_launch_p.add_argument(
+        "--budget-daily", type=float, default=10.0,
+        dest="budget_daily",
+        help="Daily budget in USD (default 10, max 1000).",
+    )
+    ads_launch_p.add_argument(
+        "--niche", default=None,
+        help="Auto-included in campaign name when supplied.",
+    )
+    ads_launch_p.add_argument(
+        "--name", default=None,
+        help="Override the auto-generated campaign name.",
+    )
+    ads_launch_p.add_argument("--json", action="store_true")
+
     # W963-6: blog-candidates — SEO content seed.
     blog_candidates_p = sub.add_parser(
         "blog-candidates",
@@ -10043,6 +10107,131 @@ def _cmd_niche(args) -> None:
     print(
         "  Stores: `shopai niche --by-store` -- per-store tags"
     )
+
+
+def _cmd_ads_status(args) -> None:
+    """W963-7: per-platform readiness diagnostic."""
+    from engines.ads_launcher import AdsLauncherEngine
+
+    as_json = bool(getattr(args, "json", False))
+    result = AdsLauncherEngine().run({
+        "data": {"action": "status"},
+    })
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    platforms = data.get("platforms") or {}
+    print("Ads readiness")
+    print()
+    for name, status in platforms.items():
+        mk = "[OK ]" if status.get("adapter_registered") and status.get("credentials_present") and status.get("account_resolved") else "[XX]"
+        print(
+            f"  {mk} {name:<8} {status.get('detail', '')}"
+        )
+        if status.get("env_vars_needed"):
+            print(
+                f"      missing env: "
+                f"{', '.join(status['env_vars_needed'])}"
+            )
+    print()
+    next_action = data.get("next_action") or ""
+    if next_action:
+        print(f"  NEXT: {next_action}")
+
+
+def _cmd_ads_connect(args) -> None:
+    """W963-7: store ad platform credentials in .env."""
+    from engines.ads_launcher.connect import connect_platform
+
+    platform = getattr(args, "platform", "meta")
+    token = getattr(args, "access_token", "")
+    account_id = getattr(args, "account_id", "")
+    as_json = bool(getattr(args, "json", False))
+
+    res = connect_platform(
+        platform=platform,
+        access_token=token,
+        account_id=account_id,
+    )
+
+    if as_json:
+        print(json.dumps({
+            "platform": res.platform,
+            "success": res.success,
+            "detail": res.detail,
+            "env_path": res.env_path,
+        }, indent=2))
+        return
+
+    mk = "[OK ]" if res.success else "[XX]"
+    print(f"{mk} ads connect {platform}  {res.detail}")
+    if res.success:
+        print()
+        print(
+            f"  Next: shopai ads status  "
+            f"(verify {platform} now ready)"
+        )
+
+
+def _cmd_ads_launch(args) -> None:
+    """W963-7: fire first PAUSED campaign."""
+    from engines.ads_launcher import AdsLauncherEngine
+
+    platform = getattr(args, "platform", "meta")
+    budget = float(getattr(args, "budget_daily", 10.0))
+    niche = getattr(args, "niche", None)
+    name = getattr(args, "name", None)
+    as_json = bool(getattr(args, "json", False))
+
+    payload = {
+        "data": {
+            "action": "launch",
+            "platform": platform,
+            "daily_budget_usd": budget,
+        },
+    }
+    if niche:
+        payload["data"]["niche"] = niche
+    if name:
+        payload["data"]["name"] = name
+
+    result = AdsLauncherEngine().run(payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if not data.get("launched"):
+        reason = (
+            data.get("blocked_reason")
+            or data.get("error")
+            or "unknown"
+        )
+        print(f"[XX] ads launch  {reason}")
+        next_action = data.get("next_action", "")
+        if next_action:
+            print(f"  -> {next_action}")
+        return
+
+    print(f"[$$] ads launch  {data.get('platform')}  PAUSED")
+    print()
+    print(
+        f"  Campaign:  {data.get('campaign_name', '?')}"
+    )
+    print(
+        f"  ID:        {data.get('campaign_id', '?')}"
+    )
+    print(
+        f"  Budget:    "
+        f"${data.get('daily_budget_usd', 0):.2f}/day"
+    )
+    print(f"  Status:    PAUSED (operator activates)")
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
 
 
 def _cmd_blog_candidates(args) -> None:
@@ -51786,6 +51975,20 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "blog-candidates":
         _cmd_blog_candidates(args)
+        return
+
+    if args.command == "ads":
+        action = getattr(args, "ads_action", None)
+        if action == "status":
+            _cmd_ads_status(args)
+            return
+        if action == "connect":
+            _cmd_ads_connect(args)
+            return
+        if action == "launch":
+            _cmd_ads_launch(args)
+            return
+        print("Usage: shopai ads {status|connect|launch}")
         return
 
     if args.command == "niche":
