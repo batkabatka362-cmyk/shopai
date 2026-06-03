@@ -1924,6 +1924,69 @@ def build_parser() -> argparse.ArgumentParser:
     )
     chk_p.add_argument("--json", action="store_true")
 
+    # W963-22: welcome — 3-email welcome cadence for new customers.
+    welcome_p = sub.add_parser(
+        "welcome",
+        help=(
+            "3-email welcome cadence for new customers. "
+            "Drives first-order conversion + repeat-buyer "
+            "behavior. Status / preview / send-batch."
+        ),
+    )
+    welcome_sub = welcome_p.add_subparsers(
+        dest="welcome_action",
+    )
+
+    wc_status_p = welcome_sub.add_parser(
+        "status",
+        help="ESP wiring + welcomed-so-far totals.",
+    )
+    wc_status_p.add_argument("--json", action="store_true")
+
+    wc_preview_p = welcome_sub.add_parser(
+        "preview",
+        help="Show next N candidate welcome emails (no send).",
+    )
+    wc_preview_p.add_argument(
+        "--limit", type=int, default=5,
+    )
+    wc_preview_p.add_argument(
+        "--store-name", default=None, dest="store_name",
+    )
+    wc_preview_p.add_argument(
+        "--discount-code", default=None, dest="discount_code",
+        help="Override default WELCOME15 code.",
+    )
+    wc_preview_p.add_argument(
+        "--shop-url", default=None, dest="shop_url",
+    )
+    wc_preview_p.add_argument("--json", action="store_true")
+
+    wc_send_p = welcome_sub.add_parser(
+        "send-batch",
+        help="Dispatch the next welcome batch via wired ESP.",
+    )
+    wc_send_p.add_argument(
+        "--limit", type=int, default=5,
+    )
+    wc_send_p.add_argument(
+        "--store-name", default=None, dest="store_name",
+    )
+    wc_send_p.add_argument(
+        "--discount-code", default=None, dest="discount_code",
+    )
+    wc_send_p.add_argument(
+        "--shop-url", default=None, dest="shop_url",
+    )
+    wc_send_p.add_argument(
+        "--from-email", default=None, dest="from_email",
+    )
+    wc_send_p.add_argument(
+        "--yes", action="store_true",
+        help="Required to actually send (default dry-run).",
+    )
+    wc_send_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11364,6 +11427,143 @@ def _cmd_warmup_plan(args) -> None:
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
         )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_welcome_status(args) -> None:
+    """W963-22: welcome-series status."""
+    from engines.welcome_series import WelcomeSeriesEngine
+
+    as_json = bool(getattr(args, "json", False))
+    result = WelcomeSeriesEngine().run({
+        "data": {"action": "status"},
+    })
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    data = result.get("data") or {}
+    mk = "[OK ]" if data.get("esp_ready") else "[XX]"
+    print(f"Welcome-series status  {mk}")
+    print()
+    print(f"  esp_ready:       {data.get('esp_ready')}")
+    print(
+        f"  welcomed_so_far: {data.get('welcomed_so_far')}"
+    )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_welcome_preview(args) -> None:
+    """W963-22: preview next welcome batch."""
+    from engines.welcome_series import WelcomeSeriesEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "action": "preview",
+            "limit": int(getattr(args, "limit", 5)),
+            "store_name": getattr(args, "store_name", None),
+            "discount_code": getattr(
+                args, "discount_code", None,
+            ),
+            "shop_url": getattr(args, "shop_url", None),
+        },
+    }
+    result = WelcomeSeriesEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    data = result.get("data") or {}
+    report = data.get("report") or {}
+    requests = data.get("requests") or []
+    print(f"Welcome-series preview ({len(requests)})")
+    print()
+    print(
+        f"  eligible={report.get('eligible', 0)}  "
+        f"already_completed={report.get('already_completed', 0)}  "
+        f"not_due_yet={report.get('not_due_yet', 0)}  "
+        f"queued={report.get('queued', 0)}"
+    )
+    print()
+    for r in requests:
+        email = (r.get("customer_email") or "")[:40]
+        subj = (r.get("subject") or "")[:42]
+        print(
+            f"  - stage={r.get('stage')}  {email:<40s}  "
+            f"{subj}"
+        )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_welcome_send_batch(args) -> None:
+    """W963-22: dispatch welcome batch."""
+    from engines.welcome_series import WelcomeSeriesEngine
+
+    as_json = bool(getattr(args, "json", False))
+    confirmed = bool(getattr(args, "yes", False))
+
+    if not confirmed:
+        payload = {
+            "data": {
+                "action": "preview",
+                "limit": int(getattr(args, "limit", 5)),
+                "store_name": getattr(
+                    args, "store_name", None,
+                ),
+                "discount_code": getattr(
+                    args, "discount_code", None,
+                ),
+                "shop_url": getattr(args, "shop_url", None),
+            },
+        }
+        result = WelcomeSeriesEngine().run(payload)
+        if as_json:
+            print(json.dumps(result, indent=2, default=str))
+            return
+        data = result.get("data") or {}
+        report = data.get("report") or {}
+        print("Welcome send-batch (DRY-RUN — no --yes)")
+        print()
+        print(
+            f"  Would queue {report.get('queued', 0)} "
+            "welcome email(s). Add --yes to commit."
+        )
+        return
+
+    payload = {
+        "data": {
+            "action": "send-batch",
+            "limit": int(getattr(args, "limit", 5)),
+            "store_name": getattr(args, "store_name", None),
+            "discount_code": getattr(
+                args, "discount_code", None,
+            ),
+            "shop_url": getattr(args, "shop_url", None),
+            "from_email": getattr(args, "from_email", None),
+        },
+    }
+    result = WelcomeSeriesEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    data = result.get("data") or {}
+    report = data.get("report") or {}
+    mk = (
+        "[$$]"
+        if report.get("sent", 0) > 0 and report.get("failed", 0) == 0
+        else "[OK ]"
+        if report.get("failed", 0) == 0
+        else "[XX]"
+    )
+    print(f"{mk} welcome send-batch")
+    print()
+    print(
+        f"  sent={report.get('sent', 0)}  "
+        f"failed={report.get('failed', 0)}  "
+        f"queued={report.get('queued', 0)}"
+    )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -53984,6 +54184,23 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "checkup":
         _cmd_checkup(args)
+        return
+
+    if args.command == "welcome":
+        action = getattr(args, "welcome_action", None)
+        if action == "status":
+            _cmd_welcome_status(args)
+            return
+        if action == "preview":
+            _cmd_welcome_preview(args)
+            return
+        if action == "send-batch":
+            _cmd_welcome_send_batch(args)
+            return
+        print(
+            "Usage: shopai welcome "
+            "{status|preview|send-batch}"
+        )
         return
 
     if args.command == "tiktok":
