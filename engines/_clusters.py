@@ -396,6 +396,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "ads_launcher",          # W963-7: ad-platform credential + launch wrapper
     "email_connect",         # W963-8: ESP credential + send-test wrapper
     "affiliate_links",       # W963-9: per-partner referral link generator
+    "pinterest_publisher",   # W963-10: Pinterest connect + publish-pin wrapper
 })
 
 

@@ -211,7 +211,9 @@ def audit_engine_capabilities(
     # / llm / shipping) also claim capabilities. The router-execute
     # extension surfaces those too, so we need their claims to
     # avoid false positives like WEB_SEARCH (claimed by search/).
-    for pkg_name in ("ads", "search", "email", "llm", "shipping"):
+    for pkg_name in (
+        "ads", "search", "email", "llm", "shipping", "social",
+    ):
         try:
             pkg = __import__(
                 f"core.adapters.{pkg_name}.bootstrap",

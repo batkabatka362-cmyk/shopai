@@ -1528,6 +1528,83 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view",
     )
 
+    # W963-10: pinterest — Pinterest connect + publish-pin.
+    pinterest_p = sub.add_parser(
+        "pinterest",
+        help=(
+            "Pinterest API v5 operator wrapper. Highest-ROI "
+            "organic-traffic platform for visual e-commerce "
+            "(beauty / fashion / home). Status / connect / "
+            "boards / publish-pin."
+        ),
+    )
+    pinterest_sub = pinterest_p.add_subparsers(
+        dest="pinterest_action",
+    )
+
+    pinterest_status_p = pinterest_sub.add_parser(
+        "status",
+        help="Pinterest readiness (adapter + creds + live auth).",
+    )
+    pinterest_status_p.add_argument(
+        "--skip-live", action="store_true",
+        help="Skip the live auth probe (creds-state only).",
+    )
+    pinterest_status_p.add_argument("--json", action="store_true")
+
+    pinterest_connect_p = pinterest_sub.add_parser(
+        "connect",
+        help="Save PINTEREST_ACCESS_TOKEN to .env.",
+    )
+    pinterest_connect_p.add_argument(
+        "--token", required=True, dest="access_token",
+        help=(
+            "OAuth bearer token from "
+            "https://developers.pinterest.com/apps"
+        ),
+    )
+    pinterest_connect_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    pinterest_boards_p = pinterest_sub.add_parser(
+        "boards",
+        help="List existing Pinterest boards on the account.",
+    )
+    pinterest_boards_p.add_argument(
+        "--limit", type=int, default=25,
+    )
+    pinterest_boards_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    pinterest_pin_p = pinterest_sub.add_parser(
+        "publish-pin",
+        help="Publish a single pin to a board.",
+    )
+    pinterest_pin_p.add_argument(
+        "--board-id", required=True, dest="board_id",
+    )
+    pinterest_pin_p.add_argument(
+        "--title", required=True,
+        help="Pin title (max 100 chars).",
+    )
+    pinterest_pin_p.add_argument(
+        "--image-url", required=True, dest="image_url",
+        help="Public HTTPS URL of the image.",
+    )
+    pinterest_pin_p.add_argument(
+        "--description", default="",
+        help="Pin description (max 800 chars).",
+    )
+    pinterest_pin_p.add_argument(
+        "--link", default="",
+        help="Destination URL (drives traffic to product).",
+    )
+    pinterest_pin_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # W963-9: affiliate — partner referral link generator.
     affiliate_p = sub.add_parser(
         "affiliate",
@@ -10193,6 +10270,132 @@ def _cmd_niche(args) -> None:
     print(
         "  Stores: `shopai niche --by-store` -- per-store tags"
     )
+
+
+def _cmd_pinterest_status(args) -> None:
+    """W963-10: Pinterest readiness diagnostic."""
+    from engines.pinterest_publisher import PinterestPublisherEngine
+
+    skip_live = bool(getattr(args, "skip_live", False))
+    as_json = bool(getattr(args, "json", False))
+    result = PinterestPublisherEngine().run({
+        "data": {"action": "status", "skip_live": skip_live},
+    })
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    data = result.get("data") or {}
+    s = data.get("status") or {}
+    mk = "[OK ]" if data.get("ready") else "[XX]"
+    print(f"Pinterest readiness  {mk}")
+    print()
+    print(f"  adapter_registered: {s.get('adapter_registered')}")
+    print(f"  credentials_present: {s.get('credentials_present')}")
+    print(f"  auth_verified:      {s.get('auth_verified')}")
+    if s.get("username"):
+        print(f"  username:           {s.get('username')}")
+    print(f"  detail: {s.get('detail', '')}")
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_pinterest_connect(args) -> None:
+    """W963-10: save Pinterest token to .env."""
+    from engines.pinterest_publisher.connect import (
+        connect_pinterest,
+    )
+
+    token = getattr(args, "access_token", "")
+    as_json = bool(getattr(args, "json", False))
+    res = connect_pinterest(access_token=token)
+
+    if as_json:
+        print(json.dumps({
+            "success": res.success,
+            "detail": res.detail,
+            "env_path": res.env_path,
+        }, indent=2))
+        return
+
+    mk = "[OK ]" if res.success else "[XX]"
+    print(f"{mk} pinterest connect  {res.detail}")
+    if res.success:
+        print()
+        print(
+            "  Next: shopai pinterest status  "
+            "(verify auth)"
+        )
+
+
+def _cmd_pinterest_boards(args) -> None:
+    """W963-10: list existing boards."""
+    from engines.pinterest_publisher import PinterestPublisherEngine
+
+    limit = int(getattr(args, "limit", 25))
+    as_json = bool(getattr(args, "json", False))
+    result = PinterestPublisherEngine().run({
+        "data": {"action": "list-boards", "limit": limit},
+    })
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    data = result.get("data") or {}
+    boards = data.get("boards") or []
+    if not data.get("success"):
+        err = data.get("error") or "unknown"
+        print(f"pinterest boards: ERROR  {err}")
+        return
+    print(f"Pinterest boards ({len(boards)})")
+    print()
+    for b in boards:
+        print(
+            f"  - {b.get('name', '?'):<28} "
+            f"id={b.get('id', '?')}  "
+            f"pins={b.get('pin_count', 0)}  "
+            f"privacy={b.get('privacy', '?')}"
+        )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_pinterest_publish_pin(args) -> None:
+    """W963-10: publish single pin."""
+    from engines.pinterest_publisher import PinterestPublisherEngine
+
+    board_id = getattr(args, "board_id", "")
+    title = getattr(args, "title", "")
+    image_url = getattr(args, "image_url", "")
+    description = getattr(args, "description", "")
+    link = getattr(args, "link", "")
+    as_json = bool(getattr(args, "json", False))
+
+    result = PinterestPublisherEngine().run({
+        "data": {
+            "action": "publish-pin",
+            "board_id": board_id,
+            "title": title,
+            "image_url": image_url,
+            "description": description,
+            "link": link,
+        },
+    })
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    data = result.get("data") or {}
+    if not data.get("published"):
+        err = data.get("error") or "unknown"
+        print(f"[XX] pinterest publish-pin  {err}")
+        return
+    print(f"[$$] pinterest publish-pin  '{data.get('title')}'")
+    print()
+    print(f"  pin_id:  {data.get('pin_id', '?')}")
+    print(f"  board:   {data.get('board_id', '?')}")
+    print(f"  pin URL: {data.get('pin_url', '?')}")
+    if data.get("link"):
+        print(f"  drives → {data.get('link')}")
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
 
 
 def _cmd_affiliate_generate_link(args) -> None:
@@ -52046,6 +52249,12 @@ def _maybe_bootstrap_secondary_adapters() -> None:
         register_all()
     except Exception:  # noqa: BLE001
         pass
+    # Social (Pinterest) -- W963-10
+    try:
+        from core.adapters.social.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _maybe_bootstrap_shopify_adapters() -> None:
@@ -52220,6 +52429,26 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_affiliate_generate_link(args)
             return
         print("Usage: shopai affiliate {generate-link}")
+        return
+
+    if args.command == "pinterest":
+        action = getattr(args, "pinterest_action", None)
+        if action == "status":
+            _cmd_pinterest_status(args)
+            return
+        if action == "connect":
+            _cmd_pinterest_connect(args)
+            return
+        if action == "boards":
+            _cmd_pinterest_boards(args)
+            return
+        if action == "publish-pin":
+            _cmd_pinterest_publish_pin(args)
+            return
+        print(
+            "Usage: shopai pinterest "
+            "{status|connect|boards|publish-pin}"
+        )
         return
 
     if args.command == "email":

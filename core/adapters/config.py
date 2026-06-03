@@ -74,6 +74,12 @@ ENV_ALIASES: dict[str, str] = {
     "twilio_auth_token":  "TWILIO_AUTH_TOKEN",
     "twilio_from_number": "TWILIO_FROM_NUMBER",
 
+    # ── Social ────────────────────────────────
+    # W963-10: Pinterest API v5. OAuth bearer token + no
+    # account id needed for v5 (replaced by board id on each
+    # call).
+    "pinterest":     "PINTEREST_ACCESS_TOKEN",
+
     # ── Media / scraping ──────────────────────
     "firecrawl":     "FIRECRAWL_API_KEY",
     # Apify: actor-based scraping. Single token auths every

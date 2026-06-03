@@ -73,6 +73,7 @@ class AdapterCategory(str, Enum):
     HELPDESK = "helpdesk"                  # Customer support (Intercom, Zendesk)
     CRM = "crm"                            # Customer relationship management (HubSpot)
     SOURCING = "sourcing"                  # Dropshipping suppliers (CJ, AutoDS, Spocket)
+    SOCIAL = "social"                      # Social media publishing (Pinterest, future TikTok/IG)
     OTHER = "other"
 
 
@@ -491,6 +492,14 @@ class Capability(str, Enum):
     SEND_EMAIL_CAMPAIGN = "send_email_campaign"
     SEND_SMS = "send_sms"
     SEND_PUSH = "send_push"
+
+    # ── Social ────────────────────────────────
+    # W963-10: social media publishing. Pinterest first
+    # (highest ROI for visual niches: beauty / fashion / home).
+    SOCIAL_VERIFY_AUTH = "social_verify_auth"
+    SOCIAL_LIST_BOARDS = "social_list_boards"
+    SOCIAL_CREATE_BOARD = "social_create_board"
+    SOCIAL_CREATE_PIN = "social_create_pin"
 
     # ── Media ─────────────────────────────────
     GENERATE_IMAGE = "generate_image"
