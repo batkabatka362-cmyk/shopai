@@ -1849,6 +1849,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     warmup_p.add_argument("--json", action="store_true")
 
+    # W963-18: today — morning operator companion (5-signal brief).
+    today_p = sub.add_parser(
+        "today",
+        help=(
+            "Morning operator brief. Synthesises warmup-plan "
+            "day-of + revenue_readiness + autonomy + cycle + "
+            "approvals into a single 5-line view."
+        ),
+    )
+    today_p.add_argument(
+        "--day", type=int, default=1,
+        help="Assumed warmup-plan day (1..30).",
+    )
+    today_p.add_argument(
+        "--niche", default=None,
+    )
+    today_p.add_argument(
+        "--store", default=None, dest="store_id",
+        help="Per-store scope. Omit for fleet.",
+    )
+    today_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11289,6 +11311,55 @@ def _cmd_warmup_plan(args) -> None:
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
         )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_today(args) -> None:
+    """W963-18: morning operator brief."""
+    from engines.today_brief import TodayBriefEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "day": int(getattr(args, "day", 1)),
+            "niche": getattr(args, "niche", None),
+            "store_id": getattr(args, "store_id", None),
+        },
+    }
+    result = TodayBriefEngine().run(payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    verdict = data.get("verdict", "skipped")
+    mk = {
+        "ok": "[OK ]",
+        "warn": "[!! ]",
+        "critical": "[XX]",
+        "skipped": "[-- ]",
+    }.get(verdict, "[?? ]")
+    print(
+        f"Today brief  {mk}  day={data.get('day')} "
+        f"niche={data.get('niche')}"
+    )
+    print()
+    for s in data.get("signals") or []:
+        v = s.get("verdict", "skipped")
+        chip = {
+            "ok": "[OK ]",
+            "warn": "[!! ]",
+            "critical": "[XX]",
+            "skipped": "[-- ]",
+        }.get(v, "[?? ]")
+        print(
+            f"  {chip} {s.get('name', '?'):<12s} "
+            f"{s.get('headline', '')}"
+        )
+        if s.get("detail"):
+            print(f"           {s.get('detail')}")
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -53644,6 +53715,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "warmup-plan":
         _cmd_warmup_plan(args)
+        return
+
+    if args.command == "today":
+        _cmd_today(args)
         return
 
     if args.command == "tiktok":
