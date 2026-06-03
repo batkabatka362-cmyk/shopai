@@ -397,6 +397,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "email_connect",         # W963-8: ESP credential + send-test wrapper
     "affiliate_links",       # W963-9: per-partner referral link generator
     "pinterest_publisher",   # W963-10: Pinterest connect + publish-pin wrapper
+    "cro_variants",          # W963-11: CRO title/description/price variant generator
 })
 
 

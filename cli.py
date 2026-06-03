@@ -1528,6 +1528,55 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view",
     )
 
+    # W963-11: cro — title/description/price variant generator.
+    cro_p = sub.add_parser(
+        "cro",
+        help=(
+            "Conversion-rate optimization: generate alternative "
+            "title / description / price variants for a product. "
+            "Read-only candidate generator -- operator picks the "
+            "variants to A/B test."
+        ),
+    )
+    cro_sub = cro_p.add_subparsers(dest="cro_action")
+
+    cro_var_p = cro_sub.add_parser(
+        "variants",
+        help="Generate variant candidates for a product.",
+    )
+    cro_var_p.add_argument(
+        "--product-id", default=None, dest="product_id",
+        help=(
+            "Shopify product GID (gid://shopify/Product/X). "
+            "When omitted, --title and --price can supply a "
+            "synthetic product for testing."
+        ),
+    )
+    cro_var_p.add_argument(
+        "--title", default=None,
+        help="Synthetic product title (for offline testing).",
+    )
+    cro_var_p.add_argument(
+        "--description", default=None,
+        help="Synthetic product description.",
+    )
+    cro_var_p.add_argument(
+        "--category", default=None,
+        help="Product category (drives variant tone).",
+    )
+    cro_var_p.add_argument(
+        "--price", type=float, default=None,
+        help="Current price (for price variant generation).",
+    )
+    cro_var_p.add_argument(
+        "--strategies", default="title,description,price",
+        help=(
+            "Comma-separated list of strategies to run "
+            "(default: all three)."
+        ),
+    )
+    cro_var_p.add_argument("--json", action="store_true")
+
     # W963-10: pinterest — Pinterest connect + publish-pin.
     pinterest_p = sub.add_parser(
         "pinterest",
@@ -10270,6 +10319,86 @@ def _cmd_niche(args) -> None:
     print(
         "  Stores: `shopai niche --by-store` -- per-store tags"
     )
+
+
+def _cmd_cro_variants(args) -> None:
+    """W963-11: variant candidate generator."""
+    from engines.cro_variants import CroVariantsEngine
+
+    product_id = getattr(args, "product_id", None)
+    title = getattr(args, "title", None)
+    description = getattr(args, "description", None)
+    category = getattr(args, "category", None)
+    price = getattr(args, "price", None)
+    strategies = getattr(args, "strategies", "")
+    as_json = bool(getattr(args, "json", False))
+
+    payload: dict[str, Any] = {"data": {}}
+    if product_id:
+        payload["data"]["product_id"] = product_id
+    if title or description or category or price is not None:
+        # Build synthetic product from CLI flags.
+        product: dict[str, Any] = {}
+        if title:
+            product["title"] = title
+        if description:
+            product["description"] = description
+        if category:
+            product["category"] = category
+        if price is not None:
+            product["price"] = float(price)
+        payload["data"]["product"] = product
+    if strategies:
+        payload["data"]["strategies"] = strategies
+
+    result = CroVariantsEngine().run(payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success":
+        err = result.get("error") or "unknown"
+        print(f"cro variants: ERROR  {err}")
+        return
+
+    title_out = data.get("product_title", "?")
+    cat = data.get("product_category", "")
+    px = data.get("product_price", 0.0)
+    variants = data.get("variants") or {}
+
+    print(
+        f"CRO variants for: {title_out}  "
+        f"(category={cat or '?'}  current=${px:.2f})"
+    )
+    print()
+    if "title" in variants:
+        print("  Title variants:")
+        for v in variants["title"]:
+            print(
+                f"    [{v.get('angle'):<8}] "
+                f"{v.get('text')}"
+            )
+        print()
+    if "description" in variants:
+        print("  Description variants:")
+        for v in variants["description"]:
+            text = v.get("text", "")
+            preview = text[:140] + (
+                "..." if len(text) > 140 else ""
+            )
+            print(f"    [{v.get('strategy'):<13}] {preview}")
+        print()
+    if "price" in variants:
+        print("  Price variants:")
+        for v in variants["price"]:
+            print(
+                f"    [{v.get('label'):<13}] "
+                f"${v.get('price'):.2f}"
+            )
+        print()
+    print(f"  NEXT: {data.get('next_action', '')}")
 
 
 def _cmd_pinterest_status(args) -> None:
@@ -52429,6 +52558,14 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_affiliate_generate_link(args)
             return
         print("Usage: shopai affiliate {generate-link}")
+        return
+
+    if args.command == "cro":
+        action = getattr(args, "cro_action", None)
+        if action == "variants":
+            _cmd_cro_variants(args)
+            return
+        print("Usage: shopai cro {variants}")
         return
 
     if args.command == "pinterest":
