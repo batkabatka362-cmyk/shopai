@@ -1890,6 +1890,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ebe_p.add_argument("--json", action="store_true")
 
+    # W963-20: bigpicture — unified morning view.
+    bp_p = sub.add_parser(
+        "bigpicture",
+        help=(
+            "One-command morning view. Today brief + "
+            "earnings-by-engine + warmup-plan day-of in a "
+            "single rendered screen."
+        ),
+    )
+    bp_p.add_argument(
+        "--day", type=int, default=1,
+        help="Assumed warmup-plan day (1..30).",
+    )
+    bp_p.add_argument("--niche", default=None)
+    bp_p.add_argument(
+        "--store", default=None, dest="store_id",
+    )
+    bp_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11331,6 +11350,109 @@ def _cmd_warmup_plan(args) -> None:
             f"{d.get('intent')}"
         )
     print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_bigpicture(args) -> None:
+    """W963-20: unified morning view."""
+    from engines.bigpicture import BigpictureEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "day": int(getattr(args, "day", 1)),
+            "niche": getattr(args, "niche", None),
+            "store_id": getattr(args, "store_id", None),
+        },
+    }
+    result = BigpictureEngine().run(payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    verdict = data.get("verdict", "skipped")
+    mk = {
+        "ok": "[OK ]",
+        "warn": "[!! ]",
+        "critical": "[XX]",
+        "skipped": "[-- ]",
+    }.get(verdict, "[?? ]")
+
+    print(
+        f"Bigpicture  {mk}  day={data.get('day')} "
+        f"niche={data.get('niche')}"
+    )
+    print()
+
+    sections = data.get("sections") or {}
+
+    # ── Section 1: today ─────────────────────────
+    today = (sections.get("today") or {}).get("data") or {}
+    print("[1] Today brief")
+    for s in today.get("signals") or []:
+        v = s.get("verdict", "skipped")
+        chip = {
+            "ok": "[OK ]",
+            "warn": "[!! ]",
+            "critical": "[XX]",
+            "skipped": "[-- ]",
+        }.get(v, "[?? ]")
+        print(
+            f"    {chip} {s.get('name', '?'):<12s} "
+            f"{s.get('headline', '')}"
+        )
+    print()
+
+    # ── Section 2: warmup-plan day ──────────────
+    warmup = (sections.get("warmup") or {}).get("data") or {}
+    if warmup:
+        print(
+            f"[2] Day {warmup.get('day')} "
+            f"[{warmup.get('phase')}]  "
+            f"{warmup.get('intent')}"
+        )
+        actions = warmup.get("actions") or []
+        if actions:
+            for a in actions[:3]:
+                print(f"      $ {a}")
+        print(f"    pivot: {warmup.get('pivot_signal', '')}")
+        print()
+
+    # ── Section 3: earnings by engine ───────────
+    earnings = (
+        sections.get("earnings") or {}
+    ).get("data") or {}
+    engines = earnings.get("engines") or []
+    total_rev = earnings.get("total_attributed_revenue", 0.0)
+    earning_count = earnings.get("earning_count", 0)
+    print(
+        f"[3] Earnings (7d)  total=${total_rev:.2f}  "
+        f"earning={earning_count}/{len(engines)}"
+    )
+    # Show only earning + flat engines; hide the no_data
+    # noise.
+    earning_or_flat = [
+        e for e in engines
+        if e.get("verdict") in ("earning", "flat")
+    ]
+    if earning_or_flat:
+        for e in earning_or_flat[:8]:
+            verdict = e.get("verdict")
+            chip = {
+                "earning": "[$$]",
+                "flat":    "[. ]",
+            }.get(verdict, "[-- ]")
+            print(
+                f"    {chip} {e.get('engine', '?'):<24s} "
+                f"orders={e.get('attributed_orders', 0):<3d} "
+                f"rev=${e.get('attributed_revenue', 0.0):.2f}"
+            )
+    else:
+        print("    (no attributed revenue yet)")
+    print()
+
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -53793,6 +53915,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "earnings-by-engine":
         _cmd_earnings_by_engine(args)
+        return
+
+    if args.command == "bigpicture":
+        _cmd_bigpicture(args)
         return
 
     if args.command == "tiktok":
