@@ -79,6 +79,12 @@ ENV_ALIASES: dict[str, str] = {
     # account id needed for v5 (replaced by board id on each
     # call).
     "pinterest":     "PINTEREST_ACCESS_TOKEN",
+    # W963-12: TikTok for Business v2 / Content Posting API.
+    # OAuth access token + business account ID. Operators
+    # need a TikTok Business Center account + Content Posting
+    # permission granted at app setup time.
+    "tiktok":             "TIKTOK_ACCESS_TOKEN",
+    "tiktok_business_id": "TIKTOK_BUSINESS_ID",
 
     # ── Media / scraping ──────────────────────
     "firecrawl":     "FIRECRAWL_API_KEY",

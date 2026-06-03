@@ -500,6 +500,9 @@ class Capability(str, Enum):
     SOCIAL_LIST_BOARDS = "social_list_boards"
     SOCIAL_CREATE_BOARD = "social_create_board"
     SOCIAL_CREATE_PIN = "social_create_pin"
+    # W963-12: TikTok content posting via Content Posting API.
+    SOCIAL_LIST_POSTS = "social_list_posts"
+    SOCIAL_CREATE_POST = "social_create_post"
 
     # ── Media ─────────────────────────────────
     GENERATE_IMAGE = "generate_image"

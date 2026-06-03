@@ -398,6 +398,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "affiliate_links",       # W963-9: per-partner referral link generator
     "pinterest_publisher",   # W963-10: Pinterest connect + publish-pin wrapper
     "cro_variants",          # W963-11: CRO title/description/price variant generator
+    "tiktok_publisher",      # W963-12: TikTok connect + publish-post wrapper
 })
 
 

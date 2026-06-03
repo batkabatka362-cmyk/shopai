@@ -1577,6 +1577,91 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cro_var_p.add_argument("--json", action="store_true")
 
+    # W963-12: tiktok — TikTok for Business Content Posting.
+    tiktok_p = sub.add_parser(
+        "tiktok",
+        help=(
+            "TikTok for Business Content Posting API wrapper. "
+            "Second-largest visual social platform after "
+            "Pinterest. Status / connect / posts / publish-post."
+        ),
+    )
+    tiktok_sub = tiktok_p.add_subparsers(dest="tiktok_action")
+
+    tiktok_status_p = tiktok_sub.add_parser(
+        "status",
+        help="TikTok readiness (adapter + creds + live auth).",
+    )
+    tiktok_status_p.add_argument(
+        "--skip-live", action="store_true",
+    )
+    tiktok_status_p.add_argument("--json", action="store_true")
+
+    tiktok_connect_p = tiktok_sub.add_parser(
+        "connect",
+        help="Save TIKTOK_ACCESS_TOKEN + TIKTOK_BUSINESS_ID.",
+    )
+    tiktok_connect_p.add_argument(
+        "--token", required=True, dest="access_token",
+        help=(
+            "OAuth access token from "
+            "https://business.tiktok.com -> Developer Center"
+        ),
+    )
+    tiktok_connect_p.add_argument(
+        "--business-id", required=True, dest="business_id",
+        help="TikTok Business Center account ID.",
+    )
+    tiktok_connect_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    tiktok_posts_p = tiktok_sub.add_parser(
+        "posts",
+        help="List recent posts on the business account.",
+    )
+    tiktok_posts_p.add_argument(
+        "--limit", type=int, default=25,
+    )
+    tiktok_posts_p.add_argument(
+        "--business-id", dest="business_id", default=None,
+        help="Override TIKTOK_BUSINESS_ID env.",
+    )
+    tiktok_posts_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    tiktok_pub_p = tiktok_sub.add_parser(
+        "publish-post",
+        help="Publish single photo or video post.",
+    )
+    tiktok_pub_p.add_argument(
+        "--caption", required=True,
+        help="Post caption (max 2200 chars).",
+    )
+    tiktok_pub_p.add_argument(
+        "--media-url", required=True, dest="media_url",
+        help="Public HTTP(S) URL of the image or video.",
+    )
+    tiktok_pub_p.add_argument(
+        "--type", default="PHOTO", dest="media_type",
+        choices=["PHOTO", "VIDEO"],
+    )
+    tiktok_pub_p.add_argument(
+        "--privacy", default="PUBLIC_TO_EVERYONE",
+        choices=[
+            "PUBLIC_TO_EVERYONE",
+            "MUTUAL_FOLLOW_FRIENDS",
+            "SELF_ONLY",
+        ],
+    )
+    tiktok_pub_p.add_argument(
+        "--business-id", dest="business_id", default=None,
+    )
+    tiktok_pub_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # W963-10: pinterest — Pinterest connect + publish-pin.
     pinterest_p = sub.add_parser(
         "pinterest",
@@ -10398,6 +10483,135 @@ def _cmd_cro_variants(args) -> None:
                 f"${v.get('price'):.2f}"
             )
         print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_tiktok_status(args) -> None:
+    """W963-12: TikTok readiness diagnostic."""
+    from engines.tiktok_publisher import TikTokPublisherEngine
+
+    skip_live = bool(getattr(args, "skip_live", False))
+    as_json = bool(getattr(args, "json", False))
+    result = TikTokPublisherEngine().run({
+        "data": {"action": "status", "skip_live": skip_live},
+    })
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    data = result.get("data") or {}
+    s = data.get("status") or {}
+    mk = "[OK ]" if data.get("ready") else "[XX]"
+    print(f"TikTok readiness  {mk}")
+    print()
+    print(f"  adapter_registered:  {s.get('adapter_registered')}")
+    print(f"  credentials_present: {s.get('credentials_present')}")
+    print(f"  business_id_present: {s.get('business_id_present')}")
+    print(f"  auth_verified:       {s.get('auth_verified')}")
+    if s.get("username"):
+        print(f"  username:            {s.get('username')}")
+    print(f"  detail: {s.get('detail', '')}")
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_tiktok_connect(args) -> None:
+    """W963-12: save TikTok credentials to .env."""
+    from engines.tiktok_publisher.connect import connect_tiktok
+
+    token = getattr(args, "access_token", "")
+    biz = getattr(args, "business_id", "")
+    as_json = bool(getattr(args, "json", False))
+    res = connect_tiktok(
+        access_token=token, business_id=biz,
+    )
+    if as_json:
+        print(json.dumps({
+            "success": res.success,
+            "detail": res.detail,
+            "env_path": res.env_path,
+        }, indent=2))
+        return
+    mk = "[OK ]" if res.success else "[XX]"
+    print(f"{mk} tiktok connect  {res.detail}")
+    if res.success:
+        print()
+        print("  Next: shopai tiktok status (verify auth)")
+
+
+def _cmd_tiktok_posts(args) -> None:
+    """W963-12: list TikTok posts."""
+    from engines.tiktok_publisher import TikTokPublisherEngine
+
+    limit = int(getattr(args, "limit", 25))
+    business_id = getattr(args, "business_id", None)
+    as_json = bool(getattr(args, "json", False))
+    payload: dict[str, Any] = {
+        "data": {"action": "list-posts", "limit": limit},
+    }
+    if business_id:
+        payload["data"]["business_id"] = business_id
+    result = TikTokPublisherEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    data = result.get("data") or {}
+    posts = data.get("posts") or []
+    if not data.get("success"):
+        err = data.get("error") or "unknown"
+        print(f"tiktok posts: ERROR  {err}")
+        return
+    print(f"TikTok posts ({len(posts)})")
+    print()
+    for p in posts:
+        cap = p.get("caption", "")[:60]
+        print(
+            f"  - {cap:<60}  "
+            f"views={p.get('view_count', 0)}  "
+            f"likes={p.get('like_count', 0)}"
+        )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_tiktok_publish_post(args) -> None:
+    """W963-12: publish single TikTok post."""
+    from engines.tiktok_publisher import TikTokPublisherEngine
+
+    caption = getattr(args, "caption", "")
+    media_url = getattr(args, "media_url", "")
+    media_type = getattr(args, "media_type", "PHOTO")
+    privacy = getattr(args, "privacy", "PUBLIC_TO_EVERYONE")
+    business_id = getattr(args, "business_id", None)
+    as_json = bool(getattr(args, "json", False))
+
+    payload: dict[str, Any] = {
+        "data": {
+            "action": "publish-post",
+            "caption": caption,
+            "media_url": media_url,
+            "media_type": media_type,
+            "privacy": privacy,
+        },
+    }
+    if business_id:
+        payload["data"]["business_id"] = business_id
+
+    result = TikTokPublisherEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    data = result.get("data") or {}
+    if not data.get("published"):
+        err = data.get("error") or "unknown"
+        print(f"[XX] tiktok publish-post  {err}")
+        return
+    print(f"[$$] tiktok publish-post  {data.get('media_type')}")
+    print()
+    print(f"  publish_id: {data.get('publish_id', '?')}")
+    print(f"  status:     {data.get('status', 'PROCESSING')}")
+    if data.get("share_url"):
+        print(f"  share URL:  {data.get('share_url')}")
+    print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -52566,6 +52780,26 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_cro_variants(args)
             return
         print("Usage: shopai cro {variants}")
+        return
+
+    if args.command == "tiktok":
+        action = getattr(args, "tiktok_action", None)
+        if action == "status":
+            _cmd_tiktok_status(args)
+            return
+        if action == "connect":
+            _cmd_tiktok_connect(args)
+            return
+        if action == "posts":
+            _cmd_tiktok_posts(args)
+            return
+        if action == "publish-post":
+            _cmd_tiktok_publish_post(args)
+            return
+        print(
+            "Usage: shopai tiktok "
+            "{status|connect|posts|publish-post}"
+        )
         return
 
     if args.command == "pinterest":

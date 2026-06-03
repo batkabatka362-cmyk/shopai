@@ -10,6 +10,7 @@ from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
 from .pinterest import PinterestAdapter
+from .tiktok import TikTokAdapter
 
 logger = get_logger("adapters.social.bootstrap")
 
@@ -19,6 +20,7 @@ logger = get_logger("adapters.social.bootstrap")
 # the live bootstrap hasn't been invoked yet.
 _SOCIAL_ADAPTER_CLASSES = [
     PinterestAdapter,
+    TikTokAdapter,
 ]
 
 
