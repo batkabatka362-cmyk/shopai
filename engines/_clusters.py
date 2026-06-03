@@ -405,6 +405,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "review_request",        # W963-16: post-purchase review request automation
     "warmup_plan",           # W963-17: 30-day cold-start playbook generator
     "today_brief",           # W963-18: morning operator companion across 5 signals
+    "earnings_by_engine",    # W963-19: per-W963-engine attribution rollup
 })
 
 

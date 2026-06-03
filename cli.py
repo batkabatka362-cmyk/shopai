@@ -1871,6 +1871,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     today_p.add_argument("--json", action="store_true")
 
+    # W963-19: earnings-by-engine — per-W963 attribution rollup.
+    ebe_p = sub.add_parser(
+        "earnings-by-engine",
+        help=(
+            "Per-W963-engine revenue attribution. Shows "
+            "which of the 18 cold-start engines actually "
+            "produced attributable orders in the window."
+        ),
+    )
+    ebe_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+        dest="window_hours",
+        help="Lookback window in hours (default 168 = 7d).",
+    )
+    ebe_p.add_argument(
+        "--store", default=None, dest="store_id",
+    )
+    ebe_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11310,6 +11329,57 @@ def _cmd_warmup_plan(args) -> None:
             f"    day {d.get('day'):>2d} "
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
+        )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_earnings_by_engine(args) -> None:
+    """W963-19: per-W963-engine attribution rollup."""
+    from engines.earnings_by_engine import EarningsByEngineEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "window_hours": float(
+                getattr(args, "window_hours", 168.0),
+            ),
+            "store_id": getattr(args, "store_id", None),
+        },
+    }
+    result = EarningsByEngineEngine().run(payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    engines = data.get("engines") or []
+    window = data.get("window_hours")
+    total_rev = data.get("total_attributed_revenue", 0.0)
+    print(
+        f"Earnings-by-W963-engine  window={window}h  "
+        f"total=${total_rev:.2f}  "
+        f"earning={data.get('earning_count', 0)}/{len(engines)}"
+    )
+    print()
+    print(
+        f"  {'day':>3s}  {'engine':<24s}  "
+        f"{'orders':>7s}  {'rev':>8s}  {'verdict':<10s}"
+    )
+    for e in engines:
+        verdict = e.get("verdict", "no_data")
+        mk = {
+            "earning": "[$$]",
+            "flat":    "[. ]",
+            "no_data": "[-- ]",
+        }.get(verdict, "[?? ]")
+        print(
+            f"  {mk} d{e.get('intro_day'):>2d}  "
+            f"{e.get('engine', '?'):<24s}  "
+            f"{e.get('attributed_orders', 0):>7d}  "
+            f"${e.get('attributed_revenue', 0.0):>7.2f}  "
+            f"{verdict:<10s}"
         )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
@@ -53719,6 +53789,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "today":
         _cmd_today(args)
+        return
+
+    if args.command == "earnings-by-engine":
+        _cmd_earnings_by_engine(args)
         return
 
     if args.command == "tiktok":
