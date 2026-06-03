@@ -1909,6 +1909,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bp_p.add_argument("--json", action="store_true")
 
+    # W963-21: checkup — parallel health probe across W963 roster.
+    chk_p = sub.add_parser(
+        "checkup",
+        help=(
+            "Diagnostic across all 18 W963 engines. Shows "
+            "per-engine verdict: ready / partial / missing / "
+            "error. Different from bigpicture (routine) — "
+            "this is the substrate health check."
+        ),
+    )
+    chk_p.add_argument(
+        "--store", default=None, dest="store_id",
+    )
+    chk_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11348,6 +11363,52 @@ def _cmd_warmup_plan(args) -> None:
             f"    day {d.get('day'):>2d} "
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
+        )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_checkup(args) -> None:
+    """W963-21: substrate health probe across W963 roster."""
+    from engines.checkup import CheckupEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {"store_id": getattr(args, "store_id", None)},
+    }
+    result = CheckupEngine().run(payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    verdict = data.get("verdict", "missing")
+    mk = {
+        "ready":   "[OK ]",
+        "partial": "[!! ]",
+        "missing": "[XX]",
+        "error":   "[XX]",
+    }.get(verdict, "[?? ]")
+    counts = data.get("counts") or {}
+    print(
+        f"Checkup  {mk}  verdict={verdict}  "
+        f"ready={counts.get('ready', 0)}/{data.get('engine_count', 0)}  "
+        f"partial={counts.get('partial', 0)}  "
+        f"error={counts.get('error', 0)}"
+    )
+    print()
+    for e in data.get("engines") or []:
+        v = e.get("verdict", "missing")
+        chip = {
+            "ready":   "[OK ]",
+            "partial": "[!! ]",
+            "missing": "[XX]",
+            "error":   "[XX]",
+        }.get(v, "[?? ]")
+        print(
+            f"  {chip} {e.get('engine', '?'):<24s} "
+            f"{e.get('detail', '')[:48]}"
         )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
@@ -53919,6 +53980,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "bigpicture":
         _cmd_bigpicture(args)
+        return
+
+    if args.command == "checkup":
+        _cmd_checkup(args)
         return
 
     if args.command == "tiktok":

@@ -407,6 +407,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "today_brief",           # W963-18: morning operator companion across 5 signals
     "earnings_by_engine",    # W963-19: per-W963-engine attribution rollup
     "bigpicture",            # W963-20: unified morning view (today + earnings + warmup)
+    "checkup",               # W963-21: parallel health probe across W963 roster
 })
 
 
