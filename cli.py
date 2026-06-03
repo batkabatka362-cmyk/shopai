@@ -1528,6 +1528,53 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view",
     )
 
+    # W963-8: email — ESP credential + send-test wrapper.
+    email_p = sub.add_parser(
+        "email",
+        help=(
+            "Email ESP wrapper: connect provider credentials, "
+            "check readiness, send a test transactional email. "
+            "Supports brevo / resend (wired), sendgrid + "
+            "klaviyo env slots reserved for future adapters."
+        ),
+    )
+    email_sub = email_p.add_subparsers(dest="email_action")
+
+    email_status_p = email_sub.add_parser(
+        "status", help="Per-provider readiness.",
+    )
+    email_status_p.add_argument("--json", action="store_true")
+
+    email_connect_p = email_sub.add_parser(
+        "connect", help="Save provider API key to .env.",
+    )
+    email_connect_p.add_argument(
+        "provider",
+        choices=["brevo", "resend", "sendgrid", "klaviyo"],
+    )
+    email_connect_p.add_argument(
+        "--api-key", required=True, dest="api_key",
+        help="Provider API key.",
+    )
+    email_connect_p.add_argument("--json", action="store_true")
+
+    email_send_test_p = email_sub.add_parser(
+        "send-test",
+        help="Fire a single test transactional email.",
+    )
+    email_send_test_p.add_argument(
+        "--to", required=True,
+        help="Destination email address.",
+    )
+    email_send_test_p.add_argument(
+        "--subject", default="ShopAI test email",
+    )
+    email_send_test_p.add_argument(
+        "--from", dest="from_email", default=None,
+        help="Override the sender (defaults to ESP config).",
+    )
+    email_send_test_p.add_argument("--json", action="store_true")
+
     # W963-7: ads — Meta/Google Ads launcher substrate.
     ads_p = sub.add_parser(
         "ads",
@@ -10107,6 +10154,104 @@ def _cmd_niche(args) -> None:
     print(
         "  Stores: `shopai niche --by-store` -- per-store tags"
     )
+
+
+def _cmd_email_status(args) -> None:
+    """W963-8: per-provider readiness diagnostic."""
+    from engines.email_connect import EmailConnectEngine
+
+    as_json = bool(getattr(args, "json", False))
+    result = EmailConnectEngine().run({
+        "data": {"action": "status"},
+    })
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    providers = data.get("providers") or {}
+    print("Email readiness")
+    print()
+    for name, status in providers.items():
+        mk = (
+            "[OK ]" if status.get("adapter_wired") and status.get("credentials_present")
+            else "[XX]"
+        )
+        print(
+            f"  {mk} {name:<10} {status.get('detail', '')}"
+        )
+    print()
+    next_action = data.get("next_action") or ""
+    if next_action:
+        print(f"  NEXT: {next_action}")
+
+
+def _cmd_email_connect(args) -> None:
+    """W963-8: save ESP credentials to .env."""
+    from engines.email_connect.connect import connect_provider
+
+    provider = getattr(args, "provider", "brevo")
+    api_key = getattr(args, "api_key", "")
+    as_json = bool(getattr(args, "json", False))
+
+    res = connect_provider(
+        provider=provider, api_key=api_key,
+    )
+
+    if as_json:
+        print(json.dumps({
+            "provider": res.provider,
+            "success": res.success,
+            "detail": res.detail,
+            "env_path": res.env_path,
+        }, indent=2))
+        return
+
+    mk = "[OK ]" if res.success else "[XX]"
+    print(f"{mk} email connect {provider}  {res.detail}")
+    if res.success:
+        print()
+        print(
+            f"  Next: shopai email send-test "
+            f"--to <your@email.com>  (verify the wire-up)"
+        )
+
+
+def _cmd_email_send_test(args) -> None:
+    """W963-8: send single test transactional email."""
+    from engines.email_connect import EmailConnectEngine
+
+    to = getattr(args, "to", "")
+    subject = getattr(args, "subject", "ShopAI test email")
+    from_email = getattr(args, "from_email", None)
+    as_json = bool(getattr(args, "json", False))
+
+    payload = {
+        "data": {
+            "action": "send-test",
+            "to": to,
+            "subject": subject,
+        },
+    }
+    if from_email:
+        payload["data"]["from_email"] = from_email
+
+    result = EmailConnectEngine().run(payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if not data.get("sent"):
+        err = data.get("error") or data.get("detail") or "unknown"
+        print(f"[XX] email send-test  {err}")
+        return
+
+    print(f"[OK ] email send-test  {data.get('detail', '')}")
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
 
 
 def _cmd_ads_status(args) -> None:
@@ -51975,6 +52120,20 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "blog-candidates":
         _cmd_blog_candidates(args)
+        return
+
+    if args.command == "email":
+        action = getattr(args, "email_action", None)
+        if action == "status":
+            _cmd_email_status(args)
+            return
+        if action == "connect":
+            _cmd_email_connect(args)
+            return
+        if action == "send-test":
+            _cmd_email_send_test(args)
+            return
+        print("Usage: shopai email {status|connect|send-test}")
         return
 
     if args.command == "ads":

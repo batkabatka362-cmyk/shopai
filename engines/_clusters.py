@@ -394,6 +394,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "earn_bootstrap",        # W963-5: one-command cold-start chain
     "content_publisher",     # W963-6: SEO blog content seed
     "ads_launcher",          # W963-7: ad-platform credential + launch wrapper
+    "email_connect",         # W963-8: ESP credential + send-test wrapper
 })
 
 
