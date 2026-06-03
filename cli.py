@@ -27142,6 +27142,29 @@ def _cmd_cycle_run(args) -> None:
             "shipping-alert bridge failed: %s", exc,
         )
 
+    # W963-23: autopilot bridge -- fires welcome_series +
+    # review_request batches inside the standard cycle.
+    # Each stage is env-gated so missing env vars keep the
+    # write stages silent (same default-OFF posture as
+    # autopilot's --yes flow).
+    try:
+        from engines.autopilot.runner import run_autopilot
+        ap_report = run_autopilot(
+            confirmed=True, store_id=None,
+        )
+        fired = [
+            s.name for s in ap_report.stages if s.fired
+        ]
+        if fired:
+            logger.info(
+                "autopilot bridge fired stages: %s",
+                ",".join(fired),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "autopilot bridge failed: %s", exc,
+        )
+
     # Wave 854: auto-disarm bridge -- runs BEFORE the
     # substrate fire so chronically-degraded domains get
     # their armed flag revoked before they fire again.
