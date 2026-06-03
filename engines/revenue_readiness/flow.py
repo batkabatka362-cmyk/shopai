@@ -88,15 +88,27 @@ class RevenueReadinessEngine:
                 "customers": 0,
                 "total_revenue": 0.0,
             }
-        try:
-            from core.stores.manager import StoreManager
-            sm = StoreManager()
-            stats = sm.get_stats(store_id) or {}
-        except Exception as exc:  # noqa: BLE001
-            logger.debug(
-                "revenue_readiness stats lookup raised: %s", exc,
-            )
-            stats = {}
+        # W963-1.1: correct import path. Pre-fix used
+        # ``core.stores.manager`` which doesn't exist; the bare
+        # except below swallowed the ImportError so every per-
+        # store probe returned zero stats regardless of reality.
+        stats = {}
+        for module_path in (
+            "data_pipeline.store.store_manager",
+            "execution.shopify.store_manager",
+        ):
+            try:
+                mod = __import__(
+                    module_path, fromlist=["StoreManager"],
+                )
+                sm = mod.StoreManager()
+                stats = sm.get_stats(store_id) or {}
+                break
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "revenue_readiness stats lookup raised "
+                    "for %s: %s", module_path, exc,
+                )
         return {
             "products": int(stats.get("products", 0) or 0),
             "orders": int(stats.get("orders", 0) or 0),
