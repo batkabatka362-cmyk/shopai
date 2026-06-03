@@ -1665,6 +1665,88 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # W963-15: instagram — Instagram Graph API.
+    instagram_p = sub.add_parser(
+        "instagram",
+        help=(
+            "Instagram Graph API v21 operator wrapper. Closes "
+            "the visual-social trifecta (Pinterest + TikTok + "
+            "Instagram). Status / connect / posts / publish-post."
+        ),
+    )
+    instagram_sub = instagram_p.add_subparsers(
+        dest="instagram_action",
+    )
+
+    ig_status_p = instagram_sub.add_parser(
+        "status",
+        help="Instagram readiness (adapter + creds + live auth).",
+    )
+    ig_status_p.add_argument(
+        "--skip-live", action="store_true",
+    )
+    ig_status_p.add_argument("--json", action="store_true")
+
+    ig_connect_p = instagram_sub.add_parser(
+        "connect",
+        help="Save INSTAGRAM_ACCESS_TOKEN + INSTAGRAM_ACCOUNT_ID.",
+    )
+    ig_connect_p.add_argument(
+        "--token", required=True, dest="access_token",
+        help=(
+            "Access token from Meta developer dashboard "
+            "with instagram_basic + instagram_content_publish."
+        ),
+    )
+    ig_connect_p.add_argument(
+        "--account-id", required=True, dest="account_id",
+        help=(
+            "Instagram Business Account ID (NOT user id). "
+            "Look up via Meta Graph API Explorer."
+        ),
+    )
+    ig_connect_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    ig_posts_p = instagram_sub.add_parser(
+        "posts",
+        help="List recent posts on the connected IG account.",
+    )
+    ig_posts_p.add_argument(
+        "--limit", type=int, default=25,
+    )
+    ig_posts_p.add_argument(
+        "--account-id", dest="account_id", default=None,
+        help="Override INSTAGRAM_ACCOUNT_ID env.",
+    )
+    ig_posts_p.add_argument(
+        "--json", action="store_true",
+    )
+
+    ig_pub_p = instagram_sub.add_parser(
+        "publish-post",
+        help="Publish single image or video post (2-step async).",
+    )
+    ig_pub_p.add_argument(
+        "--caption", required=True,
+        help="Caption (max 2200 chars).",
+    )
+    ig_pub_p.add_argument(
+        "--media-url", required=True, dest="media_url",
+        help="Public HTTP(S) URL of image or video.",
+    )
+    ig_pub_p.add_argument(
+        "--type", default="IMAGE", dest="media_type",
+        choices=["IMAGE", "VIDEO", "REELS"],
+    )
+    ig_pub_p.add_argument(
+        "--account-id", dest="account_id", default=None,
+    )
+    ig_pub_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -10734,6 +10816,142 @@ def _cmd_chat_respond(args) -> None:
     for line in data.get("draft_response", "").splitlines():
         print(f"  {line}")
     print(f"  ---")
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_instagram_status(args) -> None:
+    """W963-15: Instagram readiness diagnostic."""
+    from engines.instagram_publisher import (
+        InstagramPublisherEngine,
+    )
+
+    skip_live = bool(getattr(args, "skip_live", False))
+    as_json = bool(getattr(args, "json", False))
+    result = InstagramPublisherEngine().run({
+        "data": {"action": "status", "skip_live": skip_live},
+    })
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    data = result.get("data") or {}
+    s = data.get("status") or {}
+    mk = "[OK ]" if data.get("ready") else "[XX]"
+    print(f"Instagram readiness  {mk}")
+    print()
+    print(f"  adapter_registered:  {s.get('adapter_registered')}")
+    print(f"  credentials_present: {s.get('credentials_present')}")
+    print(f"  account_id_present:  {s.get('account_id_present')}")
+    print(f"  auth_verified:       {s.get('auth_verified')}")
+    if s.get("username"):
+        print(f"  username:            {s.get('username')}")
+    print(f"  detail: {s.get('detail', '')}")
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_instagram_connect(args) -> None:
+    """W963-15: save Instagram credentials."""
+    from engines.instagram_publisher.connect import (
+        connect_instagram,
+    )
+
+    token = getattr(args, "access_token", "")
+    acct = getattr(args, "account_id", "")
+    as_json = bool(getattr(args, "json", False))
+    res = connect_instagram(
+        access_token=token, account_id=acct,
+    )
+    if as_json:
+        print(json.dumps({
+            "success": res.success,
+            "detail": res.detail,
+            "env_path": res.env_path,
+        }, indent=2))
+        return
+    mk = "[OK ]" if res.success else "[XX]"
+    print(f"{mk} instagram connect  {res.detail}")
+    if res.success:
+        print()
+        print("  Next: shopai instagram status (verify auth)")
+
+
+def _cmd_instagram_posts(args) -> None:
+    """W963-15: list Instagram posts."""
+    from engines.instagram_publisher import (
+        InstagramPublisherEngine,
+    )
+
+    limit = int(getattr(args, "limit", 25))
+    account_id = getattr(args, "account_id", None)
+    as_json = bool(getattr(args, "json", False))
+    payload: dict[str, Any] = {
+        "data": {"action": "list-posts", "limit": limit},
+    }
+    if account_id:
+        payload["data"]["account_id"] = account_id
+    result = InstagramPublisherEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    data = result.get("data") or {}
+    posts = data.get("posts") or []
+    if not data.get("success"):
+        err = data.get("error") or "unknown"
+        print(f"instagram posts: ERROR  {err}")
+        return
+    print(f"Instagram posts ({len(posts)})")
+    print()
+    for p in posts:
+        cap = (p.get("caption") or "")[:60]
+        print(
+            f"  - {cap:<60}  "
+            f"type={p.get('media_type', '?')}  "
+            f"likes={p.get('like_count', 0)}"
+        )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_instagram_publish_post(args) -> None:
+    """W963-15: publish Instagram post (2-step async)."""
+    from engines.instagram_publisher import (
+        InstagramPublisherEngine,
+    )
+
+    caption = getattr(args, "caption", "")
+    media_url = getattr(args, "media_url", "")
+    media_type = getattr(args, "media_type", "IMAGE")
+    account_id = getattr(args, "account_id", None)
+    as_json = bool(getattr(args, "json", False))
+
+    payload: dict[str, Any] = {
+        "data": {
+            "action": "publish-post",
+            "caption": caption,
+            "media_url": media_url,
+            "media_type": media_type,
+        },
+    }
+    if account_id:
+        payload["data"]["account_id"] = account_id
+
+    result = InstagramPublisherEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    data = result.get("data") or {}
+    if not data.get("published"):
+        err = data.get("error") or "unknown"
+        print(f"[XX] instagram publish-post  {err}")
+        return
+    print(
+        f"[$$] instagram publish-post  "
+        f"{data.get('media_type')}"
+    )
+    print()
+    print(f"  post_id:     {data.get('post_id', '?')}")
+    print(f"  creation_id: {data.get('creation_id', '?')}")
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -53048,6 +53266,26 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_cold_start_orchestrate(args)
             return
         print("Usage: shopai cold-start {orchestrate}")
+        return
+
+    if args.command == "instagram":
+        action = getattr(args, "instagram_action", None)
+        if action == "status":
+            _cmd_instagram_status(args)
+            return
+        if action == "connect":
+            _cmd_instagram_connect(args)
+            return
+        if action == "posts":
+            _cmd_instagram_posts(args)
+            return
+        if action == "publish-post":
+            _cmd_instagram_publish_post(args)
+            return
+        print(
+            "Usage: shopai instagram "
+            "{status|connect|posts|publish-post}"
+        )
         return
 
     if args.command == "tiktok":

@@ -401,6 +401,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "tiktok_publisher",      # W963-12: TikTok connect + publish-post wrapper
     "customer_chat",         # W963-13: customer message intent + draft response
     "cold_start_orchestrator", # W963-14: end-to-end day-1 cold-start chain orchestrator
+    "instagram_publisher",   # W963-15: Instagram Graph API connect + publish-post
 })
 
 

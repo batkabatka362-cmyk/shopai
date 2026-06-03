@@ -85,6 +85,12 @@ ENV_ALIASES: dict[str, str] = {
     # permission granted at app setup time.
     "tiktok":             "TIKTOK_ACCESS_TOKEN",
     "tiktok_business_id": "TIKTOK_BUSINESS_ID",
+    # W963-15: Instagram Graph API. Uses Meta's Graph API
+    # (same auth domain as Meta Ads from W963-7 -- operators
+    # can reuse a single Meta app). Needs a Facebook Page
+    # connected to an Instagram Business Account.
+    "instagram":          "INSTAGRAM_ACCESS_TOKEN",
+    "instagram_account_id": "INSTAGRAM_ACCOUNT_ID",
 
     # ── Media / scraping ──────────────────────
     "firecrawl":     "FIRECRAWL_API_KEY",

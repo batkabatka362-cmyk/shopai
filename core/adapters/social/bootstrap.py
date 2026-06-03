@@ -9,6 +9,7 @@ from __future__ import annotations
 from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
+from .instagram import InstagramAdapter
 from .pinterest import PinterestAdapter
 from .tiktok import TikTokAdapter
 
@@ -21,6 +22,7 @@ logger = get_logger("adapters.social.bootstrap")
 _SOCIAL_ADAPTER_CLASSES = [
     PinterestAdapter,
     TikTokAdapter,
+    InstagramAdapter,
 ]
 
 
