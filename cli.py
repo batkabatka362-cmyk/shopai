@@ -1577,6 +1577,52 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cro_var_p.add_argument("--json", action="store_true")
 
+    # W963-14: cold-start orchestrator (chains W963 substrate).
+    cs_p = sub.add_parser(
+        "cold-start",
+        help=(
+            "End-to-end day-1 cold-start orchestrator. Chains "
+            "revenue-readiness + product-candidates + blog-"
+            "candidates + cro variants + channel readiness + "
+            "earnings into ONE command. Default: preview "
+            "(read-only). --yes commits product + blog seeds."
+        ),
+    )
+    cs_sub = cs_p.add_subparsers(dest="cs_action")
+
+    cs_orch_p = cs_sub.add_parser(
+        "orchestrate",
+        help="Run the full cold-start chain.",
+    )
+    cs_orch_p.add_argument(
+        "--store", dest="store_id", default=None,
+        help=(
+            "Store ID (revenue-readiness probes per-store "
+            "when provided)."
+        ),
+    )
+    cs_orch_p.add_argument(
+        "--niche", default="beauty",
+        help=(
+            "beauty | fashion | home | tech | food "
+            "(default: beauty)"
+        ),
+    )
+    cs_orch_p.add_argument(
+        "--blog-id", dest="blog_id", default=None,
+        help="Shopify Blog GID for blog seed (required for --yes).",
+    )
+    cs_orch_p.add_argument(
+        "--yes", action="store_true",
+        help=(
+            "Commit: enqueue product + blog seeds. Without "
+            "--yes the chain previews everything."
+        ),
+    )
+    cs_orch_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # W963-13: chat — customer message intent + draft response.
     chat_p = sub.add_parser(
         "chat",
@@ -10526,6 +10572,107 @@ def _cmd_cro_variants(args) -> None:
             )
         print()
     print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_cold_start_orchestrate(args) -> None:
+    """W963-14: end-to-end cold-start chain."""
+    from engines.cold_start_orchestrator import (
+        ColdStartOrchestratorEngine,
+    )
+
+    store_id = getattr(args, "store_id", None)
+    niche = getattr(args, "niche", "beauty")
+    blog_id = getattr(args, "blog_id", None)
+    apply_flag = bool(getattr(args, "yes", False))
+    as_json = bool(getattr(args, "json", False))
+
+    payload: dict[str, Any] = {
+        "data": {
+            "niche": niche,
+            "apply": apply_flag,
+        },
+    }
+    if store_id:
+        payload["data"]["store_id"] = store_id
+    if blog_id:
+        payload["data"]["blog_id"] = blog_id
+
+    result = ColdStartOrchestratorEngine().run(payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success":
+        err = result.get("error") or "unknown"
+        print(f"cold-start: ERROR  {err}")
+        return
+
+    print(f"Cold-start orchestrator")
+    print()
+    print(f"  Headline: {data.get('headline', '?')}")
+    print(f"  Store:    {data.get('store_id') or '(fleet)'}")
+    print(f"  Niche:    {data.get('niche', '?')}")
+    print(
+        f"  Mode:     {'COMMIT' if data.get('apply_mode') else 'PREVIEW'}"
+    )
+    print()
+
+    steps = data.get("steps") or {}
+
+    diag = steps.get("diagnose") or {}
+    print(
+        f"  Diagnose:      verdict={diag.get('verdict', '?')}  "
+        f"gates={diag.get('gates_passed', 0)}/"
+        f"{diag.get('gates_total', 6)}"
+    )
+    if "product_seed" in steps:
+        ps = steps["product_seed"]
+        print(
+            f"  Product seed:  "
+            f"candidates={ps.get('candidates_generated', 0)}  "
+            f"pending={ps.get('pending_actions', 0)}"
+        )
+    bs = steps.get("blog_seed") or {}
+    print(
+        f"  Blog seed:     "
+        f"candidates={bs.get('candidates_generated', 0)}  "
+        f"pending={bs.get('pending_actions', 0)}"
+    )
+    cro = steps.get("cro") or {}
+    print(
+        f"  CRO preview:   "
+        f"sample={cro.get('sample_product', '?')[:40]}  "
+        f"title={cro.get('title_variant_count', 0)} "
+        f"desc={cro.get('description_variant_count', 0)} "
+        f"price={cro.get('price_variant_count', 0)}"
+    )
+    ch = steps.get("channels") or {}
+    print(
+        f"  Channels:      "
+        f"ads={'OK' if ch.get('ads_ready') else 'XX'}  "
+        f"email={'OK' if ch.get('email_ready') else 'XX'}  "
+        f"pinterest={'OK' if ch.get('pinterest_ready') else 'XX'}  "
+        f"tiktok={'OK' if ch.get('tiktok_ready') else 'XX'}"
+    )
+    er = steps.get("earnings") or {}
+    print(
+        f"  Earnings 24h:  "
+        f"{er.get('currency', 'USD')} "
+        f"{er.get('revenue_24h', 0.0):.2f}  "
+        f"orders={er.get('orders_24h', 0)}  "
+        f"verdict={er.get('verdict', '?')}"
+    )
+    print()
+
+    actions = data.get("next_actions") or []
+    if actions:
+        print(f"  Next actions ({len(actions)}):")
+        for i, a in enumerate(actions, 1):
+            print(f"    {i}. {a}")
+    else:
+        print("  No next actions -- store earning + healthy.")
 
 
 def _cmd_chat_respond(args) -> None:
@@ -52893,6 +53040,14 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_chat_respond(args)
             return
         print("Usage: shopai chat {respond}")
+        return
+
+    if args.command == "cold-start":
+        action = getattr(args, "cs_action", None)
+        if action == "orchestrate":
+            _cmd_cold_start_orchestrate(args)
+            return
+        print("Usage: shopai cold-start {orchestrate}")
         return
 
     if args.command == "tiktok":
