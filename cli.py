@@ -1528,6 +1528,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view",
     )
 
+    # W963-6: blog-candidates — SEO content seed.
+    blog_candidates_p = sub.add_parser(
+        "blog-candidates",
+        help=(
+            "Generate N SEO blog post candidates for a niche. "
+            "Cold-start traffic substrate — each post is a free "
+            "Google-indexable doorway. Niches: beauty / fashion "
+            "/ home / tech / food. Default read-only; --apply "
+            "enqueues DRAFT articles to approval queue."
+        ),
+    )
+    blog_candidates_p.add_argument(
+        "--niche", default=None,
+        help="beauty | fashion | home | tech | food",
+    )
+    blog_candidates_p.add_argument(
+        "--count", type=int, default=10,
+        help="How many post candidates (default 10).",
+    )
+    blog_candidates_p.add_argument(
+        "--apply", action="store_true",
+        help=(
+            "Enqueue as DRAFT articles in approval queue. "
+            "Requires --blog-id to specify the target Shopify "
+            "blog (gid://shopify/Blog/...)."
+        ),
+    )
+    blog_candidates_p.add_argument(
+        "--blog-id", dest="blog_id", default=None,
+        help=(
+            "Shopify Blog GID for --apply (e.g. "
+            "gid://shopify/Blog/123456789)."
+        ),
+    )
+    blog_candidates_p.add_argument(
+        "--json", action="store_true",
+        help="Emit raw JSON instead of text view",
+    )
+
     # W963-2: product-candidates — cold-start product list
     # generator. Reads from a curated niche → 20 candidates
     # catalog; future revision will swap to AI / supplier-API.
@@ -10004,6 +10043,87 @@ def _cmd_niche(args) -> None:
     print(
         "  Stores: `shopai niche --by-store` -- per-store tags"
     )
+
+
+def _cmd_blog_candidates(args) -> None:
+    """W963-6: SEO blog content seed generator."""
+    from engines.content_publisher import ContentPublisherEngine
+
+    niche = getattr(args, "niche", None)
+    count = int(getattr(args, "count", 10) or 10)
+    apply_flag = bool(getattr(args, "apply", False))
+    blog_id = getattr(args, "blog_id", None)
+    as_json = bool(getattr(args, "json", False))
+
+    if apply_flag and not blog_id:
+        print(
+            "blog-candidates: --apply requires --blog-id "
+            "(gid://shopify/Blog/...). Find your blog id via "
+            "Shopify Admin -> Online Store -> Blog Posts "
+            "-> select blog -> URL contains the id."
+        )
+        return
+
+    payload: dict[str, Any] = {"data": {"count": count}}
+    if niche:
+        payload["data"]["niche"] = niche
+    if apply_flag:
+        payload["data"]["apply_candidates"] = True
+        payload["data"]["blog_id"] = blog_id
+
+    result = ContentPublisherEngine().run(payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success" or not data:
+        err = result.get("error") or "unknown error"
+        print(f"blog-candidates: ERROR  {err}")
+        return
+
+    niche_out = data.get("niche") or ""
+    returned = data.get("count_returned", 0)
+    requested = data.get("count_requested", 0)
+    candidates = data.get("candidates", [])
+    pending = data.get("pending_actions") or []
+    next_action = data.get("next_action", "")
+
+    if not niche_out:
+        print(f"Blog-candidates  {next_action}")
+        return
+
+    print(
+        f"Blog-candidates  niche={niche_out}  "
+        f"returned={returned}/{requested}"
+        + (f"  pending={len(pending)}" if pending else "")
+    )
+    print()
+    for i, c in enumerate(candidates, 1):
+        title = c.get("title", "(untitled)")
+        kw = c.get("keyword", "")
+        tags = ", ".join((c.get("tags") or [])[:3])
+        excerpt = c.get("meta_excerpt", "")
+        print(f"  {i:>2}. {title}")
+        print(f"      target keyword: {kw}")
+        if tags:
+            print(f"      tags: {tags}")
+        if excerpt:
+            preview = excerpt[:100] + ("..." if len(excerpt) > 100 else "")
+            print(f"      excerpt: {preview}")
+        print()
+    if pending:
+        print(f"  Enqueued {len(pending)} pending article(s):")
+        for p in pending[:3]:
+            print(
+                f"    - {p.get('pending_action_id', '?')}: "
+                f"{p.get('narrative', '')[:70]}"
+            )
+        if len(pending) > 3:
+            print(f"    ... and {len(pending) - 3} more")
+        print()
+    print(f"  NEXT: {next_action}")
 
 
 def _cmd_earn_bootstrap(args) -> None:
@@ -51662,6 +51782,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "product-candidates":
         _cmd_product_candidates(args)
+        return
+
+    if args.command == "blog-candidates":
+        _cmd_blog_candidates(args)
         return
 
     if args.command == "niche":

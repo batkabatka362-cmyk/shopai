@@ -718,3 +718,32 @@ def _create_draft_product_dispatch(
         if not k.startswith("_")
     }
     return _router_call("SHOPIFY_CREATE_PRODUCT", adapter_params)
+
+
+# ── content_publisher → SHOPIFY_CREATE_ARTICLE (draft blog) ──────
+
+
+@register_dispatcher("create_draft_article")
+def _create_draft_article_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """W963-6: replay content_publisher's DRAFT article create.
+
+    Each candidate carries title + body_html + tags + blog_id +
+    is_published=False (DRAFT enforcement). _metadata field is
+    stripped (source-tracking only). The dispatcher trusts the
+    enqueue-time is_published=False flag; operators who want to
+    publish an article should set is_published=True in the queue
+    entry params before approving.
+    """
+    title = str(params.get("title", "")).strip()
+    blog_id = str(params.get("blog_id", "")).strip()
+    if not title:
+        return False, {"error": "missing_title"}
+    if not blog_id:
+        return False, {"error": "missing_blog_id"}
+    adapter_params = {
+        k: v for k, v in params.items()
+        if not k.startswith("_")
+    }
+    return _router_call("SHOPIFY_CREATE_ARTICLE", adapter_params)

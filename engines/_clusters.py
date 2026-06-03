@@ -392,6 +392,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "product_sourcer",       # W963-2: cold-start seed generator
     "earnings_report",       # W963-4: output-side measurement
     "earn_bootstrap",        # W963-5: one-command cold-start chain
+    "content_publisher",     # W963-6: SEO blog content seed
 })
 
 
