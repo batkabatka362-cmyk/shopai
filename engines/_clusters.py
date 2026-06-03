@@ -402,6 +402,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "customer_chat",         # W963-13: customer message intent + draft response
     "cold_start_orchestrator", # W963-14: end-to-end day-1 cold-start chain orchestrator
     "instagram_publisher",   # W963-15: Instagram Graph API connect + publish-post
+    "review_request",        # W963-16: post-purchase review request automation
 })
 
 

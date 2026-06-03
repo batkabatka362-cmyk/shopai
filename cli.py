@@ -1747,6 +1747,84 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # W963-16: reviews — post-purchase review request automation.
+    reviews_p = sub.add_parser(
+        "reviews",
+        help=(
+            "Post-purchase review request automation. Pulls "
+            "recently delivered orders + asks for a niche-tuned "
+            "review via the wired ESP. Status / preview / "
+            "send-batch."
+        ),
+    )
+    reviews_sub = reviews_p.add_subparsers(
+        dest="reviews_action",
+    )
+
+    rv_status_p = reviews_sub.add_parser(
+        "status",
+        help="ESP wiring + asked-so-far totals.",
+    )
+    rv_status_p.add_argument("--json", action="store_true")
+
+    rv_preview_p = reviews_sub.add_parser(
+        "preview",
+        help="Show next N candidate review requests (no send).",
+    )
+    rv_preview_p.add_argument(
+        "--limit", type=int, default=5,
+    )
+    rv_preview_p.add_argument(
+        "--window-days", type=float, default=14.0,
+        dest="window_days",
+    )
+    rv_preview_p.add_argument(
+        "--niche", default=None,
+        help="beauty / fashion / home / tech / food (optional).",
+    )
+    rv_preview_p.add_argument(
+        "--store-name", default=None, dest="store_name",
+    )
+    rv_preview_p.add_argument(
+        "--review-link-template", default=None,
+        dest="review_link_template",
+        help=(
+            "URL template with {order_id} {order_name} "
+            "{product_title} placeholders."
+        ),
+    )
+    rv_preview_p.add_argument("--json", action="store_true")
+
+    rv_send_p = reviews_sub.add_parser(
+        "send-batch",
+        help="Dispatch the next batch via the wired ESP.",
+    )
+    rv_send_p.add_argument(
+        "--limit", type=int, default=5,
+    )
+    rv_send_p.add_argument(
+        "--window-days", type=float, default=14.0,
+        dest="window_days",
+    )
+    rv_send_p.add_argument(
+        "--niche", default=None,
+    )
+    rv_send_p.add_argument(
+        "--store-name", default=None, dest="store_name",
+    )
+    rv_send_p.add_argument(
+        "--review-link-template", default=None,
+        dest="review_link_template",
+    )
+    rv_send_p.add_argument(
+        "--from-email", default=None, dest="from_email",
+    )
+    rv_send_p.add_argument(
+        "--yes", action="store_true",
+        help="Required to actually send (default is dry-run).",
+    )
+    rv_send_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -10952,6 +11030,155 @@ def _cmd_instagram_publish_post(args) -> None:
     print()
     print(f"  post_id:     {data.get('post_id', '?')}")
     print(f"  creation_id: {data.get('creation_id', '?')}")
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_reviews_status(args) -> None:
+    """W963-16: review-request status."""
+    from engines.review_request import ReviewRequestEngine
+
+    as_json = bool(getattr(args, "json", False))
+    result = ReviewRequestEngine().run({
+        "data": {"action": "status"},
+    })
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    data = result.get("data") or {}
+    mk = "[OK ]" if data.get("esp_ready") else "[XX]"
+    print(f"Review-request status  {mk}")
+    print()
+    print(f"  esp_ready:    {data.get('esp_ready')}")
+    print(f"  asked_so_far: {data.get('asked_so_far')}")
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_reviews_preview(args) -> None:
+    """W963-16: preview the next batch (no send)."""
+    from engines.review_request import ReviewRequestEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload: dict[str, Any] = {
+        "data": {
+            "action": "preview",
+            "limit": int(getattr(args, "limit", 5)),
+            "window_days": float(
+                getattr(args, "window_days", 14.0),
+            ),
+            "niche": getattr(args, "niche", None),
+            "store_name": getattr(args, "store_name", None),
+            "review_link_template": getattr(
+                args, "review_link_template", None,
+            ),
+        },
+    }
+    result = ReviewRequestEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    data = result.get("data") or {}
+    report = data.get("report") or {}
+    requests = data.get("requests") or []
+    print(f"Review-request preview ({len(requests)})")
+    print()
+    print(
+        f"  eligible={report.get('eligible', 0)}  "
+        f"already_asked={report.get('already_asked', 0)}  "
+        f"queued={report.get('queued', 0)}"
+    )
+    skipped = report.get("skipped_reasons") or {}
+    if skipped:
+        items = ", ".join(
+            f"{k}={v}" for k, v in sorted(skipped.items())
+        )
+        print(f"  skipped: {items}")
+    print()
+    for r in requests:
+        title = (r.get("product_title") or "")[:32]
+        email = (r.get("customer_email") or "")[:40]
+        subj = (r.get("subject") or "")[:48]
+        print(
+            f"  - {email:<40}  {title:<32}  {subj}"
+        )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_reviews_send_batch(args) -> None:
+    """W963-16: dispatch a batch. Dry-run unless --yes."""
+    from engines.review_request import ReviewRequestEngine
+
+    as_json = bool(getattr(args, "json", False))
+    confirmed = bool(getattr(args, "yes", False))
+
+    if not confirmed:
+        # Default to preview so a stray invocation can't blast
+        # emails into a live ESP.
+        payload: dict[str, Any] = {
+            "data": {
+                "action": "preview",
+                "limit": int(getattr(args, "limit", 5)),
+                "window_days": float(
+                    getattr(args, "window_days", 14.0),
+                ),
+                "niche": getattr(args, "niche", None),
+                "store_name": getattr(args, "store_name", None),
+                "review_link_template": getattr(
+                    args, "review_link_template", None,
+                ),
+            },
+        }
+        result = ReviewRequestEngine().run(payload)
+        if as_json:
+            print(json.dumps(result, indent=2, default=str))
+            return
+        data = result.get("data") or {}
+        report = data.get("report") or {}
+        print("Review-request send-batch (DRY-RUN — no --yes)")
+        print()
+        print(
+            f"  Would queue {report.get('queued', 0)} "
+            f"request(s). Add --yes to commit."
+        )
+        return
+
+    payload = {
+        "data": {
+            "action": "send-batch",
+            "limit": int(getattr(args, "limit", 5)),
+            "window_days": float(
+                getattr(args, "window_days", 14.0),
+            ),
+            "niche": getattr(args, "niche", None),
+            "store_name": getattr(args, "store_name", None),
+            "review_link_template": getattr(
+                args, "review_link_template", None,
+            ),
+            "from_email": getattr(args, "from_email", None),
+        },
+    }
+    result = ReviewRequestEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    data = result.get("data") or {}
+    report = data.get("report") or {}
+    mk = (
+        "[$$]"
+        if report.get("sent", 0) > 0 and report.get("failed", 0) == 0
+        else "[OK ]"
+        if report.get("failed", 0) == 0
+        else "[XX]"
+    )
+    print(f"{mk} reviews send-batch")
+    print()
+    print(
+        f"  sent={report.get('sent', 0)}  "
+        f"failed={report.get('failed', 0)}  "
+        f"queued={report.get('queued', 0)}"
+    )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -53285,6 +53512,23 @@ def main(argv: list[str] | None = None) -> None:
         print(
             "Usage: shopai instagram "
             "{status|connect|posts|publish-post}"
+        )
+        return
+
+    if args.command == "reviews":
+        action = getattr(args, "reviews_action", None)
+        if action == "status":
+            _cmd_reviews_status(args)
+            return
+        if action == "preview":
+            _cmd_reviews_preview(args)
+            return
+        if action == "send-batch":
+            _cmd_reviews_send_batch(args)
+            return
+        print(
+            "Usage: shopai reviews "
+            "{status|preview|send-batch}"
         )
         return
 
