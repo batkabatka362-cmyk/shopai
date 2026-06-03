@@ -409,6 +409,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "bigpicture",            # W963-20: unified morning view (today + earnings + warmup)
     "checkup",               # W963-21: parallel health probe across W963 roster
     "welcome_series",        # W963-22: 3-email welcome cadence for new customers
+    "autopilot",             # W963-23: end-to-end autonomous loop (welcome+review+measure+health)
 })
 
 

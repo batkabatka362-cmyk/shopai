@@ -1987,6 +1987,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     wc_send_p.add_argument("--json", action="store_true")
 
+    # W963-23: autopilot — end-to-end autonomous loop.
+    ap_p = sub.add_parser(
+        "autopilot",
+        help=(
+            "Single-command autonomous loop: welcome + "
+            "reviews + measurement + health. Each stage "
+            "env-gated. Default dry-run; --yes commits."
+        ),
+    )
+    ap_p.add_argument(
+        "--store", default=None, dest="store_id",
+    )
+    ap_p.add_argument(
+        "--yes", action="store_true",
+        help="Required to fire writers (default dry-run).",
+    )
+    ap_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11426,6 +11444,57 @@ def _cmd_warmup_plan(args) -> None:
             f"    day {d.get('day'):>2d} "
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
+        )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_autopilot(args) -> None:
+    """W963-23: end-to-end autonomous loop."""
+    from engines.autopilot import AutopilotEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "confirmed": bool(getattr(args, "yes", False)),
+            "store_id": getattr(args, "store_id", None),
+        },
+    }
+    result = AutopilotEngine().run(payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    verdict = data.get("overall_verdict", "skipped")
+    mk = {
+        "ok":       "[OK ]",
+        "warn":     "[!! ]",
+        "error":    "[XX]",
+        "disabled": "[-- ]",
+        "skipped":  "[-- ]",
+    }.get(verdict, "[?? ]")
+    confirmed = data.get("confirmed")
+    print(
+        f"Autopilot  {mk}  "
+        f"{'LIVE' if confirmed else 'DRY-RUN'}  "
+        f"verdict={verdict}"
+    )
+    print()
+    for s in data.get("stages") or []:
+        v = s.get("verdict", "skipped")
+        chip = {
+            "ok":       "[OK ]",
+            "warn":     "[!! ]",
+            "error":    "[XX]",
+            "disabled": "[-- ]",
+            "skipped":  "[-- ]",
+        }.get(v, "[?? ]")
+        fire = "fired" if s.get("fired") else "noop"
+        print(
+            f"  {chip} {s.get('name', '?'):<10s} "
+            f"{fire:<6s}  {s.get('detail', '')[:60]}"
         )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
@@ -54184,6 +54253,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "checkup":
         _cmd_checkup(args)
+        return
+
+    if args.command == "autopilot":
+        _cmd_autopilot(args)
         return
 
     if args.command == "welcome":
