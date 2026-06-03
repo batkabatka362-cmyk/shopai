@@ -1577,6 +1577,48 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cro_var_p.add_argument("--json", action="store_true")
 
+    # W963-13: chat — customer message intent + draft response.
+    chat_p = sub.add_parser(
+        "chat",
+        help=(
+            "Customer service AI substrate: classify intent + "
+            "generate draft response. Works offline (templates); "
+            "--use-llm refines via configured LLM adapter."
+        ),
+    )
+    chat_sub = chat_p.add_subparsers(dest="chat_action")
+
+    chat_resp_p = chat_sub.add_parser(
+        "respond",
+        help="Generate a draft response for a customer message.",
+    )
+    chat_resp_p.add_argument(
+        "--message", required=True,
+        help="Customer message text.",
+    )
+    chat_resp_p.add_argument(
+        "--customer-name", dest="customer_name", default=None,
+        help="Customer's name (for personalisation).",
+    )
+    chat_resp_p.add_argument(
+        "--order-id", dest="order_id", default=None,
+        help="Order number when relevant.",
+    )
+    chat_resp_p.add_argument(
+        "--store-name", dest="store_name", default=None,
+        help="Store name (for signature).",
+    )
+    chat_resp_p.add_argument(
+        "--use-llm", action="store_true",
+        help=(
+            "Refine the template response via CHAT_COMPLETE "
+            "LLM adapter when configured (Ollama, etc)."
+        ),
+    )
+    chat_resp_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -10483,6 +10525,69 @@ def _cmd_cro_variants(args) -> None:
                 f"${v.get('price'):.2f}"
             )
         print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_chat_respond(args) -> None:
+    """W963-13: customer message intent classification + draft."""
+    from engines.customer_chat import CustomerChatEngine
+
+    message = getattr(args, "message", "")
+    customer_name = getattr(args, "customer_name", None)
+    order_id = getattr(args, "order_id", None)
+    store_name = getattr(args, "store_name", None)
+    use_llm = bool(getattr(args, "use_llm", False))
+    as_json = bool(getattr(args, "json", False))
+
+    payload: dict[str, Any] = {
+        "data": {
+            "message": message,
+            "use_llm": use_llm,
+        },
+    }
+    if customer_name:
+        payload["data"]["customer_name"] = customer_name
+    if order_id:
+        payload["data"]["order_id"] = order_id
+    if store_name:
+        payload["data"]["store_name"] = store_name
+
+    result = CustomerChatEngine().run(payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success":
+        err = result.get("error") or "unknown"
+        print(f"chat respond: ERROR  {err}")
+        return
+
+    intent = data.get("intent", "?")
+    conf = data.get("intent_confidence", 0.0)
+    review = data.get("requires_human_review", False)
+    used_llm = data.get("used_llm", False)
+
+    print(f"Customer chat response")
+    print()
+    print(f"  Message:      \"{message}\"")
+    print(f"  Intent:       {intent}  (confidence={conf:.2f})")
+    print(
+        f"  Review:       "
+        f"{'⚠️ HUMAN REVIEW REQUIRED' if review else 'OK to send'}"
+    )
+    print(
+        f"  LLM refined:  "
+        f"{'yes' if used_llm else 'no (template baseline)'}"
+    )
+    print()
+    print(f"  Draft response:")
+    print(f"  ---")
+    for line in data.get("draft_response", "").splitlines():
+        print(f"  {line}")
+    print(f"  ---")
+    print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -52780,6 +52885,14 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_cro_variants(args)
             return
         print("Usage: shopai cro {variants}")
+        return
+
+    if args.command == "chat":
+        action = getattr(args, "chat_action", None)
+        if action == "respond":
+            _cmd_chat_respond(args)
+            return
+        print("Usage: shopai chat {respond}")
         return
 
     if args.command == "tiktok":

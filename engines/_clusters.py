@@ -399,6 +399,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "pinterest_publisher",   # W963-10: Pinterest connect + publish-pin wrapper
     "cro_variants",          # W963-11: CRO title/description/price variant generator
     "tiktok_publisher",      # W963-12: TikTok connect + publish-post wrapper
+    "customer_chat",         # W963-13: customer message intent + draft response
 })
 
 
