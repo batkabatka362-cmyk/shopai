@@ -1528,6 +1528,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view",
     )
 
+    # W963-9: affiliate — partner referral link generator.
+    affiliate_p = sub.add_parser(
+        "affiliate",
+        help=(
+            "Affiliate link operations. The existing affiliate "
+            "engine pays commissions; this command surface "
+            "GENERATES the trackable referral URLs partners share."
+        ),
+    )
+    affiliate_sub = affiliate_p.add_subparsers(
+        dest="affiliate_action",
+    )
+
+    affiliate_gen_p = affiliate_sub.add_parser(
+        "generate-link",
+        help="Generate stable per-partner referral URL.",
+    )
+    affiliate_gen_p.add_argument(
+        "--partner-email", default=None,
+        dest="partner_email",
+        help="Partner email (preferred identity).",
+    )
+    affiliate_gen_p.add_argument(
+        "--partner-name", default=None,
+        dest="partner_name",
+        help="Partner name (fallback when no email).",
+    )
+    affiliate_gen_p.add_argument(
+        "--shop-url", default=None,
+        dest="shop_url",
+        help=(
+            "Store URL (e.g. store.myshopify.com). Falls "
+            "back to active store's shop_url when omitted."
+        ),
+    )
+    affiliate_gen_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # W963-8: email — ESP credential + send-test wrapper.
     email_p = sub.add_parser(
         "email",
@@ -10154,6 +10193,59 @@ def _cmd_niche(args) -> None:
     print(
         "  Stores: `shopai niche --by-store` -- per-store tags"
     )
+
+
+def _cmd_affiliate_generate_link(args) -> None:
+    """W963-9: per-partner referral link generator."""
+    from engines.affiliate_links import AffiliateLinksEngine
+
+    partner_email = getattr(args, "partner_email", None)
+    partner_name = getattr(args, "partner_name", None)
+    shop_url = getattr(args, "shop_url", None)
+    as_json = bool(getattr(args, "json", False))
+
+    # Fall back to active store's URL if --shop-url omitted.
+    if not shop_url:
+        try:
+            from core.stores.manager import StoreManager
+            sm = StoreManager()
+            active = sm.get_active_store()
+            if active:
+                shop_url = active.get("shop_url") or None
+        except Exception:  # noqa: BLE001
+            shop_url = None
+
+    payload: dict[str, Any] = {"data": {}}
+    if partner_email:
+        payload["data"]["partner_email"] = partner_email
+    if partner_name:
+        payload["data"]["partner_name"] = partner_name
+    if shop_url:
+        payload["data"]["shop_url"] = shop_url
+
+    result = AffiliateLinksEngine().run(payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success":
+        err = result.get("error") or "unknown"
+        print(f"affiliate generate-link: ERROR  {err}")
+        return
+
+    print(f"Affiliate link generated")
+    print()
+    if data.get("partner_email"):
+        print(f"  Partner email: {data.get('partner_email')}")
+    if data.get("partner_name"):
+        print(f"  Partner name:  {data.get('partner_name')}")
+    print(f"  Shop URL:      {data.get('shop_url')}")
+    print(f"  Code:          {data.get('code')}")
+    print(f"  Link:          {data.get('link')}")
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
 
 
 def _cmd_email_status(args) -> None:
@@ -52120,6 +52212,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "blog-candidates":
         _cmd_blog_candidates(args)
+        return
+
+    if args.command == "affiliate":
+        action = getattr(args, "affiliate_action", None)
+        if action == "generate-link":
+            _cmd_affiliate_generate_link(args)
+            return
+        print("Usage: shopai affiliate {generate-link}")
         return
 
     if args.command == "email":
