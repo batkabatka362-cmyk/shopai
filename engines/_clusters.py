@@ -403,6 +403,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "cold_start_orchestrator", # W963-14: end-to-end day-1 cold-start chain orchestrator
     "instagram_publisher",   # W963-15: Instagram Graph API connect + publish-post
     "review_request",        # W963-16: post-purchase review request automation
+    "warmup_plan",           # W963-17: 30-day cold-start playbook generator
 })
 
 

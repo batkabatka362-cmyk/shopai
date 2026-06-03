@@ -1825,6 +1825,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rv_send_p.add_argument("--json", action="store_true")
 
+    # W963-17: warmup-plan — 30-day cold-start playbook generator.
+    warmup_p = sub.add_parser(
+        "warmup-plan",
+        help=(
+            "30-day cold-start playbook. Day-by-day "
+            "schedule of which W963 engines to fire when. "
+            "Default emits the full plan; --day N drills "
+            "into one day."
+        ),
+    )
+    warmup_p.add_argument(
+        "--day", type=int, default=None,
+        help="Single day drill (1..30).",
+    )
+    warmup_p.add_argument(
+        "--niche", default=None,
+        help="beauty / fashion / home / tech / food.",
+    )
+    warmup_p.add_argument(
+        "--phases", action="store_true",
+        help="Just print the 4 phase summary.",
+    )
+    warmup_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11179,6 +11203,92 @@ def _cmd_reviews_send_batch(args) -> None:
         f"failed={report.get('failed', 0)}  "
         f"queued={report.get('queued', 0)}"
     )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_warmup_plan(args) -> None:
+    """W963-17: 30-day cold-start playbook generator."""
+    from engines.warmup_plan import WarmupPlanEngine
+
+    as_json = bool(getattr(args, "json", False))
+    niche = getattr(args, "niche", None)
+    day = getattr(args, "day", None)
+    show_phases = bool(getattr(args, "phases", False))
+
+    if show_phases:
+        payload = {"data": {"action": "phases"}}
+    elif day is not None:
+        payload = {
+            "data": {
+                "action": "day", "day": int(day),
+                "niche": niche,
+            },
+        }
+    else:
+        payload = {
+            "data": {"action": "full", "niche": niche},
+        }
+
+    result = WarmupPlanEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    if result.get("status") != "success":
+        print(f"warmup-plan ERROR  {result.get('error')}")
+        return
+
+    data = result.get("data") or {}
+    action = data.get("action")
+
+    if action == "phases":
+        print("Warmup-plan phases")
+        print()
+        for k, v in (data.get("phase_summary") or {}).items():
+            print(f"  {k}: {v}")
+        print()
+        print(f"  NEXT: {data.get('next_action', '')}")
+        return
+
+    if action == "day":
+        wd = data.get("day") or {}
+        print(
+            f"Warmup-plan day {wd.get('day')} "
+            f"[{wd.get('phase')}]  niche={data.get('niche')}"
+        )
+        print()
+        print(f"  intent: {wd.get('intent')}")
+        print()
+        actions = wd.get("actions") or []
+        if actions:
+            print("  actions:")
+            for a in actions:
+                print(f"    $ {a}")
+            print()
+        print(f"  measure: {wd.get('measurement')}")
+        print(f"  pivot:   {wd.get('pivot_signal')}")
+        print()
+        print(f"  NEXT: {data.get('next_action', '')}")
+        return
+
+    # full
+    niche_label = data.get("niche") or "general"
+    days = data.get("days") or []
+    print(
+        f"Warmup-plan (30-day playbook, niche={niche_label})"
+    )
+    print()
+    for k, v in (data.get("phase_summary") or {}).items():
+        print(f"  {k}: {v}")
+    print()
+    print("  Day-by-day intent:")
+    for d in days:
+        print(
+            f"    day {d.get('day'):>2d} "
+            f"[{d.get('phase'):<10s}]  "
+            f"{d.get('intent')}"
+        )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -53530,6 +53640,10 @@ def main(argv: list[str] | None = None) -> None:
             "Usage: shopai reviews "
             "{status|preview|send-batch}"
         )
+        return
+
+    if args.command == "warmup-plan":
+        _cmd_warmup_plan(args)
         return
 
     if args.command == "tiktok":
