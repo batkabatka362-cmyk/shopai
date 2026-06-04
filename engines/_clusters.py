@@ -432,6 +432,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "strategist_memory",     # W963-43: persistent recommendation+outcome history (Q3 substrate)
     "outcome_backfill",      # W963-44: match Shopify orders to actions, write outcomes (Phase 3.A)
     "store_pnl_tracker",     # W963-45: per-store P&L (revenue - ad spend - ESP - shipping)
+    "daily_pnl_history",     # W963-46: persistent daily P&L snapshots + trend computation
 })
 
 

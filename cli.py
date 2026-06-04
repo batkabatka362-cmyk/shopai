@@ -2517,6 +2517,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pn_p.add_argument("--json", action="store_true")
 
+    # W963-46: pnl-history — persistent daily snapshots.
+    ph_p = sub.add_parser(
+        "pnl-history",
+        help=(
+            "Persistent daily P&L snapshots + trend "
+            "computation. Run --record from cron daily."
+        ),
+    )
+    ph_p.add_argument(
+        "--record", action="store_true",
+        help="Capture a new snapshot now.",
+    )
+    ph_p.add_argument(
+        "--trend", action="store_true",
+        help="Show trend (rising / flat / falling).",
+    )
+    ph_p.add_argument(
+        "--query", action="store_true",
+        help="List raw snapshots.",
+    )
+    ph_p.add_argument(
+        "--store", default="", dest="store_id",
+    )
+    ph_p.add_argument(
+        "--days", type=int, default=30,
+    )
+    ph_p.add_argument(
+        "--window-days", type=int, default=7,
+        dest="window_days",
+        help="Window for the P&L snapshot itself.",
+    )
+    ph_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11957,6 +11990,144 @@ def _cmd_warmup_plan(args) -> None:
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
         )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_pnl_history(args) -> None:
+    """W963-46: daily P&L history."""
+    from engines.daily_pnl_history import DailyPnlHistoryEngine
+
+    as_json = bool(getattr(args, "json", False))
+    store_id = getattr(args, "store_id", "") or ""
+    days = int(getattr(args, "days", 30))
+    window_days = int(getattr(args, "window_days", 7))
+    record_mode = bool(getattr(args, "record", False))
+    trend_mode = bool(getattr(args, "trend", False))
+    query_mode = bool(getattr(args, "query", False))
+
+    if record_mode:
+        action = "record"
+    elif trend_mode:
+        action = "trend"
+    elif query_mode:
+        action = "query"
+    else:
+        action = "summary"
+
+    payload = {
+        "data": {
+            "action": action,
+            "store_id": store_id,
+            "days": days,
+            "window_days": window_days,
+        },
+    }
+    result = DailyPnlHistoryEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    print(
+        f"P&L history ({data.get('action', '?')})"
+    )
+    print()
+
+    if action == "summary":
+        print(
+            f"  total_snapshots: "
+            f"{data.get('total_snapshots', 0)}"
+        )
+        print(
+            f"  store_count: "
+            f"{data.get('store_count', 0)}"
+        )
+        stores = data.get("stores_with_history") or []
+        if stores:
+            print(
+                f"  stores: {', '.join(stores[:10])}"
+            )
+    elif action == "record":
+        results = data.get("results") or []
+        wrote = data.get("wrote_count", 0)
+        n = data.get("store_count", 0)
+        print(
+            f"  recorded: {wrote}/{n}"
+        )
+        print(
+            f"  snapshot_count_after: "
+            f"{data.get('snapshot_count_after', 0)}"
+        )
+        print()
+        for r in results:
+            chip = "[OK ]" if r.get("wrote") else "[-- ]"
+            print(
+                f"  {chip} {r.get('store_id', '?'):<14s} "
+                f"verdict={r.get('verdict', '?'):<10s} "
+                f"profit=${r.get('gross_profit', 0):>7.2f}"
+            )
+    elif action == "query":
+        snaps = data.get("snapshots") or []
+        print(
+            f"  store={data.get('store_id') or '(any)'} "
+            f"days={data.get('days')} "
+            f"count={data.get('count')}"
+        )
+        print()
+        for s in snaps[:20]:
+            print(
+                f"  {s.get('date', '?'):<10s} "
+                f"{s.get('store_id', '?'):<14s} "
+                f"rev=${s.get('gross_revenue', 0):>7.2f} "
+                f"profit=${s.get('gross_profit', 0):>7.2f} "
+                f"verdict={s.get('verdict', '?')}"
+            )
+    elif action == "trend":
+        if store_id:
+            t = data.get("trend") or {}
+            v = t.get("verdict", "no_data")
+            chip = {
+                "rising":  "[OK ]",
+                "falling": "[!! ]",
+                "flat":    "[-- ]",
+                "no_data": "[.. ]",
+            }.get(v, "[?? ]")
+            print(
+                f"  {chip} store={t.get('store_id')} "
+                f"verdict={v}  "
+                f"samples={t.get('sample_count')}"
+            )
+            print(
+                f"  first_half_avg:  ${t.get('first_avg', 0):>7.2f}"
+            )
+            print(
+                f"  second_half_avg: ${t.get('second_avg', 0):>7.2f}"
+            )
+            print(
+                f"  delta:           ${t.get('delta', 0):>+7.2f} "
+                f"({t.get('slope_pct')}%)"
+            )
+        else:
+            trends = data.get("trends") or []
+            print(
+                f"  store_count: {len(trends)}"
+            )
+            print()
+            for t in trends:
+                v = t.get("verdict", "no_data")
+                chip = {
+                    "rising":  "[OK ]",
+                    "falling": "[!! ]",
+                    "flat":    "[-- ]",
+                    "no_data": "[.. ]",
+                }.get(v, "[?? ]")
+                print(
+                    f"  {chip} {t.get('store_id', '?'):<14s} "
+                    f"verdict={v:<10s} "
+                    f"delta=${t.get('delta', 0):>+7.2f} "
+                    f"({t.get('slope_pct')}%)"
+                )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -56396,6 +56567,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pnl":
         _cmd_pnl(args)
+        return
+
+    if args.command == "pnl-history":
+        _cmd_pnl_history(args)
         return
 
     if args.command == "welcome":
