@@ -422,6 +422,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "cross_store_anomaly_detector", # W963-33: per-store metric divergence vs fleet norm (median+MAD)
     "fleet_chaos_test",      # W963-34: lightweight chaos test verifying graceful degrade (Q4)
     "fleet_strategist",      # W963-35: fleet-wide AGI brain - ranks stores by urgency x potential
+    "plan_executor",         # W963-36: enqueue composed plan as PENDING approval batch
 })
 
 

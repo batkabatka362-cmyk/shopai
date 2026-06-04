@@ -2310,6 +2310,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fs_p.add_argument("--json", action="store_true")
 
+    # W963-36: plan-execute — enqueue composed plan as batch.
+    pe_p = sub.add_parser(
+        "plan-execute",
+        help=(
+            "Execute a composed plan as a batched approval "
+            "submission. Triple-gated: --yes + "
+            "SHOPAI_PLAN_EXECUTOR_ENABLED=1."
+        ),
+    )
+    pe_p.add_argument(
+        "goal", nargs="?", default="",
+        help="Goal phrase or template name.",
+    )
+    pe_p.add_argument(
+        "--store", default="", dest="store_id",
+    )
+    pe_p.add_argument(
+        "--yes", action="store_true",
+        help="Required to enqueue.",
+    )
+    pe_p.add_argument(
+        "--max-steps", type=int, default=10,
+        dest="max_steps",
+    )
+    pe_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11750,6 +11776,76 @@ def _cmd_warmup_plan(args) -> None:
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
         )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_plan_execute(args) -> None:
+    """W963-36: execute composed plan as queue batch."""
+    from engines.plan_executor import PlanExecutorEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "goal": getattr(args, "goal", "") or "",
+            "store_id": getattr(args, "store_id", "") or "",
+            "confirmed": bool(getattr(args, "yes", False)),
+            "max_steps": int(getattr(args, "max_steps", 10)),
+        },
+    }
+    result = PlanExecutorEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    enq = data.get("enqueued_count", 0)
+    steps = data.get("steps") or []
+    confirmed = data.get("confirmed")
+    mk = (
+        "[$$]" if enq > 0
+        else "[-- ]" if steps else "[!! ]"
+    )
+    mode = "LIVE" if confirmed else "DRY-RUN"
+    print(
+        f"Plan-execute  {mk}  {mode}  "
+        f"plan_id={data.get('plan_id', '')[:24]}  "
+        f"goal={data.get('goal', '')!r}  "
+        f"template={data.get('template_matched') or '(custom)'}"
+    )
+    print()
+    if not data.get("env_gate_set"):
+        print("  [!] SHOPAI_PLAN_EXECUTOR_ENABLED=1 NOT set")
+        print()
+    print(
+        f"  Plan: {data.get('plan_step_count', 0)} step(s)  "
+        f"enqueued={enq}  skipped={data.get('skipped_count', 0)}"
+    )
+    skip_reasons = data.get("skip_reasons") or {}
+    if skip_reasons:
+        print(
+            "  skip_reasons: "
+            + ", ".join(
+                f"{k}={v}"
+                for k, v in sorted(skip_reasons.items())
+            )
+        )
+    print()
+    for s in steps:
+        chip = "[OK ]" if s.get("enqueued") else "[-- ]"
+        action_id = s.get("action_id") or ""
+        suffix = (
+            f"  action_id={action_id[:14]}" if action_id else ""
+        )
+        print(
+            f"  {chip} {s.get('plan_step_order')}. "
+            f"{s.get('plan_step_engine', '?'):<22s} "
+            f"{s.get('plan_step_action', '?')[:40]}{suffix}"
+        )
+        if s.get("skip_reason"):
+            print(
+                f"        skip: {s.get('skip_reason')}"
+            )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -55383,6 +55479,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "fleet-strategist":
         _cmd_fleet_strategist(args)
+        return
+
+    if args.command == "plan-execute":
+        _cmd_plan_execute(args)
         return
 
     if args.command == "welcome":
