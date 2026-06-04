@@ -418,6 +418,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "confidence_auto_approver", # W963-29: track-record-based auto-approve trust-wedge widener
     "capability_browser",    # W963-30: substrate registry browser - goal -> ranked engines
     "plan_composer",         # W963-31: goal -> multi-step substrate plan (template + custom compose)
+    "fleet_emergency_pause", # W963-32: single-command kill switch halting fleet-wide autonomy
 })
 
 

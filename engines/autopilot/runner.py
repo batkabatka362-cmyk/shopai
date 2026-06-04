@@ -224,18 +224,54 @@ def _compute_overall(stages: list[StageResult]) -> str:
     return worst
 
 
+def _fleet_emergency_paused() -> bool:
+    """Best-effort check of the fleet emergency marker.
+    Default to NOT paused when the substrate isn't available
+    (engine module missing in older deployments) so legacy
+    flows keep working."""
+    try:
+        from engines.fleet_emergency_pause.state import (
+            is_paused,
+        )
+        return bool(is_paused())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "autopilot: fleet_emergency probe raised: %s", exc,
+        )
+        return False
+
+
 def run_autopilot(
     *, confirmed: bool, store_id: str | None,
 ) -> AutopilotReport:
-    """Execute all 4 stages in order. Returns the aggregate."""
+    """Execute all 4 stages in order. Returns the aggregate.
+
+    Fleet emergency check: if the marker is set, write stages
+    (welcome, reviews) are forced into disabled state. Read
+    stages (measure, health) still run so the operator can
+    diagnose during the pause."""
     report = AutopilotReport(
         confirmed=confirmed, store_id=store_id,
     )
+    fleet_paused = _fleet_emergency_paused()
+    if fleet_paused:
+        # Override confirmed for write stages -- they pretend
+        # the operator didn't approve so they short-circuit.
+        write_confirmed = False
+    else:
+        write_confirmed = confirmed
     report.stages = [
-        _run_welcome(confirmed),
-        _run_reviews(confirmed),
+        _run_welcome(write_confirmed),
+        _run_reviews(write_confirmed),
         _run_measure(store_id),
         _run_health(store_id),
     ]
+    if fleet_paused:
+        # Stamp the write stages with the emergency reason.
+        for s in report.stages[:2]:
+            if s.verdict == "disabled":
+                s.detail = (
+                    "fleet emergency pause is active"
+                )
     report.overall_verdict = _compute_overall(report.stages)
     return report

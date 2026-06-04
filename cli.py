@@ -2219,6 +2219,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pc_p.add_argument("--json", action="store_true")
 
+    # W963-32: fleet-emergency — kill switch.
+    fe_p = sub.add_parser(
+        "fleet-emergency",
+        help=(
+            "Single-command fleet kill switch. Halts ALL "
+            "autopilot writers across stores when set."
+        ),
+    )
+    fe_group = fe_p.add_mutually_exclusive_group()
+    fe_group.add_argument(
+        "--pause", action="store_const", const="pause",
+        dest="emergency_action",
+    )
+    fe_group.add_argument(
+        "--resume", action="store_const", const="resume",
+        dest="emergency_action",
+    )
+    fe_p.add_argument(
+        "--yes", action="store_true",
+        help="Required for --pause / --resume.",
+    )
+    fe_p.add_argument(
+        "--reason", default="",
+        help="Reason string (recorded on pause).",
+    )
+    fe_p.add_argument(
+        "--by", default="operator",
+        help="Operator identifier (recorded on pause).",
+    )
+    fe_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11660,6 +11691,54 @@ def _cmd_warmup_plan(args) -> None:
             f"{d.get('intent')}"
         )
     print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_fleet_emergency(args) -> None:
+    """W963-32: fleet emergency pause / resume / status."""
+    from engines.fleet_emergency_pause import (
+        FleetEmergencyPauseEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    action = (
+        getattr(args, "emergency_action", None) or "status"
+    )
+    payload = {
+        "data": {
+            "action": action,
+            "confirmed": bool(getattr(args, "yes", False)),
+            "reason": getattr(args, "reason", "") or "",
+            "by": getattr(args, "by", "operator") or "operator",
+        },
+    }
+    result = FleetEmergencyPauseEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    paused = data.get("paused")
+    mk = "[XX]" if paused else "[OK ]"
+    print(
+        f"Fleet emergency  {mk}  "
+        f"paused={paused}  action={data.get('action')}  "
+        f"fired={data.get('fired')}"
+    )
+    print()
+    if paused:
+        print(
+            f"  paused_at: {data.get('paused_at', '?')}"
+        )
+        print(
+            f"  paused_by: {data.get('paused_by', '?')}"
+        )
+        if data.get("reason"):
+            print(f"  reason:    {data.get('reason')}")
+        print()
+    if data.get("skip_reason"):
+        print(f"  skip_reason: {data.get('skip_reason')}")
+        print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -55067,6 +55146,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "plan-compose":
         _cmd_plan_compose(args)
+        return
+
+    if args.command == "fleet-emergency":
+        _cmd_fleet_emergency(args)
         return
 
     if args.command == "welcome":
