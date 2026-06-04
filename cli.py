@@ -15842,6 +15842,23 @@ def _cmd_empire(args) -> None:
     except Exception:  # noqa: BLE001
         pass
 
+    # ─ W963-48: composed AGI earnings verdict
+    agi_block = None
+    try:
+        from engines.agi_earnings_summary.summarizer import (
+            compute_summary as _agi_summary_e,
+        )
+        _agi = _agi_summary_e(days=7)
+        agi_block = {
+            "verdict": _agi.verdict,
+            "gross_profit": _agi.fleet_gross_profit,
+            "attribution_pct": _agi.fleet_attribution_pct,
+            "monthly_run_rate": _agi.monthly_run_rate,
+            "trend": _agi.trend_verdict,
+        }
+    except Exception:  # noqa: BLE001
+        pass
+
     # ─ Spend cap state
     spend_block = None
     try:
@@ -16214,6 +16231,33 @@ def _cmd_empire(args) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "empire autonomy block raised: %s", exc,
+        )
+
+    # W963-49: composed AGI earnings verdict (one-liner).
+    # Surfaces only when verdict != no_data (empire has
+    # activity); silent on idle days.
+    try:
+        from engines.agi_earnings_summary.summarizer import (
+            compute_summary as _agi_summary_emp,
+        )
+        _agi_emp = _agi_summary_emp(days=7)
+        if _agi_emp.verdict != "no_data":
+            _emp_chip = {
+                "earning":         "[OK ]",
+                "attributed_loss": "[BAD]",
+                "organic_only":    "[WRN]",
+            }.get(_agi_emp.verdict, "[ ? ]")
+            print(
+                f"    agi earnings:       {_emp_chip} "
+                f"{_agi_emp.verdict:<16s} "
+                f"profit=${_agi_emp.fleet_gross_profit:>7.0f}  "
+                f"attr={_agi_emp.fleet_attribution_pct:>5.1f}%  "
+                f"run-rate/mo="
+                f"${_agi_emp.monthly_run_rate:>7.0f}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "empire agi earnings block raised: %s", exc,
         )
 
     # Wave 835: discoverer coverage line. Always shows so
