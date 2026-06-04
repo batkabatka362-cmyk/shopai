@@ -16487,6 +16487,35 @@ def _cmd_empire(args) -> None:
                 f"{revenue_block['top_cluster']}"
             )
 
+    # W963-48: AGI earnings summary verdict (one-line)
+    try:
+        from engines.agi_earnings_summary.summarizer import (
+            compute_summary as _agi_summary,
+        )
+        _agi = _agi_summary(days=7)
+        _v = _agi.verdict
+        _chip = {
+            "earning":         "[OK ]",
+            "attributed_loss": "[BAD]",
+            "organic_only":    "[WRN]",
+            "no_data":         "[-- ]",
+        }.get(_v, "[?? ]")
+        # Surface only when the empire has activity (skip
+        # spam when idle)
+        if _v != "no_data":
+            print(
+                f"  AGI earnings:         {_chip} "
+                f"{_v:<16s} "
+                f"profit=${_agi.fleet_gross_profit:>7.0f}  "
+                f"attr={_agi.fleet_attribution_pct:>5.1f}%  "
+                f"trend={_agi.trend_verdict}"
+            )
+    except Exception as _exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief: agi_earnings_summary raised: %s",
+            _exc,
+        )
+
     # Spend
     if spend_block:
         bcount = spend_block["breach_count"]
