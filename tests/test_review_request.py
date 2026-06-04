@@ -194,6 +194,25 @@ class TestSendBatch:
         assert r.sent == 0
         assert r.failed == 1
 
+    def test_router_unavailable_records_writeback(self):
+        # Regression: BUG-9 — Pattern Z gap on router-
+        # unavailable path.
+        order = _make_order(age_days=20.0)
+        wb_calls = []
+        def _capture(**kwargs):
+            wb_calls.append(kwargs)
+        with patch(
+            "core.adapters.router.get_router",
+            side_effect=Exception("no router"),
+        ), patch(
+            "engines._writeback_recorder.record_writeback",
+            side_effect=_capture,
+        ):
+            send_batch(orders=[order])
+        assert len(wb_calls) == 1
+        assert wb_calls[0]["success"] is False
+        assert "router unavailable" in wb_calls[0]["error"]
+
     def test_success(self):
         order = _make_order(age_days=20.0)
         fake_router = MagicMock()
@@ -239,6 +258,16 @@ class TestEngineEnvelope:
             "data": {"action": "blast"},
         })
         assert result["status"] == "error"
+
+    def test_non_string_action_does_not_crash(self):
+        # Regression: action=42 used to AttributeError on
+        # .lower() and break Pattern Q.
+        for bad in (42, 3.14, [], {}, True):
+            result = ReviewRequestEngine().run({
+                "data": {"action": bad},
+            })
+            assert result["status"] in {"success", "error"}
+            assert isinstance(result["data"], (dict, type(None)))
 
 
 # ── Engine actions ────────────────────────────────────────

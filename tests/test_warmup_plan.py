@@ -122,6 +122,14 @@ class TestEngineEnvelope:
         })
         assert result["status"] == "error"
 
+    def test_non_string_action_does_not_crash(self):
+        # Regression: BUG-7
+        for bad in (42, 3.14, [], {}, True):
+            result = WarmupPlanEngine().run({
+                "data": {"action": bad},
+            })
+            assert result["status"] in {"success", "error"}
+
 
 class TestEngineActions:
     def test_full_returns_30_days(self):

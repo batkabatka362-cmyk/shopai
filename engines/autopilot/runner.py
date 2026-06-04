@@ -33,7 +33,7 @@ class AutopilotReport:
 
 
 def _env_gate(name: str, default_on: bool = False) -> bool:
-    raw = os.environ.get(name, "")
+    raw = os.environ.get(name, "").strip()
     if not raw:
         return default_on
     return raw.lower() in ("1", "true", "yes", "on")

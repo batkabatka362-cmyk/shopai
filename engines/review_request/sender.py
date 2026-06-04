@@ -173,41 +173,37 @@ def _send_email(
 ) -> ReviewRequest:
     """Dispatch via SEND_EMAIL_TRANSACTIONAL. Records Pattern Z
     inside this function so callers don't need to."""
+    ok = False
+    err = ""
     try:
         from core.adapters.router import get_router
         from core.adapters.base import Capability
         router = get_router()
+        params: dict[str, Any] = {
+            "to": request.customer_email,
+            "to_name": request.customer_name,
+            "subject": request.subject,
+            "html": request.body_html,
+        }
+        if from_email:
+            params["from_email"] = from_email
+        try:
+            result = router.execute(
+                Capability.SEND_EMAIL_TRANSACTIONAL, params,
+            )
+            ok = bool(getattr(result, "ok", False))
+            if not ok:
+                err = getattr(result, "error", "") or ""
+        except Exception as exc:  # noqa: BLE001
+            err = f"{type(exc).__name__}: {exc}"
     except Exception as exc:  # noqa: BLE001
-        request.error = (
-            f"router unavailable: {type(exc).__name__}"
-        )
-        return request
-
-    params: dict[str, Any] = {
-        "to": request.customer_email,
-        "to_name": request.customer_name,
-        "subject": request.subject,
-        "html": request.body_html,
-    }
-    if from_email:
-        params["from_email"] = from_email
-
-    ok = False
-    err = ""
-    try:
-        result = router.execute(
-            Capability.SEND_EMAIL_TRANSACTIONAL, params,
-        )
-        ok = bool(getattr(result, "ok", False))
-        if not ok:
-            err = getattr(result, "error", "") or ""
-    except Exception as exc:  # noqa: BLE001
-        err = f"{type(exc).__name__}: {exc}"
+        err = f"router unavailable: {type(exc).__name__}"
 
     request.sent = ok
     request.error = err
 
-    # Pattern Z.
+    # Pattern Z -- ALWAYS record, including the
+    # router-unavailable path so attribution sees the failure.
     try:
         from engines._writeback_recorder import (
             record_writeback,

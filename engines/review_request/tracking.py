@@ -42,6 +42,15 @@ _TRACKING_PATH = Path(
 
 
 def _is_test_environment() -> bool:
+    # Pattern J test-environment guard. We require BOTH the
+    # pytest sentinel AND not an explicit production-mode
+    # opt-out, so a stray PYTEST_CURRENT_TEST leaking into a
+    # production shell can be overridden by setting
+    # SHOPAI_FORCE_PRODUCTION_WRITES=1.
+    if os.environ.get(
+        "SHOPAI_FORCE_PRODUCTION_WRITES", "",
+    ).strip().lower() in ("1", "true", "yes", "on"):
+        return False
     return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 

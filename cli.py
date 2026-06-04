@@ -27144,26 +27144,35 @@ def _cmd_cycle_run(args) -> None:
 
     # W963-23: autopilot bridge -- fires welcome_series +
     # review_request batches inside the standard cycle.
-    # Each stage is env-gated so missing env vars keep the
-    # write stages silent (same default-OFF posture as
-    # autopilot's --yes flow).
-    try:
-        from engines.autopilot.runner import run_autopilot
-        ap_report = run_autopilot(
-            confirmed=True, store_id=None,
-        )
-        fired = [
-            s.name for s in ap_report.stages if s.fired
-        ]
-        if fired:
-            logger.info(
-                "autopilot bridge fired stages: %s",
-                ",".join(fired),
+    # Triple-gated: cycle's --yes + SHOPAI_CYCLE_RUN_CONFIRM=1
+    # (already passed by this point), PLUS a separate
+    # SHOPAI_CYCLE_AUTOPILOT_BRIDGE=1 env gate so operators
+    # can wire autopilot for standalone use WITHOUT also
+    # having the cycle fire it. And each writer stage still
+    # has its own SHOPAI_AUTOPILOT_WELCOME/REVIEWS gate.
+    # The bridge respects the cycle's --store scope.
+    bridge_enabled = os.environ.get(
+        "SHOPAI_CYCLE_AUTOPILOT_BRIDGE", "",
+    ).strip().lower() in ("1", "true", "yes", "on")
+    if bridge_enabled:
+        try:
+            from engines.autopilot.runner import run_autopilot
+            ap_report = run_autopilot(
+                confirmed=True,
+                store_id=only_store or None,
             )
-    except Exception as exc:  # noqa: BLE001
-        logger.debug(
-            "autopilot bridge failed: %s", exc,
-        )
+            fired = [
+                s.name for s in ap_report.stages if s.fired
+            ]
+            if fired:
+                logger.info(
+                    "autopilot bridge fired stages: %s",
+                    ",".join(fired),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "autopilot bridge failed: %s", exc,
+            )
 
     # Wave 854: auto-disarm bridge -- runs BEFORE the
     # substrate fire so chronically-degraded domains get

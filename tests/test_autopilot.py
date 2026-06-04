@@ -38,6 +38,15 @@ class TestEnvGate:
             ):
                 assert _env_gate("FAKE_KEY_X", True) is False
 
+    def test_whitespace_stripped(self):
+        # Regression: BUG-14 — operator-set
+        # SHOPAI_AUTOPILOT_WELCOME='1 ' silently failed.
+        for raw in ("1 ", " 1", "  true\n", "\tyes\t"):
+            with patch.dict(
+                os.environ, {"FAKE_KEY_X": raw}, clear=False,
+            ):
+                assert _env_gate("FAKE_KEY_X", False) is True
+
 
 # ── _compute_overall ──────────────────────────────────────
 

@@ -42,7 +42,7 @@ class ReviewRequestEngine:
         if not isinstance(data, dict):
             data = {}
 
-        action = (data.get("action") or "status").lower()
+        action = str(data.get("action") or "status").lower()
 
         if action == "status":
             return self._success(

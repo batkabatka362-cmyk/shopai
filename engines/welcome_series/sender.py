@@ -114,14 +114,22 @@ def _eligible(
     if stage is None:
         return False, "already_completed", None
 
-    # Check cadence gate.
+    # Check cadence gate. Stage 1 fires immediately (gate=0)
+    # so a missing/malformed created_at is fine for stage 1.
+    # For stages 2-3 we MUST know created_at — without it we
+    # can't tell whether 48h/120h has elapsed, so we fail
+    # closed (skip rather than risk firing the whole series
+    # in a single cron run).
     created_at = customer.get("created_at") or ""
     created_ts = _parse_created(created_at)
-    if created_ts is not None:
-        elapsed_hours = (now - created_ts) / 3600.0
-        gate = _STAGE_GATE_HOURS.get(stage, 0.0)
-        if elapsed_hours < gate:
-            return False, "not_due_yet", stage
+    gate = _STAGE_GATE_HOURS.get(stage, 0.0)
+    if created_ts is None:
+        if gate > 0.0:
+            return False, "bad_created_at", stage
+        return True, "", stage
+    elapsed_hours = (now - created_ts) / 3600.0
+    if elapsed_hours < gate:
+        return False, "not_due_yet", stage
     return True, "", stage
 
 
@@ -163,40 +171,37 @@ def _send_email(
     *,
     from_email: str | None,
 ) -> WelcomeRequest:
+    ok = False
+    err = ""
     try:
         from core.adapters.router import get_router
         from core.adapters.base import Capability
         router = get_router()
+        params: dict[str, Any] = {
+            "to": request.customer_email,
+            "to_name": request.customer_name,
+            "subject": request.subject,
+            "html": request.body_html,
+        }
+        if from_email:
+            params["from_email"] = from_email
+        try:
+            result = router.execute(
+                Capability.SEND_EMAIL_TRANSACTIONAL, params,
+            )
+            ok = bool(getattr(result, "ok", False))
+            if not ok:
+                err = getattr(result, "error", "") or ""
+        except Exception as exc:  # noqa: BLE001
+            err = f"{type(exc).__name__}: {exc}"
     except Exception as exc:  # noqa: BLE001
-        request.error = (
-            f"router unavailable: {type(exc).__name__}"
-        )
-        return request
-
-    params: dict[str, Any] = {
-        "to": request.customer_email,
-        "to_name": request.customer_name,
-        "subject": request.subject,
-        "html": request.body_html,
-    }
-    if from_email:
-        params["from_email"] = from_email
-
-    ok = False
-    err = ""
-    try:
-        result = router.execute(
-            Capability.SEND_EMAIL_TRANSACTIONAL, params,
-        )
-        ok = bool(getattr(result, "ok", False))
-        if not ok:
-            err = getattr(result, "error", "") or ""
-    except Exception as exc:  # noqa: BLE001
-        err = f"{type(exc).__name__}: {exc}"
+        err = f"router unavailable: {type(exc).__name__}"
 
     request.sent = ok
     request.error = err
 
+    # Pattern Z -- ALWAYS record, including router-unavailable
+    # path so attribution sees the failure.
     try:
         from engines._writeback_recorder import (
             record_writeback,

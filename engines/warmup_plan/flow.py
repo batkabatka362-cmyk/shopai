@@ -41,7 +41,7 @@ class WarmupPlanEngine:
         if not isinstance(data, dict):
             data = {}
 
-        action = (data.get("action") or "full").lower()
+        action = str(data.get("action") or "full").lower()
         niche = data.get("niche")
 
         if action == "full":

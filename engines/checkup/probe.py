@@ -137,19 +137,18 @@ def _probe_ads_launcher() -> HealthRow:
         "data": {"action": "status"},
     })
     data = result.get("data") or {}
-    # Status returns 'wired' / 'unwired' / etc.
-    status = data.get("status_summary") or {}
-    if any(
-        v.get("wired") for v in (status.values() if isinstance(status, dict) else [])
-    ):
-        verdict = "ready"
-    else:
-        verdict = "partial"
+    # ads_launcher returns data.platforms = {name: {credentials_present, ...}}
+    platforms = data.get("platforms") or {}
+    any_wired = any(
+        isinstance(p, dict) and p.get("credentials_present")
+        for p in platforms.values()
+    ) if isinstance(platforms, dict) else False
+    verdict = "ready" if any_wired else "partial"
     return HealthRow(
         engine="ads_launcher",
         verdict=verdict,
         detail=("at least one platform wired"
-                if verdict == "ready"
+                if any_wired
                 else "no ad platform credentials"),
         drill="shopai ads connect meta --token X",
     )
@@ -161,12 +160,17 @@ def _probe_email_connect() -> HealthRow:
         "data": {"action": "status"},
     })
     data = result.get("data") or {}
-    esp_ready = data.get("esp_ready", False)
+    # email_connect returns data.providers = {name: {credentials_present, ...}}
+    providers = data.get("providers") or {}
+    any_ready = any(
+        isinstance(p, dict) and p.get("credentials_present")
+        for p in providers.values()
+    ) if isinstance(providers, dict) else False
     return HealthRow(
         engine="email_connect",
-        verdict="ready" if esp_ready else "partial",
+        verdict="ready" if any_ready else "partial",
         detail=("ESP wired"
-                if esp_ready
+                if any_ready
                 else "no ESP credentials"),
         drill="shopai email connect brevo --api-key K",
     )

@@ -158,6 +158,44 @@ class TestBuildBatch:
         r = build_batch(customers=cs, limit=4)
         assert r.queued == 4
 
+    def test_missing_created_at_stage_1_ok(self, tmp_path):
+        # Stage 1 has gate=0, so a missing/malformed
+        # created_at is still eligible.
+        tracking.reset_path(tmp_path / "ws.json")
+        c = _make_customer()
+        c["created_at"] = ""
+        r = build_batch(customers=[c])
+        assert r.queued == 1
+        assert r.requests[0].stage == 1
+
+    def test_missing_created_at_higher_stages_fail_closed(
+        self, tmp_path, monkeypatch,
+    ):
+        # If created_at is unparseable, stage 2 and 3 MUST
+        # not fire — we don't know if the cadence gate
+        # (48h / 120h) has elapsed.
+        from engines.welcome_series import sender as snd
+        monkeypatch.setattr(
+            snd, "next_stage",
+            lambda cid: 2,
+        )
+        c = _make_customer()
+        c["created_at"] = "not-a-date"
+        r = build_batch(customers=[c])
+        assert r.queued == 0
+        assert r.skipped_reasons.get("bad_created_at") == 1
+
+    def test_malformed_created_at_stage_1_still_ok(
+        self, tmp_path,
+    ):
+        # Stage 1: even garbage date is fine because
+        # gate=0 fires immediately.
+        tracking.reset_path(tmp_path / "ws.json")
+        c = _make_customer()
+        c["created_at"] = "2026-13-45T99:99:99Z"
+        r = build_batch(customers=[c])
+        assert r.queued == 1
+
 
 # ── Sender: send_batch ────────────────────────────────────
 
@@ -175,6 +213,29 @@ class TestSendBatch:
             r = send_batch(customers=[c])
         assert r.sent == 0
         assert r.failed == 1
+
+    def test_router_unavailable_records_writeback(
+        self, tmp_path,
+    ):
+        # Regression: BUG-9 — router-unavailable path used
+        # to return early WITHOUT calling record_writeback,
+        # so attribution never saw the failure.
+        tracking.reset_path(tmp_path / "ws.json")
+        c = _make_customer()
+        wb_calls = []
+        def _capture(**kwargs):
+            wb_calls.append(kwargs)
+        with patch(
+            "core.adapters.router.get_router",
+            side_effect=Exception("no router"),
+        ), patch(
+            "engines._writeback_recorder.record_writeback",
+            side_effect=_capture,
+        ):
+            send_batch(customers=[c])
+        assert len(wb_calls) == 1
+        assert wb_calls[0]["success"] is False
+        assert "router unavailable" in wb_calls[0]["error"]
 
     def test_success(self, tmp_path):
         tracking.reset_path(tmp_path / "ws.json")
@@ -222,6 +283,15 @@ class TestEnvelope:
             "data": {"action": "blast"},
         })
         assert r["status"] == "error"
+
+    def test_non_string_action_does_not_crash(self):
+        # Regression: BUG-7 — non-string action used to
+        # AttributeError on .lower() in flow.py.
+        for bad in (42, 3.14, [], {}, True):
+            r = WelcomeSeriesEngine().run({
+                "data": {"action": bad},
+            })
+            assert r["status"] in {"success", "error"}
 
     def test_carries_engine_name(self):
         r = WelcomeSeriesEngine().run({})

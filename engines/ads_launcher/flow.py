@@ -46,7 +46,7 @@ class AdsLauncherEngine:
 
         # Default action is 'status' — read-only diagnostic
         # that always works and never writes.
-        action = (data.get("action") or "status").lower()
+        action = str(data.get("action") or "status").lower()
 
         if action == "status":
             return self._success(

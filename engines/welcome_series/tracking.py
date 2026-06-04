@@ -40,6 +40,12 @@ _TRACKING_PATH = Path(
 
 
 def _is_test_environment() -> bool:
+    # Pattern J test-environment guard. Mirrors
+    # engines.review_request.tracking._is_test_environment.
+    if os.environ.get(
+        "SHOPAI_FORCE_PRODUCTION_WRITES", "",
+    ).strip().lower() in ("1", "true", "yes", "on"):
+        return False
     return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 

@@ -34,7 +34,7 @@ class InstagramPublisherEngine:
         if not isinstance(data, dict):
             data = {}
 
-        action = (data.get("action") or "status").lower()
+        action = str(data.get("action") or "status").lower()
 
         if action == "status":
             skip_live = bool(data.get("skip_live", False))
