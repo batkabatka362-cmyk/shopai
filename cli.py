@@ -2677,6 +2677,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ac_p.add_argument("--json", action="store_true")
 
+    # W963-54: morning-brief — composed 10-second standup.
+    mb_p = sub.add_parser(
+        "morning-brief",
+        help=(
+            "10-second morning standup. Composes every "
+            "Phase 3 substrate engine into one screen: "
+            "verdict + run-rate + trend + orphans + "
+            "approvals + last cycle + 3 next-actions + "
+            "critique of each."
+        ),
+    )
+    mb_p.add_argument(
+        "--store", default="", dest="store_id",
+    )
+    mb_p.add_argument(
+        "--record", action="store_true",
+        dest="persist_snapshot",
+        help=(
+            "Also persist a W963-50 history snapshot "
+            "(daily-cron pattern)."
+        ),
+    )
+    mb_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12256,6 +12280,114 @@ def _cmd_pnl_history(args) -> None:
                     f"({t.get('slope_pct')}%)"
                 )
     print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_morning_brief(args) -> None:
+    """W963-54: composed 10-second morning standup."""
+    from engines.agi_morning_brief import (
+        AgiMorningBriefEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "store_id":
+                getattr(args, "store_id", "") or "",
+            "persist_snapshot": bool(
+                getattr(args, "persist_snapshot", False),
+            ),
+        },
+    }
+    result = AgiMorningBriefEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    verdict = data.get("verdict", "no_data")
+    chip = {
+        "earning":         "[OK ]",
+        "attributed_loss": "[BAD]",
+        "organic_only":    "[WRN]",
+        "no_data":         "[.. ]",
+    }.get(verdict, "[?? ]")
+    scope = (
+        data.get("store_id") or "(fleet)"
+    )
+
+    print(f"AGI morning brief  --  scope={scope}")
+    print()
+    print(f"  {chip} {data.get('headline', '')}")
+    print()
+    print(
+        f"  trend (14d snapshots):  "
+        f"{data.get('history_trend_verdict', 'no_data')}  "
+        f"(n={data.get('history_samples', 0)})"
+    )
+    print(
+        f"  orphan AGI claims:      "
+        f"{data.get('orphan_action_count', 0)}"
+    )
+    print(
+        f"  approvals pending:      "
+        f"{data.get('pending_approvals', 0)}"
+    )
+    age = data.get("last_cycle_age_hours", 0.0)
+    last_v = data.get("last_cycle_verdict", "unknown")
+    age_str = (
+        f"{age:.1f}h ago" if age > 0
+        else "never"
+    )
+    print(
+        f"  last cycle:             {last_v}  ({age_str})"
+    )
+    if data.get("snapshot_recorded"):
+        print("  [snapshot recorded into W963-50 history]")
+    print()
+    print("  PLAN:")
+    proposed = data.get("proposed") or []
+    crit_by_rank = {
+        c.get("rank"): c
+        for c in data.get("critiques") or []
+    }
+    for p in proposed:
+        prio = p.get("priority", "info")
+        pchip = {
+            "critical": "[!! ]",
+            "normal":   "[-- ]",
+            "info":     "[.. ]",
+        }.get(prio, "[?? ]")
+        print(
+            f"    {pchip} #{p.get('rank', 0)} "
+            f"{p.get('action', '?')}"
+        )
+        print(
+            f"          cmd: {p.get('cli_command', '')}"
+        )
+        print(
+            f"          why: {p.get('rationale', '')}"
+        )
+        c = crit_by_rank.get(p.get("rank"))
+        if c:
+            flags = c.get("risk_flags") or []
+            sev = c.get("severity", "info")
+            if flags:
+                sev_chip = {
+                    "critical": "[!! ]",
+                    "warn":     "[-- ]",
+                    "info":     "[.. ]",
+                }.get(sev, "[?? ]")
+                print(
+                    f"          {sev_chip} risk: "
+                    f"{', '.join(flags)}"
+                )
+                rat = c.get("counter_rationale", "")
+                if rat:
+                    print(
+                        f"                 {rat}"
+                    )
+        print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -57306,6 +57438,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "action-critic":
         _cmd_action_critic(args)
+        return
+
+    if args.command == "morning-brief":
+        _cmd_morning_brief(args)
         return
 
     if args.command == "welcome":
