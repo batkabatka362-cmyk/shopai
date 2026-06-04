@@ -410,6 +410,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "checkup",               # W963-21: parallel health probe across W963 roster
     "welcome_series",        # W963-22: 3-email welcome cadence for new customers
     "autopilot",             # W963-23: end-to-end autonomous loop (welcome+review+measure+health)
+    "daily_trajectory",      # W963-24: per-day revenue slope ("are we trending up?")
 })
 
 

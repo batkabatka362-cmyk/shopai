@@ -2005,6 +2005,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ap_p.add_argument("--json", action="store_true")
 
+    # W963-24: trajectory — per-day revenue slope.
+    tr_p = sub.add_parser(
+        "trajectory",
+        help=(
+            "Per-day revenue trajectory across last N days. "
+            "Answers: 'are we trending up?' Shows daily "
+            "buckets + slope verdict + sparkline."
+        ),
+    )
+    tr_p.add_argument(
+        "--days", type=int, default=30,
+        help="Window in days (2-90).",
+    )
+    tr_p.add_argument(
+        "--store", default=None, dest="store_id",
+    )
+    tr_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11444,6 +11462,56 @@ def _cmd_warmup_plan(args) -> None:
             f"    day {d.get('day'):>2d} "
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
+        )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_trajectory(args) -> None:
+    """W963-24: per-day revenue trajectory."""
+    from engines.daily_trajectory import DailyTrajectoryEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "days": int(getattr(args, "days", 30)),
+            "store_id": getattr(args, "store_id", None),
+        },
+    }
+    result = DailyTrajectoryEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    verdict = data.get("verdict", "cold_start")
+    mk = {
+        "rising":     "[OK ]",
+        "flat":       "[-- ]",
+        "declining":  "[!! ]",
+        "cold_start": "[.. ]",
+    }.get(verdict, "[?? ]")
+    print(
+        f"Trajectory  {mk}  verdict={verdict}  "
+        f"slope={data.get('slope_pct', 0):+.1f}%  "
+        f"days={data.get('days')}  "
+        f"total=${data.get('total_revenue', 0.0):.2f}"
+    )
+    print()
+    sparkline = data.get("sparkline") or ""
+    if sparkline:
+        print(f"  spark: {sparkline}")
+        print()
+    buckets = data.get("buckets") or []
+    for b in buckets:
+        rev = b.get("revenue", 0.0)
+        delta = b.get("delta_vs_prev", 0.0)
+        sign = "+" if delta >= 0 else ""
+        print(
+            f"  {b.get('date', '?')}  "
+            f"orders={b.get('order_count', 0):>2d}  "
+            f"rev=${rev:>7.2f}  "
+            f"delta={sign}${delta:.2f}"
         )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
@@ -54289,6 +54357,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autopilot":
         _cmd_autopilot(args)
+        return
+
+    if args.command == "trajectory":
+        _cmd_trajectory(args)
         return
 
     if args.command == "welcome":
