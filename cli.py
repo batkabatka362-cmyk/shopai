@@ -2599,6 +2599,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     es_p.add_argument("--json", action="store_true")
 
+    # W963-50: earnings-history — persistent verdict log.
+    eh_p = sub.add_parser(
+        "earnings-history",
+        help=(
+            "Persistent daily verdict log + trend "
+            "(improving/declining/flat). 'Is the AGI's "
+            "earning getting BETTER?' (not just 'is it "
+            "earning now?')"
+        ),
+    )
+    eh_p.add_argument(
+        "--record", action="store_true",
+        help="Snapshot the current verdict and persist.",
+    )
+    eh_p.add_argument(
+        "--trend", action="store_true",
+        help="Compute verdict trend across the window.",
+    )
+    eh_p.add_argument(
+        "--query", action="store_true",
+        help="List recorded snapshots in window.",
+    )
+    eh_p.add_argument("--days", type=int, default=30)
+    eh_p.add_argument("--limit", type=int, default=20)
+    eh_p.add_argument(
+        "--attribution-window-hours", type=float,
+        default=48.0,
+        dest="attribution_window_hours",
+    )
+    eh_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12177,6 +12208,131 @@ def _cmd_pnl_history(args) -> None:
                     f"delta=${t.get('delta', 0):>+7.2f} "
                     f"({t.get('slope_pct')}%)"
                 )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_earnings_history(args) -> None:
+    """W963-50: persistent verdict log + trend."""
+    from engines.agi_earnings_history import (
+        AgiEarningsHistoryEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    record_mode = bool(getattr(args, "record", False))
+    trend_mode = bool(getattr(args, "trend", False))
+    query_mode = bool(getattr(args, "query", False))
+
+    if record_mode:
+        action = "record"
+    elif trend_mode:
+        action = "trend"
+    elif query_mode:
+        action = "query"
+    else:
+        action = "summary"
+
+    payload = {
+        "data": {
+            "action": action,
+            "days": int(getattr(args, "days", 30)),
+            "limit": int(getattr(args, "limit", 20)),
+            "attribution_window_hours": float(
+                getattr(
+                    args, "attribution_window_hours", 48.0,
+                ),
+            ),
+        },
+    }
+    result = AgiEarningsHistoryEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    print(
+        f"AGI earnings history ({data.get('action', '?')})"
+    )
+    print()
+
+    if action == "summary":
+        print(
+            f"  total_snapshots: "
+            f"{data.get('total_snapshots', 0)}"
+        )
+        latest = data.get("latest") or {}
+        if latest:
+            print(
+                f"  latest:          "
+                f"verdict={latest.get('verdict', '?')}  "
+                f"profit=$"
+                f"{latest.get('gross_profit', 0):.0f}  "
+                f"attr="
+                f"{latest.get('attribution_pct', 0):.1f}%"
+            )
+    elif action == "record":
+        snap = data.get("snapshot") or {}
+        wrote = "[OK ]" if data.get("wrote") else "[-- ]"
+        print(
+            f"  {wrote} verdict="
+            f"{snap.get('verdict', '?')}  "
+            f"profit=${snap.get('gross_profit', 0):.0f}  "
+            f"attr={snap.get('attribution_pct', 0):.1f}%"
+        )
+        print(
+            f"  snapshot_count_after: "
+            f"{data.get('snapshot_count_after', 0)}"
+        )
+    elif action == "query":
+        snaps = data.get("snapshots") or []
+        print(
+            f"  count={data.get('count', 0)}  "
+            f"days={data.get('days', 30)}"
+        )
+        print()
+        for s in snaps[:20]:
+            import datetime as _dt
+            ts = float(s.get("ts", 0) or 0)
+            try:
+                when = _dt.datetime.fromtimestamp(
+                    ts,
+                ).strftime("%Y-%m-%d %H:%M")
+            except (ValueError, OSError):
+                when = "?"
+            print(
+                f"  {when}  "
+                f"verdict={s.get('verdict', '?'):<16s} "
+                f"profit=$"
+                f"{s.get('gross_profit', 0):>7.0f}  "
+                f"attr="
+                f"{s.get('attribution_pct', 0):>5.1f}%"
+            )
+    elif action == "trend":
+        t = data.get("trend") or {}
+        v = t.get("verdict", "no_data")
+        chip = {
+            "improving": "[OK ]",
+            "declining": "[!! ]",
+            "flat":      "[-- ]",
+            "no_data":   "[.. ]",
+        }.get(v, "[?? ]")
+        print(
+            f"  {chip} verdict={v}  "
+            f"samples={t.get('sample_count', 0)}"
+        )
+        print(
+            f"  first_avg_rank:  "
+            f"{t.get('first_avg_rank', 0):.2f}"
+        )
+        print(
+            f"  second_avg_rank: "
+            f"{t.get('second_avg_rank', 0):.2f}"
+        )
+        print(
+            f"  delta:           "
+            f"{t.get('delta', 0):+.2f}"
+        )
+
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -56904,6 +57060,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "earnings-summary":
         _cmd_earnings_summary(args)
+        return
+
+    if args.command == "earnings-history":
+        _cmd_earnings_history(args)
         return
 
     if args.command == "welcome":
