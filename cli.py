@@ -2576,6 +2576,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rc_p.add_argument("--json", action="store_true")
 
+    # W963-48: earnings-summary — composed AGI earning verdict.
+    es_p = sub.add_parser(
+        "earnings-summary",
+        help=(
+            "ONE answer to 'is the AGI earning?'. Composes "
+            "reconciliation + pnl + trend into a single "
+            "verdict (earning/attributed_loss/organic_only/"
+            "no_data) + monthly run-rate. 10-second daily "
+            "operator check."
+        ),
+    )
+    es_p.add_argument("--days", type=int, default=7)
+    es_p.add_argument(
+        "--attribution-window-hours", type=float,
+        default=48.0,
+        dest="attribution_window_hours",
+    )
+    es_p.add_argument(
+        "--trend-days", type=int, default=30,
+        dest="trend_days",
+    )
+    es_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12154,6 +12177,95 @@ def _cmd_pnl_history(args) -> None:
                     f"delta=${t.get('delta', 0):>+7.2f} "
                     f"({t.get('slope_pct')}%)"
                 )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_earnings_summary(args) -> None:
+    """W963-48: composed AGI earnings verdict."""
+    from engines.agi_earnings_summary import (
+        AgiEarningsSummaryEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "days": int(getattr(args, "days", 7)),
+            "attribution_window_hours": float(
+                getattr(
+                    args, "attribution_window_hours", 48.0,
+                ),
+            ),
+            "trend_days": int(
+                getattr(args, "trend_days", 30),
+            ),
+        },
+    }
+    result = AgiEarningsSummaryEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success":
+        print(
+            f"earnings-summary: ERROR  {result.get('error')}"
+        )
+        return
+
+    verdict = data.get("verdict", "no_data")
+    chip = {
+        "earning":         "[OK ]",
+        "attributed_loss": "[!! ]",
+        "organic_only":    "[-- ]",
+        "no_data":         "[.. ]",
+    }.get(verdict, "[?? ]")
+
+    print(
+        f"AGI earnings summary "
+        f"({data.get('days', 7)}d window, "
+        f"attribution={data.get('attribution_window_hours')}h)"
+    )
+    print()
+    print(f"  {chip} verdict: {verdict}")
+    print(
+        f"  fleet_gross_profit:        "
+        f"${data.get('fleet_gross_profit', 0):>9.2f}"
+    )
+    print(
+        f"  fleet_attributed_revenue:  "
+        f"${data.get('fleet_attributed_revenue', 0):>9.2f}"
+    )
+    print(
+        f"  fleet_organic_revenue:     "
+        f"${data.get('fleet_organic_revenue', 0):>9.2f}"
+    )
+    print(
+        f"  attribution_pct:           "
+        f"{data.get('fleet_attribution_pct', 0):>8.1f}%"
+    )
+    print(
+        f"  margin_pct:                "
+        f"{data.get('fleet_margin_pct', 0):>8.1f}%"
+    )
+    print(
+        f"  monthly_run_rate:          "
+        f"${data.get('monthly_run_rate', 0):>9.2f}"
+    )
+    print(
+        f"  trend_verdict:             "
+        f"{data.get('trend_verdict', 'no_data')}"
+    )
+    print(
+        f"  stores: {data.get('profitable_store_count', 0)} "
+        f"profitable / "
+        f"{data.get('loss_store_count', 0)} loss / "
+        f"{data.get('store_count', 0)} total"
+    )
+    print(
+        f"  fleet_orphan_actions:      "
+        f"{data.get('fleet_orphan_action_count', 0)}"
+    )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -56715,6 +56827,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "reconcile":
         _cmd_reconcile(args)
+        return
+
+    if args.command == "earnings-summary":
+        _cmd_earnings_summary(args)
         return
 
     if args.command == "welcome":
