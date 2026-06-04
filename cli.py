@@ -2054,6 +2054,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fn_p.add_argument("--json", action="store_true")
 
+    # W963-26: fleet-autopilot — iterate autopilot across fleet.
+    fa_p = sub.add_parser(
+        "fleet-autopilot",
+        help=(
+            "Iterate autopilot across every store in the "
+            "fleet (north-star empire mode). Per-store "
+            "active_store context. Default dry-run; --yes "
+            "fires (still per-writer env-gated)."
+        ),
+    )
+    fa_p.add_argument(
+        "--yes", action="store_true",
+        help="Required to fire writers per-store.",
+    )
+    fa_p.add_argument(
+        "--only-store", default=None, dest="only_store",
+        help="Run for just one store id.",
+    )
+    fa_p.add_argument(
+        "--skip-store", action="append", default=[],
+        dest="skip_stores",
+        help="Exclude a store id (repeatable).",
+    )
+    fa_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11494,6 +11519,73 @@ def _cmd_warmup_plan(args) -> None:
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
         )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_fleet_autopilot(args) -> None:
+    """W963-26: iterate autopilot across the fleet."""
+    from engines.fleet_autopilot import FleetAutopilotEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "confirmed": bool(getattr(args, "yes", False)),
+            "only_store": getattr(args, "only_store", None),
+            "skip_stores": getattr(
+                args, "skip_stores", None,
+            ) or [],
+        },
+    }
+    result = FleetAutopilotEngine().run(payload)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    verdict = data.get("overall_verdict", "skipped")
+    mk = {
+        "ok":       "[OK ]",
+        "warn":     "[!! ]",
+        "error":    "[XX]",
+        "disabled": "[-- ]",
+        "skipped":  "[-- ]",
+    }.get(verdict, "[?? ]")
+    confirmed = data.get("confirmed")
+    by_store = data.get("by_store") or []
+    print(
+        f"Fleet-autopilot  {mk}  "
+        f"{'LIVE' if confirmed else 'DRY-RUN'}  "
+        f"verdict={verdict}  "
+        f"stores={data.get('total_stores')}  "
+        f"sent={data.get('sent_count_total', 0)}"
+    )
+    print()
+    print(
+        f"  {'store_id':<18s}  {'verdict':<10s}  "
+        f"{'fired':>6s}  {'sent':>5s}  {'errors':>7s}"
+    )
+    for o in by_store:
+        v = o.get("verdict", "skipped")
+        chip = {
+            "ok":       "[OK ]",
+            "warn":     "[!! ]",
+            "error":    "[XX]",
+            "disabled": "[-- ]",
+            "skipped":  "[-- ]",
+        }.get(v, "[?? ]")
+        print(
+            f"  {chip} {o.get('store_id', '?'):<14s}  "
+            f"{v:<10s}  "
+            f"{o.get('fired_count', 0):>6d}  "
+            f"{o.get('sent_count', 0):>5d}  "
+            f"{o.get('error_count', 0):>7d}"
+        )
+    skipped = data.get("skipped_stores") or []
+    if skipped:
+        print()
+        print(f"  Skipped: {', '.join(skipped)}")
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -27294,7 +27386,7 @@ def _cmd_cycle_run(args) -> None:
             "shipping-alert bridge failed: %s", exc,
         )
 
-    # W963-23: autopilot bridge -- fires welcome_series +
+    # W963-23/26: autopilot bridge -- fires welcome_series +
     # review_request batches inside the standard cycle.
     # Triple-gated: cycle's --yes + SHOPAI_CYCLE_RUN_CONFIRM=1
     # (already passed by this point), PLUS a separate
@@ -27302,25 +27394,51 @@ def _cmd_cycle_run(args) -> None:
     # can wire autopilot for standalone use WITHOUT also
     # having the cycle fire it. And each writer stage still
     # has its own SHOPAI_AUTOPILOT_WELCOME/REVIEWS gate.
-    # The bridge respects the cycle's --store scope.
+    #
+    # When --store is set, fires single-store. When --store
+    # is omitted AND SHOPAI_CYCLE_AUTOPILOT_FLEET=1 is set,
+    # uses fleet_autopilot to iterate every store under its
+    # active_store context (north-star empire mode). Without
+    # the fleet gate, single-store fallback to default
+    # credentials (legacy behaviour).
     bridge_enabled = os.environ.get(
         "SHOPAI_CYCLE_AUTOPILOT_BRIDGE", "",
     ).strip().lower() in ("1", "true", "yes", "on")
     if bridge_enabled:
+        fleet_mode = (
+            (not only_store)
+            and os.environ.get(
+                "SHOPAI_CYCLE_AUTOPILOT_FLEET", "",
+            ).strip().lower() in ("1", "true", "yes", "on")
+        )
         try:
-            from engines.autopilot.runner import run_autopilot
-            ap_report = run_autopilot(
-                confirmed=True,
-                store_id=only_store or None,
-            )
-            fired = [
-                s.name for s in ap_report.stages if s.fired
-            ]
-            if fired:
-                logger.info(
-                    "autopilot bridge fired stages: %s",
-                    ",".join(fired),
+            if fleet_mode:
+                from engines.fleet_autopilot.runner import (
+                    run_fleet_autopilot,
                 )
+                fr = run_fleet_autopilot(confirmed=True)
+                if fr.sent_count_total > 0 or fr.errors_total > 0:
+                    logger.info(
+                        "fleet-autopilot bridge: %d store(s), "
+                        "sent=%d errors=%d",
+                        len(fr.by_store),
+                        fr.sent_count_total,
+                        fr.errors_total,
+                    )
+            else:
+                from engines.autopilot.runner import run_autopilot
+                ap_report = run_autopilot(
+                    confirmed=True,
+                    store_id=only_store or None,
+                )
+                fired = [
+                    s.name for s in ap_report.stages if s.fired
+                ]
+                if fired:
+                    logger.info(
+                        "autopilot bridge fired stages: %s",
+                        ",".join(fired),
+                    )
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "autopilot bridge failed: %s", exc,
@@ -54449,6 +54567,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "funnel":
         _cmd_funnel(args)
+        return
+
+    if args.command == "fleet-autopilot":
+        _cmd_fleet_autopilot(args)
         return
 
     if args.command == "welcome":
