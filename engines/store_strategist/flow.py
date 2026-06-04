@@ -50,6 +50,30 @@ class StoreStrategistEngine:
 
         verdict = overall_verdict(ctx, recs)
 
+        # W963-43: auto-record top recommendation into
+        # persistent memory. Best-effort -- failure does NOT
+        # break the strategist.
+        if store_id and recs:
+            try:
+                from engines.strategist_memory import store as _mem
+                top_rec = recs[0]
+                _mem.record(
+                    store_id=store_id,
+                    signal=str(top_rec.source_signal or ""),
+                    action=str(top_rec.action or ""),
+                    drill_command=str(top_rec.drill_command or ""),
+                    confidence=float(top_rec.confidence or 0.0),
+                    impact=str(top_rec.impact or "medium"),
+                    priority_score=float(
+                        top_rec.priority_score or 0.0,
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "store_strategist: memory record raised: %s",
+                    exc,
+                )
+
         return self._success(
             {
                 "store_id": ctx.store_id,

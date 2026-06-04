@@ -2446,6 +2446,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     nf_p.add_argument("--json", action="store_true")
 
+    # W963-43: memory-strategist — persistent recommendation history.
+    sm_p = sub.add_parser(
+        "memory-strategist",
+        help=(
+            "Inspect persistent strategist memory. Records "
+            "what each store_strategist run recommended + "
+            "what happened next. Future LLM brain queries "
+            "this to reason from history."
+        ),
+    )
+    sm_p.add_argument(
+        "--store", default="", dest="store_id",
+    )
+    sm_p.add_argument(
+        "--signal", default="",
+        help="Filter to one source_signal.",
+    )
+    sm_p.add_argument(
+        "--recall", type=int, default=0,
+        help="Show last K entries (0=summary only).",
+    )
+    sm_p.add_argument(
+        "--stats", action="store_true",
+        help="Show signal-stats counts.",
+    )
+    sm_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11886,6 +11913,99 @@ def _cmd_warmup_plan(args) -> None:
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
         )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_memory_strategist(args) -> None:
+    """W963-43: query persistent strategist memory."""
+    from engines.strategist_memory import StrategistMemoryEngine
+
+    as_json = bool(getattr(args, "json", False))
+    store_id = getattr(args, "store_id", "") or ""
+    signal = getattr(args, "signal", "") or ""
+    recall = int(getattr(args, "recall", 0))
+    stats_mode = bool(getattr(args, "stats", False))
+
+    if stats_mode:
+        payload = {
+            "data": {
+                "action": "stats",
+                "store_id": store_id,
+                "signal": signal,
+            },
+        }
+    elif recall > 0:
+        payload = {
+            "data": {
+                "action": "recall",
+                "store_id": store_id,
+                "signal": signal,
+                "k": recall,
+            },
+        }
+    else:
+        payload = {"data": {"action": "summary"}}
+
+    result = StrategistMemoryEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    action = data.get("action", "?")
+    print(
+        f"Strategist memory ({action})"
+    )
+    print()
+
+    if action == "summary":
+        print(
+            f"  total_entries: "
+            f"{data.get('total_entries', 0)}"
+        )
+        stores = data.get("stores_with_entries") or []
+        print(f"  store_count:   {len(stores)}")
+        if stores:
+            print(
+                f"  stores: {', '.join(stores[:10])}"
+            )
+    elif action == "stats":
+        s = data.get("stats") or {}
+        print(
+            f"  store={data.get('store_id') or '(any)'} "
+            f"signal={data.get('signal') or '(any)'}"
+        )
+        print(f"  total:    {s.get('total', 0)}")
+        print(f"  positive: {s.get('positive', 0)}")
+        print(f"  negative: {s.get('negative', 0)}")
+        print(f"  unknown:  {s.get('unknown', 0)}")
+    elif action == "recall":
+        entries = data.get("entries") or []
+        print(
+            f"  store={data.get('store_id') or '(any)'} "
+            f"signal={data.get('signal') or '(any)'} "
+            f"k={data.get('k')}"
+        )
+        print()
+        for e in entries:
+            outcome = e.get("outcome", "?")
+            chip = {
+                "positive": "[+]",
+                "negative": "[-]",
+                "unknown":  "[?]",
+            }.get(outcome, "[?]")
+            ts = e.get("ts", 0)
+            print(
+                f"  {chip} "
+                f"signal={e.get('signal', '?'):<15s} "
+                f"action={e.get('action', '?')[:40]}"
+            )
+            print(
+                f"       store={e.get('store_id', '?')} "
+                f"conf={e.get('confidence', 0):.2f} "
+                f"impact={e.get('impact', '?')}"
+            )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -56025,6 +56145,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "notify-fleet":
         _cmd_notify_fleet(args)
+        return
+
+    if args.command == "memory-strategist":
+        _cmd_memory_strategist(args)
         return
 
     if args.command == "welcome":
