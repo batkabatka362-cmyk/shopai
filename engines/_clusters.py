@@ -428,6 +428,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "confidence_calibrator", # W963-39: per-engine trust threshold based on outcome history
     "fleet_intervention_alerts", # W963-40: aggregate critical fleet signals into one operator surface
     "fleet_brief_digest",    # W963-41: morning empire synthesizer (PHASE 2 CAPSTONE)
+    "fleet_notifier",        # W963-42: push critical empire events to webhook (async loop)
 })
 
 

@@ -2425,6 +2425,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     br_p.add_argument("--json", action="store_true")
 
+    # W963-42: notify-fleet — push critical events.
+    nf_p = sub.add_parser(
+        "notify-fleet",
+        help=(
+            "Push critical empire events to webhook. "
+            "Per-event cooldowns. Triple-gated."
+        ),
+    )
+    nf_p.add_argument(
+        "--yes", action="store_true",
+    )
+    nf_p.add_argument(
+        "--kind", default="",
+        help="Filter to one kind.",
+    )
+    nf_p.add_argument(
+        "--reset", action="store_true",
+        help="Clear all cooldown state.",
+    )
+    nf_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11864,6 +11885,82 @@ def _cmd_warmup_plan(args) -> None:
             f"    day {d.get('day'):>2d} "
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
+        )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_notify_fleet(args) -> None:
+    """W963-42: push critical empire events to webhook."""
+    from engines.fleet_notifier import FleetNotifierEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "confirmed": bool(getattr(args, "yes", False)),
+            "kind": getattr(args, "kind", "") or "",
+            "reset": bool(getattr(args, "reset", False)),
+        },
+    }
+    result = FleetNotifierEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    sent = data.get("sent_count", 0)
+    eligible = data.get("eligible_count", 0)
+    confirmed = data.get("confirmed")
+    mode = "LIVE" if confirmed else "DRY-RUN"
+    mk = (
+        "[$$]" if sent > 0
+        else "[OK ]" if eligible > 0
+        else "[-- ]"
+    )
+    print(
+        f"Notify fleet  {mk}  {mode}  "
+        f"candidates={data.get('candidates_scanned')}  "
+        f"eligible={eligible}  sent={sent}"
+    )
+    if not data.get("webhook_url_set"):
+        print()
+        print(
+            "  [!] SHOPAI_NOTIFY_WEBHOOK_URL not set"
+        )
+    if not data.get("env_gate_set"):
+        print(
+            "  [!] SHOPAI_FLEET_NOTIFIER_ENABLED=1 not set"
+        )
+    if data.get("reset_result"):
+        print()
+        print(f"  reset: {data.get('reset_result')}")
+    print()
+    skip_reasons = data.get("skip_reasons") or {}
+    if skip_reasons:
+        print(
+            "  skip_reasons: "
+            + ", ".join(
+                f"{k}={v}"
+                for k, v in sorted(skip_reasons.items())
+            )
+        )
+        print()
+    for d in data.get("dispatches") or []:
+        chip = (
+            "[$$]" if d.get("sent")
+            else "[XX]" if d.get("error")
+            else "[-- ]"
+        )
+        cd = d.get("cooldown_remaining") or 0
+        suffix = (
+            f"  cooldown_remaining={cd:.0f}s"
+            if cd > 0 else ""
+        )
+        print(
+            f"  {chip} {d.get('kind', '?'):<22s} "
+            f"scope={d.get('scope', '?')[:30]:<30s} "
+            f"skip={d.get('skip_reason') or '-':<15s}"
+            f"{suffix}"
         )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
@@ -55924,6 +56021,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "brief":
         _cmd_brief(args)
+        return
+
+    if args.command == "notify-fleet":
+        _cmd_notify_fleet(args)
         return
 
     if args.command == "welcome":
