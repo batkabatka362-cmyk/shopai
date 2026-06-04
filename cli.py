@@ -2114,6 +2114,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fta_p.add_argument("--json", action="store_true")
 
+    # W963-28: strategist — per-store AGI brain.
+    st_p = sub.add_parser(
+        "strategist",
+        help=(
+            "Per-store AGI brain. Reads observation engines "
+            "(funnel, trajectory, earnings-by-engine, "
+            "checkup, autonomy) + outputs ranked "
+            "recommendations with confidence."
+        ),
+    )
+    st_p.add_argument(
+        "--store", default="", dest="store_id",
+    )
+    st_p.add_argument(
+        "--top", type=int, default=0,
+        help="Limit to top N recommendations (0=all).",
+    )
+    st_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11553,6 +11572,81 @@ def _cmd_warmup_plan(args) -> None:
             f"    day {d.get('day'):>2d} "
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
+        )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_strategist(args) -> None:
+    """W963-28: per-store advisor."""
+    from engines.store_strategist import StoreStrategistEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "store_id": getattr(args, "store_id", "") or "",
+            "top": int(getattr(args, "top", 0)),
+        },
+    }
+    result = StoreStrategistEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    verdict = data.get("verdict", "wait")
+    mk = {
+        "intervene": "[!! ]",
+        "active":    "[$$]",
+        "wait":      "[.. ]",
+    }.get(verdict, "[?? ]")
+    store_label = data.get("store_id") or "(default)"
+    print(
+        f"Strategist  {mk}  store={store_label}  "
+        f"niche={data.get('niche') or '-'}  "
+        f"verdict={verdict}"
+    )
+    print()
+    ctx = data.get("context") or {}
+    print("  Context:")
+    print(
+        f"    funnel:      {ctx.get('funnel_verdict')}  "
+        f"weakest={ctx.get('funnel_weakest') or '-'}"
+    )
+    print(
+        f"    trajectory:  {ctx.get('trajectory_verdict')}  "
+        f"slope={ctx.get('trajectory_slope_pct', 0):+.1f}%"
+    )
+    print(
+        f"    earning:     "
+        f"{ctx.get('earning_count')} engine(s)  "
+        f"7d=${ctx.get('total_revenue_7d', 0):.2f}"
+    )
+    print(
+        f"    checkup:     {ctx.get('checkup_verdict')}"
+    )
+    print(
+        f"    autonomy:    {ctx.get('autonomy_overall')}  "
+        f"paused={','.join(ctx.get('autonomy_paused') or []) or '-'}"
+    )
+    print()
+    recs = data.get("recommendations") or []
+    print(f"  Recommendations ({len(recs)}):")
+    for i, rec in enumerate(recs, 1):
+        impact = rec.get("impact", "?")
+        chip = {
+            "high": "[H]", "medium": "[M]", "low": "[L]",
+        }.get(impact, "[?]")
+        print(
+            f"  {chip} {i}. {rec.get('action', '?')}  "
+            f"(priority={rec.get('priority_score', 0):.2f}, "
+            f"conf={rec.get('confidence', 0):.2f})"
+        )
+        print(
+            f"        reason: {rec.get('reasoning', '')}"
+        )
+        print(
+            f"        drill:  $ {rec.get('drill_command', '')}"
         )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
@@ -54684,6 +54778,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "fleet-transfer-auto":
         _cmd_fleet_transfer_auto(args)
+        return
+
+    if args.command == "strategist":
+        _cmd_strategist(args)
         return
 
     if args.command == "welcome":
