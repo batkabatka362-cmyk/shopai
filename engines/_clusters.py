@@ -431,6 +431,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "fleet_notifier",        # W963-42: push critical empire events to webhook (async loop)
     "strategist_memory",     # W963-43: persistent recommendation+outcome history (Q3 substrate)
     "outcome_backfill",      # W963-44: match Shopify orders to actions, write outcomes (Phase 3.A)
+    "store_pnl_tracker",     # W963-45: per-store P&L (revenue - ad spend - ESP - shipping)
 })
 
 

@@ -2500,6 +2500,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ob_p.add_argument("--json", action="store_true")
 
+    # W963-45: pnl — per-store + fleet P&L.
+    pn_p = sub.add_parser(
+        "pnl",
+        help=(
+            "Per-store + fleet P&L (revenue - ad spend - "
+            "ESP - shipping). Verdict: profitable / "
+            "break_even / loss / no_data."
+        ),
+    )
+    pn_p.add_argument(
+        "--store", default="", dest="store_id",
+    )
+    pn_p.add_argument(
+        "--days", type=int, default=7,
+    )
+    pn_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11939,6 +11956,125 @@ def _cmd_warmup_plan(args) -> None:
             f"    day {d.get('day'):>2d} "
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
+        )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_pnl(args) -> None:
+    """W963-45: P&L tracker."""
+    from engines.store_pnl_tracker import StorePnlTrackerEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "store_id": getattr(args, "store_id", "") or "",
+            "days": int(getattr(args, "days", 7)),
+        },
+    }
+    result = StorePnlTrackerEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    mode = data.get("mode", "fleet")
+    days = data.get("days", 7)
+
+    if mode == "single":
+        pnl = data.get("pnl") or {}
+        verdict = pnl.get("verdict", "no_data")
+        mk = {
+            "profitable": "[$$]",
+            "break_even": "[-- ]",
+            "loss":       "[XX]",
+            "no_data":    "[.. ]",
+        }.get(verdict, "[?? ]")
+        print(
+            f"P&L  {mk}  store={pnl.get('store_id')}  "
+            f"days={days}  verdict={verdict}"
+        )
+        print()
+        print(
+            f"  gross_revenue: ${pnl.get('gross_revenue', 0):>10.2f}"
+        )
+        print(
+            f"  refunds:       ${pnl.get('refunds', 0):>10.2f}"
+        )
+        print(
+            f"  net_revenue:   ${pnl.get('net_revenue', 0):>10.2f}"
+        )
+        print()
+        print(
+            f"  ad_spend:      ${pnl.get('ad_spend', 0):>10.2f}"
+        )
+        print(
+            f"  esp_spend:     ${pnl.get('esp_spend', 0):>10.4f}"
+        )
+        print(
+            f"  shipping:      ${pnl.get('shipping_cost', 0):>10.2f}"
+        )
+        print(
+            f"  total_cost:    ${pnl.get('total_cost', 0):>10.2f}"
+        )
+        print()
+        print(
+            f"  GROSS PROFIT:  ${pnl.get('gross_profit', 0):>10.2f}"
+        )
+        print(
+            f"  margin:        {pnl.get('margin_pct', 0):>10.1f}%"
+        )
+        print()
+        print(f"  orders: {pnl.get('order_count', 0)}")
+        print(f"  NEXT: {data.get('next_action', '')}")
+        return
+
+    # Fleet mode
+    rev = data.get("fleet_revenue", 0.0)
+    profit = data.get("fleet_gross_profit", 0.0)
+    margin = data.get("fleet_margin_pct", 0.0)
+    mk = (
+        "[$$]" if profit > 0
+        else "[XX]" if profit < 0
+        else "[-- ]"
+    )
+    print(
+        f"Fleet P&L  {mk}  days={days}  "
+        f"stores={data.get('store_count')}"
+    )
+    print()
+    print(
+        f"  fleet revenue:      ${rev:>10.2f}"
+    )
+    print(
+        f"  fleet ad_spend:     ${data.get('fleet_ad_spend', 0):>10.2f}"
+    )
+    print(
+        f"  fleet esp_spend:    ${data.get('fleet_esp_spend', 0):>10.4f}"
+    )
+    print(
+        f"  fleet shipping:     ${data.get('fleet_shipping_cost', 0):>10.2f}"
+    )
+    print()
+    print(
+        f"  FLEET GROSS PROFIT: ${profit:>10.2f} "
+        f"({margin:.1f}% margin)"
+    )
+    print()
+    for s in data.get("by_store") or []:
+        v = s.get("verdict", "no_data")
+        chip = {
+            "profitable": "[$$]",
+            "break_even": "[-- ]",
+            "loss":       "[XX]",
+            "no_data":    "[.. ]",
+        }.get(v, "[?? ]")
+        print(
+            f"  {chip} {s.get('store_id', '?'):<14s} "
+            f"rev=${s.get('gross_revenue', 0):>7.2f}  "
+            f"cost=${s.get('total_cost', 0):>6.2f}  "
+            f"profit=${s.get('gross_profit', 0):>7.2f}  "
+            f"margin={s.get('margin_pct', 0):>5.1f}%"
         )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
@@ -56256,6 +56392,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "outcome-backfill":
         _cmd_outcome_backfill(args)
+        return
+
+    if args.command == "pnl":
+        _cmd_pnl(args)
         return
 
     if args.command == "welcome":
