@@ -2630,6 +2630,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     eh_p.add_argument("--json", action="store_true")
 
+    # W963-51: llm-strategist — LLM-refined recall ranking.
+    ls_p = sub.add_parser(
+        "llm-strategist",
+        help=(
+            "LLM-augmented strategist memory advisor. "
+            "Deterministic ranking always runs; opt into "
+            "LLM insight via SHOPAI_AI_STRATEGY=1."
+        ),
+    )
+    ls_p.add_argument(
+        "--store", default="", dest="store_id",
+    )
+    ls_p.add_argument(
+        "--signal", default="",
+    )
+    ls_p.add_argument("--k", type=int, default=10)
+    ls_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12208,6 +12226,66 @@ def _cmd_pnl_history(args) -> None:
                     f"delta=${t.get('delta', 0):>+7.2f} "
                     f"({t.get('slope_pct')}%)"
                 )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_llm_strategist(args) -> None:
+    """W963-51: LLM-refined strategist memory advisor."""
+    from engines.llm_strategist_advisor import (
+        LlmStrategistAdvisorEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "store_id":
+                getattr(args, "store_id", "") or "",
+            "signal": getattr(args, "signal", "") or "",
+            "k": int(getattr(args, "k", 10)),
+        },
+    }
+    result = LlmStrategistAdvisorEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    print(
+        f"LLM strategist advisor "
+        f"(store={data.get('store_id') or '(fleet)'})"
+    )
+    print()
+    print(
+        f"  entries_scanned: "
+        f"{data.get('entries_scanned', 0)}"
+    )
+    print(
+        f"  llm_used:        {data.get('llm_used', False)}"
+        f"  ({data.get('llm_reason', '')})"
+    )
+    recs = data.get("recommendations") or []
+    print(
+        f"  top {len(recs)} recommendation(s):"
+    )
+    print()
+    for r in recs:
+        chip = {
+            "high":   "[OK ]",
+            "medium": "[-- ]",
+            "low":    "[?? ]",
+        }.get(r.get("confidence", "low"), "[?? ]")
+        print(
+            f"  {chip} #{r.get('rank', 0)}  "
+            f"{r.get('signal', '?'):<24s} "
+            f"+{r.get('positive_count', 0):>3d}/"
+            f"-{r.get('negative_count', 0):>3d}  "
+            f"sr={r.get('success_rate', 0):>5.2f}  "
+            f"{r.get('confidence', 'low')}"
+        )
+        insight = r.get("pattern_insight") or ""
+        if insight:
+            print(f"        insight: {insight}")
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -57064,6 +57142,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "earnings-history":
         _cmd_earnings_history(args)
+        return
+
+    if args.command == "llm-strategist":
+        _cmd_llm_strategist(args)
         return
 
     if args.command == "welcome":

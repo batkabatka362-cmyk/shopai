@@ -436,6 +436,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "revenue_reconciliation", # W963-47: classify revenue as AGI-attributed/organic + orphan claims
     "agi_earnings_summary",  # W963-48: composes recon + pnl + trend into single verdict
     "agi_earnings_history",  # W963-50: persistent daily verdict log + trend
+    "llm_strategist_advisor",# W963-51: deterministic + LLM-refined strategist patterns
 })
 
 
