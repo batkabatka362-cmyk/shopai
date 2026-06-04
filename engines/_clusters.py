@@ -438,6 +438,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "agi_earnings_history",  # W963-50: persistent daily verdict log + trend
     "llm_strategist_advisor",# W963-51: deterministic + LLM-refined strategist patterns
     "llm_action_proposer",   # W963-52: state-aware 3-action proposer + LLM rationale
+    "llm_action_critic",     # W963-53: adversarial critique of proposer output
 })
 
 
