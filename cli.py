@@ -2288,6 +2288,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ch_p.add_argument("--json", action="store_true")
 
+    # W963-35: fleet-strategist — rank stores by urgency.
+    fs_p = sub.add_parser(
+        "fleet-strategist",
+        help=(
+            "Fleet-wide AGI brain. Ranks stores by urgency × "
+            "revenue potential. Operator scans ONE prioritized "
+            "list instead of N store dashboards."
+        ),
+    )
+    fs_p.add_argument(
+        "--top", type=int, default=0,
+        help="Limit to top N stores (0=all).",
+    )
+    fs_p.add_argument(
+        "--verdict", default="",
+        help=(
+            "Filter to single verdict: "
+            "intervene / active / wait."
+        ),
+    )
+    fs_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11729,6 +11751,68 @@ def _cmd_warmup_plan(args) -> None:
             f"{d.get('intent')}"
         )
     print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_fleet_strategist(args) -> None:
+    """W963-35: fleet-wide AGI brain ranking."""
+    from engines.fleet_strategist import FleetStrategistEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "top": int(getattr(args, "top", 0)),
+            "verdict": getattr(args, "verdict", "") or "",
+        },
+    }
+    result = FleetStrategistEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    fv = data.get("fleet_verdict", "no_data")
+    mk = {
+        "intervention_needed": "[!! ]",
+        "earning_fleet":       "[$$]",
+        "cold_start_fleet":    "[.. ]",
+        "quiet_fleet":         "[-- ]",
+        "no_data":             "[?? ]",
+    }.get(fv, "[?? ]")
+    print(
+        f"Fleet strategist  {mk}  verdict={fv}  "
+        f"stores={data.get('total_stores')}  "
+        f"with_data={data.get('stores_with_data')}"
+    )
+    print()
+    by_bucket = data.get("by_bucket") or {}
+    for bucket_name in (
+        "intervene_now", "active", "cold_start", "quiet",
+    ):
+        rows = by_bucket.get(bucket_name) or []
+        if not rows:
+            continue
+        print(
+            f"  {bucket_name.upper().replace('_', ' '):<15s} "
+            f"({len(rows)} store{'s' if len(rows) != 1 else ''})"
+        )
+        for r in rows[:5]:
+            impact = r.get("top_impact", "?")
+            chip = {
+                "high": "[H]", "medium": "[M]", "low": "[L]",
+            }.get(impact, "[?]")
+            print(
+                f"    {chip} {r.get('store_id', '?'):<14s} "
+                f"priority={r.get('fleet_priority', 0):>5.2f}  "
+                f"rev=${r.get('revenue_7d', 0):>6.0f}  "
+                f"{r.get('top_action', '?')[:50]}"
+            )
+            if r.get("top_drill"):
+                print(
+                    f"          drill: $ "
+                    f"{r.get('top_drill', '')}"
+                )
+        print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -55295,6 +55379,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "chaos-test":
         _cmd_chaos_test(args)
+        return
+
+    if args.command == "fleet-strategist":
+        _cmd_fleet_strategist(args)
         return
 
     if args.command == "welcome":
