@@ -2079,6 +2079,41 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fa_p.add_argument("--json", action="store_true")
 
+    # W963-27: fleet-transfer-auto — auto-propagate winners.
+    fta_p = sub.add_parser(
+        "fleet-transfer-auto",
+        help=(
+            "Auto-propagate cross-store winners as PENDING "
+            "approvals. Scan empire for transfer candidates "
+            "+ enqueue on target stores. Triple-gated: --yes "
+            "+ SHOPAI_FLEET_TRANSFER_AUTO=1 env."
+        ),
+    )
+    fta_p.add_argument(
+        "--yes", action="store_true",
+        help="Required to actually enqueue (dry-run default).",
+    )
+    fta_p.add_argument(
+        "--min-positive", type=int, default=3,
+        dest="min_positive",
+        help="Min positive outcomes on source (default 3).",
+    )
+    fta_p.add_argument(
+        "--max-per-pair", type=int, default=5,
+        dest="max_per_pair",
+        help="Cap enqueues per (source, target) (default 5).",
+    )
+    fta_p.add_argument(
+        "--top-k", type=int, default=50, dest="top_k",
+        help="Max candidates from the scanner (default 50).",
+    )
+    fta_p.add_argument(
+        "--allow-cross-niche", action="store_true",
+        dest="allow_cross_niche",
+        help="Lift the same-niche-only restriction.",
+    )
+    fta_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11520,6 +11555,80 @@ def _cmd_warmup_plan(args) -> None:
             f"{d.get('intent')}"
         )
     print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_fleet_transfer_auto(args) -> None:
+    """W963-27: cross-store auto-transfer of winners."""
+    from engines.fleet_transfer_auto import (
+        FleetTransferAutoEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "confirmed": bool(getattr(args, "yes", False)),
+            "min_positive": int(
+                getattr(args, "min_positive", 3),
+            ),
+            "max_per_pair": int(
+                getattr(args, "max_per_pair", 5),
+            ),
+            "top_k": int(getattr(args, "top_k", 50)),
+            "allow_cross_niche": bool(
+                getattr(args, "allow_cross_niche", False),
+            ),
+        },
+    }
+    result = FleetTransferAutoEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    confirmed = data.get("confirmed")
+    enq = data.get("enqueued_count", 0)
+    scanned = data.get("candidates_scanned", 0)
+    mk = (
+        "[$$]" if enq > 0
+        else "[.. ]" if scanned == 0
+        else "[-- ]"
+    )
+    mode = "LIVE" if confirmed else "DRY-RUN"
+    print(
+        f"Fleet-transfer-auto  {mk}  {mode}  "
+        f"scanned={scanned}  enqueued={enq}  "
+        f"skipped={data.get('skip_count', 0)}"
+    )
+    if not data.get("env_gate_set"):
+        print()
+        print(
+            "  [!] SHOPAI_FLEET_TRANSFER_AUTO=1 NOT set "
+            "(writers stay in dry-run)"
+        )
+    print()
+    skip_reasons = data.get("skip_reasons") or {}
+    if skip_reasons:
+        print(
+            "  skip_reasons: "
+            + ", ".join(
+                f"{k}={v}"
+                for k, v in sorted(skip_reasons.items())
+            )
+        )
+        print()
+    applied = data.get("applied") or []
+    enqueued_rows = [a for a in applied if a.get("enqueued")]
+    if enqueued_rows:
+        for a in enqueued_rows:
+            print(
+                f"  [$$] {a.get('from_store', '?'):<12s} -> "
+                f"{a.get('to_store', '?'):<12s}  "
+                f"{a.get('engine', '?')}/"
+                f"{a.get('action_type', '?')}  "
+                f"score={a.get('score', 0):.2f}"
+            )
+        print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -54571,6 +54680,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "fleet-autopilot":
         _cmd_fleet_autopilot(args)
+        return
+
+    if args.command == "fleet-transfer-auto":
+        _cmd_fleet_transfer_auto(args)
         return
 
     if args.command == "welcome":

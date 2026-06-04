@@ -413,6 +413,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "daily_trajectory",      # W963-24: per-day revenue slope ("are we trending up?")
     "conversion_funnel",     # W963-25: per-stage drop-off (sessions/cart/checkout/paid)
     "fleet_autopilot",       # W963-26: iterate autopilot across full fleet (north-star empire mode)
+    "fleet_transfer_auto",   # W963-27: auto-propagate cross-store winners as PENDING approvals
 })
 
 
