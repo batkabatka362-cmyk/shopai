@@ -2381,6 +2381,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     aq_p.add_argument("--json", action="store_true")
 
+    # W963-39: calibrate — per-engine trust thresholds.
+    cc_p = sub.add_parser(
+        "calibrate",
+        help=(
+            "Auto-tune per-engine trust thresholds based "
+            "on outcome history. Drives the W963-29 "
+            "confidence_auto_approver."
+        ),
+    )
+    cc_p.add_argument(
+        "--store", default="", dest="store_id",
+    )
+    cc_p.add_argument(
+        "--min-sample", type=int, default=5,
+        dest="min_sample",
+    )
+    cc_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11820,6 +11838,71 @@ def _cmd_warmup_plan(args) -> None:
             f"    day {d.get('day'):>2d} "
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
+        )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_calibrate(args) -> None:
+    """W963-39: per-engine trust threshold calibration."""
+    from engines.confidence_calibrator import (
+        ConfidenceCalibratorEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "store_id": getattr(args, "store_id", "") or "",
+            "min_sample": int(
+                getattr(args, "min_sample", 5),
+            ),
+        },
+    }
+    result = ConfidenceCalibratorEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    counts = data.get("band_counts") or {}
+    total = data.get("total_engines", 0)
+    blocked = counts.get("blocked", 0)
+    relaxed = counts.get("relaxed", 0)
+    mk = (
+        "[!! ]" if blocked > 0
+        else "[$$]" if relaxed > 0
+        else "[-- ]" if total == 0
+        else "[OK ]"
+    )
+    print(
+        f"Calibrate  {mk}  total={total}  "
+        f"blocked={blocked}  cautious={counts.get('cautious', 0)}  "
+        f"standard={counts.get('standard', 0)}  "
+        f"relaxed={relaxed}  "
+        f"unknown={counts.get('unknown', 0)}"
+    )
+    print()
+    print("  Band thresholds:")
+    for band, t in sorted(
+        (data.get("band_thresholds") or {}).items(),
+    ):
+        print(f"    {band:<10s} = {t}")
+    print()
+    for c in data.get("calibrations") or []:
+        band = c.get("band", "?")
+        chip = {
+            "blocked":  "[XX]",
+            "cautious": "[!! ]",
+            "unknown":  "[?? ]",
+            "standard": "[OK ]",
+            "relaxed":  "[$$]",
+        }.get(band, "[?? ]")
+        print(
+            f"  {chip} {c.get('engine', '?'):<24s} "
+            f"band={band:<10s}  "
+            f"sample={c.get('sample_size', 0):>4d}  "
+            f"ratio={c.get('positive_ratio', 0):>4.2f}  "
+            f"thresh={c.get('calibrated_threshold', 0)}"
         )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
@@ -55694,6 +55777,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "anomaly-quarantine":
         _cmd_anomaly_quarantine(args)
+        return
+
+    if args.command == "calibrate":
+        _cmd_calibrate(args)
         return
 
     if args.command == "welcome":

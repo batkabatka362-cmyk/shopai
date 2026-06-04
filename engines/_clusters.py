@@ -425,6 +425,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "plan_executor",         # W963-36: enqueue composed plan as PENDING approval batch
     "strategist_executor_bridge", # W963-37: strategist recs -> plan_executor (fleet autonomy bridge)
     "anomaly_auto_quarantine", # W963-38: outlier alert -> auto-pause store writers
+    "confidence_calibrator", # W963-39: per-engine trust threshold based on outcome history
 })
 
 
