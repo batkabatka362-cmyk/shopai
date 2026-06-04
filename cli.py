@@ -2399,6 +2399,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cc_p.add_argument("--json", action="store_true")
 
+    # W963-40: interventions — operator action surface.
+    iv_p = sub.add_parser(
+        "interventions",
+        help=(
+            "Surface stores needing operator attention NOW. "
+            "Aggregates anomaly + strategist intervene + "
+            "autonomy paused + fleet emergency signals."
+        ),
+    )
+    iv_p.add_argument(
+        "--top", type=int, default=0,
+        help="Limit to top N alerts.",
+    )
+    iv_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11840,6 +11855,60 @@ def _cmd_warmup_plan(args) -> None:
             f"{d.get('intent')}"
         )
     print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_interventions(args) -> None:
+    """W963-40: fleet intervention alerts."""
+    from engines.fleet_intervention_alerts import (
+        FleetInterventionAlertsEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {"top": int(getattr(args, "top", 0))},
+    }
+    result = FleetInterventionAlertsEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    total = data.get("total_signals_scanned", 0)
+    crit = data.get("critical_count", 0)
+    high = data.get("high_count", 0)
+    mk = (
+        "[XX]" if crit > 0
+        else "[!! ]" if high > 0
+        else "[OK ]" if total == 0
+        else "[-- ]"
+    )
+    print(
+        f"Interventions  {mk}  "
+        f"signals={total}  critical={crit}  "
+        f"high={high}  medium={data.get('medium_count', 0)}"
+    )
+    print()
+    for a in data.get("alerts") or []:
+        sev = a.get("severity", "?")
+        chip = {
+            "critical": "[XX]",
+            "high":     "[!! ]",
+            "medium":   "[-- ]",
+        }.get(sev, "[?? ]")
+        print(
+            f"  {chip} store={a.get('store_id', '?'):<14s} "
+            f"signal={a.get('signal', '?'):<22s} "
+            f"score={a.get('severity_score', 0):>4.1f}"
+        )
+        print(f"       {a.get('headline', '')}")
+        if a.get("detail"):
+            print(f"       detail: {a.get('detail')}")
+        if a.get("drill_command"):
+            print(
+                f"       drill: $ {a.get('drill_command')}"
+            )
+        print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -55781,6 +55850,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "calibrate":
         _cmd_calibrate(args)
+        return
+
+    if args.command == "interventions":
+        _cmd_interventions(args)
         return
 
     if args.command == "welcome":

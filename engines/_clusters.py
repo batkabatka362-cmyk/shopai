@@ -426,6 +426,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "strategist_executor_bridge", # W963-37: strategist recs -> plan_executor (fleet autonomy bridge)
     "anomaly_auto_quarantine", # W963-38: outlier alert -> auto-pause store writers
     "confidence_calibrator", # W963-39: per-engine trust threshold based on outcome history
+    "fleet_intervention_alerts", # W963-40: aggregate critical fleet signals into one operator surface
 })
 
 
