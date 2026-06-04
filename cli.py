@@ -2473,6 +2473,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sm_p.add_argument("--json", action="store_true")
 
+    # W963-44: outcome-backfill — match orders to actions.
+    ob_p = sub.add_parser(
+        "outcome-backfill",
+        help=(
+            "Match Shopify orders to EXECUTED actions and "
+            "record outcomes (positive/negative). Feeds "
+            "calibrator + auto-approver. Triple-gated."
+        ),
+    )
+    ob_p.add_argument(
+        "--yes", action="store_true",
+    )
+    ob_p.add_argument(
+        "--min-age-hours", type=float, default=24.0,
+        dest="min_age_hours",
+        help="Skip actions younger than this.",
+    )
+    ob_p.add_argument(
+        "--grace-hours", type=float, default=168.0,
+        dest="grace_hours",
+        help="After this with 0 orders -> mark negative.",
+    )
+    ob_p.add_argument(
+        "--store", default="", dest="store_id",
+    )
+    ob_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11914,6 +11941,82 @@ def _cmd_warmup_plan(args) -> None:
             f"{d.get('intent')}"
         )
     print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_outcome_backfill(args) -> None:
+    """W963-44: outcome backfill."""
+    from engines.outcome_backfill import OutcomeBackfillEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "confirmed": bool(getattr(args, "yes", False)),
+            "min_age_hours": float(
+                getattr(args, "min_age_hours", 24.0),
+            ),
+            "grace_hours": float(
+                getattr(args, "grace_hours", 168.0),
+            ),
+            "store_id": getattr(args, "store_id", "") or "",
+        },
+    }
+    result = OutcomeBackfillEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    pos = data.get("positive_count", 0)
+    neg = data.get("negative_count", 0)
+    scanned = data.get("total_executed_scanned", 0)
+    confirmed = data.get("confirmed")
+    mode = "LIVE" if confirmed else "DRY-RUN"
+    mk = (
+        "[$$]" if pos > 0
+        else "[!! ]" if neg > 0
+        else "[-- ]"
+    )
+    print(
+        f"Outcome backfill  {mk}  {mode}  "
+        f"scanned={scanned}  "
+        f"positive={pos}  negative={neg}  "
+        f"already_recorded={data.get('already_recorded')}  "
+        f"too_recent={data.get('too_recent')}"
+    )
+    if not data.get("env_gate_set"):
+        print()
+        print(
+            "  [!] SHOPAI_OUTCOME_BACKFILL_ENABLED=1 NOT set"
+        )
+    print()
+    skip_reasons = data.get("skip_reasons") or {}
+    if skip_reasons:
+        print(
+            "  skip_reasons: "
+            + ", ".join(
+                f"{k}={v}"
+                for k, v in sorted(skip_reasons.items())
+            )
+        )
+        print()
+    recorded = [
+        d for d in data.get("decisions") or []
+        if d.get("recorded")
+    ]
+    for d in recorded[:10]:
+        chip = (
+            "[+]" if d.get("outcome") == "positive"
+            else "[-]"
+        )
+        print(
+            f"  {chip} {d.get('action_id', '?')[:16]:<16s} "
+            f"{d.get('engine', '?'):<22s} "
+            f"orders={d.get('matched_orders')}  "
+            f"rev=${d.get('attributed_revenue', 0):.2f}"
+        )
+    if recorded:
+        print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -56149,6 +56252,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "memory-strategist":
         _cmd_memory_strategist(args)
+        return
+
+    if args.command == "outcome-backfill":
+        _cmd_outcome_backfill(args)
         return
 
     if args.command == "welcome":
