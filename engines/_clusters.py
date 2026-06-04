@@ -417,6 +417,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "store_strategist",      # W963-28: per-store AGI brain - read signals, output ranked recommendations
     "confidence_auto_approver", # W963-29: track-record-based auto-approve trust-wedge widener
     "capability_browser",    # W963-30: substrate registry browser - goal -> ranked engines
+    "plan_composer",         # W963-31: goal -> multi-step substrate plan (template + custom compose)
 })
 
 

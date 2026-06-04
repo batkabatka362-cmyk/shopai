@@ -2196,6 +2196,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cb_p.add_argument("--json", action="store_true")
 
+    # W963-31: plan-compose — goal -> multi-step plan.
+    pc_p = sub.add_parser(
+        "plan-compose",
+        help=(
+            "Compose multi-step substrate plan from a goal "
+            "phrase. Built-in templates: cold_start, "
+            "increase_conversion, increase_traffic, "
+            "retain_customers, diagnose."
+        ),
+    )
+    pc_p.add_argument(
+        "goal", nargs="?", default="",
+        help="Goal phrase or template name.",
+    )
+    pc_p.add_argument(
+        "--store", default="", dest="store_id",
+    )
+    pc_p.add_argument(
+        "--max-steps", type=int, default=10,
+        dest="max_steps",
+    )
+    pc_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11637,6 +11660,67 @@ def _cmd_warmup_plan(args) -> None:
             f"{d.get('intent')}"
         )
     print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_plan_compose(args) -> None:
+    """W963-31: compose substrate plan from goal."""
+    from engines.plan_composer import PlanComposerEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "goal": getattr(args, "goal", "") or "",
+            "store_id": getattr(args, "store_id", "") or "",
+            "max_steps": int(getattr(args, "max_steps", 10)),
+        },
+    }
+    result = PlanComposerEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    goal = data.get("goal") or "(empty)"
+    tmpl = data.get("template_matched") or "(custom)"
+    conf = data.get("confidence", 0.0)
+    steps = data.get("steps") or []
+    mk = (
+        "[OK ]" if data.get("template_matched")
+        else "[-- ]" if steps else "[!! ]"
+    )
+    print(
+        f"Plan-compose  {mk}  goal={goal!r}  "
+        f"template={tmpl}  conf={conf:.2f}  "
+        f"steps={len(steps)}"
+    )
+    print()
+    for s in steps:
+        impact = s.get("impact", "?")
+        chip = {
+            "high": "[H]", "medium": "[M]", "low": "[L]",
+        }.get(impact, "[?]")
+        print(
+            f"  {chip} {s.get('order')}. "
+            f"{s.get('action', '?')}"
+        )
+        print(f"        engine: {s.get('engine', '?')}")
+        print(f"        drill:  $ {s.get('drill_command', '')}")
+        print(f"        why:    {s.get('reasoning', '')}")
+        if s.get("expected_outcome"):
+            print(
+                f"        expect: {s.get('expected_outcome', '')}"
+            )
+        print()
+    notes = data.get("notes") or []
+    for n in notes:
+        print(f"  NOTE: {n}")
+    if not goal or goal == "(empty)":
+        templates = data.get("available_templates") or []
+        print(
+            f"  Available templates: {', '.join(templates)}"
+        )
+        print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -54979,6 +55063,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "capability-browse":
         _cmd_capability_browse(args)
+        return
+
+    if args.command == "plan-compose":
+        _cmd_plan_compose(args)
         return
 
     if args.command == "welcome":
