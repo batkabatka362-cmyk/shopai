@@ -2250,6 +2250,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fe_p.add_argument("--json", action="store_true")
 
+    # W963-33: anomaly-detect — cross-store outlier alerter.
+    ad_p = sub.add_parser(
+        "anomaly-detect",
+        help=(
+            "Cross-store metric divergence detector. "
+            "Flags stores diverging N+ MADs from fleet "
+            "median across revenue, funnel, queue, etc."
+        ),
+    )
+    ad_p.add_argument(
+        "--metric", default="",
+        help=(
+            "Filter to single metric "
+            "(revenue_7d / funnel_drop_rate / etc)."
+        ),
+    )
+    ad_p.add_argument(
+        "--mad", type=float, default=3.0,
+        dest="mad_threshold",
+        help="MAD threshold (default 3.0).",
+    )
+    ad_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11691,6 +11714,65 @@ def _cmd_warmup_plan(args) -> None:
             f"{d.get('intent')}"
         )
     print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_anomaly_detect(args) -> None:
+    """W963-33: cross-store outlier detector."""
+    from engines.cross_store_anomaly_detector import (
+        CrossStoreAnomalyDetectorEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "metric": getattr(args, "metric", "") or "",
+            "mad_threshold": float(
+                getattr(args, "mad_threshold", 3.0),
+            ),
+        },
+    }
+    result = CrossStoreAnomalyDetectorEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    alerts = data.get("alerts") or []
+    n = len(alerts)
+    mk = (
+        "[!! ]" if n > 0 else "[OK ]"
+    )
+    print(
+        f"Anomaly detect  {mk}  "
+        f"stores={data.get('total_stores')}  "
+        f"alerts={n}  "
+        f"mad_threshold={data.get('mad_threshold'):.1f}"
+    )
+    print()
+    norms = data.get("fleet_norms") or {}
+    if norms:
+        print("  Fleet norms (median / mad):")
+        for k, v in sorted(norms.items()):
+            print(
+                f"    {k:<24s} "
+                f"median={v.get('median'):>8.2f}  "
+                f"mad={v.get('mad'):>8.2f}"
+            )
+        print()
+    for a in alerts:
+        direction_mark = (
+            "↑" if a.get("direction") == "high" else "↓"
+        )
+        print(
+            f"  [!] store={a.get('store_id', '?'):<14s} "
+            f"metric={a.get('metric', '?'):<22s} "
+            f"value={a.get('value', 0):>8.2f}  "
+            f"({a.get('deviation_mads', 0):.1f} MADs "
+            f"{direction_mark})"
+        )
+    if alerts:
+        print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -55150,6 +55232,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "fleet-emergency":
         _cmd_fleet_emergency(args)
+        return
+
+    if args.command == "anomaly-detect":
+        _cmd_anomaly_detect(args)
         return
 
     if args.command == "welcome":
