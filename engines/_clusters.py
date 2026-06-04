@@ -423,6 +423,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "fleet_chaos_test",      # W963-34: lightweight chaos test verifying graceful degrade (Q4)
     "fleet_strategist",      # W963-35: fleet-wide AGI brain - ranks stores by urgency x potential
     "plan_executor",         # W963-36: enqueue composed plan as PENDING approval batch
+    "strategist_executor_bridge", # W963-37: strategist recs -> plan_executor (fleet autonomy bridge)
 })
 
 

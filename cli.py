@@ -2336,6 +2336,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pe_p.add_argument("--json", action="store_true")
 
+    # W963-37: strategist-bridge — fleet autonomy bridge.
+    sb_p = sub.add_parser(
+        "strategist-bridge",
+        help=(
+            "Autonomous bridge: strategist recommendations → "
+            "plan_executor. Quadruple-gated."
+        ),
+    )
+    sb_p.add_argument(
+        "--yes", action="store_true",
+        help="Required to enqueue.",
+    )
+    sb_p.add_argument(
+        "--confidence-floor", type=float, default=0.6,
+        dest="confidence_floor",
+    )
+    sb_p.add_argument(
+        "--store", default="", dest="store_id",
+        help="Single-store scope.",
+    )
+    sb_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11776,6 +11798,80 @@ def _cmd_warmup_plan(args) -> None:
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
         )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_strategist_bridge(args) -> None:
+    """W963-37: strategist → plan_executor bridge."""
+    from engines.strategist_executor_bridge import (
+        StrategistExecutorBridgeEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "confirmed": bool(getattr(args, "yes", False)),
+            "confidence_floor": float(
+                getattr(args, "confidence_floor", 0.6),
+            ),
+            "store_id": getattr(args, "store_id", "") or "",
+        },
+    }
+    result = StrategistExecutorBridgeEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    enq = data.get("enqueued_total", 0)
+    composed = data.get("composed_only", 0)
+    confirmed = data.get("confirmed")
+    mode = "LIVE" if confirmed else "DRY-RUN"
+    mk = (
+        "[$$]" if enq > 0
+        else "[OK ]" if composed > 0
+        else "[-- ]"
+    )
+    print(
+        f"Strategist-bridge  {mk}  {mode}  "
+        f"scanned={data.get('total_stores_scanned')}  "
+        f"composed={composed}  enqueued={enq}  "
+        f"floor={data.get('confidence_floor')}"
+    )
+    if not data.get("env_gate_set"):
+        print()
+        print(
+            "  [!] SHOPAI_STRATEGIST_EXECUTOR_BRIDGE=1 "
+            "NOT set"
+        )
+    print()
+    skip_reasons = data.get("skip_reasons") or {}
+    if skip_reasons:
+        print(
+            "  skip_reasons: "
+            + ", ".join(
+                f"{k}={v}"
+                for k, v in sorted(skip_reasons.items())
+            )
+        )
+        print()
+    for d in data.get("decisions") or []:
+        v = d.get("verdict", "skip")
+        chip = {
+            "enqueued": "[$$]",
+            "composed": "[OK ]",
+            "skip":     "[-- ]",
+            "error":    "[XX]",
+        }.get(v, "[?? ]")
+        print(
+            f"  {chip} {d.get('store_id', '?'):<14s} "
+            f"signal={d.get('source_signal', ''):<20s} "
+            f"score={d.get('score', 0):>4.2f}  "
+            f"template={d.get('matched_template') or '-'}"
+        )
+        if d.get("skip_reason"):
+            print(f"        skip: {d.get('skip_reason')}")
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -55483,6 +55579,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "plan-execute":
         _cmd_plan_execute(args)
+        return
+
+    if args.command == "strategist-bridge":
+        _cmd_strategist_bridge(args)
         return
 
     if args.command == "welcome":
