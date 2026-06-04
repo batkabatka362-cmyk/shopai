@@ -2648,6 +2648,21 @@ def build_parser() -> argparse.ArgumentParser:
     ls_p.add_argument("--k", type=int, default=10)
     ls_p.add_argument("--json", action="store_true")
 
+    # W963-52: next-actions — state-aware 3-action proposer.
+    na_p = sub.add_parser(
+        "next-actions",
+        help=(
+            "Read empire's current state + propose 3 "
+            "ranked next-actions with rationale + CLI. "
+            "Opt-in LLM rationale refinement via "
+            "SHOPAI_AI_STRATEGY=1."
+        ),
+    )
+    na_p.add_argument(
+        "--store", default="", dest="store_id",
+    )
+    na_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12227,6 +12242,72 @@ def _cmd_pnl_history(args) -> None:
                     f"({t.get('slope_pct')}%)"
                 )
     print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_next_actions(args) -> None:
+    """W963-52: state-aware action proposer."""
+    from engines.llm_action_proposer import (
+        LlmActionProposerEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "store_id":
+                getattr(args, "store_id", "") or "",
+        },
+    }
+    result = LlmActionProposerEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    sig = data.get("signals") or {}
+    verdict = data.get("verdict", "no_data")
+    chip = {
+        "earning":         "[OK ]",
+        "attributed_loss": "[BAD]",
+        "organic_only":    "[WRN]",
+        "no_data":         "[.. ]",
+    }.get(verdict, "[?? ]")
+
+    print(
+        f"Next actions "
+        f"(store={data.get('store_id') or '(fleet)'}, "
+        f"verdict={verdict})"
+    )
+    print()
+    print(
+        f"  {chip} "
+        f"profit=${sig.get('gross_profit', 0):.0f}  "
+        f"attr={sig.get('attribution_pct', 0):.1f}%  "
+        f"trend={sig.get('trend_verdict', '?')}  "
+        f"pending={sig.get('pending_approvals', 0)}"
+    )
+    print(
+        f"  llm_used: {data.get('llm_used', False)}  "
+        f"({data.get('llm_reason', '')})"
+    )
+    print()
+    for a in data.get("proposed") or []:
+        pchip = {
+            "critical": "[!! ]",
+            "normal":   "[-- ]",
+            "info":     "[.. ]",
+        }.get(a.get("priority", "info"), "[?? ]")
+        print(
+            f"  {pchip} #{a.get('rank', 0)}  "
+            f"{a.get('action', '?')}"
+        )
+        print(
+            f"        cmd: {a.get('cli_command', '')}"
+        )
+        print(
+            f"        why: {a.get('rationale', '')}"
+        )
+        print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -57146,6 +57227,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "llm-strategist":
         _cmd_llm_strategist(args)
+        return
+
+    if args.command == "next-actions":
+        _cmd_next_actions(args)
         return
 
     if args.command == "welcome":
