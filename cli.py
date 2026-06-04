@@ -2273,6 +2273,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ad_p.add_argument("--json", action="store_true")
 
+    # W963-34: chaos-test — graceful-degrade verifier.
+    ch_p = sub.add_parser(
+        "chaos-test",
+        help=(
+            "Run lightweight chaos tests. Simulates "
+            "substrate failures (no real mutations) + "
+            "verifies engines degrade gracefully."
+        ),
+    )
+    ch_p.add_argument(
+        "--suite", default="",
+        help="Single suite: observation / autopilot / cross_store.",
+    )
+    ch_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11713,6 +11728,46 @@ def _cmd_warmup_plan(args) -> None:
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
         )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_chaos_test(args) -> None:
+    """W963-34: run chaos tests."""
+    from engines.fleet_chaos_test import FleetChaosTestEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "suite": getattr(args, "suite", "") or "",
+        },
+    }
+    result = FleetChaosTestEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    verdict = data.get("verdict", "unknown")
+    mk = {
+        "resilient": "[OK ]",
+        "degraded":  "[!! ]",
+        "fragile":   "[XX]",
+    }.get(verdict, "[?? ]")
+    print(
+        f"Chaos test  {mk}  verdict={verdict}  "
+        f"{data.get('passed', 0)}/{data.get('total', 0)} "
+        f"passed  ({data.get('failed', 0)} failed)"
+    )
+    print()
+    for r in data.get("results") or []:
+        chip = "[OK ]" if r.get("passed") else "[XX]"
+        print(
+            f"  {chip} {r.get('suite', '?')}."
+            f"{r.get('name', '?')}"
+        )
+        if r.get("detail"):
+            print(f"       {r.get('detail')}")
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -55236,6 +55291,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "anomaly-detect":
         _cmd_anomaly_detect(args)
+        return
+
+    if args.command == "chaos-test":
+        _cmd_chaos_test(args)
         return
 
     if args.command == "welcome":

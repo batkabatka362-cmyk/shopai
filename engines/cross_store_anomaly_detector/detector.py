@@ -207,7 +207,15 @@ def detect_anomalies(
         store_ids = _list_fleet_stores()
         metrics_list = []
         for sid in store_ids:
-            m = _store_metrics(sid)
+            try:
+                m = _store_metrics(sid)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "anomaly: per-store fetch raised for "
+                    "%s: %s",
+                    sid, exc,
+                )
+                m = None
             if m:
                 metrics_list.append(m)
         metrics = metrics_list

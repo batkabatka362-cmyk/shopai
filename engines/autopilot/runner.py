@@ -260,11 +260,28 @@ def run_autopilot(
         write_confirmed = False
     else:
         write_confirmed = confirmed
+    # W963-34 chaos resilience: each stage wrapped so a stage
+    # function that itself raises (rather than returning an
+    # error StageResult) does NOT halt the autopilot loop.
+    def _safe_stage(name, fn, *args):
+        try:
+            return fn(*args)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "autopilot: stage %s raised: %s", name, exc,
+            )
+            return StageResult(
+                name=name, enabled=True,
+                verdict="error",
+                detail=(
+                    f"stage exception: {type(exc).__name__}"
+                ),
+            )
     report.stages = [
-        _run_welcome(write_confirmed),
-        _run_reviews(write_confirmed),
-        _run_measure(store_id),
-        _run_health(store_id),
+        _safe_stage("welcome", _run_welcome, write_confirmed),
+        _safe_stage("reviews", _run_reviews, write_confirmed),
+        _safe_stage("measure", _run_measure, store_id),
+        _safe_stage("health", _run_health, store_id),
     ]
     if fleet_paused:
         # Stamp the write stages with the emergency reason.

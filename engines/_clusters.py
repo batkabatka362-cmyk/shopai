@@ -420,6 +420,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "plan_composer",         # W963-31: goal -> multi-step substrate plan (template + custom compose)
     "fleet_emergency_pause", # W963-32: single-command kill switch halting fleet-wide autonomy
     "cross_store_anomaly_detector", # W963-33: per-store metric divergence vs fleet norm (median+MAD)
+    "fleet_chaos_test",      # W963-34: lightweight chaos test verifying graceful degrade (Q4)
 })
 
 
