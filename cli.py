@@ -2023,6 +2023,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     tr_p.add_argument("--json", action="store_true")
 
+    # W963-25: funnel — conversion funnel drop-off.
+    fn_p = sub.add_parser(
+        "funnel",
+        help=(
+            "Conversion funnel drop-off per stage "
+            "(sessions -> cart -> checkout -> paid). "
+            "Identifies weakest link + points at the "
+            "engine that targets it."
+        ),
+    )
+    fn_p.add_argument(
+        "--days", type=int, default=7,
+        help="Window in days (1-90, default 7).",
+    )
+    fn_p.add_argument(
+        "--store", default=None, dest="store_id",
+    )
+    fn_p.add_argument(
+        "--sessions", type=int, default=None,
+        help=(
+            "Optional session count from analytics "
+            "(when known)."
+        ),
+    )
+    fn_p.add_argument(
+        "--cart-adds", type=int, default=None,
+        dest="cart_adds",
+        help="Optional cart-add count from analytics.",
+    )
+    fn_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11462,6 +11493,59 @@ def _cmd_warmup_plan(args) -> None:
             f"    day {d.get('day'):>2d} "
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
+        )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_funnel(args) -> None:
+    """W963-25: conversion funnel."""
+    from engines.conversion_funnel import (
+        ConversionFunnelEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "days": int(getattr(args, "days", 7)),
+            "store_id": getattr(args, "store_id", None),
+            "sessions": getattr(args, "sessions", None),
+            "cart_adds": getattr(args, "cart_adds", None),
+        },
+    }
+    result = ConversionFunnelEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+    data = result.get("data") or {}
+    verdict = data.get("verdict", "unknown")
+    mk = {
+        "healthy":    "[OK ]",
+        "leaky":      "[!! ]",
+        "no_traffic": "[.. ]",
+        "unknown":    "[-- ]",
+    }.get(verdict, "[?? ]")
+    print(
+        f"Funnel  {mk}  verdict={verdict}  "
+        f"days={data.get('days')}  "
+        f"weakest={data.get('weakest_link') or '-'} "
+        f"({data.get('weakest_drop', 0)*100:.0f}% drop)"
+    )
+    print()
+    print(
+        f"  {'stage':<22s}  {'count':>7s}  "
+        f"{'conv from prev':>16s}"
+    )
+    for s in data.get("stages") or []:
+        conv = s.get("conversion_from_prev")
+        conv_str = (
+            f"{conv*100:5.1f}%"
+            if conv is not None else "       -"
+        )
+        print(
+            f"  {s.get('name', '?'):<22s}  "
+            f"{s.get('count', 0):>7d}  "
+            f"{conv_str:>16s}"
         )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
@@ -54361,6 +54445,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "trajectory":
         _cmd_trajectory(args)
+        return
+
+    if args.command == "funnel":
+        _cmd_funnel(args)
         return
 
     if args.command == "welcome":

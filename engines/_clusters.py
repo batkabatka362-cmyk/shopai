@@ -411,6 +411,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "welcome_series",        # W963-22: 3-email welcome cadence for new customers
     "autopilot",             # W963-23: end-to-end autonomous loop (welcome+review+measure+health)
     "daily_trajectory",      # W963-24: per-day revenue slope ("are we trending up?")
+    "conversion_funnel",     # W963-25: per-stage drop-off (sessions/cart/checkout/paid)
 })
 
 
