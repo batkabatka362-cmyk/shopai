@@ -433,6 +433,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "outcome_backfill",      # W963-44: match Shopify orders to actions, write outcomes (Phase 3.A)
     "store_pnl_tracker",     # W963-45: per-store P&L (revenue - ad spend - ESP - shipping)
     "daily_pnl_history",     # W963-46: persistent daily P&L snapshots + trend computation
+    "revenue_reconciliation", # W963-47: classify revenue as AGI-attributed/organic + orphan claims
 })
 
 

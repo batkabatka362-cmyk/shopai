@@ -2550,6 +2550,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ph_p.add_argument("--json", action="store_true")
 
+    # W963-47: reconcile — classify revenue.
+    rc_p = sub.add_parser(
+        "reconcile",
+        help=(
+            "Classify revenue as AGI-attributed vs organic "
+            "+ surface orphan attribution claims. Honest "
+            "accounting for 'earning autonomously'."
+        ),
+    )
+    rc_p.add_argument(
+        "--store", default="", dest="store_id",
+    )
+    rc_p.add_argument(
+        "--days", type=int, default=7,
+    )
+    rc_p.add_argument(
+        "--attribution-window-hours", type=float,
+        default=48.0,
+        dest="attribution_window_hours",
+        help=(
+            "Time window (hours) after action for orders "
+            "to count as attributed."
+        ),
+    )
+    rc_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12128,6 +12154,120 @@ def _cmd_pnl_history(args) -> None:
                     f"delta=${t.get('delta', 0):>+7.2f} "
                     f"({t.get('slope_pct')}%)"
                 )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_reconcile(args) -> None:
+    """W963-47: revenue reconciliation."""
+    from engines.revenue_reconciliation import (
+        RevenueReconciliationEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "store_id":
+                getattr(args, "store_id", "") or "",
+            "days": int(getattr(args, "days", 7)),
+            "attribution_window_hours": float(
+                getattr(
+                    args, "attribution_window_hours", 48.0,
+                ),
+            ),
+        },
+    }
+    result = RevenueReconciliationEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    mode = data.get("mode", "fleet")
+    days = data.get("days", 7)
+    window_h = data.get("attribution_window_hours", 48.0)
+
+    print(
+        f"Revenue reconciliation ({mode}, "
+        f"days={days}, attribution-window={window_h}h)"
+    )
+    print()
+
+    if mode == "single":
+        rc = data.get("recon") or {}
+        att = rc.get("attributed_order_count", 0)
+        org = rc.get("organic_order_count", 0)
+        total_o = rc.get("order_count", 0)
+        print(
+            f"  store_id:                "
+            f"{rc.get('store_id', '?')}"
+        )
+        print(
+            f"  total_orders:            {total_o}"
+        )
+        print(
+            f"  attributed_orders:       {att}"
+        )
+        print(
+            f"  organic_orders:          {org}"
+        )
+        print(
+            f"  attributed_revenue:      "
+            f"${rc.get('attributed_revenue', 0):>7.2f}"
+        )
+        print(
+            f"  organic_revenue:         "
+            f"${rc.get('organic_revenue', 0):>7.2f}"
+        )
+        print(
+            f"  attribution_pct:         "
+            f"{rc.get('attribution_pct', 0):>6.1f}%"
+        )
+        print(
+            f"  orphan_action_count:     "
+            f"{rc.get('orphan_action_count', 0)}"
+        )
+        orphans = rc.get("orphan_actions") or []
+        if orphans:
+            print()
+            print("  Orphan actions (first 5):")
+            for o in orphans[:5]:
+                print(
+                    f"    - {o.get('engine'):<22s} "
+                    f"{o.get('action_type'):<24s} "
+                    f"age={o.get('age_hours', 0):>5.1f}h"
+                )
+    else:
+        att = data.get("fleet_attributed_revenue", 0.0)
+        org = data.get("fleet_organic_revenue", 0.0)
+        pct = data.get("fleet_attribution_pct", 0.0)
+        orphans = data.get("fleet_orphan_action_count", 0)
+        n = data.get("store_count", 0)
+        print(f"  store_count:              {n}")
+        print(
+            f"  fleet_attributed_revenue: ${att:>7.2f}"
+        )
+        print(
+            f"  fleet_organic_revenue:    ${org:>7.2f}"
+        )
+        print(
+            f"  fleet_attribution_pct:    {pct:>6.1f}%"
+        )
+        print(f"  fleet_orphan_actions:     {orphans}")
+        print()
+        by_store = data.get("by_store") or []
+        for r in by_store:
+            sid = r.get("store_id", "?")
+            a = r.get("attributed_order_count", 0)
+            t = r.get("order_count", 0)
+            chip = "[OK ]" if a > 0 else "[-- ]"
+            print(
+                f"  {chip} {sid:<14s} "
+                f"orders={a}/{t}  "
+                f"attr=${r.get('attributed_revenue', 0):>7.2f}  "
+                f"orphans={r.get('orphan_action_count', 0)}"
+            )
+
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -56571,6 +56711,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pnl-history":
         _cmd_pnl_history(args)
+        return
+
+    if args.command == "reconcile":
+        _cmd_reconcile(args)
         return
 
     if args.command == "welcome":
