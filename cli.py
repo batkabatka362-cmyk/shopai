@@ -2358,6 +2358,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sb_p.add_argument("--json", action="store_true")
 
+    # W963-38: anomaly-quarantine — outlier auto-pause.
+    aq_p = sub.add_parser(
+        "anomaly-quarantine",
+        help=(
+            "When cross_store_anomaly fires, auto-pause "
+            "outlier stores' writers. Triple-gated."
+        ),
+    )
+    aq_p.add_argument(
+        "--yes", action="store_true",
+    )
+    aq_p.add_argument(
+        "--min-deviation", type=float, default=4.0,
+        dest="min_deviation",
+        help="MAD threshold (default 4.0).",
+    )
+    aq_p.add_argument(
+        "--engine", action="append", default=None,
+        dest="pause_engines",
+        help="Per-engine pause list (repeatable).",
+    )
+    aq_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11798,6 +11821,90 @@ def _cmd_warmup_plan(args) -> None:
             f"[{d.get('phase'):<10s}]  "
             f"{d.get('intent')}"
         )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_anomaly_quarantine(args) -> None:
+    """W963-38: outlier auto-pause."""
+    from engines.anomaly_auto_quarantine import (
+        AnomalyAutoQuarantineEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "confirmed": bool(getattr(args, "yes", False)),
+            "min_deviation": float(
+                getattr(args, "min_deviation", 4.0),
+            ),
+            "pause_engines": getattr(
+                args, "pause_engines", None,
+            ),
+        },
+    }
+    result = AnomalyAutoQuarantineEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    pauses = data.get("total_pauses_added", 0)
+    eligible = data.get("eligible_alerts", 0)
+    confirmed = data.get("confirmed")
+    mode = "LIVE" if confirmed else "DRY-RUN"
+    mk = (
+        "[!! ]" if pauses > 0
+        else "[.. ]" if eligible == 0
+        else "[OK ]"
+    )
+    print(
+        f"Anomaly quarantine  {mk}  {mode}  "
+        f"alerts={data.get('alerts_scanned')}  "
+        f"eligible={eligible}  pauses={pauses}  "
+        f"threshold={data.get('min_deviation'):.1f}"
+    )
+    if not data.get("env_gate_set"):
+        print()
+        print(
+            "  [!] SHOPAI_ANOMALY_AUTO_QUARANTINE=1 NOT set"
+        )
+    print()
+    pause_engines = data.get("pause_engines") or []
+    print(
+        f"  pause engines: "
+        f"{', '.join(pause_engines)}"
+    )
+    print()
+    skip_reasons = data.get("skip_reasons") or {}
+    if skip_reasons:
+        print(
+            "  skip_reasons: "
+            + ", ".join(
+                f"{k}={v}"
+                for k, v in sorted(skip_reasons.items())
+            )
+        )
+        print()
+    for d in data.get("decisions") or []:
+        paused = d.get("engines_paused") or []
+        skipped = d.get("engines_skipped_existing") or []
+        arrow = "↑" if d.get("direction") == "high" else "↓"
+        print(
+            f"  [!] store={d.get('store_id', '?'):<14s} "
+            f"metric={d.get('metric', '?'):<22s} "
+            f"deviation={d.get('deviation_mads', 0):>4.1f} "
+            f"MADs {arrow}"
+        )
+        if paused:
+            print(f"        paused: {', '.join(paused)}")
+        if skipped:
+            print(
+                f"        skipped (existing): "
+                f"{', '.join(skipped)}"
+            )
+        if d.get("skip_reason"):
+            print(f"        skip: {d.get('skip_reason')}")
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -55583,6 +55690,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "strategist-bridge":
         _cmd_strategist_bridge(args)
+        return
+
+    if args.command == "anomaly-quarantine":
+        _cmd_anomaly_quarantine(args)
         return
 
     if args.command == "welcome":
