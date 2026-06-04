@@ -2169,6 +2169,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     aa_p.add_argument("--json", action="store_true")
 
+    # W963-30: capability-browse — substrate registry search.
+    cb_p = sub.add_parser(
+        "capability-browse",
+        help=(
+            "Search the substrate registry. Given a goal "
+            "phrase (\"get traffic\", \"convert better\"), "
+            "returns ranked engines + adapters + drill CLIs."
+        ),
+    )
+    cb_p.add_argument(
+        "query", nargs="?", default="",
+        help="Goal phrase or keyword.",
+    )
+    cb_p.add_argument(
+        "--kind", default="",
+        help="Filter by kind (engine / adapter / audit / etc).",
+    )
+    cb_p.add_argument(
+        "--tag", default="",
+        help="Filter by tag.",
+    )
+    cb_p.add_argument(
+        "--top", type=int, default=20,
+        help="Cap results (default 20, 0=all).",
+    )
+    cb_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11610,6 +11637,58 @@ def _cmd_warmup_plan(args) -> None:
             f"{d.get('intent')}"
         )
     print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_capability_browse(args) -> None:
+    """W963-30: search substrate registry."""
+    from engines.capability_browser import CapabilityBrowserEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "query": getattr(args, "query", "") or "",
+            "kind": getattr(args, "kind", "") or "",
+            "tag": getattr(args, "tag", "") or "",
+            "top": int(getattr(args, "top", 20)),
+        },
+    }
+    result = CapabilityBrowserEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    q = data.get("query") or "(all)"
+    hits = data.get("hits") or []
+    print(
+        f"Capability browse  q={q!r}  "
+        f"registry={data.get('total_registry')}  "
+        f"hits={len(hits)}"
+    )
+    if data.get("kind_filter"):
+        print(f"  kind filter: {data.get('kind_filter')}")
+    if data.get("tag_filter"):
+        print(f"  tag filter:  {data.get('tag_filter')}")
+    print()
+    for i, h in enumerate(hits, 1):
+        desc = (h.get("description") or "")[:60]
+        cli = (h.get("cli_commands") or [""])[0]
+        print(
+            f"  {i:>2d}. [{h.get('score', 0):>5.1f}] "
+            f"{h.get('name', '?'):<28s} "
+            f"{h.get('kind', '?'):<10s}  {desc}"
+        )
+        if cli:
+            print(f"        cli: shopai {cli}")
+    print()
+    goals = data.get("goal_suggestions") or []
+    if not q or q == "(all)":
+        print(
+            f"  Try goal phrases: "
+            f"{', '.join(goals[:5])}..."
+        )
+        print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -54896,6 +54975,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "auto-approve":
         _cmd_auto_approve(args)
+        return
+
+    if args.command == "capability-browse":
+        _cmd_capability_browse(args)
         return
 
     if args.command == "welcome":

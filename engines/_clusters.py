@@ -416,6 +416,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "fleet_transfer_auto",   # W963-27: auto-propagate cross-store winners as PENDING approvals
     "store_strategist",      # W963-28: per-store AGI brain - read signals, output ranked recommendations
     "confidence_auto_approver", # W963-29: track-record-based auto-approve trust-wedge widener
+    "capability_browser",    # W963-30: substrate registry browser - goal -> ranked engines
 })
 
 
