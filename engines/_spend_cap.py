@@ -127,6 +127,12 @@ def is_enabled() -> bool:
 
 
 def _is_test_environment() -> bool:
+    # Pattern J test-environment guard with production-override
+    # escape hatch.
+    if os.environ.get(
+        "SHOPAI_FORCE_PRODUCTION_WRITES", "",
+    ).strip().lower() in ("1", "true", "yes", "on"):
+        return False
     return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 

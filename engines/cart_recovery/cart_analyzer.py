@@ -135,19 +135,30 @@ def _classify_customer(total_orders: int, avg_order_value: float) -> str:
 
 
 def _compute_hours_since(abandoned_at: str) -> float:
-    """Compute hours since abandonment from an ISO-8601 timestamp."""
-    if not abandoned_at:
+    """Compute hours since abandonment from an ISO-8601 timestamp.
+
+    Tolerates Z suffix, +offset, space separator, date-only,
+    and fractional seconds. On unparseable input falls back to
+    0.0 to preserve downstream expectations (downstream code
+    branches on `< N` thresholds) but the robust parser above
+    means the fallback is rare. The prior implementation used
+    time.strptime with a rigid format + a wrong-on-DST
+    time.timezone fixup, which this replaces."""
+    if not abandoned_at or not isinstance(abandoned_at, str):
         return 0.0
     try:
-        # Parse ISO-8601 format: 2026-04-02T10:00:00Z
-        clean = abandoned_at.replace("Z", "+00:00")
-        # Use time.strptime for basic parsing
-        fmt = "%Y-%m-%dT%H:%M:%S"
-        base = abandoned_at.split("+")[0].split("Z")[0]
-        parsed = time.strptime(base, fmt)
-        abandoned_epoch = time.mktime(parsed) - time.timezone
-        now_epoch = time.time()
-        diff_hours = max((now_epoch - abandoned_epoch) / 3600.0, 0.0)
-        return diff_hours
-    except (ValueError, OverflowError):
+        from datetime import datetime, timezone
+        s = abandoned_at.strip().replace(" ", "T", 1)
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        if len(s) == 10:
+            s += "T00:00:00+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        diff = (
+            datetime.now(timezone.utc) - dt
+        ).total_seconds() / 3600.0
+        return max(diff, 0.0)
+    except (ValueError, TypeError, OverflowError):
         return 0.0

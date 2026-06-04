@@ -71,7 +71,9 @@ class ConfigField:
         if self.type == "float":
             return float(raw)
         if self.type == "bool":
-            return raw.lower() in ("1", "true", "yes", "on")
+            return raw.strip().lower() in (
+                "1", "true", "yes", "on",
+            )
         return raw
 
     def display(self) -> str:
@@ -315,7 +317,9 @@ def validate_config(schema: Optional[list[ConfigField]] = None) -> ValidationRes
             )
 
     # Production warnings
-    env = os.environ.get("SHOPAI_ENV", "development").lower()
+    env = os.environ.get(
+        "SHOPAI_ENV", "development",
+    ).strip().lower()
     if env in ("production", "prod"):
         log_level = os.environ.get("SHOPAI_LOG_LEVEL", "WARNING").upper()
         if log_level == "DEBUG":

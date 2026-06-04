@@ -92,16 +92,6 @@ def publish_pin(
             error="image_url must be a public HTTP(S) URL",
         )
 
-    try:
-        from core.adapters.router import get_router
-        from core.adapters.base import Capability
-        router = get_router()
-    except Exception as exc:  # noqa: BLE001
-        return PublishResult(
-            success=False,
-            error=f"router unavailable: {type(exc).__name__}",
-        )
-
     params = {
         "board_id": board_id,
         "title": title,
@@ -109,6 +99,22 @@ def publish_pin(
         "description": description,
         "link": link,
     }
+
+    try:
+        from core.adapters.router import get_router
+        from core.adapters.base import Capability
+        router = get_router()
+    except Exception as exc:  # noqa: BLE001
+        if record_writeback:
+            _record(
+                params, success=False,
+                error=f"router unavailable: {exc}",
+            )
+        return PublishResult(
+            success=False,
+            error=f"router unavailable: {type(exc).__name__}",
+        )
+
     try:
         result = router.execute(
             Capability.SOCIAL_CREATE_PIN, params,

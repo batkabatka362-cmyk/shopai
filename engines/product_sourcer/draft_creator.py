@@ -179,15 +179,37 @@ def mint_drafts_immediately(
         logger.debug(
             "product_sourcer: router import failed: %s", exc,
         )
-        # All mints fail the same way.
+        # All mints fail the same way. Pattern Z: record each
+        # attempt so the autonomous loop sees the substrate
+        # failure -- previously this branch silently skipped
+        # the recorder.
         for cand in candidates:
             if not isinstance(cand, dict) or not cand.get("name"):
                 continue
+            params = _candidate_to_params(cand, niche=niche)
+            adapter_params = {
+                k: v for k, v in params.items()
+                if not k.startswith("_")
+            }
+            try:
+                record_writeback(
+                    engine=_ENGINE,
+                    action_type=_ACTION_TYPE,
+                    capability=_CAPABILITY,
+                    params=adapter_params,
+                    success=False,
+                    error="smart router unavailable",
+                )
+            except Exception as rwe:  # noqa: BLE001
+                logger.debug(
+                    "product_sourcer: writeback raised: %s",
+                    rwe,
+                )
             out.append({
                 "product_id": None,
                 "status": "router_missing",
                 "narrative": _build_narrative(cand, niche),
-                "params": _candidate_to_params(cand, niche=niche),
+                "params": params,
                 "error": "smart router unavailable",
             })
         return out

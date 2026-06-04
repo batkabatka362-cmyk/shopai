@@ -56,6 +56,16 @@ logger = get_logger("engines.writeback_recorder")
 # recorder no-ops — preserving the production behaviour, gating
 # test pollution, and not requiring a per-test monkeypatch.
 def _is_test_environment() -> bool:
+    # Pattern J test-environment guard with production-override
+    # escape hatch. A stray PYTEST_CURRENT_TEST env var in a
+    # production shell would silently disable the Phase 8
+    # fan-out (MemoryIntelligence + DataArchitecture +
+    # LearningLoop); the override lets operators force-enable
+    # writes when they know they're in production.
+    if os.environ.get(
+        "SHOPAI_FORCE_PRODUCTION_WRITES", "",
+    ).strip().lower() in ("1", "true", "yes", "on"):
+        return False
     return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 

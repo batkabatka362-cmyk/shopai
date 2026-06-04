@@ -83,15 +83,18 @@ def _order_is_eligible(
     if not isinstance(created, str) or not created:
         return False, "no_created_at"
     try:
-        # ISO 8601 from Shopify, with optional Z suffix.
-        s = created.rstrip("Z")
+        # ISO 8601 from Shopify -- tolerate Z suffix, +offset,
+        # space-separator, date-only. Always produce a UTC-
+        # aware datetime so .timestamp() is correct.
         from datetime import datetime, timezone
-        if "+" not in s and len(s) >= 19:
-            dt = datetime.fromisoformat(s).replace(
-                tzinfo=timezone.utc,
-            )
-        else:
-            dt = datetime.fromisoformat(s)
+        s = created.strip().replace(" ", "T", 1)
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        if len(s) == 10:
+            s += "T00:00:00+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
         order_ts = dt.timestamp()
     except (ValueError, TypeError):
         return False, "bad_created_at"

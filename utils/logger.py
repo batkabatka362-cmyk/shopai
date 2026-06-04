@@ -41,7 +41,9 @@ _LOG_LEVEL = getattr(
     logging, os.environ.get("SHOPAI_LOG_LEVEL", "WARNING").upper(),
     logging.WARNING,
 )
-_LOG_FORMAT = os.environ.get("SHOPAI_LOG_FORMAT", "text").lower()
+_LOG_FORMAT = os.environ.get(
+    "SHOPAI_LOG_FORMAT", "text",
+).strip().lower()
 _LOG_FILE = os.environ.get("SHOPAI_LOG_FILE", "").strip()
 try:
     _LOG_MAX_BYTES = int(float(os.environ.get("SHOPAI_LOG_MAX_MB", "10")) * 1024 * 1024)
@@ -227,7 +229,9 @@ def reload_config() -> None:
         logging, os.environ.get("SHOPAI_LOG_LEVEL", "WARNING").upper(),
         logging.WARNING,
     )
-    _LOG_FORMAT = os.environ.get("SHOPAI_LOG_FORMAT", "text").lower()
+    _LOG_FORMAT = os.environ.get(
+    "SHOPAI_LOG_FORMAT", "text",
+).strip().lower()
     _LOG_FILE = os.environ.get("SHOPAI_LOG_FILE", "").strip()
     try:
         _LOG_MAX_BYTES = int(float(os.environ.get("SHOPAI_LOG_MAX_MB", "10")) * 1024 * 1024)

@@ -44,48 +44,46 @@ def send_test_email(
             detail="'to' must be a valid email address",
         )
 
+    ok = False
+    err = ""
+    detail = ""
+    msg_id = ""
     try:
         from core.adapters.router import get_router
         from core.adapters.base import Capability
         router = get_router()
+        params = {
+            "to": to,
+            "subject": subject,
+            "body_html": body_html,
+        }
+        if from_email:
+            params["from"] = from_email
+        try:
+            result = router.execute(
+                Capability.SEND_EMAIL_TRANSACTIONAL, params,
+            )
+            ok = bool(getattr(result, "ok", False))
+            err = getattr(result, "error", "") or ""
+            data = getattr(result, "data", None) or {}
+            if isinstance(data, dict):
+                msg_id = str(
+                    data.get("message_id")
+                    or data.get("id")
+                    or ""
+                )
+        except Exception as exc:  # noqa: BLE001
+            err = str(exc)
+            detail = (
+                f"adapter raised: {type(exc).__name__}"
+            )
     except Exception as exc:  # noqa: BLE001
-        return SendResult(
-            success=False,
-            detail=f"router unavailable: {type(exc).__name__}",
-            error=str(exc),
-        )
+        err = str(exc)
+        detail = f"router unavailable: {type(exc).__name__}"
 
-    params = {
-        "to": to,
-        "subject": subject,
-        "body_html": body_html,
-    }
-    if from_email:
-        params["from"] = from_email
-
-    try:
-        result = router.execute(
-            Capability.SEND_EMAIL_TRANSACTIONAL, params,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return SendResult(
-            success=False,
-            detail=f"adapter raised: {type(exc).__name__}",
-            error=str(exc),
-        )
-
-    ok = bool(getattr(result, "ok", False))
-    err = getattr(result, "error", "") or ""
-    data = getattr(result, "data", None) or {}
-    msg_id = ""
-    if isinstance(data, dict):
-        msg_id = str(
-            data.get("message_id")
-            or data.get("id")
-            or ""
-        )
-
-    # Pattern Z record.
+    # Pattern Z record -- ALWAYS, including router-unavailable
+    # and adapter-raise paths so substrate failures reach
+    # the autonomous loop's outcome tracking.
     try:
         from engines._writeback_recorder import (
             record_writeback,
@@ -104,7 +102,7 @@ def send_test_email(
     if not ok:
         return SendResult(
             success=False,
-            detail=err or "send failed",
+            detail=detail or err or "send failed",
             error=err,
         )
 

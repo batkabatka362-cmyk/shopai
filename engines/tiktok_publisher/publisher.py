@@ -91,16 +91,6 @@ def publish_post(
             error="media_type must be PHOTO or VIDEO",
         )
 
-    try:
-        from core.adapters.router import get_router
-        from core.adapters.base import Capability
-        router = get_router()
-    except Exception as exc:  # noqa: BLE001
-        return PublishResult(
-            success=False,
-            error=f"router unavailable: {type(exc).__name__}",
-        )
-
     params: dict = {
         "caption": caption,
         "media_url": media_url,
@@ -109,6 +99,21 @@ def publish_post(
     }
     if business_id:
         params["business_id"] = business_id
+
+    try:
+        from core.adapters.router import get_router
+        from core.adapters.base import Capability
+        router = get_router()
+    except Exception as exc:  # noqa: BLE001
+        if record_writeback:
+            _record(
+                params, success=False,
+                error=f"router unavailable: {exc}",
+            )
+        return PublishResult(
+            success=False,
+            error=f"router unavailable: {type(exc).__name__}",
+        )
 
     try:
         result = router.execute(

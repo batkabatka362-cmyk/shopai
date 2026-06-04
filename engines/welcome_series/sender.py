@@ -74,17 +74,25 @@ def _hydrate_customers(limit: int) -> list[dict[str, Any]]:
 
 
 def _parse_created(created_at: str) -> float | None:
-    """Parse a Shopify created_at ISO string -> unix seconds."""
+    """Parse a Shopify created_at ISO string -> unix seconds.
+
+    Tolerates: 'Z' suffix, '+' offset, space separator instead
+    of 'T', date-only ('2026-06-04'). Always produces a UTC-
+    aware datetime so .timestamp() is timezone-correct."""
     if not isinstance(created_at, str) or not created_at:
         return None
+    s = created_at.strip()
+    if not s:
+        return None
     try:
-        s = created_at.rstrip("Z")
-        if "+" not in s and len(s) >= 19:
-            dt = datetime.fromisoformat(s).replace(
-                tzinfo=timezone.utc,
-            )
-        else:
-            dt = datetime.fromisoformat(s)
+        s = s.replace(" ", "T", 1)
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        if len(s) == 10:
+            s += "T00:00:00+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
         return dt.timestamp()
     except (ValueError, TypeError):
         return None

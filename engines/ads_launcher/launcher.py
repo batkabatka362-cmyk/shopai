@@ -144,16 +144,6 @@ def launch_first_campaign(
     # W962-71 rounding to nearest cent.
     daily_budget_cents = int(round(budget * 100))
 
-    try:
-        from core.adapters.router import get_router
-        from core.adapters.base import Capability
-        router = get_router()
-    except Exception as exc:  # noqa: BLE001
-        return LaunchResult(
-            platform=platform, success=False,
-            error=f"router unavailable: {type(exc).__name__}",
-        )
-
     params = {
         "name": campaign_name,
         "objective": obj,
@@ -161,25 +151,40 @@ def launch_first_campaign(
         "daily_budget": daily_budget_cents,
     }
 
-    try:
-        result = router.execute(
-            Capability.ADS_CREATE_CAMPAIGN, params,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return LaunchResult(
-            platform=platform, success=False,
-            error=f"adapter raised: {type(exc).__name__}: {exc}",
-        )
-
-    ok = bool(getattr(result, "ok", False))
-    err = getattr(result, "error", "") or ""
-    data = getattr(result, "data", None) or {}
+    ok = False
+    err = ""
+    early_detail = ""
     campaign_id = ""
-    if isinstance(data, dict):
-        campaign_id = str(
-            data.get("campaign_id") or data.get("id") or ""
+    try:
+        from core.adapters.router import get_router
+        from core.adapters.base import Capability
+        router = get_router()
+        try:
+            result = router.execute(
+                Capability.ADS_CREATE_CAMPAIGN, params,
+            )
+            ok = bool(getattr(result, "ok", False))
+            err = getattr(result, "error", "") or ""
+            data = getattr(result, "data", None) or {}
+            if isinstance(data, dict):
+                campaign_id = str(
+                    data.get("campaign_id")
+                    or data.get("id")
+                    or ""
+                )
+        except Exception as exc:  # noqa: BLE001
+            err = str(exc)
+            early_detail = (
+                f"adapter raised: {type(exc).__name__}: {exc}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        err = str(exc)
+        early_detail = (
+            f"router unavailable: {type(exc).__name__}"
         )
 
+    # Pattern Z record -- ALWAYS, including router-unavailable
+    # + adapter-raise paths.
     if record_writeback:
         try:
             from engines._writeback_recorder import (
@@ -197,6 +202,12 @@ def launch_first_campaign(
             logger.debug(
                 "ads_launcher writeback raised: %s", exc,
             )
+
+    if early_detail:
+        return LaunchResult(
+            platform=platform, success=False,
+            error=early_detail,
+        )
 
     if not ok:
         return LaunchResult(

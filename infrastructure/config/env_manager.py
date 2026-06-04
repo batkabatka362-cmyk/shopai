@@ -70,7 +70,9 @@ class EnvManager:
 
         Returns one of: development, staging, production (default: development).
         """
-        env = os.environ.get("SHOPAI_ENV", "development").lower()
+        env = os.environ.get(
+            "SHOPAI_ENV", "development",
+        ).strip().lower()
         if env in ("production", "prod"):
             return "production"
         if env in ("staging", "stage"):
