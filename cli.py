@@ -2133,6 +2133,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     st_p.add_argument("--json", action="store_true")
 
+    # W963-29: auto-approve — trust-wedge widener.
+    aa_p = sub.add_parser(
+        "auto-approve",
+        help=(
+            "Trust-wedge widener. Auto-approve PENDING "
+            "actions when their engine's per-store track "
+            "record is strong. Triple-gated: --yes + "
+            "SHOPAI_CONFIDENCE_AUTO_APPROVE=1."
+        ),
+    )
+    aa_p.add_argument(
+        "--yes", action="store_true",
+        help="Required to actually approve (default dry-run).",
+    )
+    aa_p.add_argument(
+        "--min-sample", type=int, default=5,
+        dest="min_sample",
+        help="Min outcomes before trust earned (default 5).",
+    )
+    aa_p.add_argument(
+        "--min-positive-ratio", type=float, default=0.8,
+        dest="min_positive_ratio",
+        help=(
+            "Min positive ratio for trust (0..1, default 0.8)."
+        ),
+    )
+    aa_p.add_argument(
+        "--max-approvals", type=int, default=50,
+        dest="max_approvals",
+        help="Cap per invocation (default 50).",
+    )
+    aa_p.add_argument(
+        "--store", default=None, dest="store_id",
+    )
+    aa_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11574,6 +11610,80 @@ def _cmd_warmup_plan(args) -> None:
             f"{d.get('intent')}"
         )
     print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_auto_approve(args) -> None:
+    """W963-29: trust-based auto-approve."""
+    from engines.confidence_auto_approver import (
+        ConfidenceAutoApproverEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "confirmed": bool(getattr(args, "yes", False)),
+            "min_sample": int(getattr(args, "min_sample", 5)),
+            "min_positive_ratio": float(
+                getattr(args, "min_positive_ratio", 0.8),
+            ),
+            "max_approvals": int(
+                getattr(args, "max_approvals", 50),
+            ),
+            "store_id": getattr(args, "store_id", None),
+        },
+    }
+    result = ConfidenceAutoApproverEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    confirmed = data.get("confirmed")
+    apr = data.get("approved_count", 0)
+    scanned = data.get("pending_scanned", 0)
+    mk = (
+        "[$$]" if apr > 0
+        else "[.. ]" if scanned == 0
+        else "[-- ]"
+    )
+    mode = "LIVE" if confirmed else "DRY-RUN"
+    print(
+        f"Auto-approve  {mk}  {mode}  "
+        f"scanned={scanned}  approved={apr}  "
+        f"skipped={data.get('skipped_count', 0)}  "
+        f"threshold={data.get('min_positive_ratio'):.0%}"
+    )
+    if not data.get("env_gate_set"):
+        print()
+        print(
+            "  [!] SHOPAI_CONFIDENCE_AUTO_APPROVE=1 NOT set"
+        )
+    print()
+    skip_reasons = data.get("skip_reasons") or {}
+    if skip_reasons:
+        print(
+            "  skip_reasons: "
+            + ", ".join(
+                f"{k}={v}"
+                for k, v in sorted(skip_reasons.items())
+            )
+        )
+        print()
+    approved = [
+        d for d in data.get("decisions") or []
+        if d.get("approved")
+    ]
+    if approved:
+        print(f"  Approved ({len(approved)}):")
+        for d in approved[:20]:
+            print(
+                f"  [$$] {d.get('action_id', '?')[:12]:<12s}  "
+                f"{d.get('engine', '?'):<22s}  "
+                f"sample={d.get('sample_size')}  "
+                f"ratio={d.get('positive_ratio'):.0%}"
+            )
+        print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -54782,6 +54892,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "strategist":
         _cmd_strategist(args)
+        return
+
+    if args.command == "auto-approve":
+        _cmd_auto_approve(args)
         return
 
     if args.command == "welcome":
