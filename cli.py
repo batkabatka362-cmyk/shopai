@@ -2414,6 +2414,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     iv_p.add_argument("--json", action="store_true")
 
+    # W963-41: brief — single-screen morning empire digest.
+    br_p = sub.add_parser(
+        "brief",
+        help=(
+            "Single-screen morning empire digest. "
+            "Synthesizes fleet state + interventions + "
+            "earnings + substrate health + top 3 actions."
+        ),
+    )
+    br_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -11856,6 +11867,61 @@ def _cmd_warmup_plan(args) -> None:
         )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_brief(args) -> None:
+    """W963-41: morning empire digest."""
+    from engines.fleet_brief_digest import (
+        FleetBriefDigestEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    result = FleetBriefDigestEngine().run({})
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    verdict = data.get("fleet_verdict", "no_data")
+    mk = {
+        "intervention_needed": "[!! ]",
+        "earning_fleet":       "[$$]",
+        "cold_start_fleet":    "[.. ]",
+        "quiet_fleet":         "[-- ]",
+        "no_data":             "[?? ]",
+    }.get(verdict, "[?? ]")
+    print()
+    print(
+        f"═══ FLEET BRIEF  {mk}  "
+        f"{verdict.upper().replace('_', ' ')} ═══"
+    )
+    print()
+    print(
+        f"  Fleet size: {data.get('fleet_size')}  "
+        f"7d revenue: ${data.get('fleet_revenue_7d', 0):.2f}  "
+        f"earning engines: {data.get('earning_count')}"
+    )
+    if data.get("emergency_active"):
+        print()
+        print("  *** EMERGENCY PAUSE ACTIVE ***")
+    if data.get("critical_interventions", 0) > 0:
+        print(
+            f"  *** {data['critical_interventions']} "
+            "CRITICAL INTERVENTION(S) ***"
+        )
+    print()
+    for s in data.get("sections") or []:
+        print(f"  ┌─ {s.get('name', '?')}")
+        print(f"  │   {s.get('headline', '')}")
+        for d in s.get("detail") or []:
+            print(f"  │   {d}")
+        print()
+    print("  ┌─ TOP 3 ACTIONS")
+    for i, a in enumerate(data.get("top_actions") or [], 1):
+        print(f"  │   {i}. {a}")
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+    print()
 
 
 def _cmd_interventions(args) -> None:
@@ -55854,6 +55920,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "interventions":
         _cmd_interventions(args)
+        return
+
+    if args.command == "brief":
+        _cmd_brief(args)
         return
 
     if args.command == "welcome":

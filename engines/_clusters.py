@@ -427,6 +427,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "anomaly_auto_quarantine", # W963-38: outlier alert -> auto-pause store writers
     "confidence_calibrator", # W963-39: per-engine trust threshold based on outcome history
     "fleet_intervention_alerts", # W963-40: aggregate critical fleet signals into one operator surface
+    "fleet_brief_digest",    # W963-41: morning empire synthesizer (PHASE 2 CAPSTONE)
 })
 
 
