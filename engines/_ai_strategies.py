@@ -460,12 +460,24 @@ class AIOrchestratorStrategy:
         # context affects priority bucketing.
         niche = self._store_niche(store_id)
 
+        # W963-66: prefer the world-model's agi_phase4 section
+        # if W963-64 already populated it; else compute fresh.
+        agi_phase4_context = (
+            world_model.get("agi_phase4")
+            if isinstance(world_model, dict) else None
+        )
+        if not isinstance(agi_phase4_context, dict):
+            agi_phase4_context = _agi_phase4_context()
+
         system = (
             "You are a Tier 1 orchestrator for ShopAI -- an "
             "autonomous Shopify merchant empire. Given a "
             "store's world-model + per-cluster revenue "
-            "attribution with trend + niche, classify the "
-            "store's current priority. Return JSON: "
+            "attribution with trend + niche + the fleet-wide "
+            "AGI verdict (W963-48: earning / attributed_loss "
+            "/ organic_only / no_data + 14d trend + critical "
+            "anomaly count), classify the store's current "
+            "priority. Return JSON: "
             "{\"priority\": \"launching|growing|mature|"
             "at_risk|stagnant\", \"rationale\": \"...\"}. "
             "Deterministic baseline already gave one answer; "
@@ -476,13 +488,20 @@ class AIOrchestratorStrategy:
             "with mostly trend='falling' clusters lean toward "
             "at_risk/stagnant even if current revenue looks OK. "
             "Niche affects pacing -- beauty/fashion stores "
-            "ramp faster than tech/home (shorter sales cycle)."
+            "ramp faster than tech/home (shorter sales cycle). "
+            "AGI verdict bumps: fleet-wide 'attributed_loss' "
+            "biases per-store priority toward at_risk (preserve "
+            "what's earning); 'organic_only' biases toward "
+            "launching (need to establish AGI attribution); "
+            "critical anomaly active = lean stagnant if signals "
+            "are ambiguous (act conservatively)."
         )
         user = json.dumps({
             "store_id": store_id,
             "niche": niche,
             "world_model_stats": world_model.get("stats", {}),
             "attribution_7d": attribution_context,
+            "agi_phase4": agi_phase4_context,
             "deterministic_classification": {
                 "priority": base.priority,
                 "rationale": base.rationale,
