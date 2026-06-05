@@ -30,6 +30,10 @@ class MorningBrief:
         default_factory=list,
     )
     snapshot_recorded: bool = False
+    anomalies: list[dict[str, Any]] = field(
+        default_factory=list,
+    )
+    anomaly_critical_count: int = 0
     headline: str = ""
     next_action: str = ""
 
@@ -228,6 +232,20 @@ def _build_headline(brief: MorningBrief) -> str:
 
 
 def _build_next_action(brief: MorningBrief) -> str:
+    # Critical anomalies escalate above the proposer plan
+    if brief.anomaly_critical_count > 0:
+        crit = next(
+            (
+                a for a in brief.anomalies
+                if a.get("severity") == "critical"
+            ),
+            None,
+        )
+        if crit:
+            return (
+                f"CRITICAL anomaly {crit.get('type')}: "
+                "run shopai anomalies before plan."
+            )
     if not brief.proposed:
         return "No next-action proposed."
     top = brief.proposed[0]
@@ -254,6 +272,30 @@ def _build_next_action(brief: MorningBrief) -> str:
     )
 
 
+def _gather_anomalies(brief: MorningBrief) -> None:
+    try:
+        from engines.agi_anomaly_detector.detector import (
+            detect,
+        )
+        r = detect(window=14)
+        brief.anomalies = [
+            {
+                "type": a.type,
+                "severity": a.severity,
+                "delta": a.delta,
+                "description": a.description,
+                "occurred_at": a.occurred_at,
+            }
+            for a in r.anomalies
+        ]
+        brief.anomaly_critical_count = sum(
+            1 for a in r.anomalies
+            if a.severity == "critical"
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("brief: anomalies raised: %s", exc)
+
+
 def build_morning_brief(
     *,
     store_id: str = "",
@@ -267,6 +309,7 @@ def build_morning_brief(
     _gather_last_cycle(brief)
     _gather_proposals(brief)
     _gather_critiques(brief)
+    _gather_anomalies(brief)
     _maybe_record_snapshot(brief, persist_snapshot)
     brief.headline = _build_headline(brief)
     brief.next_action = _build_next_action(brief)

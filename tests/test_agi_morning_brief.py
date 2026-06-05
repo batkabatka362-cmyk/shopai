@@ -137,6 +137,42 @@ class TestNextAction:
         out = _build_next_action(b)
         assert "WARN" in out
 
+    def test_critical_anomaly_escalates_above_plan(self):
+        b = MorningBrief(
+            store_id="",
+            proposed=[{
+                "rank": 1, "action": "y",
+                "cli_command": "shopai y",
+            }],
+            anomalies=[{
+                "type": "VERDICT_FLIP",
+                "severity": "critical",
+            }],
+            anomaly_critical_count=1,
+        )
+        out = _build_next_action(b)
+        assert "CRITICAL anomaly" in out
+        assert "VERDICT_FLIP" in out
+
+    def test_warn_anomaly_does_not_escalate(self):
+        b = MorningBrief(
+            store_id="",
+            proposed=[{
+                "rank": 1, "action": "y",
+                "cli_command": "shopai y",
+            }],
+            anomalies=[{
+                "type": "ORPHAN_BURST",
+                "severity": "warn",
+            }],
+            anomaly_critical_count=0,
+        )
+        out = _build_next_action(b)
+        # Warn-only anomalies don't escalate; plan rank-1
+        # still surfaces
+        assert "y" in out
+        assert "CRITICAL anomaly" not in out
+
 
 # ── build_morning_brief (integration via mocks) ───────────
 

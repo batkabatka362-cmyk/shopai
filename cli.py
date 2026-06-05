@@ -12600,6 +12600,17 @@ def _cmd_morning_brief(args) -> None:
     )
     if data.get("snapshot_recorded"):
         print("  [snapshot recorded into W963-50 history]")
+    anomalies = data.get("anomalies") or []
+    crit_n = data.get("anomaly_critical_count", 0)
+    if anomalies:
+        achip = (
+            "[!! ]" if crit_n > 0 else "[-- ]"
+        )
+        print(
+            f"  {achip} ANOMALIES: "
+            f"{len(anomalies)} flagged ({crit_n} critical) "
+            "-- shopai anomalies"
+        )
     print()
     print("  PLAN:")
     proposed = data.get("proposed") or []
@@ -17007,6 +17018,35 @@ def _cmd_empire(args) -> None:
             "empire autonomy block raised: %s", exc,
         )
 
+    # W963-58: anomaly watcher inline. Always surface when
+    # any anomaly present (these are SUDDEN events the
+    # operator must see immediately).
+    try:
+        from engines.agi_anomaly_detector.detector import (
+            detect as _anom_emp,
+        )
+        _ar_emp = _anom_emp(window=14)
+        if _ar_emp.anomalies:
+            _crit_emp = sum(
+                1 for a in _ar_emp.anomalies
+                if a.severity == "critical"
+            )
+            _chip_emp = (
+                "[BAD]" if _crit_emp > 0 else "[WRN]"
+            )
+            print(
+                f"    anomalies:          {_chip_emp} "
+                f"{len(_ar_emp.anomalies)} flagged "
+                f"({_crit_emp} critical)"
+            )
+            print(
+                "    -> shopai anomalies"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "empire anomaly block raised: %s", exc,
+        )
+
     # W963-49: composed AGI earnings verdict (one-liner).
     # Surfaces only when verdict != no_data (empire has
     # activity); silent on idle days.
@@ -17332,6 +17372,29 @@ def _cmd_empire(args) -> None:
         logger.debug(
             "daily-brief: agi_earnings_summary raised: %s",
             _exc,
+        )
+
+    # W963-58: anomaly watcher one-liner
+    try:
+        from engines.agi_anomaly_detector.detector import (
+            detect as _anomaly_detect,
+        )
+        _ar = _anomaly_detect(window=14)
+        if _ar.anomalies:
+            _crit = sum(
+                1 for a in _ar.anomalies
+                if a.severity == "critical"
+            )
+            _achip = "[BAD]" if _crit > 0 else "[WRN]"
+            print(
+                f"  Anomalies:            {_achip} "
+                f"{len(_ar.anomalies)} flagged "
+                f"({_crit} critical) "
+                "-- shopai anomalies"
+            )
+    except Exception as _exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief: anomalies raised: %s", _exc,
         )
 
     # Spend
