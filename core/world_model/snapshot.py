@@ -1503,6 +1503,83 @@ class WorldModel:
             "delta": delta_dict,
         }
 
+    def _section_agi_phase4(self) -> dict:
+        """W963-64: Phase 4 substrate state for AI strategies.
+
+        Surfaces a compact summary of the ritual substrate
+        (verdict + run-rate + trend + critical-anomaly count)
+        so AICaptainStrategy + AIOrchestratorStrategy can
+        condition decisions on the AGI's CURRENT earning
+        signal without re-running compute_summary at every
+        agent call.
+
+        Fleet-scoped: the W963-48 summary aggregates over
+        the entire fleet; a per-store variant could come
+        later once attribution is per-store. For now
+        callers get the same fleet-level signal regardless
+        of store_id.
+
+        Fail-open: any missing substrate component leaves
+        the field None; section stays checked=True so
+        consumers can distinguish "not wired" from "no
+        signal yet".
+        """
+        out: dict = {
+            "checked": True,
+            "scope": "fleet",
+            "verdict": None,
+            "gross_profit": None,
+            "attribution_pct": None,
+            "monthly_run_rate": None,
+            "trend_verdict": None,
+            "history_snapshots": 0,
+            "history_trend": None,
+            "anomalies_critical": 0,
+            "anomalies_total": 0,
+            "anomalies_top": None,
+        }
+        try:
+            from engines.agi_earnings_summary.summarizer \
+                import compute_summary
+            s = compute_summary(days=7)
+            out["verdict"] = s.verdict
+            out["gross_profit"] = s.fleet_gross_profit
+            out["attribution_pct"] = (
+                s.fleet_attribution_pct
+            )
+            out["monthly_run_rate"] = s.monthly_run_rate
+            out["trend_verdict"] = s.trend_verdict
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from engines.agi_earnings_history import (
+                store as _hist,
+            )
+            out["history_snapshots"] = _hist.snapshot_count()
+            t = _hist.compute_trend(days=14)
+            out["history_trend"] = t.get("verdict")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from engines.agi_anomaly_detector.detector \
+                import detect
+            r = detect(window=14)
+            out["anomalies_total"] = len(r.anomalies)
+            out["anomalies_critical"] = sum(
+                1 for a in r.anomalies
+                if a.severity == "critical"
+            )
+            if r.anomalies:
+                top = r.anomalies[0]
+                out["anomalies_top"] = {
+                    "type": top.type,
+                    "severity": top.severity,
+                    "description": top.description,
+                }
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+
     # ── Public API ──────────────────────────────────────────
 
     def snapshot(
@@ -1582,6 +1659,7 @@ class WorldModel:
             store_id=store_id,
             include=include_launch_readiness,
         )
+        agi_phase4 = self._section_agi_phase4()
 
         return {
             "store_id": store_id,
@@ -1603,6 +1681,7 @@ class WorldModel:
             "cycle": cycle,
             "attribution": attribution,
             "launch_readiness": launch_readiness,
+            "agi_phase4": agi_phase4,
         }
 
 

@@ -22405,6 +22405,45 @@ def _cmd_world_model_show(args) -> None:
                         f"(-{drop_pp:.0f}pp){tag}"
                     )
 
+    # W963-64: Phase 4 substrate verdict (fleet-wide).
+    # Surfaces only when something is signal-bearing
+    # (verdict != no_data OR anomalies present) to keep the
+    # idle case quiet.
+    phase4 = snap.get("agi_phase4") or {}
+    if phase4.get("checked") and (
+        phase4.get("verdict") not in (None, "no_data")
+        or phase4.get("anomalies_critical", 0) > 0
+    ):
+        v = phase4.get("verdict", "no_data")
+        print()
+        print("AGI (fleet, 7d):")
+        print(
+            f"  Verdict: {v}  "
+            f"profit=${phase4.get('gross_profit', 0):.0f}  "
+            f"attr={phase4.get('attribution_pct', 0):.1f}%  "
+            f"run-rate/mo="
+            f"${phase4.get('monthly_run_rate', 0):.0f}"
+        )
+        print(
+            f"  Trend (14d snapshots): "
+            f"{phase4.get('history_trend', 'no_data')}  "
+            f"(n={phase4.get('history_snapshots', 0)})"
+        )
+        anom_crit = phase4.get("anomalies_critical", 0)
+        anom_total = phase4.get("anomalies_total", 0)
+        if anom_total > 0:
+            top = phase4.get("anomalies_top") or {}
+            print(
+                f"  Anomalies: {anom_total} flagged "
+                f"({anom_crit} critical)"
+            )
+            if top:
+                print(
+                    f"    top: {top.get('type', '?')} "
+                    f"({top.get('severity', '?')}) -- "
+                    f"{top.get('description', '')}"
+                )
+
     # Cycle health section (pause + 3 engine-degradation
     # signal classes + 7d pause activity rollup). Renders
     # only when something is non-quiet -- keeps a healthy
