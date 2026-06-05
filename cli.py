@@ -2863,6 +2863,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ec_p.add_argument("--json", action="store_true")
 
+    # W963-88: earn-path -- smart "what's next?" guide.
+    ep_p = sub.add_parser(
+        "earn-path",
+        help=(
+            "Stateless on-ramp guide. Tells the operator "
+            "the exact next command based on current "
+            "state (env-vars + niches + catalog + cron + "
+            "first cycle + Phase 5 + earning)."
+        ),
+    )
+    ep_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12469,6 +12481,64 @@ def _cmd_pnl_history(args) -> None:
                 )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_earn_path(args) -> None:
+    """W963-88: smart on-ramp guide."""
+    from engines.earn_path import EarnPathEngine
+
+    as_json = bool(getattr(args, "json", False))
+    result = EarnPathEngine().run({})
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    n_done = data.get("completed_count", 0)
+    n_total = data.get("total_count", 0)
+    pct = data.get("pct_complete", 0.0)
+    # Progress bar
+    n_bar = 20
+    n_filled = int(n_bar * n_done / max(n_total, 1))
+    bar = "█" * n_filled + "·" * (n_bar - n_filled)
+
+    print(
+        f"Empire on-ramp  --  "
+        f"{n_done}/{n_total}  ({pct:.0f}%)"
+    )
+    print()
+    print(f"  [{bar}]")
+    print()
+    print(f"  {data.get('headline', '')}")
+    print()
+
+    stages = data.get("stages") or []
+    for s in stages:
+        status = s.get("status", "pending")
+        chip = {
+            "done":    "[OK ]",
+            "next":    "[>>>]",
+            "pending": "[ . ]",
+        }.get(status, "[ ? ]")
+        print(
+            f"  {chip} {s.get('title', '?')}"
+        )
+        if status == "next":
+            print(
+                f"        cmd: {s.get('cli_command', '')}"
+            )
+            why = s.get("rationale", "")
+            if why:
+                print(f"        why: {why[:80]}")
+    print()
+    next_cmd = data.get("next_command")
+    if next_cmd:
+        print(f"  NEXT: {next_cmd}")
+    else:
+        print(
+            "  NEXT: empire is earning -- monitor "
+            "via shopai morning-brief"
+        )
 
 
 def _cmd_earn_config(args) -> None:
@@ -58960,6 +59030,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "earn-config":
         _cmd_earn_config(args)
+        return
+
+    if args.command == "earn-path":
+        _cmd_earn_path(args)
         return
 
     if args.command == "welcome":
