@@ -57,6 +57,7 @@ class AgiEarningsHistoryEngine:
             days = int(data.get("days", 7))
         except (TypeError, ValueError):
             days = 7
+        days = max(1, min(days, 365))
         try:
             window_h = float(
                 data.get(

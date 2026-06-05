@@ -37,6 +37,7 @@ class StorePnlTrackerEngine:
             days = int(data.get("days", 7))
         except (TypeError, ValueError):
             days = 7
+        days = max(1, min(days, 365))
         store_id = str(data.get("store_id") or "")
 
         if store_id:

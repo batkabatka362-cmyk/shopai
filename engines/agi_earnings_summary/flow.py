@@ -37,16 +37,19 @@ class AgiEarningsSummaryEngine:
             days = int(data.get("days", 7))
         except (TypeError, ValueError):
             days = 7
+        days = max(1, min(days, 365))
         try:
             window_h = float(
                 data.get("attribution_window_hours", 48.0),
             )
         except (TypeError, ValueError):
             window_h = 48.0
+        window_h = max(0.0, window_h)
         try:
             trend_days = int(data.get("trend_days", 30))
         except (TypeError, ValueError):
             trend_days = 30
+        trend_days = max(2, min(trend_days, 365))
 
         s = compute_summary(
             days=days,

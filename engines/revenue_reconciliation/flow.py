@@ -41,12 +41,16 @@ class RevenueReconciliationEngine:
             days = int(data.get("days", 7))
         except (TypeError, ValueError):
             days = 7
+        # Clamp days to a sensible range so the display
+        # matches what the reconciler actually computes.
+        days = max(1, min(days, 365))
         try:
             window_h = float(
                 data.get("attribution_window_hours", 48.0),
             )
         except (TypeError, ValueError):
             window_h = 48.0
+        window_h = max(0.0, window_h)
         store_id = str(data.get("store_id") or "")
 
         if store_id:
