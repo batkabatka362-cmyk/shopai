@@ -150,6 +150,16 @@ _PROBES: list[dict[str, Any]] = [
         ),
         "min_occurrences": 2,
     },
+    # W963-84: cycle hook records to auto_disarm_log
+    {
+        "name": "cli_cycle_auto_disarm_record",
+        "path": "cli.py",
+        "enclosing_function": "_cmd_cycle_run",
+        "needles": (
+            "auto_disarm_log",
+        ),
+        "min_occurrences": 1,
+    },
     # ── Non-cli probes: file-level scan
     {
         "name": "notify_agi_anomaly_alert",

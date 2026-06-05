@@ -2826,6 +2826,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ar_p.add_argument("--json", action="store_true")
 
+    # W963-84: auto-disarm-history -- query persisted log
+    adh_p = sub.add_parser(
+        "auto-disarm-history",
+        help=(
+            "Audit trail of W963-82 auto-disarm events. "
+            "Each entry records WHEN it fired, WHY "
+            "(override reason), and WHAT got disarmed."
+        ),
+    )
+    adh_p.add_argument("--limit", type=int, default=20)
+    adh_p.add_argument(
+        "--hours", type=float, default=168.0,
+        help="Lookback window (default 7d)",
+    )
+    adh_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12432,6 +12448,72 @@ def _cmd_pnl_history(args) -> None:
                 )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_auto_disarm_history(args) -> None:
+    """W963-84: query W963-82 auto-disarm event log."""
+    from engines.agi_arm_recommender.auto_disarm_log import (
+        recent_events, entry_count,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    limit = int(getattr(args, "limit", 20))
+    hours = float(getattr(args, "hours", 168.0))
+    events = recent_events(limit=limit, hours=hours)
+
+    if as_json:
+        print(json.dumps({
+            "total_entries": entry_count(),
+            "window_hours": hours,
+            "limit": limit,
+            "events": events,
+        }, indent=2, default=str))
+        return
+
+    total = entry_count()
+    print(
+        f"Auto-disarm history  --  window={hours:.0f}h  "
+        f"limit={limit}  total_logged={total}"
+    )
+    print()
+    if not events:
+        print(
+            "  No auto-disarm events in window."
+        )
+        if total == 0:
+            print(
+                "  (substrate has never auto-disarmed -- "
+                "either env-var unset or empire stable)"
+            )
+        return
+    import datetime as _dt
+    for e in events:
+        ts = float(e.get("ts", 0) or 0)
+        try:
+            when = _dt.datetime.fromtimestamp(
+                ts,
+            ).strftime("%Y-%m-%d %H:%M")
+        except (ValueError, OSError):
+            when = "?"
+        doms = e.get("domains_disarmed") or []
+        engs = e.get("engines_recommended") or []
+        print(
+            f"  {when}  "
+            f"reason={e.get('override_reason', '?')[:40]}"
+        )
+        print(
+            f"    domains: {', '.join(doms)}"
+        )
+        if engs:
+            print(
+                f"    engines: "
+                f"{', '.join(engs[:5])}"
+                + (
+                    f" (+{len(engs)-5} more)"
+                    if len(engs) > 5 else ""
+                )
+            )
+        print()
 
 
 def _cmd_arm_recommend(args) -> None:
@@ -31394,6 +31476,33 @@ def _cmd_cycle_run(args) -> None:
                             sorted(disarmed_domains),
                         ),
                     )
+                    # W963-84: persist the event for the
+                    # audit trail. Best-effort; never
+                    # propagates failures back to cycle.
+                    try:
+                        from engines.agi_arm_recommender. \
+                            auto_disarm_log import (
+                                record_event as _w963_84,
+                            )
+                        _w963_84(
+                            override_reason=(
+                                _w963_81_report
+                                .override_applied
+                            ),
+                            domains_disarmed=sorted(
+                                disarmed_domains,
+                            ),
+                            engines_recommended=[
+                                r.engine for r in (
+                                    _w963_81_report
+                                    .disarm_recommendations
+                                )
+                            ],
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "W963-84 log raised: %s", exc,
+                        )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "W963-81 arm-recommender hook raised: %s",
@@ -58671,6 +58780,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "arm-recommend":
         _cmd_arm_recommend(args)
+        return
+
+    if args.command == "auto-disarm-history":
+        _cmd_auto_disarm_history(args)
         return
 
     if args.command == "welcome":
