@@ -2814,6 +2814,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     oi_p.add_argument("--json", action="store_true")
 
+    # W963-80: arm-recommend -- Phase 5 arm/disarm recommender.
+    ar_p = sub.add_parser(
+        "arm-recommend",
+        help=(
+            "Phase 5 opener. Read empire's Phase 4 signals "
+            "and recommend which engines to ARM / DISARM "
+            "next cycle. Advisory: review then apply via "
+            "shopai autonomy-arm / -disarm."
+        ),
+    )
+    ar_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12419,6 +12431,72 @@ def _cmd_pnl_history(args) -> None:
                     f"({t.get('slope_pct')}%)"
                 )
     print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_arm_recommend(args) -> None:
+    """W963-80: Phase 5 arm/disarm recommender."""
+    from engines.agi_arm_recommender import (
+        AgiArmRecommenderEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    result = AgiArmRecommenderEngine().run({})
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    verdict = data.get("verdict", "no_data")
+    v_chip = {
+        "earning":         "[OK ]",
+        "attributed_loss": "[BAD]",
+        "organic_only":    "[WRN]",
+        "no_data":         "[ - ]",
+    }.get(verdict, "[ ? ]")
+    print(
+        f"AGI arm recommendation  {v_chip} "
+        f"verdict={verdict}  "
+        f"trajectory={data.get('trajectory', 'no_data')}"
+    )
+    print()
+    print(f"  {data.get('headline', '')}")
+    if data.get("override_applied"):
+        print(
+            f"  *** OVERRIDE: "
+            f"{data.get('override_applied')} ***"
+        )
+    print()
+    arms = data.get("arm_recommendations") or []
+    disarms = data.get("disarm_recommendations") or []
+    if arms:
+        print(f"  ARM ({len(arms)}):")
+        for r in arms:
+            pri = r.get("priority", "normal")
+            pchip = {
+                "critical": "[!! ]",
+                "normal":   "[ + ]",
+                "info":     "[ . ]",
+            }.get(pri, "[?? ]")
+            print(
+                f"    {pchip} {r.get('engine', '?'):<24s} "
+                f"-- {r.get('rationale', '')[:60]}"
+            )
+        print()
+    if disarms:
+        print(f"  DISARM ({len(disarms)}):")
+        for r in disarms:
+            pri = r.get("priority", "normal")
+            pchip = {
+                "critical": "[!! ]",
+                "normal":   "[ - ]",
+                "info":     "[ . ]",
+            }.get(pri, "[?? ]")
+            print(
+                f"    {pchip} {r.get('engine', '?'):<24s} "
+                f"-- {r.get('rationale', '')[:60]}"
+            )
+        print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -58510,6 +58588,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "investigate-orphans":
         _cmd_investigate_orphans(args)
+        return
+
+    if args.command == "arm-recommend":
+        _cmd_arm_recommend(args)
         return
 
     if args.command == "welcome":
