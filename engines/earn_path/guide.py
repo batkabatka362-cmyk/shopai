@@ -316,8 +316,20 @@ def build_path() -> EarnPathReport:
         report.next_stage = next_stage.name
         report.next_command = next_stage.cli_command
         report.next_title = next_stage.title
+        # W963-95: use next_stage's actual 1-indexed
+        # position. Pre-fix used completed_count+1, which
+        # diverges from next_stage's position when stages
+        # are completed out of order (operator can finish
+        # stage 4 before stage 2; completed_count=2 but
+        # next_stage is still stage 2 -> headline read
+        # "Stage 3/8: <stage 2 title>" mismatch).
+        next_idx = next(
+            (i for i, s in enumerate(stages, start=1)
+             if s is next_stage),
+            report.completed_count + 1,
+        )
         report.headline = (
-            f"Stage {report.completed_count + 1}/"
+            f"Stage {next_idx}/"
             f"{report.total_count}: {next_stage.title}"
         )
     else:

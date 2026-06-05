@@ -311,6 +311,65 @@ class TestBuildPath:
         )
         # Completed count includes the out-of-order done
         assert r.completed_count == 2
+        # W963-95: headline cites next_stage's POSITION
+        # (notify_webhook = stage 2), not completed_count+1.
+        # Pre-fix this read "Stage 3/8: ..." because two
+        # stages were done; post-fix reads "Stage 2/8:".
+        assert "Stage 2/8" in r.headline
+        assert "Stage 3/8" not in r.headline
+        assert "Slack" in r.headline or "Discord" in r.headline
+
+    def test_in_order_headline_unchanged(self):
+        """W963-95 regression: in the strictly-in-order
+        case, stage N+1 is next when N are done. Headline
+        math must still match (we didn't introduce a
+        regression for the common path)."""
+        patches = [
+            patch(
+                "engines.earn_path.guide._config_env_done",
+                return_value=True,
+            ),
+            patch(
+                "engines.earn_path.guide."
+                "_notify_webhook_done",
+                return_value=True,
+            ),
+            patch(
+                "engines.earn_path.guide._niches_done",
+                return_value=True,
+            ),
+            patch(
+                "engines.earn_path.guide._catalog_seeded",
+                return_value=False,
+            ),
+            patch(
+                "engines.earn_path.guide._cron_scheduled",
+                return_value=False,
+            ),
+            patch(
+                "engines.earn_path.guide."
+                "_first_cycle_ran",
+                return_value=False,
+            ),
+            patch(
+                "engines.earn_path.guide._phase5_enabled",
+                return_value=False,
+            ),
+            patch(
+                "engines.earn_path.guide._is_earning",
+                return_value=False,
+            ),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            r = build_path()
+        finally:
+            for p in patches:
+                p.stop()
+        # 3 done in order -> stage 4 next
+        assert r.completed_count == 3
+        assert "Stage 4/8" in r.headline
 
 
 # ── Pattern Q envelope ────────────────────────────────────
