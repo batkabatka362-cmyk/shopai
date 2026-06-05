@@ -6310,6 +6310,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_ca_p.add_argument("--json", action="store_true")
 
+    # W963-91: Pattern CB -- verdict + trend vocabulary stays
+    # consolidated into core/agi/verdict_vocabulary.
+    pattern_cb_p = sub.add_parser(
+        "pattern-cb-audit",
+        help=(
+            "W963-91: verify no AGI-loop file redefines the "
+            "_VERDICT_RANK dict or pattern-matches the trend "
+            "vocabulary via literal strings. Prevents W963-72 "
+            "+ W963-90 bug classes from recurring."
+        ),
+    )
+    pattern_cb_p.add_argument("--json", action="store_true")
+
     # Wave 926: thrash guardrail status CLI
     thrash_guardrail_p = sub.add_parser(
         "thrash-guardrail",
@@ -39920,6 +39933,58 @@ def _cmd_pattern_ca_audit(args) -> None:
         )
 
 
+def _cmd_pattern_cb_audit(args) -> None:
+    """W963-91: verdict + trend vocabulary drift guard."""
+    from engines._pattern_cb_audit import (
+        run_pattern_cb_audit,
+    )
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_cb_audit()
+    if as_json:
+        print(json.dumps({
+            "files_scanned": report.files_scanned,
+            "rank_violations": [
+                {
+                    "rule": v.rule,
+                    "path": v.path,
+                    "line": v.line,
+                    "detail": v.detail,
+                }
+                for v in report.rank_violations
+            ],
+            "trend_violations": [
+                {
+                    "rule": v.rule,
+                    "path": v.path,
+                    "line": v.line,
+                    "detail": v.detail,
+                }
+                for v in report.trend_violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern CB FAILED -- "
+            f"{len(report.violations)} drift(s):"
+        )
+        for v in report.violations:
+            print(
+                f"  [{v.rule}] {v.path}:{v.line}  "
+                f"{v.detail}"
+            )
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern CB OK -- "
+            f"{report.files_scanned} AGI-loop file(s) "
+            "honor the canonical vocabulary."
+        )
+
+
 def _cmd_pattern_bn_audit(args) -> None:
     """Wave 893: autonomy-overview output schema."""
     from engines._pattern_bn_audit import run_pattern_bn_audit
@@ -49866,6 +49931,25 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_cb":
+            # W963-91: verdict + trend vocabulary drift.
+            from engines._pattern_cb_audit import (
+                run_pattern_cb_audit,
+            )
+            r = run_pattern_cb_audit()
+            return {
+                "ok": not r.has_violations,
+                "files_scanned": r.files_scanned,
+                "violations": [
+                    {
+                        "rule": v.rule,
+                        "path": v.path,
+                        "line": v.line,
+                        "detail": v.detail,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -49896,6 +49980,8 @@ _AUDIT_ORDER = (
     "pattern_by", "pattern_bz",
     # W963-67: Pattern CA -- Phase 4 substrate wiring
     "pattern_ca",
+    # W963-91: Pattern CB -- verdict + trend vocab drift
+    "pattern_cb",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -49971,6 +50057,7 @@ _AUDIT_LABELS = {
     "pattern_by": "Pattern BY (thrash block log chain)",
     "pattern_bz": "Pattern BZ (daily-brief thrash blocks row)",
     "pattern_ca": "Pattern CA (Phase 4 substrate wiring)",
+    "pattern_cb": "Pattern CB (verdict + trend vocab consolidation)",
 }
 
 
@@ -59739,6 +59826,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-ca-audit":
         _cmd_pattern_ca_audit(args)
+        return
+
+    if args.command == "pattern-cb-audit":
+        _cmd_pattern_cb_audit(args)
         return
 
     if args.command == "autonomy-env":

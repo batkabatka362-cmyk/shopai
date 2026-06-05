@@ -8,22 +8,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-# Verdict severity ladder (higher = healthier).
-#   no_data:          0  idle / no signal
-#   attributed_loss:  1  WORST -- AGI attributed + bleeding
-#   organic_only:     2  neutral -- revenue exists but AGI
-#                        not the cause
-#   earning:          3  BEST -- AGI driving profit
-# attributed_loss is below organic_only because the empire
-# is ACTIVELY LOSING under AGI control vs merely failing to
-# attribute. A change from organic_only -> attributed_loss
-# is a REGRESSION, not improvement.
-_VERDICT_RANK = {
-    "no_data":         0,
-    "attributed_loss": 1,
-    "organic_only":    2,
-    "earning":         3,
-}
+# W963-91: source of truth lives in core.agi.verdict_vocabulary.
+# Local alias kept for back-compat (other test fixtures may
+# still reference the symbol).
+from core.agi.verdict_vocabulary import VERDICT_RANK as _VERDICT_RANK
 
 
 @dataclass

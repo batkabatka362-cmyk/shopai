@@ -217,12 +217,13 @@ def _deterministic_baseline(
         return acts
 
     # earning
-    # W963-90 fix: compute_summary.trend_verdict emits
-    # "falling" (rising/falling/flat/no_data ladder), NOT
-    # "declining" (which is the agi_earnings_history
-    # vocabulary). Accept both so the critical escalation
-    # path actually fires for the real upstream signal.
-    if trend in ("falling", "declining"):
+    # W963-91: use canonical trend classifier so the
+    # critical-escalation path catches BOTH the
+    # 'falling' (summarizer) + 'declining' (history)
+    # vocabularies + any future ladder added without
+    # changing this call site.
+    from core.agi.verdict_vocabulary import is_declining
+    if is_declining(trend):
         crit = "critical"
         why = (
             "Earnings declining over the window -- "

@@ -232,6 +232,11 @@ class AgiEarningsHistoryEngine:
 
 
 def _trend_next(trend: dict[str, Any]) -> str:
+    # W963-91: use canonical classifiers so both ladders
+    # render correctly.
+    from core.agi.verdict_vocabulary import (
+        is_declining, is_improving,
+    )
     v = trend.get("verdict", "no_data")
     n = trend.get("sample_count", 0)
     if v == "no_data":
@@ -239,14 +244,14 @@ def _trend_next(trend: dict[str, Any]) -> str:
             f"Need at least 2 snapshots ({n} present). "
             "Run shopai earnings-history --record daily."
         )
-    if v == "improving":
+    if is_improving(v):
         return (
             f"AGI earnings IMPROVING over "
             f"{trend.get('days')}d "
             f"(rank delta=+{trend.get('delta')}). Keep "
             "going."
         )
-    if v == "declining":
+    if is_declining(v):
         return (
             f"AGI earnings DECLINING over "
             f"{trend.get('days')}d "

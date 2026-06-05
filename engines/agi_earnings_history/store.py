@@ -14,16 +14,8 @@ logger = logging.getLogger(__name__)
 _DATA_PATH = Path("data/agi_earnings_history.json")
 _MAX_ENTRIES = 5000
 
-# Verdict band ordinal: higher = healthier. Used for trend
-# computation. attributed_loss is BELOW organic_only because
-# the empire is actively losing under AGI control vs merely
-# failing to attribute -- the former is strictly worse.
-_VERDICT_RANK = {
-    "no_data":         0,
-    "attributed_loss": 1,
-    "organic_only":    2,
-    "earning":         3,
-}
+# W963-91: ladder hoisted to core.agi.verdict_vocabulary.
+from core.agi.verdict_vocabulary import VERDICT_RANK as _VERDICT_RANK
 
 
 def _is_test_environment() -> bool:
