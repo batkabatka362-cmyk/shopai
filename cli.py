@@ -6323,6 +6323,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_cb_p.add_argument("--json", action="store_true")
 
+    # W963-92: Pattern CC -- persistence helpers consolidation.
+    pattern_cc_p = sub.add_parser(
+        "pattern-cc-audit",
+        help=(
+            "W963-92: verify the 7 W963-44+ persistence "
+            "modules don't redefine _is_test_environment "
+            "or call tempfile.mkstemp directly. They must "
+            "import from core.agi.persistence."
+        ),
+    )
+    pattern_cc_p.add_argument("--json", action="store_true")
+
     # Wave 926: thrash guardrail status CLI
     thrash_guardrail_p = sub.add_parser(
         "thrash-guardrail",
@@ -39933,6 +39945,49 @@ def _cmd_pattern_ca_audit(args) -> None:
         )
 
 
+def _cmd_pattern_cc_audit(args) -> None:
+    """W963-92: persistence helpers consolidation guard."""
+    from engines._pattern_cc_audit import (
+        run_pattern_cc_audit,
+    )
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_cc_audit()
+    if as_json:
+        print(json.dumps({
+            "files_checked": report.files_checked,
+            "violations": [
+                {
+                    "rule": v.rule,
+                    "path": v.path,
+                    "line": v.line,
+                    "detail": v.detail,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern CC FAILED -- "
+            f"{len(report.violations)} drift(s):"
+        )
+        for v in report.violations:
+            print(
+                f"  [{v.rule}] {v.path}:{v.line}  "
+                f"{v.detail}"
+            )
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern CC OK -- "
+            f"{report.files_checked} W963-92 migrated "
+            "module(s) honor the canonical persistence."
+        )
+
+
 def _cmd_pattern_cb_audit(args) -> None:
     """W963-91: verdict + trend vocabulary drift guard."""
     from engines._pattern_cb_audit import (
@@ -49950,6 +50005,25 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_cc":
+            # W963-92: persistence helpers drift.
+            from engines._pattern_cc_audit import (
+                run_pattern_cc_audit,
+            )
+            r = run_pattern_cc_audit()
+            return {
+                "ok": not r.has_violations,
+                "files_checked": r.files_checked,
+                "violations": [
+                    {
+                        "rule": v.rule,
+                        "path": v.path,
+                        "line": v.line,
+                        "detail": v.detail,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -49982,6 +50056,8 @@ _AUDIT_ORDER = (
     "pattern_ca",
     # W963-91: Pattern CB -- verdict + trend vocab drift
     "pattern_cb",
+    # W963-92: Pattern CC -- persistence helpers drift
+    "pattern_cc",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -50058,6 +50134,7 @@ _AUDIT_LABELS = {
     "pattern_bz": "Pattern BZ (daily-brief thrash blocks row)",
     "pattern_ca": "Pattern CA (Phase 4 substrate wiring)",
     "pattern_cb": "Pattern CB (verdict + trend vocab consolidation)",
+    "pattern_cc": "Pattern CC (persistence helpers consolidation)",
 }
 
 
@@ -59830,6 +59907,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-cb-audit":
         _cmd_pattern_cb_audit(args)
+        return
+
+    if args.command == "pattern-cc-audit":
+        _cmd_pattern_cc_audit(args)
         return
 
     if args.command == "autonomy-env":

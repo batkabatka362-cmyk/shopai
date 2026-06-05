@@ -9,6 +9,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+# W963-92: canonical Pattern J guard + atomic text writer
+# (the .env file is text-not-JSON; atomic_write_text gives
+# the same crash-safe guarantees as atomic_write_json).
+from core.agi.persistence import (
+    atomic_write_text as _atomic_write_text,
+    is_test_environment as _is_test_environment,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -182,38 +190,22 @@ def _load_env_file() -> dict[str, str]:
 def _atomic_write_env(entries: dict[str, str]) -> bool:
     """Write the env entries to ./.env atomically.
     Preserves keys NOT in entries via merge with current
-    file contents."""
+    file contents.
+
+    W963-92: delegates the actual write to the canonical
+    atomic_write_text() so any future atomic-write fix
+    (e.g. fsync-before-replace) lives in one place.
+    """
     current = _load_env_file()
     current.update(entries)
-    # Sort for stable output
     lines = [
         f"{k}={v}" for k, v in sorted(current.items())
     ]
     body = "\n".join(lines) + "\n"
-    try:
-        _ENV_FILE.parent.mkdir(
-            parents=True, exist_ok=True,
-        )
-        fd, tmp = tempfile.mkstemp(
-            prefix=".env.",
-            dir=str(_ENV_FILE.parent) or ".",
-        )
-        os.close(fd)
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(body)
-        os.replace(tmp, str(_ENV_FILE))
-        return True
-    except OSError as exc:
-        logger.debug("earn_config: env write: %s", exc)
-        return False
+    return _atomic_write_text(_ENV_FILE, body)
 
 
-def _is_test_environment() -> bool:
-    if os.environ.get(
-        "SHOPAI_FORCE_PRODUCTION_WRITES", "",
-    ).lower() in ("1", "true", "yes"):
-        return False
-    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
+# W963-92: _is_test_environment imported from core.agi.persistence above.
 
 
 def build_state() -> ConfigReport:

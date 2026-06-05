@@ -6,6 +6,11 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
+# W963-92: canonical Pattern J guard
+from core.agi.persistence import (
+    is_test_environment as _is_test_environment,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,12 +61,7 @@ class MorningBrief:
     next_action: str = ""
 
 
-def _is_test_environment() -> bool:
-    if os.environ.get(
-        "SHOPAI_FORCE_PRODUCTION_WRITES", "",
-    ).lower() in ("1", "true", "yes"):
-        return False
-    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
+# W963-92: _is_test_environment imported from core.agi.persistence.
 
 
 def _gather_summary(brief: MorningBrief) -> None:

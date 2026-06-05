@@ -9,13 +9,18 @@ override) so unit tests don't pollute prod state.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+# W963-92: canonical persistence helpers
+from core.agi.persistence import (
+    atomic_write_json,
+    is_test_environment as _is_test_environment,
+    load_json_dict as _load_json_dict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,61 +33,17 @@ _PATH = Path(
 )
 
 
-def _is_test_environment() -> bool:
-    if os.environ.get(
-        "SHOPAI_FORCE_PRODUCTION_WRITES", "",
-    ).strip().lower() in ("1", "true", "yes", "on"):
-        return False
-    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
-
-
 def _load_raw() -> dict[str, Any]:
-    try:
-        if not _PATH.exists():
-            return {"sent": {}}
-        with _PATH.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            data.setdefault("sent", {})
-            if not isinstance(data["sent"], dict):
-                data["sent"] = {}
-            return data
-        return {"sent": {}}
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.debug(
-            "fleet_notifier: load failed (%s)", exc,
-        )
-        return {"sent": {}}
+    data = _load_json_dict(_PATH)
+    if "sent" not in data or not isinstance(
+        data.get("sent"), dict,
+    ):
+        data["sent"] = {}
+    return data
 
 
 def _atomic_write(data: dict[str, Any]) -> None:
-    try:
-        _PATH.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        logger.debug(
-            "fleet_notifier: mkdir failed (%s)", exc,
-        )
-        return
-    try:
-        fd, tmp_path = tempfile.mkstemp(
-            prefix=".fleet_notifier_",
-            suffix=".json",
-            dir=str(_PATH.parent),
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, default=str)
-            os.replace(tmp_path, _PATH)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-    except OSError as exc:
-        logger.debug(
-            "fleet_notifier: write failed (%s)", exc,
-        )
+    atomic_write_json(_PATH, data)
 
 
 def _key(kind: str, scope: str = "") -> str:

@@ -25,14 +25,18 @@ Public API:
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
-import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+# W963-92: canonical persistence helpers
+from core.agi.persistence import (
+    atomic_write_json,
+    is_test_environment as _is_test_environment,
+    load_json_list as _load_json_list,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,49 +66,19 @@ class AutoDisarmEvent:
         }
 
 
-def _is_test_environment() -> bool:
-    if os.environ.get(
-        "SHOPAI_FORCE_PRODUCTION_WRITES", "",
-    ).lower() in ("1", "true", "yes"):
-        return False
-    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
+# W963-92: _is_test_environment + load/write delegated to
+# core.agi.persistence. _load_raw + _atomic_write kept as
+# thin no-arg / single-arg wrappers so existing call sites
+# AND test fixtures (which monkeypatch _DATA_PATH) keep
+# working unchanged.
 
 
 def _load_raw() -> list[dict[str, Any]]:
-    if not _DATA_PATH.exists():
-        return []
-    try:
-        with _DATA_PATH.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return [d for d in data if isinstance(d, dict)]
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.debug(
-            "auto_disarm_log: load raised: %s", exc,
-        )
-    return []
+    return _load_json_list(_DATA_PATH)
 
 
 def _atomic_write(entries: list[dict[str, Any]]) -> bool:
-    try:
-        _DATA_PATH.parent.mkdir(
-            parents=True, exist_ok=True,
-        )
-        fd, tmp = tempfile.mkstemp(
-            prefix=".auto_disarm_log.",
-            suffix=".json",
-            dir=str(_DATA_PATH.parent),
-        )
-        os.close(fd)
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(entries, f, indent=2, default=str)
-        os.replace(tmp, str(_DATA_PATH))
-        return True
-    except OSError as exc:
-        logger.debug(
-            "auto_disarm_log: write raised: %s", exc,
-        )
-        return False
+    return atomic_write_json(_DATA_PATH, entries)
 
 
 def record_event(
