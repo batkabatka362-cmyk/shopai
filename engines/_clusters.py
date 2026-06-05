@@ -446,6 +446,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "cron_recommender",      # W963-59: tunes cron interval to observed signal velocity
     "agi_brief_diff",        # W963-68: day-over-day Phase 4 verdict diff
     "agi_recommend_streak",  # W963-70: consecutive un-acted recommendation streaks
+    "agi_orphan_investigator", # W963-78: drill into orphan AGI attribution claims
 })
 
 

@@ -2796,6 +2796,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     att_p.add_argument("--json", action="store_true")
 
+    # W963-78: investigate-orphans -- drill orphan AGI claims.
+    oi_p = sub.add_parser(
+        "investigate-orphans",
+        help=(
+            "When reconciliation surfaces orphan AGI "
+            "actions (revenue-driving + no matching "
+            "order), drill in: top engines, suspicion "
+            "tier, drill hints."
+        ),
+    )
+    oi_p.add_argument("--days", type=int, default=7)
+    oi_p.add_argument(
+        "--attribution-window-hours", type=float,
+        default=48.0,
+        dest="attribution_window_hours",
+    )
+    oi_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12401,6 +12419,75 @@ def _cmd_pnl_history(args) -> None:
                     f"({t.get('slope_pct')}%)"
                 )
     print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_investigate_orphans(args) -> None:
+    """W963-78: drill orphan AGI attribution claims."""
+    from engines.agi_orphan_investigator import (
+        AgiOrphanInvestigatorEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "days": int(getattr(args, "days", 7)),
+            "attribution_window_hours": float(
+                getattr(
+                    args, "attribution_window_hours", 48.0,
+                ),
+            ),
+        },
+    }
+    result = AgiOrphanInvestigatorEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    n = data.get("total_orphan_count", 0)
+    chip = "[OK ]" if n == 0 else "[WRN]"
+    print(
+        f"AGI orphan investigation  {chip}  "
+        f"days={data.get('days', 7)}  "
+        f"window={data.get('attribution_window_hours')}h"
+    )
+    print()
+    print(f"  {data.get('headline', '')}")
+    print()
+    by_engine = data.get("by_engine") or []
+    if by_engine:
+        print("  By engine:")
+        for e in by_engine[:10]:
+            sus = e.get("suspicion", "low")
+            sus_chip = {
+                "high":   "[BAD]",
+                "medium": "[WRN]",
+                "low":    "[ - ]",
+            }.get(sus, "[ ? ]")
+            print(
+                f"    {sus_chip} {e.get('engine', '?'):<24s} "
+                f"orphans={e.get('orphan_count', 0):>3d}  "
+                f"stores={len(e.get('stores_affected') or [])}  "
+                f"median_age={e.get('median_age_hours', 0):.1f}h"
+            )
+        print()
+    by_store = data.get("by_store") or []
+    if by_store:
+        print("  By store:")
+        for s in by_store[:10]:
+            print(
+                f"    {s.get('store_id', '?'):<14s} "
+                f"orphans={s.get('orphan_count', 0):>3d}  "
+                f"engines={s.get('distinct_engines', 0)}"
+            )
+        print()
+    hints = data.get("drill_hints") or []
+    if hints:
+        print("  Drill hints:")
+        for h in hints:
+            print(f"    -> {h}")
+        print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -58390,6 +58477,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "attention":
         _cmd_attention(args)
+        return
+
+    if args.command == "investigate-orphans":
+        _cmd_investigate_orphans(args)
         return
 
     if args.command == "welcome":
