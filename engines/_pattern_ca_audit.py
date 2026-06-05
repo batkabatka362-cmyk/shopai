@@ -160,6 +160,26 @@ _PROBES: list[dict[str, Any]] = [
         ),
         "min_occurrences": 1,
     },
+    # W963-85: daily-brief shows recent auto-disarm
+    {
+        "name": "cli_daily_brief_auto_disarm_inline",
+        "path": "cli.py",
+        "enclosing_function": "_cmd_daily_brief",
+        "needles": (
+            "auto_disarm_log",
+        ),
+        "min_occurrences": 1,
+    },
+    # W963-85: empire shows recent auto-disarm
+    {
+        "name": "cli_empire_auto_disarm_inline",
+        "path": "cli.py",
+        "enclosing_function": "_cmd_empire",
+        "needles": (
+            "auto_disarm_log",
+        ),
+        "min_occurrences": 1,
+    },
     # ── Non-cli probes: file-level scan
     {
         "name": "notify_agi_anomaly_alert",

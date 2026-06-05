@@ -17602,6 +17602,27 @@ def _cmd_empire(args) -> None:
             "empire anomaly block raised: %s", exc,
         )
 
+    # W963-85: empire recent auto-disarm event inline.
+    try:
+        from engines.agi_arm_recommender.auto_disarm_log \
+            import recent_events as _w963_85_emp
+        _emp_disarm_events = _w963_85_emp(
+            limit=5, hours=24.0,
+        )
+        if _emp_disarm_events:
+            top = _emp_disarm_events[0]
+            doms = top.get("domains_disarmed") or []
+            print(
+                f"    auto-disarm:        [BAD] "
+                f"{len(_emp_disarm_events)} event(s) 24h; "
+                f"last: {', '.join(doms[:3])}"
+            )
+            print("    -> shopai auto-disarm-history")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "empire auto-disarm block raised: %s", exc,
+        )
+
     # W963-71: empire attention streak inline. Same shape
     # as the anomalies block; surfaces only when streak is
     # warn+ (info-level stays in `shopai attention` only).
@@ -19473,6 +19494,38 @@ def _cmd_daily_brief(args) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "daily-brief earnings block raised: %s", exc,
+        )
+
+    # W963-85: daily-brief recent auto-disarm event inline.
+    # Surfaces ONLY when a domain got auto-disarmed in last
+    # 24h (substrate already fired -- operator should know).
+    try:
+        from engines.agi_arm_recommender.auto_disarm_log \
+            import recent_events as _w963_85_recent
+        _db_disarm_events = _w963_85_recent(
+            limit=5, hours=24.0,
+        )
+        if _db_disarm_events:
+            top = _db_disarm_events[0]
+            doms = top.get("domains_disarmed") or []
+            import datetime as _dt
+            try:
+                _when = _dt.datetime.fromtimestamp(
+                    float(top.get("ts", 0) or 0),
+                ).strftime("%H:%M")
+            except (ValueError, OSError):
+                _when = "?"
+            print(
+                f"  Auto-disarm:   [BAD] "
+                f"{len(_db_disarm_events)} event(s) in 24h; "
+                f"last at {_when}: "
+                f"{', '.join(doms[:3])} "
+                "-- shopai auto-disarm-history"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief auto-disarm block raised: %s",
+            exc,
         )
 
     # W963-58: daily-brief AGI anomaly inline. Surfaces only
