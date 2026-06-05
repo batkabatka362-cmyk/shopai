@@ -137,8 +137,11 @@ def _single_next_action(pnl: Any) -> str:
             "shopai ads launch --budget-daily bumped."
         )
     if verdict == "loss":
+        # W963-94: render -$X (sign before $) when profit < 0
+        sign = "-" if pnl.gross_profit < 0 else ""
         return (
-            f"Loss: gross_profit=${pnl.gross_profit:.2f}. "
+            f"Loss: gross_profit="
+            f"{sign}${abs(pnl.gross_profit):.2f}. "
             "Check ad spend vs revenue. shopai roas to drill."
         )
     return (
@@ -157,8 +160,10 @@ def _fleet_next_action(report) -> str:
             f"({report.fleet_margin_pct:.1f}% margin)"
         )
     if report.fleet_gross_profit < 0:
+        # W963-94: render -$X (sign before $) when profit < 0
         return (
-            f"Fleet loss: ${report.fleet_gross_profit:.2f}. "
+            f"Fleet loss: "
+            f"-${abs(report.fleet_gross_profit):.2f}. "
             "Identify the losing stores."
         )
     return "Fleet at break-even."

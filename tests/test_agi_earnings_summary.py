@@ -223,3 +223,45 @@ class TestEnvelope:
         r = AgiEarningsSummaryEngine().run({})
         assert "next_action" in r["data"]
         assert r["data"]["next_action"]
+
+
+# ── W963-94: sign-prefix-before-$ rendering ───────────────
+
+
+class TestNextActionSignPrefix:
+    """W963-94 regression: attributed_loss branch rendered
+    ($-50) instead of (-$50). gross_profit is ALWAYS
+    negative under attributed_loss by definition."""
+
+    def test_attributed_loss_renders_minus_dollar(self):
+        from engines.agi_earnings_summary.flow import (
+            _next_action,
+        )
+        s = EarningsSummary(
+            days=7, attribution_window_hours=48.0,
+            fleet_attributed_revenue=100.0,
+            fleet_organic_revenue=20.0,
+            fleet_gross_profit=-50.0,
+            verdict="attributed_loss",
+        )
+        out = _next_action(s)
+        assert "-$50" in out
+        assert "$-50" not in out
+
+    def test_earning_profit_positive_unchanged(self):
+        from engines.agi_earnings_summary.flow import (
+            _next_action,
+        )
+        s = EarningsSummary(
+            days=7, attribution_window_hours=48.0,
+            fleet_attributed_revenue=200.0,
+            fleet_organic_revenue=50.0,
+            fleet_gross_profit=120.0,
+            fleet_attribution_pct=80.0,
+            monthly_run_rate=500.0,
+            trend_verdict="rising",
+            verdict="earning",
+        )
+        out = _next_action(s)
+        assert "$120" in out
+        assert "-$120" not in out

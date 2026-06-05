@@ -119,11 +119,14 @@ def _next_action(s: EarningsSummary) -> str:
             "engine ranking --sort outcome_score."
         )
     if s.verdict == "attributed_loss":
+        # W963-94: render -$50 (sign before $) when profit
+        # is negative -- which it ALWAYS is in attributed_loss.
+        loss_sign = "-" if s.fleet_gross_profit < 0 else ""
         return (
             f"AGI attributing ${s.fleet_attributed_revenue:.0f} "
             f"BUT fleet loss "
-            f"(${s.fleet_gross_profit:.0f}). Cut ad spend: "
-            "shopai roas to find culprits."
+            f"({loss_sign}${abs(s.fleet_gross_profit):.0f}). "
+            "Cut ad spend: shopai roas to find culprits."
         )
     # earning
     return (

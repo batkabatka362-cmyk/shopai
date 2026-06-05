@@ -403,3 +403,67 @@ class TestEngineActions:
             "data": {"days": 30},
         })
         assert r["data"]["days"] == 30
+
+
+# ── W963-94: sign-prefix-before-$ rendering ───────────────
+
+
+class TestSignPrefixRendering:
+    """W963-94 regression: pre-fix, single + fleet loss
+    renderers showed $-50.00 instead of -$50.00."""
+
+    def test_single_loss_renders_minus_dollar(self):
+        from engines.store_pnl_tracker.flow import (
+            _single_next_action,
+        )
+        pnl = StorePnl(
+            store_id="s1", days=7,
+            gross_profit=-50.0, verdict="loss",
+        )
+        out = _single_next_action(pnl)
+        assert "-$50.00" in out
+        assert "$-50" not in out
+
+    def test_single_profitable_unchanged(self):
+        from engines.store_pnl_tracker.flow import (
+            _single_next_action,
+        )
+        pnl = StorePnl(
+            store_id="s1", days=7,
+            gross_profit=120.0, margin_pct=25.0,
+            verdict="profitable",
+        )
+        out = _single_next_action(pnl)
+        assert "$120.00" in out
+        assert "-$120" not in out
+
+    def test_fleet_loss_renders_minus_dollar(self):
+        from engines.store_pnl_tracker.flow import (
+            _fleet_next_action,
+        )
+        from engines.store_pnl_tracker.tracker import (
+            FleetPnlReport,
+        )
+        report = FleetPnlReport(
+            days=7, fleet_gross_profit=-80.0,
+            by_store=[StorePnl(store_id="s1", days=7)],
+        )
+        out = _fleet_next_action(report)
+        assert "-$80.00" in out
+        assert "$-80" not in out
+
+    def test_fleet_profitable_unchanged(self):
+        from engines.store_pnl_tracker.flow import (
+            _fleet_next_action,
+        )
+        from engines.store_pnl_tracker.tracker import (
+            FleetPnlReport,
+        )
+        report = FleetPnlReport(
+            days=7, fleet_gross_profit=200.0,
+            fleet_margin_pct=30.0,
+            by_store=[StorePnl(store_id="s1", days=7)],
+        )
+        out = _fleet_next_action(report)
+        assert "$200.00" in out
+        assert "-$200" not in out
