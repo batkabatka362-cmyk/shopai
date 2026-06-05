@@ -228,15 +228,16 @@ def build_state() -> ConfigReport:
         file_val = file_env.get(key.name)
         is_set_env = bool(env_val and env_val.strip())
         is_set_file = bool(file_val and file_val.strip())
-        # Treat known-placeholder values as unset (e.g.
-        # sk-... or https://hooks.slack.com/...).
+        # Treat known-placeholder values as unset. Explicit
+        # exact-match against the documented defaults rather
+        # than the operator-precedence-prone chain that
+        # caused W963-72 (and / or wrong binding flagged any
+        # value ending in '...' as a placeholder).
         cur = env_val or file_val
-        if cur and (
-            cur.startswith("sk-...")
-            or cur.startswith("https://hooks.slack.com/")
-            and cur.endswith("...")
-            or cur.endswith("...")
-        ):
+        if cur in {
+            "sk-...",
+            "https://hooks.slack.com/services/...",
+        }:
             cur = None
             is_set_env = False
             is_set_file = False

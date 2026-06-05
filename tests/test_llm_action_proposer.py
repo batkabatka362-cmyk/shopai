@@ -76,16 +76,22 @@ class TestDeterministicBaseline:
         assert acts[0].priority == "info"
 
     def test_earning_declining_critical(self):
-        acts = _deterministic_baseline(
-            {
-                "verdict": "earning",
-                "gross_profit": 100.0,
-                "trend_verdict": "declining",
-                "loss_store_count": 0,
-            },
-            "",
-        )
-        assert acts[0].priority == "critical"
+        # W963-90: original test used "declining" vocab but
+        # the real upstream (compute_summary) emits
+        # "falling". Both should now escalate to critical.
+        for vocab in ("declining", "falling"):
+            acts = _deterministic_baseline(
+                {
+                    "verdict": "earning",
+                    "gross_profit": 100.0,
+                    "trend_verdict": vocab,
+                    "loss_store_count": 0,
+                },
+                "",
+            )
+            assert acts[0].priority == "critical", (
+                f"vocab {vocab} did not escalate"
+            )
 
     def test_earning_loss_stores_normal(self):
         acts = _deterministic_baseline(

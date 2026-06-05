@@ -31,19 +31,11 @@ class EarnPathReport:
     headline: str = ""
 
 
-def _config_env_done() -> bool:
-    """Stage 1: at least 5 of the 7 safe defaults set."""
-    keys = (
-        "SHOPAI_SPEND_CAP_DAILY_USD",
-        "SHOPAI_AUTO_PAUSE_ON_OVERSPEND",
-        "SHOPAI_AUTO_QUARANTINE_FROM_REVENUE",
-        "SHOPAI_AUTO_DISARM_ON_OVERRIDE",
-        "SHOPAI_CYCLE_RECORD_BRIEF",
-        "SHOPAI_AI_STRATEGY",
-        "SHOPAI_NOTIFY_AUTONOMY_COALESCE",
-    )
-    # Look in env + .env file
-    file_env: dict[str, str] = {}
+def _load_dotenv() -> dict[str, str]:
+    """Read ./.env best-effort. Returns {} on missing /
+    unreadable. Shared by all probes so env-var detection
+    is consistent across stages."""
+    out: dict[str, str] = {}
     try:
         from pathlib import Path
         p = Path(".env")
@@ -57,9 +49,33 @@ def _config_env_done() -> bool:
                 if "=" not in line:
                     continue
                 k, v = line.split("=", 1)
-                file_env[k.strip()] = v.strip()
+                out[k.strip()] = v.strip()
     except OSError:
         pass
+    return out
+
+
+def _env_or_file(key: str) -> str | None:
+    """Return os.environ[key] or the .env value; None when
+    unset in both."""
+    v = os.environ.get(key)
+    if v:
+        return v
+    return _load_dotenv().get(key) or None
+
+
+def _config_env_done() -> bool:
+    """Stage 1: at least 5 of the 7 safe defaults set."""
+    keys = (
+        "SHOPAI_SPEND_CAP_DAILY_USD",
+        "SHOPAI_AUTO_PAUSE_ON_OVERSPEND",
+        "SHOPAI_AUTO_QUARANTINE_FROM_REVENUE",
+        "SHOPAI_AUTO_DISARM_ON_OVERRIDE",
+        "SHOPAI_CYCLE_RECORD_BRIEF",
+        "SHOPAI_AI_STRATEGY",
+        "SHOPAI_NOTIFY_AUTONOMY_COALESCE",
+    )
+    file_env = _load_dotenv()
     n_set = sum(
         1 for k in keys
         if os.environ.get(k) or file_env.get(k)
@@ -68,7 +84,9 @@ def _config_env_done() -> bool:
 
 
 def _notify_webhook_done() -> bool:
-    return bool(os.environ.get("SHOPAI_NOTIFY_WEBHOOK_URL"))
+    # W963-90 fix: check .env too (operator may have run
+    # earn-config --apply but not sourced .env yet).
+    return bool(_env_or_file("SHOPAI_NOTIFY_WEBHOOK_URL"))
 
 
 def _niches_done() -> bool:
@@ -142,7 +160,8 @@ def _first_cycle_ran() -> bool:
 
 
 def _phase5_enabled() -> bool:
-    return os.environ.get(
+    # W963-90 fix: check .env too.
+    return _env_or_file(
         "SHOPAI_AUTO_DISARM_ON_OVERRIDE",
     ) == "1"
 

@@ -14,6 +14,88 @@ from engines.earn_path.guide import (
 # ── _build_stages ─────────────────────────────────────────
 
 
+class TestEnvOrFileHelper:
+    """W963-90 regression: notify-webhook + phase5 probes
+    must check .env file too, not just os.environ."""
+
+    def test_env_var_takes_precedence(
+        self, monkeypatch, tmp_path,
+    ):
+        from engines.earn_path import guide
+        import os
+        # Run in tmp dir so a real .env doesn't leak
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text(
+            "SHOPAI_TEST_KEY=file_val\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv(
+            "SHOPAI_TEST_KEY", "env_val",
+        )
+        assert guide._env_or_file(
+            "SHOPAI_TEST_KEY",
+        ) == "env_val"
+
+    def test_file_used_when_env_unset(
+        self, monkeypatch, tmp_path,
+    ):
+        from engines.earn_path import guide
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv(
+            "SHOPAI_TEST_KEY", raising=False,
+        )
+        (tmp_path / ".env").write_text(
+            "SHOPAI_TEST_KEY=file_val\n",
+            encoding="utf-8",
+        )
+        assert guide._env_or_file(
+            "SHOPAI_TEST_KEY",
+        ) == "file_val"
+
+    def test_none_when_neither(
+        self, monkeypatch, tmp_path,
+    ):
+        from engines.earn_path import guide
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv(
+            "SHOPAI_TEST_KEY", raising=False,
+        )
+        assert guide._env_or_file(
+            "SHOPAI_TEST_KEY",
+        ) is None
+
+    def test_notify_webhook_uses_file(
+        self, monkeypatch, tmp_path,
+    ):
+        from engines.earn_path import guide
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv(
+            "SHOPAI_NOTIFY_WEBHOOK_URL", raising=False,
+        )
+        # Pre-fix this returned False; post-fix reads
+        # .env and returns True.
+        (tmp_path / ".env").write_text(
+            "SHOPAI_NOTIFY_WEBHOOK_URL=https://hooks.slack.com/abc\n",
+            encoding="utf-8",
+        )
+        assert guide._notify_webhook_done() is True
+
+    def test_phase5_uses_file(
+        self, monkeypatch, tmp_path,
+    ):
+        from engines.earn_path import guide
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv(
+            "SHOPAI_AUTO_DISARM_ON_OVERRIDE",
+            raising=False,
+        )
+        (tmp_path / ".env").write_text(
+            "SHOPAI_AUTO_DISARM_ON_OVERRIDE=1\n",
+            encoding="utf-8",
+        )
+        assert guide._phase5_enabled() is True
+
+
 class TestBuildStages:
     def test_has_8_stages(self):
         stages = _build_stages()

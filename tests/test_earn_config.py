@@ -122,6 +122,35 @@ class TestBuildState:
         r = cfg.build_state()
         assert r.n_already_set == 1
 
+    def test_value_ending_in_ellipsis_not_falsely_placeholder(
+        self, _tmp_env, monkeypatch,
+    ):
+        """W963-90 regression test: pre-fix, ANY value
+        ending in '...' was falsely flagged as placeholder
+        due to operator-precedence bug. A real opaque
+        token that happens to end with '...' should now
+        count as set."""
+        monkeypatch.setenv(
+            "SHOPAI_AI_STRATEGY", "config_X_v123...",
+        )
+        r = cfg.build_state()
+        # Without W963-90 fix, this would be 0
+        assert r.n_already_set == 1
+
+    def test_exact_placeholder_still_detected(
+        self, _tmp_env, monkeypatch,
+    ):
+        """Confirm the documented exact placeholder
+        ('sk-...' / Slack URL .../...) still maps to
+        unset."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-...")
+        monkeypatch.setenv(
+            "SHOPAI_NOTIFY_WEBHOOK_URL",
+            "https://hooks.slack.com/services/...",
+        )
+        r = cfg.build_state()
+        assert r.n_already_set == 0
+
     def test_key_state_carries_rationale(self, _tmp_env):
         r = cfg.build_state()
         for k in r.keys:
