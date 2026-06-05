@@ -407,7 +407,119 @@ def run_go_live_check() -> list[CheckResult]:
         _check_store_niches(),  # Wave 76
         _check_autonomy_substrate(),  # Wave 245
         _check_revenue_readiness(),  # W963-1
+        _check_phase4_substrate(),  # W963-61
     ]
+
+
+def _check_phase4_substrate() -> CheckResult:
+    """W963-61: verify Phase 4 ritual substrate is wired.
+
+    Probes:
+      1. agi_earnings_summary runs without raising.
+      2. agi_anomaly_detector runs.
+      3. cron_recommender returns an interval.
+      4. agi_earnings_history snapshot count + freshness.
+
+    Status:
+      pass  -- all four probes OK and snapshots are < 48h old
+      warn  -- snapshots stale or count==0 (morning/week
+               briefs will return no_data forever otherwise)
+      fail  -- a substrate module raised, which means the
+               compose-IN/watch-OUT loop is broken
+    """
+    try:
+        from engines.agi_earnings_summary.summarizer import (
+            compute_summary,
+        )
+        from engines.agi_anomaly_detector.detector import (
+            detect,
+        )
+        from engines.cron_recommender.recommender import (
+            recommend,
+        )
+        from engines.agi_earnings_history import store as h
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult(
+            name="phase4_substrate",
+            status="fail",
+            detail=(
+                f"Phase 4 module import failed: {exc}"
+            ),
+            fix="reinstall: pip install -e .",
+        )
+    raised: list[str] = []
+    for label, fn in (
+        ("summary", lambda: compute_summary(days=7)),
+        ("anomaly", lambda: detect(window=14)),
+        ("cron", lambda: recommend()),
+    ):
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001
+            raised.append(f"{label}({exc!r})")
+    if raised:
+        return CheckResult(
+            name="phase4_substrate",
+            status="fail",
+            detail=(
+                "Phase 4 probe raised: " + ", ".join(raised)
+            ),
+            fix=(
+                "Run each engine manually: "
+                "shopai earnings-summary / anomalies / "
+                "cron-recommend"
+            ),
+        )
+    try:
+        total = h.snapshot_count()
+    except Exception:  # noqa: BLE001
+        total = 0
+    if total == 0:
+        return CheckResult(
+            name="phase4_substrate",
+            status="warn",
+            detail=(
+                "0 history snapshots; week-review + "
+                "anomaly will return no_data until cron "
+                "records a few."
+            ),
+            fix=(
+                "Daily cron: "
+                "shopai morning-brief --record (or "
+                "shopai earnings-history --record)"
+            ),
+        )
+    # Check freshness of the latest snapshot
+    try:
+        latest = h.latest()
+        if not latest:
+            stale = True
+        else:
+            import time as _t
+            ts = float(latest.get("ts", 0) or 0)
+            stale = (_t.time() - ts) > (48.0 * 3600.0)
+    except Exception:  # noqa: BLE001
+        stale = False
+    if stale:
+        return CheckResult(
+            name="phase4_substrate",
+            status="warn",
+            detail=(
+                f"{total} snapshot(s); latest is > 48h old"
+            ),
+            fix=(
+                "Re-enable daily cron: shopai "
+                "morning-brief --record"
+            ),
+        )
+    return CheckResult(
+        name="phase4_substrate",
+        status="pass",
+        detail=(
+            f"{total} snapshot(s); summary + anomaly + "
+            "cron probes OK"
+        ),
+    )
 
 
 def _check_revenue_readiness() -> CheckResult:
