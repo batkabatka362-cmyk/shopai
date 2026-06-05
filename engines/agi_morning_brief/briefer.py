@@ -101,9 +101,11 @@ def _gather_last_cycle(brief: MorningBrief) -> None:
         last = last_run()
         if last is None:
             return
-        # cycle_history records use 'ended_at' or 'ts'
-        ts = getattr(last, "ended_at", None) or getattr(
-            last, "ts", None,
+        # cycle_history records use 'started_at'
+        ts = (
+            getattr(last, "started_at", None)
+            or getattr(last, "ended_at", None)
+            or getattr(last, "ts", None)
         )
         if ts is None:
             return

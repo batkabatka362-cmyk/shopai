@@ -2701,6 +2701,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mb_p.add_argument("--json", action="store_true")
 
+    # W963-55: evening-brief — day-end "what happened?"
+    eb_p = sub.add_parser(
+        "evening-brief",
+        help=(
+            "End-of-day 'what happened today?' brief. "
+            "Complement to morning-brief. Cycle runs + "
+            "actions executed + outcomes recorded + "
+            "verdict shift since AM."
+        ),
+    )
+    eb_p.add_argument(
+        "--store", default="", dest="store_id",
+    )
+    eb_p.add_argument(
+        "--window-hours", type=float, default=24.0,
+        dest="window_hours",
+    )
+    eb_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12279,6 +12298,77 @@ def _cmd_pnl_history(args) -> None:
                     f"delta=${t.get('delta', 0):>+7.2f} "
                     f"({t.get('slope_pct')}%)"
                 )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_evening_brief(args) -> None:
+    """W963-55: end-of-day complement to morning brief."""
+    from engines.agi_evening_brief import (
+        AgiEveningBriefEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "store_id":
+                getattr(args, "store_id", "") or "",
+            "window_hours": float(
+                getattr(args, "window_hours", 24.0),
+            ),
+        },
+    }
+    result = AgiEveningBriefEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    scope = data.get("store_id") or "(fleet)"
+    print(
+        f"AGI evening brief  --  scope={scope}  "
+        f"window={data.get('window_hours', 24.0):.0f}h"
+    )
+    print()
+    print(f"  {data.get('headline', '')}")
+    print()
+    print(
+        f"  cycles:             "
+        f"{data.get('cycle_runs_today', 0)} ran  "
+        f"({data.get('cycle_success_runs', 0)} ok / "
+        f"{data.get('cycle_failed_runs', 0)} fail)"
+    )
+    print(
+        f"  actions executed:   "
+        f"{data.get('actions_executed_today', 0)}"
+    )
+    print(
+        f"  actions rejected:   "
+        f"{data.get('actions_rejected_today', 0)}"
+    )
+    print(
+        f"  outcomes recorded:  "
+        f"{data.get('outcomes_recorded_today', 0)}"
+    )
+    print()
+    print(
+        f"  current verdict:    "
+        f"{data.get('current_verdict', 'no_data')}  "
+        f"(profit="
+        f"${data.get('current_gross_profit', 0):.0f}, "
+        f"attr="
+        f"{data.get('current_attribution_pct', 0):.1f}%)"
+    )
+    if data.get("verdict_changed"):
+        print(
+            f"  *** SHIFTED from "
+            f"{data.get('previous_verdict', '?')} -> "
+            f"{data.get('current_verdict', '?')} ***"
+        )
+    print(
+        f"  history trend (7d): "
+        f"{data.get('history_trend', 'no_data')}"
+    )
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -57442,6 +57532,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "morning-brief":
         _cmd_morning_brief(args)
+        return
+
+    if args.command == "evening-brief":
+        _cmd_evening_brief(args)
         return
 
     if args.command == "welcome":

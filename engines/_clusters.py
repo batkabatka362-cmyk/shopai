@@ -440,6 +440,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "llm_action_proposer",   # W963-52: state-aware 3-action proposer + LLM rationale
     "llm_action_critic",     # W963-53: adversarial critique of proposer output
     "agi_morning_brief",     # W963-54: composes all Phase 3 substrate into one digest
+    "agi_evening_brief",     # W963-55: day-end "what happened today?" complement
 })
 
 
