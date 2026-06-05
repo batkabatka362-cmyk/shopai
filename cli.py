@@ -2720,6 +2720,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     eb_p.add_argument("--json", action="store_true")
 
+    # W963-56: week-review — 7d macro aggregator.
+    wr_p = sub.add_parser(
+        "week-review",
+        help=(
+            "Macro 7d aggregator. Cycle stats + queue "
+            "rollup + verdict timeline + reconciliation. "
+            "Macro-loop complement to morning/evening."
+        ),
+    )
+    wr_p.add_argument(
+        "--store", default="", dest="store_id",
+    )
+    wr_p.add_argument("--days", type=int, default=7)
+    wr_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12299,6 +12314,84 @@ def _cmd_pnl_history(args) -> None:
                     f"({t.get('slope_pct')}%)"
                 )
     print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_week_review(args) -> None:
+    """W963-56: 7-day macro aggregator."""
+    from engines.agi_week_review import AgiWeekReviewEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "store_id":
+                getattr(args, "store_id", "") or "",
+            "days": int(getattr(args, "days", 7)),
+        },
+    }
+    result = AgiWeekReviewEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    scope = data.get("store_id") or "(fleet)"
+    print(
+        f"AGI week review  --  scope={scope}  "
+        f"days={data.get('days', 7)}"
+    )
+    print()
+    print(f"  {data.get('headline', '')}")
+    print()
+    print(
+        f"  cycles:                "
+        f"{data.get('cycle_total', 0)}  "
+        f"(success rate "
+        f"{data.get('cycle_success_rate', 0):.1%})"
+    )
+    print(
+        f"  actions exec / rej:    "
+        f"{data.get('actions_executed', 0)} / "
+        f"{data.get('actions_rejected', 0)}  "
+        f"(rejection "
+        f"{data.get('rejection_rate', 0):.1%})"
+    )
+    print(
+        f"  snapshots logged:      "
+        f"{data.get('snapshot_count', 0)}  "
+        f"(distinct verdicts: "
+        f"{', '.join(data.get('distinct_verdicts') or []) or '-'})"
+    )
+    print(
+        f"  verdict transitions:   "
+        f"{data.get('verdict_transitions', 0)}"
+    )
+    print(
+        f"  attribution share:     "
+        f"{data.get('fleet_attribution_pct', 0):.1f}%  "
+        f"(orphans: "
+        f"{data.get('fleet_orphan_action_count', 0)})"
+    )
+    print()
+    timeline = data.get("verdict_timeline") or []
+    if timeline:
+        print("  Verdict timeline:")
+        import datetime as _dt
+        for entry in timeline[-10:]:
+            ts = float(entry.get("ts", 0) or 0)
+            try:
+                day = _dt.datetime.fromtimestamp(
+                    ts,
+                ).strftime("%Y-%m-%d %H:%M")
+            except (ValueError, OSError):
+                day = "?"
+            print(
+                f"    {day}  "
+                f"{entry.get('verdict', '?'):<16s} "
+                f"profit=$"
+                f"{entry.get('gross_profit', 0):>7.0f}"
+            )
+        print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -57536,6 +57629,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "evening-brief":
         _cmd_evening_brief(args)
+        return
+
+    if args.command == "week-review":
+        _cmd_week_review(args)
         return
 
     if args.command == "welcome":
