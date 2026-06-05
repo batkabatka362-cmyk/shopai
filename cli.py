@@ -12833,6 +12833,22 @@ def _cmd_morning_brief(args) -> None:
     )
     if data.get("snapshot_recorded"):
         print("  [snapshot recorded into W963-50 history]")
+    # W963-71: attention streak inline. Surfaces only when
+    # attention is needed (warn or critical streak detected).
+    if data.get("attention_needed"):
+        sev = data.get(
+            "attention_top_severity", "info",
+        )
+        achip = {
+            "critical": "[!! ]",
+            "warn":     "[-- ]",
+        }.get(sev, "[?? ]")
+        print(
+            f"  {achip} STREAK: "
+            f"{data.get('attention_top_streak', '?')} = "
+            f"{data.get('attention_top_count', 0)} cycle(s) "
+            f"({sev}) -- shopai attention"
+        )
     # W963-69: brief-diff inline. Surfaces only when
     # direction is improved / regressed (skip unchanged
     # to avoid clutter; skip no_data when history empty).

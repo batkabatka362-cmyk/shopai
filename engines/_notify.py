@@ -845,6 +845,47 @@ def collect_alerts() -> list[NotifyAlert]:
             exc,
         )
 
+    # W963-71: AGI attention streak probe. When a streak
+    # (loss / no_data / anomaly) reaches CRITICAL severity
+    # (default: 6+ consecutive snapshots), push Slack so the
+    # operator can't ignore it. Warn-level stays in inline
+    # surfaces only.
+    try:
+        from engines.agi_recommend_streak.detector import (
+            detect_streaks as _streak_detect,
+        )
+        sr = _streak_detect(threshold_days=3)
+        for s in (
+            sr.loss_streak,
+            sr.no_data_streak,
+            sr.anomaly_streak,
+        ):
+            if s.severity != "critical":
+                continue
+            alerts.append(NotifyAlert(
+                kind="agi_attention_streak",
+                severity="critical",
+                message=(
+                    f"AGI attention: {s.name} = "
+                    f"{s.count} consecutive snapshot(s). "
+                    f"{s.detail}"
+                ),
+                context={
+                    "streak": s.name,
+                    "count": s.count,
+                    "drill": s.drill,
+                },
+            ))
+            # One alert per probe -- the headline picks the
+            # worst streak; operator can drill via
+            # shopai attention for the full triple.
+            break
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "notify: attention_streak probe raised: %s",
+            exc,
+        )
+
     # W963-63: AGI anomaly inline probe. W963-57 detector
     # surfaces sudden anomalies (verdict flip / profit
     # outlier / attribution collapse / orphan burst). This

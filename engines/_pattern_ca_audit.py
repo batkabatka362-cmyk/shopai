@@ -110,6 +110,26 @@ _PROBES: list[dict[str, Any]] = [
         ),
         "min_occurrences": 2,
     },
+    # W963-71: attention streak wired into morning-brief
+    {
+        "name": "morning_brief_attention_wiring",
+        "path": "engines/agi_morning_brief/briefer.py",
+        "needles": (
+            "agi_recommend_streak",
+            "_gather_attention_streak",
+        ),
+        "min_occurrences": 2,
+    },
+    # W963-71: attention streak wired into notify
+    {
+        "name": "notify_attention_streak_alert",
+        "path": "engines/_notify.py",
+        "needles": (
+            "agi_attention_streak",
+            "agi_recommend_streak",
+        ),
+        "min_occurrences": 2,
+    },
 ]
 
 

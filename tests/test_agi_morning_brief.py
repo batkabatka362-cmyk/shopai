@@ -161,6 +161,55 @@ class TestNextAction:
         assert b.diff_headline == ""
         assert b.diff_gross_profit_delta == 0.0
 
+    def test_brief_has_attention_fields(self):
+        b = MorningBrief(store_id="")
+        assert b.attention_needed is False
+        assert b.attention_top_streak == ""
+        assert b.attention_top_count == 0
+        assert b.attention_top_severity == "info"
+
+    def test_critical_streak_escalates_above_anomaly(self):
+        b = MorningBrief(
+            store_id="",
+            proposed=[{
+                "rank": 1, "action": "y",
+                "cli_command": "shopai y",
+            }],
+            anomalies=[{
+                "type": "VERDICT_FLIP",
+                "severity": "critical",
+            }],
+            anomaly_critical_count=1,
+            attention_needed=True,
+            attention_top_streak="loss_streak",
+            attention_top_count=7,
+            attention_top_severity="critical",
+        )
+        out = _build_next_action(b)
+        # Critical streak ladder beats critical anomaly
+        assert "CRITICAL streak" in out
+        assert "loss_streak" in out
+        assert "7 cycles" in out
+
+    def test_warn_streak_falls_back_to_anomaly(self):
+        b = MorningBrief(
+            store_id="",
+            proposed=[{
+                "rank": 1, "action": "y",
+                "cli_command": "shopai y",
+            }],
+            anomalies=[{
+                "type": "VERDICT_FLIP",
+                "severity": "critical",
+            }],
+            anomaly_critical_count=1,
+            attention_needed=True,
+            attention_top_severity="warn",
+        )
+        out = _build_next_action(b)
+        # warn streak doesn't escalate; anomaly does
+        assert "CRITICAL anomaly" in out
+
     def test_warn_anomaly_does_not_escalate(self):
         b = MorningBrief(
             store_id="",

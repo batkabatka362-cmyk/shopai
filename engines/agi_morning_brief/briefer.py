@@ -38,6 +38,11 @@ class MorningBrief:
     diff_direction: str = "no_data"
     diff_headline: str = ""
     diff_gross_profit_delta: float = 0.0
+    # W963-71: attention streak context
+    attention_needed: bool = False
+    attention_top_streak: str = ""
+    attention_top_count: int = 0
+    attention_top_severity: str = "info"
     headline: str = ""
     next_action: str = ""
 
@@ -236,6 +241,18 @@ def _build_headline(brief: MorningBrief) -> str:
 
 
 def _build_next_action(brief: MorningBrief) -> str:
+    # Critical streaks escalate ABOVE single-cycle anomalies
+    # because they mean "I've been warning for N cycles in
+    # a row -- operator hasn't listened".
+    if (
+        brief.attention_needed
+        and brief.attention_top_severity == "critical"
+    ):
+        return (
+            f"CRITICAL streak {brief.attention_top_streak} "
+            f"= {brief.attention_top_count} cycles. "
+            "shopai attention for full triple."
+        )
     # Critical anomalies escalate above the proposer plan
     if brief.anomaly_critical_count > 0:
         crit = next(
@@ -274,6 +291,25 @@ def _build_next_action(brief: MorningBrief) -> str:
         f"#1{sev_tag}: {top.get('action', '?')} -> "
         f"{top.get('cli_command', '')}"
     )
+
+
+def _gather_attention_streak(brief: MorningBrief) -> None:
+    try:
+        from engines.agi_recommend_streak.detector import (
+            detect_streaks,
+        )
+        r = detect_streaks(threshold_days=3)
+        brief.attention_needed = r.attention_needed
+        if r.attention_needed and r.top_streak:
+            brief.attention_top_streak = r.top_streak
+            top = getattr(r, r.top_streak, None)
+            if top is not None:
+                brief.attention_top_count = top.count
+                brief.attention_top_severity = top.severity
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "brief: attention raised: %s", exc,
+        )
 
 
 def _gather_brief_diff(brief: MorningBrief) -> None:
@@ -330,6 +366,7 @@ def build_morning_brief(
     _gather_critiques(brief)
     _gather_anomalies(brief)
     _gather_brief_diff(brief)
+    _gather_attention_streak(brief)
     _maybe_record_snapshot(brief, persist_snapshot)
     brief.headline = _build_headline(brief)
     brief.next_action = _build_next_action(brief)
