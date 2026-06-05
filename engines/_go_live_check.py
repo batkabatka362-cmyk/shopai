@@ -408,7 +408,96 @@ def run_go_live_check() -> list[CheckResult]:
         _check_autonomy_substrate(),  # Wave 245
         _check_revenue_readiness(),  # W963-1
         _check_phase4_substrate(),  # W963-61
+        _check_phase5_autonomy(),   # W963-83
     ]
+
+
+def _check_phase5_autonomy() -> CheckResult:
+    """W963-83: Phase 5 autonomy substrate check.
+
+    Verifies the W963-80 arm_recommender + W963-82 mapping
+    are wired and the env-var safety net is configurable.
+
+    Pass: arm_recommender produces output AND mapping is
+          imported successfully.
+    Warn: substrate ready but SHOPAI_AUTO_DISARM_ON_OVERRIDE
+          is unset (operator has visibility but no
+          auto-response).
+    Fail: arm_recommender import fails or mapping module
+          unavailable (Phase 5 substrate broken).
+    """
+    try:
+        from engines.agi_arm_recommender.recommender import (
+            recommend,
+        )
+        from engines.agi_arm_recommender. \
+            engine_domain_mapping import (
+                domains_used,
+            )
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult(
+            name="phase5_autonomy",
+            status="fail",
+            detail=f"Phase 5 module import failed: {exc}",
+            fix="reinstall: pip install -e .",
+        )
+    # Probe recommender
+    try:
+        r = recommend()
+        _ = r.verdict
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult(
+            name="phase5_autonomy",
+            status="fail",
+            detail=(
+                f"arm_recommender probe raised: {exc}"
+            ),
+            fix=(
+                "Run: shopai arm-recommend (manually "
+                "to surface error)"
+            ),
+        )
+    # Confirm mapping is populated
+    domains = domains_used()
+    if not domains:
+        return CheckResult(
+            name="phase5_autonomy",
+            status="fail",
+            detail=(
+                "engine_to_domain mapping is empty -- no "
+                "auto-disarm path possible"
+            ),
+            fix=(
+                "Restore the _ENGINE_TO_DOMAIN catalog in "
+                "engine_domain_mapping.py"
+            ),
+        )
+    # Env-var safety net
+    if os.environ.get(
+        "SHOPAI_AUTO_DISARM_ON_OVERRIDE",
+    ) != "1":
+        return CheckResult(
+            name="phase5_autonomy",
+            status="warn",
+            detail=(
+                f"{len(domains)} autonomy domain(s) "
+                "wired but auto-disarm OFF "
+                "-- empire has visibility, no response"
+            ),
+            fix=(
+                "export SHOPAI_AUTO_DISARM_ON_OVERRIDE=1 "
+                "(empire will auto-disarm spend domains "
+                "on critical override)"
+            ),
+        )
+    return CheckResult(
+        name="phase5_autonomy",
+        status="pass",
+        detail=(
+            f"{len(domains)} autonomy domain(s) wired + "
+            "auto-disarm enabled"
+        ),
+    )
 
 
 def _check_phase4_substrate() -> CheckResult:
