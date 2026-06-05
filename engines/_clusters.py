@@ -442,6 +442,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "agi_morning_brief",     # W963-54: composes all Phase 3 substrate into one digest
     "agi_evening_brief",     # W963-55: day-end "what happened today?" complement
     "agi_week_review",       # W963-56: 7-day macro aggregator with verdict timeline
+    "agi_anomaly_detector",  # W963-57: MAD-based sudden anomaly detector
 })
 
 

@@ -2735,6 +2735,23 @@ def build_parser() -> argparse.ArgumentParser:
     wr_p.add_argument("--days", type=int, default=7)
     wr_p.add_argument("--json", action="store_true")
 
+    # W963-57: anomalies — MAD-based anomaly watcher.
+    an_p = sub.add_parser(
+        "anomalies",
+        help=(
+            "Scan W963-50 history for sudden statistical "
+            "anomalies (verdict flip / profit MAD outlier "
+            "/ attribution collapse-or-spike / orphan "
+            "burst). Complement to chronic regression "
+            "detection."
+        ),
+    )
+    an_p.add_argument(
+        "--window", type=int, default=14,
+        help="How many snapshots to include in the scan.",
+    )
+    an_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12314,6 +12331,62 @@ def _cmd_pnl_history(args) -> None:
                     f"({t.get('slope_pct')}%)"
                 )
     print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_anomalies(args) -> None:
+    """W963-57: MAD-based anomaly detector."""
+    from engines.agi_anomaly_detector import (
+        AgiAnomalyDetectorEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "window": int(getattr(args, "window", 14)),
+        },
+    }
+    result = AgiAnomalyDetectorEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    print(
+        f"AGI anomaly scan  --  window="
+        f"{data.get('window', 14)}  "
+        f"samples={data.get('sample_count', 0)}"
+    )
+    print()
+    print(f"  {data.get('headline', '')}")
+    print()
+    anomalies = data.get("anomalies") or []
+    if not anomalies:
+        print("  (no anomalies)")
+    else:
+        import datetime as _dt
+        for a in anomalies:
+            chip = {
+                "critical": "[!! ]",
+                "warn":     "[-- ]",
+                "info":     "[.. ]",
+            }.get(a.get("severity", "info"), "[?? ]")
+            ts = float(a.get("occurred_at", 0) or 0)
+            try:
+                when = _dt.datetime.fromtimestamp(
+                    ts,
+                ).strftime("%Y-%m-%d %H:%M")
+            except (ValueError, OSError):
+                when = "?"
+            print(
+                f"  {chip} {a.get('type', '?')}  "
+                f"({when})  "
+                f"delta={a.get('delta', 0)}"
+            )
+            desc = a.get("description", "")
+            if desc:
+                print(f"        {desc}")
+            print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -57633,6 +57706,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "week-review":
         _cmd_week_review(args)
+        return
+
+    if args.command == "anomalies":
+        _cmd_anomalies(args)
         return
 
     if args.command == "welcome":
