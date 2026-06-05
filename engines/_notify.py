@@ -845,6 +845,40 @@ def collect_alerts() -> list[NotifyAlert]:
             exc,
         )
 
+    # W963-86: auto-disarm event probe. When the W963-82
+    # auto-disarm bridge fires, the W963-84 log records.
+    # Notify the operator within the same notify-check
+    # window so they don't have to wait for the next
+    # daily-brief.
+    try:
+        from engines.agi_arm_recommender.auto_disarm_log \
+            import recent_events as _ad_recent
+        recent = _ad_recent(limit=1, hours=1.0)
+        if recent:
+            top = recent[0]
+            doms = top.get("domains_disarmed") or []
+            alerts.append(NotifyAlert(
+                kind="agi_auto_disarmed",
+                severity="critical",
+                message=(
+                    f"AGI auto-disarmed "
+                    f"{len(doms)} domain(s): "
+                    f"{', '.join(doms)} -- reason: "
+                    f"{top.get('override_reason', '')[:80]}"
+                ),
+                context={
+                    "domains": doms,
+                    "override_reason":
+                        top.get("override_reason"),
+                    "engines_recommended":
+                        top.get("engines_recommended"),
+                },
+            ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "notify: auto_disarm probe raised: %s", exc,
+        )
+
     # W963-75: AGI brief-diff probe. When the W963-68 diff
     # reports a REGRESSED direction with a significant profit
     # delta, push Slack. Anomaly detector (W963-57) handles

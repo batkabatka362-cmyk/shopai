@@ -180,6 +180,16 @@ _PROBES: list[dict[str, Any]] = [
         ),
         "min_occurrences": 1,
     },
+    # W963-86: notify pushes auto-disarm alert
+    {
+        "name": "notify_auto_disarm_alert",
+        "path": "engines/_notify.py",
+        "needles": (
+            "agi_auto_disarmed",
+            "auto_disarm_log",
+        ),
+        "min_occurrences": 2,
+    },
     # ── Non-cli probes: file-level scan
     {
         "name": "notify_agi_anomaly_alert",

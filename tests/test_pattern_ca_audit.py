@@ -176,17 +176,18 @@ class TestRunPatternCaAudit:
                 for v in report.violations
             )
         )
-        # 23 probes after W963-85:
+        # 24 probes after W963-86:
         #   14 cli.py function-scope (daily-brief x4,
         #     empire x4, morning-brief x1, cycle-run x3,
         #     cycle-status x1, reconcile x1)
-        #   3 _notify (anomaly + streak + brief-diff)
+        #   4 _notify (anomaly + streak + brief-diff +
+        #     auto-disarm)
         #   1 _ai_strategies (helper)
         #   1 world_model (section)
         #   1 _go_live_check (probe)
         #   3 morning_brief/briefer (diff + attention + arm)
-        assert report.probes_run == 23
-        assert report.clean_probes == 23
+        assert report.probes_run == 24
+        assert report.clean_probes == 24
 
     def test_missing_file_violates(self):
         with patch(
@@ -195,8 +196,8 @@ class TestRunPatternCaAudit:
         ):
             report = run_pattern_ca_audit()
         assert report.has_violations is True
-        # 23 probes all hit the empty source
-        assert len(report.violations) == 23
+        # 24 probes all hit the empty source
+        assert len(report.violations) == 24
         for v in report.violations:
             assert "missing" in v.detail.lower()
 
