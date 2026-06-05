@@ -31332,15 +31332,14 @@ def _cmd_cycle_run(args) -> None:
                 "W963-62 snapshot raised: %s", exc,
             )
 
-    # W963-81: post-cycle arm-recommender visibility hook.
-    # Surface critical OVERRIDE recommendations into the
-    # cycle log so operators see what the empire WANTS to
-    # do next cycle. Pure log-emission for now; actual
-    # auto-disarm needs the engine->autonomy-domain
-    # mapping (the recommender uses engine names like
-    # 'ads_launcher' / 'loyalty' while the autonomy bridge
-    # uses domain names like 'marketing' / 'customer_
-    # support'). The mapping table is the W963-82+ work.
+    # W963-81/82: post-cycle arm-recommender hook.
+    # W963-81 logs the recommender's override for visibility.
+    # W963-82 auto-disarms autonomy DOMAINS (not engines)
+    # when override_applied is set AND
+    # SHOPAI_AUTO_DISARM_ON_OVERRIDE=1. Engines that have no
+    # autonomy domain (via the W963-82 mapping) are skipped
+    # silently; those that DO have a domain get translated
+    # and the autonomy bridge's disarm() is called.
     try:
         from engines.agi_arm_recommender.recommender \
             import recommend as _w963_81_recommend
@@ -31359,6 +31358,42 @@ def _cmd_cycle_run(args) -> None:
                 _w963_81_report.override_applied,
                 arm_n, disarm_n,
             )
+            # W963-82: env-gated auto-disarm path.
+            if os.environ.get(
+                "SHOPAI_AUTO_DISARM_ON_OVERRIDE",
+            ) == "1":
+                from engines.agi_arm_recommender. \
+                    engine_domain_mapping import (
+                        engine_to_domain,
+                    )
+                from core.automation.autonomy_armed \
+                    import disarm as _w963_82_disarm
+                disarmed_domains: set[str] = set()
+                for rec in (
+                    _w963_81_report.disarm_recommendations
+                ):
+                    dom = engine_to_domain(rec.engine)
+                    if dom is None or dom in disarmed_domains:
+                        continue
+                    try:
+                        ok = _w963_82_disarm(dom)
+                        if ok:
+                            disarmed_domains.add(dom)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "W963-82 disarm %s raised: %s",
+                            dom, exc,
+                        )
+                if disarmed_domains:
+                    logger.warning(
+                        "W963-82 auto-disarmed %d domain(s) "
+                        "due to override '%s': %s",
+                        len(disarmed_domains),
+                        _w963_81_report.override_applied,
+                        ", ".join(
+                            sorted(disarmed_domains),
+                        ),
+                    )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "W963-81 arm-recommender hook raised: %s",
