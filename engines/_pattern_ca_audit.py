@@ -120,6 +120,16 @@ _PROBES: list[dict[str, Any]] = [
         ),
         "min_occurrences": 4,
     },
+    # W963-79: reconcile drill -> investigate-orphans
+    {
+        "name": "cli_reconcile_investigate_drill",
+        "path": "cli.py",
+        "enclosing_function": "_cmd_reconcile",
+        "needles": (
+            "investigate-orphans",
+        ),
+        "min_occurrences": 1,
+    },
     # ── Non-cli probes: file-level scan
     {
         "name": "notify_agi_anomaly_alert",

@@ -12904,10 +12904,16 @@ def _cmd_morning_brief(args) -> None:
         f"{data.get('history_trend_verdict', 'no_data')}  "
         f"(n={data.get('history_samples', 0)})"
     )
-    print(
-        f"  orphan AGI claims:      "
-        f"{data.get('orphan_action_count', 0)}"
-    )
+    orphan_n = data.get("orphan_action_count", 0)
+    if orphan_n >= 5:
+        print(
+            f"  orphan AGI claims:      [WRN] {orphan_n}  "
+            "-- shopai investigate-orphans"
+        )
+    else:
+        print(
+            f"  orphan AGI claims:      {orphan_n}"
+        )
     print(
         f"  approvals pending:      "
         f"{data.get('pending_approvals', 0)}"
@@ -13521,6 +13527,29 @@ def _cmd_reconcile(args) -> None:
             )
 
     print()
+    # W963-79: surface investigate-orphans drill when
+    # orphans > 0. Connects reconcile output to the
+    # actionable W963-78 investigator.
+    if (
+        data.get("mode") != "single"
+        and data.get("fleet_orphan_action_count", 0) > 0
+    ):
+        print(
+            "  Drill orphans: "
+            "shopai investigate-orphans"
+        )
+        print()
+    elif (
+        data.get("mode") == "single"
+        and (data.get("recon") or {}).get(
+            "orphan_action_count", 0,
+        ) > 0
+    ):
+        print(
+            "  Drill orphans: "
+            "shopai investigate-orphans"
+        )
+        print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
