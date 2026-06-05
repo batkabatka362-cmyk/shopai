@@ -2776,6 +2776,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bd_p.add_argument("--json", action="store_true")
 
+    # W963-70: attention — recommend streak (un-acted on).
+    att_p = sub.add_parser(
+        "attention",
+        help=(
+            "Operator-attention guard. Counts consecutive "
+            "W963-50 snapshots where the empire signals "
+            "stress (loss/no_data/anomaly) but no action "
+            "has been taken. Escalates with N."
+        ),
+    )
+    att_p.add_argument(
+        "--threshold-days", type=int, default=3,
+        dest="threshold_days",
+        help=(
+            "Severity escalates to warn at this count + "
+            "critical at 2x."
+        ),
+    )
+    att_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12380,6 +12400,58 @@ def _cmd_pnl_history(args) -> None:
                     f"delta=${t.get('delta', 0):>+7.2f} "
                     f"({t.get('slope_pct')}%)"
                 )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_attention(args) -> None:
+    """W963-70: operator-attention streak detector."""
+    from engines.agi_recommend_streak import (
+        AgiRecommendStreakEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    payload = {
+        "data": {
+            "threshold_days": int(
+                getattr(args, "threshold_days", 3),
+            ),
+        },
+    }
+    result = AgiRecommendStreakEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    needed = data.get("attention_needed")
+    chip = "[!! ]" if needed else "[OK ]"
+    print(f"AGI attention  {chip}")
+    print()
+    print(f"  {data.get('headline', '')}")
+    print()
+    print(
+        f"  samples scanned: "
+        f"{data.get('samples_scanned', 0)}"
+    )
+    for sname in (
+        "loss_streak", "no_data_streak", "anomaly_streak",
+    ):
+        s = data.get(sname) or {}
+        cnt = s.get("count", 0)
+        sev = s.get("severity", "info")
+        sev_chip = {
+            "critical": "[!! ]",
+            "warn":     "[-- ]",
+            "info":     "[.. ]",
+        }.get(sev, "[?? ]")
+        print(
+            f"  {sev_chip} {sname:<14s} count={cnt:>3d}  "
+            f"sev={sev}"
+        )
+        det = s.get("detail", "")
+        if det:
+            print(f"        {det}")
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -58146,6 +58218,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "brief-diff":
         _cmd_brief_diff(args)
+        return
+
+    if args.command == "attention":
+        _cmd_attention(args)
         return
 
     if args.command == "welcome":
