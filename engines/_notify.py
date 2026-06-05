@@ -845,6 +845,43 @@ def collect_alerts() -> list[NotifyAlert]:
             exc,
         )
 
+    # W963-63: AGI anomaly inline probe. W963-57 detector
+    # surfaces sudden anomalies (verdict flip / profit
+    # outlier / attribution collapse / orphan burst). This
+    # routes critical ones into the notify pipeline so the
+    # operator gets Slack/webhook push without polling
+    # shopai anomalies.
+    try:
+        from engines.agi_anomaly_detector.detector import (
+            detect as _agi_anom_detect,
+        )
+        anom_report = _agi_anom_detect(window=14)
+        for a in anom_report.anomalies:
+            if a.severity != "critical":
+                continue
+            alerts.append(NotifyAlert(
+                kind="agi_critical_anomaly",
+                severity="critical",
+                message=(
+                    f"AGI anomaly {a.type}: {a.description}"
+                ),
+                context={
+                    "type": a.type,
+                    "delta": a.delta,
+                    "occurred_at": a.occurred_at,
+                },
+            ))
+            # Only one anomaly alert per notify check to
+            # avoid Slack flood when multiple anomalies
+            # fire together. The first (critical-first
+            # sorted by W963-57) gets pushed; the rest
+            # surface on `shopai anomalies`.
+            break
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "notify: agi_anomaly probe raised: %s", exc,
+        )
+
     # 16. Wave 153: autonomy coalesce. Opt-in via
     # SHOPAI_NOTIFY_AUTONOMY_COALESCE=1. When set, replace
     # per-domain {refund,budget,fulfillment,inventory,
