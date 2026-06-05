@@ -184,6 +184,33 @@ class TestHeadline:
         h = _build_headline(d)
         assert "Unchanged" in h
 
+    def test_regressed_profit_drop_renders_minus_dollar(self):
+        """W963-93 regression test: pre-fix REGRESSED
+        branch showed $-50 (sign after dollar). Now -$50."""
+        d = BriefDiff(
+            sufficient=True,
+            previous_verdict="earning",
+            current_verdict="earning",
+            verdict_change="no_change",
+            direction="regressed",
+            gross_profit_delta=-80.0,
+        )
+        h = _build_headline(d)
+        assert "-$80" in h
+        assert "$-80" not in h
+
+    def test_improved_profit_gain_renders_plus_dollar(self):
+        d = BriefDiff(
+            sufficient=True,
+            previous_verdict="earning",
+            current_verdict="earning",
+            verdict_change="no_change",
+            direction="improved",
+            gross_profit_delta=120.0,
+        )
+        h = _build_headline(d)
+        assert "+$120" in h
+
 
 class TestNextAction:
     def test_insufficient(self):

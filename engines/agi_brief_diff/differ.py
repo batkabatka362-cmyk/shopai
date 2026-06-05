@@ -120,6 +120,11 @@ def _build_headline(diff: BriefDiff) -> str:
             "Need at least 2 history snapshots to "
             "compute a diff."
         )
+    # W963-93: sign-before-$ rendering (W963-72 class).
+    def _signed_dollars(delta: float) -> str:
+        sign = "+" if delta >= 0 else "-"
+        return f"{sign}${abs(delta):.0f}"
+
     if diff.direction == "improved":
         return (
             f"IMPROVED: {diff.previous_verdict} -> "
@@ -127,7 +132,8 @@ def _build_headline(diff: BriefDiff) -> str:
             if diff.verdict_change == "improved"
             else (
                 f"IMPROVED: {diff.current_verdict} "
-                f"(profit +${diff.gross_profit_delta:.0f})"
+                f"(profit "
+                f"{_signed_dollars(diff.gross_profit_delta)})"
             )
         )
     if diff.direction == "regressed":
@@ -137,7 +143,8 @@ def _build_headline(diff: BriefDiff) -> str:
             if diff.verdict_change == "regressed"
             else (
                 f"REGRESSED: {diff.current_verdict} "
-                f"(profit ${diff.gross_profit_delta:.0f})"
+                f"(profit "
+                f"{_signed_dollars(diff.gross_profit_delta)})"
             )
         )
     return (

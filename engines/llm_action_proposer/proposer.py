@@ -134,13 +134,19 @@ def _deterministic_baseline(
         return acts
 
     if verdict == "attributed_loss":
+        # W963-93: render -$X (profit is negative here).
+        _profit_str = (
+            f"-${abs(profit):.0f}"
+            if profit < 0
+            else f"${profit:.0f}"
+        )
         acts.append(ProposedAction(
             rank=1,
             action="investigate ad ROAS",
             cli_command="shopai roas",
             rationale=(
                 f"Fleet attributed loss "
-                f"(${profit:.0f}) means AGI is "
+                f"({_profit_str}) means AGI is "
                 "spending on traffic that's not "
                 "converting. ROAS report identifies "
                 "the losing channels."

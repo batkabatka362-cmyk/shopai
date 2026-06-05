@@ -30,7 +30,9 @@ class TestHeadline:
         )
         h = _build_headline(b)
         assert "BLEEDING" in h
-        assert "-100" in h
+        # W963-93: sign-prefix-before-$ rendering.
+        assert "-$100" in h
+        assert "$-100" not in h
 
     def test_organic_only(self):
         b = MorningBrief(

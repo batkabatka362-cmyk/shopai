@@ -194,36 +194,66 @@ def _maybe_override(
 ) -> tuple[list[str], list[str], str | None]:
     """Apply higher-priority override rules. Returns
     (arm, disarm, override_label) -- label is None when
-    no override applied."""
+    no override applied.
+
+    W963-93 fix: previously this returned early on the
+    first matching override, so a loss_streak override
+    co-existing with a critical_anomaly disarmed only
+    spend engines (missing destructive). Now MERGES every
+    applicable override so the disarm list reflects the
+    full safety posture.
+    """
     crit_anom = int(sig.get("critical_anomaly_count") or 0)
     streak_top = sig.get("streak_top")
     streak_sev = sig.get("streak_severity")
 
-    if streak_top == "loss_streak" and streak_sev == "critical":
-        # Operator ignoring N cycles of bleeding -- pull
-        # all spend down regardless of verdict.
-        disarm = list(set(disarm) | set(_SPEND_ENGINES))
+    disarm_set = set(disarm)
+    override_reasons: list[str] = []
+
+    # no_data_streak is mutually exclusive with the others
+    # because it overwrites the arm list entirely (empire
+    # is genuinely idle long-term). Apply that first and
+    # short-circuit -- it doesn't compose with regular
+    # arm/disarm logic.
+    if (
+        streak_top == "no_data_streak"
+        and streak_sev == "critical"
+    ):
         return (
-            arm, disarm,
-            "critical_loss_streak: full spend disarm",
-        )
-    if streak_top == "no_data_streak" and streak_sev == "critical":
-        # Empire genuinely idle long-term -- only kick-start
-        arm = list(_KICKSTART_ENGINES)
-        return (
-            arm, disarm,
+            list(_KICKSTART_ENGINES),
+            disarm,
             "critical_no_data_streak: kick-start only",
         )
-    if crit_anom > 0:
-        # Conservative this cycle while operator
-        # investigates. Disarm destructive ops.
-        disarm = list(
-            set(disarm) | set(_DESTRUCTIVE_ENGINES)
+
+    # loss_streak critical: full spend disarm.
+    if (
+        streak_top == "loss_streak"
+        and streak_sev == "critical"
+    ):
+        disarm_set |= set(_SPEND_ENGINES)
+        override_reasons.append(
+            "critical_loss_streak: full spend disarm",
         )
-        return (
-            arm, disarm,
+
+    # critical anomaly: destructive engines disarmed.
+    # COMPOSES with loss_streak so both safety layers
+    # apply when both fire.
+    if crit_anom > 0:
+        disarm_set |= set(_DESTRUCTIVE_ENGINES)
+        override_reasons.append(
             f"critical_anomaly={crit_anom}: "
             "destructive engines disarmed",
+        )
+
+    if override_reasons:
+        # Preserve original disarm-list order, then append
+        # newly-added engines deterministically (sorted).
+        original = list(disarm)
+        added = sorted(disarm_set - set(disarm))
+        return (
+            arm,
+            original + added,
+            "; ".join(override_reasons),
         )
     return (arm, disarm, None)
 

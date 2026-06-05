@@ -223,16 +223,22 @@ def _build_headline(brief: MorningBrief) -> str:
             "Empire IDLE -- no revenue in 7d window."
         )
     if v == "attributed_loss":
+        # W963-93: render -$X instead of $-X when profit < 0.
+        sign = "-" if brief.gross_profit < 0 else ""
         return (
             f"Empire BLEEDING -- "
-            f"${brief.gross_profit:.0f} fleet loss "
+            f"{sign}${abs(brief.gross_profit):.0f} fleet loss "
             f"(AGI attributing "
             f"{brief.attribution_pct:.0f}%)."
         )
     if v == "organic_only":
+        # gross_profit is usually positive in organic_only,
+        # but render sign-prefix-before-$ in case of edge.
+        sign = "-" if brief.gross_profit < 0 else ""
         return (
             "Empire EARNING but AGI not attributed -- "
-            f"${brief.gross_profit:.0f} profit, 0% AGI."
+            f"{sign}${abs(brief.gross_profit):.0f} profit, "
+            "0% AGI."
         )
     # earning
     arrow = {

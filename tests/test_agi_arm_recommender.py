@@ -129,6 +129,53 @@ class TestOverride:
         )
         assert override is None
 
+    def test_overrides_compose_when_both_fire(self):
+        """W963-93 regression: pre-fix, loss_streak
+        override returned early so destructive engines
+        weren't disarmed even when critical_anomaly also
+        fired. Now the disarm list contains BOTH spend
+        + destructive."""
+        sig = {
+            "streak_top": "loss_streak",
+            "streak_severity": "critical",
+            "critical_anomaly_count": 2,
+        }
+        arm, dis, override = _maybe_override(
+            sig, [], [],
+        )
+        assert override is not None
+        # Override label mentions BOTH reasons
+        assert "critical_loss_streak" in override
+        assert "critical_anomaly" in override
+        # Disarm list contains BOTH classes
+        for eng in _SPEND_ENGINES:
+            assert eng in dis, (
+                f"{eng} (spend) missing"
+            )
+        for eng in _DESTRUCTIVE_ENGINES:
+            assert eng in dis, (
+                f"{eng} (destructive) missing"
+            )
+
+    def test_no_data_streak_still_short_circuits(self):
+        """no_data_streak overwrites arm to kick-start
+        list -- it's mutually exclusive with other
+        overrides because it changes the SHAPE of the
+        plan, not just augments disarm."""
+        sig = {
+            "streak_top": "no_data_streak",
+            "streak_severity": "critical",
+            "critical_anomaly_count": 2,
+        }
+        arm, dis, override = _maybe_override(
+            sig, ["x"], [],
+        )
+        assert "no_data_streak" in override
+        # arm overwritten to kick-start, anomaly disarm
+        # NOT applied because no_data_streak short-
+        # circuits.
+        assert set(arm) == set(_KICKSTART_ENGINES)
+
 
 # ── recommend() ────────────────────────────────────────────
 

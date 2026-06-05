@@ -47,6 +47,9 @@ class TestDeterministicBaseline:
         assert len(acts) == 3
         assert acts[0].action == "investigate ad ROAS"
         assert "shopai roas" in acts[0].cli_command
+        # W963-93: rationale renders -$50 not $-50
+        assert "-$50" in acts[0].rationale
+        assert "$-50" not in acts[0].rationale
 
     def test_organic_only(self):
         acts = _deterministic_baseline(
