@@ -13214,11 +13214,16 @@ def _cmd_evening_brief(args) -> None:
         f"{data.get('outcomes_recorded_today', 0)}"
     )
     print()
+    # W963-96: sign-prefix-before-$ when profit < 0
+    _evn_gp = float(data.get('current_gross_profit', 0) or 0)
+    _evn_gp_str = (
+        f"-${abs(_evn_gp):.0f}"
+        if _evn_gp < 0 else f"${_evn_gp:.0f}"
+    )
     print(
         f"  current verdict:    "
         f"{data.get('current_verdict', 'no_data')}  "
-        f"(profit="
-        f"${data.get('current_gross_profit', 0):.0f}, "
+        f"(profit={_evn_gp_str}, "
         f"attr="
         f"{data.get('current_attribution_pct', 0):.1f}%)"
     )
@@ -13510,9 +13515,15 @@ def _cmd_next_actions(args) -> None:
         f"verdict={verdict})"
     )
     print()
+    # W963-96: sign-prefix-before-$ when profit < 0
+    _na_gp = float(sig.get('gross_profit', 0) or 0)
+    _na_gp_str = (
+        f"-${abs(_na_gp):.0f}"
+        if _na_gp < 0 else f"${_na_gp:.0f}"
+    )
     print(
         f"  {chip} "
-        f"profit=${sig.get('gross_profit', 0):.0f}  "
+        f"profit={_na_gp_str}  "
         f"attr={sig.get('attribution_pct', 0):.1f}%  "
         f"trend={sig.get('trend_verdict', '?')}  "
         f"pending={sig.get('pending_approvals', 0)}"
@@ -13663,10 +13674,16 @@ def _cmd_earnings_history(args) -> None:
     elif action == "record":
         snap = data.get("snapshot") or {}
         wrote = "[OK ]" if data.get("wrote") else "[-- ]"
+        # W963-96: sign-prefix-before-$ when profit < 0
+        _rec_gp = float(snap.get('gross_profit', 0) or 0)
+        _rec_gp_str = (
+            f"-${abs(_rec_gp):.0f}"
+            if _rec_gp < 0 else f"${_rec_gp:.0f}"
+        )
         print(
             f"  {wrote} verdict="
             f"{snap.get('verdict', '?')}  "
-            f"profit=${snap.get('gross_profit', 0):.0f}  "
+            f"profit={_rec_gp_str}  "
             f"attr={snap.get('attribution_pct', 0):.1f}%"
         )
         print(
@@ -23237,12 +23254,22 @@ def _cmd_world_model_show(args) -> None:
         v = phase4.get("verdict", "no_data")
         print()
         print("AGI (fleet, 7d):")
+        # W963-96: sign-prefix-before-$ when profit/run-rate < 0
+        _cs_gp = float(phase4.get('gross_profit', 0) or 0)
+        _cs_gp_str = (
+            f"-${abs(_cs_gp):.0f}"
+            if _cs_gp < 0 else f"${_cs_gp:.0f}"
+        )
+        _cs_rr = float(phase4.get('monthly_run_rate', 0) or 0)
+        _cs_rr_str = (
+            f"-${abs(_cs_rr):.0f}"
+            if _cs_rr < 0 else f"${_cs_rr:.0f}"
+        )
         print(
             f"  Verdict: {v}  "
-            f"profit=${phase4.get('gross_profit', 0):.0f}  "
+            f"profit={_cs_gp_str}  "
             f"attr={phase4.get('attribution_pct', 0):.1f}%  "
-            f"run-rate/mo="
-            f"${phase4.get('monthly_run_rate', 0):.0f}"
+            f"run-rate/mo={_cs_rr_str}"
         )
         print(
             f"  Trend (14d snapshots): "
