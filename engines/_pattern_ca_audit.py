@@ -130,6 +130,26 @@ _PROBES: list[dict[str, Any]] = [
         ),
         "min_occurrences": 1,
     },
+    # W963-81: cycle hook surfaces arm-recommender override
+    {
+        "name": "cli_cycle_arm_recommender_hook",
+        "path": "cli.py",
+        "enclosing_function": "_cmd_cycle_run",
+        "needles": (
+            "agi_arm_recommender",
+        ),
+        "min_occurrences": 1,
+    },
+    # W963-81: morning-brief surfaces arm-recommender override
+    {
+        "name": "morning_brief_arm_wiring",
+        "path": "engines/agi_morning_brief/briefer.py",
+        "needles": (
+            "agi_arm_recommender",
+            "_gather_arm_recommender",
+        ),
+        "min_occurrences": 2,
+    },
     # ── Non-cli probes: file-level scan
     {
         "name": "notify_agi_anomaly_alert",

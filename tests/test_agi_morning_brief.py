@@ -282,6 +282,17 @@ class TestBuildMorningBrief:
 
         # W963-71+: also mock anomaly + streak + diff so
         # real history snapshots don't bleed into the test.
+        # W963-81+: also mock arm-recommender.
+        @dataclass
+        class _FakeArmReport:
+            override_applied: str | None = None
+            arm_recommendations: list = field(
+                default_factory=list,
+            )
+            disarm_recommendations: list = field(
+                default_factory=list,
+            )
+
         @dataclass
         class _FakeAnomReport:
             anomalies: list = field(default_factory=list)
@@ -345,6 +356,10 @@ class TestBuildMorningBrief:
         ), patch(
             "engines.agi_brief_diff.differ.compute_diff",
             return_value=_FakeDiff(),
+        ), patch(
+            "engines.agi_arm_recommender.recommender."
+            "recommend",
+            return_value=_FakeArmReport(),
         ), patch(
             "engines.llm_action_critic.critic.critique",
         ) as fake_critique:
@@ -416,6 +431,10 @@ class TestBuildMorningBrief:
         ), patch(
             "engines.agi_brief_diff.differ.compute_diff",
             side_effect=RuntimeError("f"),
+        ), patch(
+            "engines.agi_arm_recommender.recommender."
+            "recommend",
+            side_effect=RuntimeError("g"),
         ):
             b = build_morning_brief()
         assert b.verdict == "no_data"

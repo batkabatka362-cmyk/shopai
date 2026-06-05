@@ -43,6 +43,10 @@ class MorningBrief:
     attention_top_streak: str = ""
     attention_top_count: int = 0
     attention_top_severity: str = "info"
+    # W963-81: arm recommender override surface
+    arm_override_active: str | None = None
+    arm_recommended_count: int = 0
+    arm_disarm_count: int = 0
     headline: str = ""
     next_action: str = ""
 
@@ -312,6 +316,26 @@ def _gather_attention_streak(brief: MorningBrief) -> None:
         )
 
 
+def _gather_arm_recommender(brief: MorningBrief) -> None:
+    """W963-81: surface arm-recommender override into the
+    morning brief so operator sees it on AM scan."""
+    try:
+        from engines.agi_arm_recommender.recommender \
+            import recommend
+        r = recommend()
+        brief.arm_override_active = r.override_applied
+        brief.arm_recommended_count = len(
+            r.arm_recommendations,
+        )
+        brief.arm_disarm_count = len(
+            r.disarm_recommendations,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "brief: arm-recommender raised: %s", exc,
+        )
+
+
 def _gather_brief_diff(brief: MorningBrief) -> None:
     try:
         from engines.agi_brief_diff.differ import (
@@ -367,6 +391,7 @@ def build_morning_brief(
     _gather_anomalies(brief)
     _gather_brief_diff(brief)
     _gather_attention_streak(brief)
+    _gather_arm_recommender(brief)
     _maybe_record_snapshot(brief, persist_snapshot)
     brief.headline = _build_headline(brief)
     brief.next_action = _build_next_action(brief)

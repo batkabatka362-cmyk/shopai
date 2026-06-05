@@ -13023,6 +13023,17 @@ def _cmd_morning_brief(args) -> None:
             f"{data.get('attention_top_count', 0)} cycle(s) "
             f"({sev}) -- shopai attention"
         )
+    # W963-81: arm-recommender override inline. Surfaces
+    # only when the recommender's verdict-driven plan got
+    # OVERRIDDEN by critical signals (anomaly / streak).
+    arm_ovr = data.get("arm_override_active")
+    if arm_ovr:
+        print(
+            f"  [!! ] ARM OVERRIDE: {arm_ovr}  "
+            f"(ARM={data.get('arm_recommended_count', 0)}, "
+            f"DISARM={data.get('arm_disarm_count', 0)}) "
+            "-- shopai arm-recommend"
+        )
     # W963-69: brief-diff inline. Surfaces only when
     # direction is improved / regressed (skip unchanged
     # to avoid clutter; skip no_data when history empty).
@@ -31320,6 +31331,39 @@ def _cmd_cycle_run(args) -> None:
             logger.debug(
                 "W963-62 snapshot raised: %s", exc,
             )
+
+    # W963-81: post-cycle arm-recommender visibility hook.
+    # Surface critical OVERRIDE recommendations into the
+    # cycle log so operators see what the empire WANTS to
+    # do next cycle. Pure log-emission for now; actual
+    # auto-disarm needs the engine->autonomy-domain
+    # mapping (the recommender uses engine names like
+    # 'ads_launcher' / 'loyalty' while the autonomy bridge
+    # uses domain names like 'marketing' / 'customer_
+    # support'). The mapping table is the W963-82+ work.
+    try:
+        from engines.agi_arm_recommender.recommender \
+            import recommend as _w963_81_recommend
+        _w963_81_report = _w963_81_recommend()
+        if _w963_81_report.override_applied:
+            disarm_n = len(
+                _w963_81_report.disarm_recommendations,
+            )
+            arm_n = len(
+                _w963_81_report.arm_recommendations,
+            )
+            logger.warning(
+                "W963-81 arm-recommender OVERRIDE: %s -- "
+                "operator should review (ARM=%d, DISARM=%d) "
+                "via `shopai arm-recommend`",
+                _w963_81_report.override_applied,
+                arm_n, disarm_n,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "W963-81 arm-recommender hook raised: %s",
+            exc,
+        )
 
     # Wave 251: post-cycle autonomy-doctor snapshot. Cheap
     # (cached AST audits + per-domain summary calls); catches
