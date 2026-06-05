@@ -28896,6 +28896,97 @@ def _cmd_cycle_status(args) -> None:
         )
         print()
 
+    # W963-77: cycle-status AGI Phase 4 verdict + trajectory.
+    # Always surfaces (operator scanning cycle health should
+    # see the AGI's current earning state inline).
+    try:
+        from engines.agi_earnings_summary.summarizer \
+            import compute_summary as _cs_agi_summary
+        from engines.agi_brief_diff.differ import (
+            compute_diff as _cs_compute_diff,
+        )
+        from engines.agi_recommend_streak.detector \
+            import detect_streaks as _cs_detect_streaks
+        from engines.agi_anomaly_detector.detector \
+            import detect as _cs_anom_detect
+        agi_s = _cs_agi_summary(days=7)
+        v_chip = {
+            "earning":         "[OK ]",
+            "attributed_loss": "[BAD]",
+            "organic_only":    "[WRN]",
+            "no_data":         "[ - ]",
+        }.get(agi_s.verdict, "[ ? ]")
+        print(
+            f"  AGI (fleet, 7d):       {v_chip} "
+            f"{agi_s.verdict:<16s} "
+            f"profit=${agi_s.fleet_gross_profit:.0f}  "
+            f"attr={agi_s.fleet_attribution_pct:.1f}%"
+        )
+        # Trajectory line (silent when unchanged + no data)
+        try:
+            diff = _cs_compute_diff()
+            if diff.sufficient and diff.direction in (
+                "improved", "regressed",
+            ):
+                d_chip = {
+                    "improved":  "[OK ]",
+                    "regressed": "[!! ]",
+                }.get(diff.direction, "[ ? ]")
+                sign = (
+                    "+" if diff.gross_profit_delta >= 0
+                    else "-"
+                )
+                print(
+                    f"    {d_chip} trajectory: "
+                    f"{diff.direction.upper()}  "
+                    f"({sign}$"
+                    f"{abs(diff.gross_profit_delta):.0f} "
+                    "profit since prior snapshot)"
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        # Streak line (silent when no attention needed)
+        try:
+            sr = _cs_detect_streaks(threshold_days=3)
+            if sr.attention_needed:
+                top = getattr(sr, sr.top_streak, None)
+                if top is not None:
+                    s_chip = {
+                        "critical": "[BAD]",
+                        "warn":     "[WRN]",
+                    }.get(top.severity, "[ ? ]")
+                    print(
+                        f"    {s_chip} streak: "
+                        f"{top.name} = {top.count} "
+                        f"cycle(s) ({top.severity})"
+                    )
+        except Exception:  # noqa: BLE001
+            pass
+        # Anomaly line (silent when 0 anomalies)
+        try:
+            ar = _cs_anom_detect(window=14)
+            if ar.anomalies:
+                crit = sum(
+                    1 for a in ar.anomalies
+                    if a.severity == "critical"
+                )
+                a_chip = (
+                    "[BAD]" if crit > 0 else "[WRN]"
+                )
+                print(
+                    f"    {a_chip} anomalies: "
+                    f"{len(ar.anomalies)} flagged "
+                    f"({crit} critical)"
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        print()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "cycle-status: agi phase4 block raised: %s",
+            exc,
+        )
+
     print("  Cluster health (10 clusters):")
     if not verdict_counts:
         print("    (no history yet)")

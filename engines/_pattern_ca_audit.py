@@ -107,6 +107,19 @@ _PROBES: list[dict[str, Any]] = [
         ),
         "min_occurrences": 1,
     },
+    # W963-77: cycle-status Phase 4 verdict + trajectory
+    {
+        "name": "cli_cycle_status_phase4_block",
+        "path": "cli.py",
+        "enclosing_function": "_cmd_cycle_status",
+        "needles": (
+            "agi_earnings_summary",
+            "agi_brief_diff",
+            "agi_recommend_streak",
+            "agi_anomaly_detector",
+        ),
+        "min_occurrences": 4,
+    },
     # ── Non-cli probes: file-level scan
     {
         "name": "notify_agi_anomaly_alert",
