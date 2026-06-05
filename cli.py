@@ -2752,6 +2752,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     an_p.add_argument("--json", action="store_true")
 
+    # W963-59: cron-recommend — tuned interval recommender.
+    cr_p = sub.add_parser(
+        "cron-recommend",
+        help=(
+            "Tuned cron-interval recommendation based on "
+            "actual cycle / action / verdict velocity. "
+            "Beats the hardcoded hourly from "
+            "shopai cycle schedule."
+        ),
+    )
+    cr_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12330,6 +12342,57 @@ def _cmd_pnl_history(args) -> None:
                     f"delta=${t.get('delta', 0):>+7.2f} "
                     f"({t.get('slope_pct')}%)"
                 )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_cron_recommend(args) -> None:
+    """W963-59: tuned cron-interval recommender."""
+    from engines.cron_recommender import CronRecommenderEngine
+
+    as_json = bool(getattr(args, "json", False))
+    result = CronRecommenderEngine().run({})
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    interval = data.get("interval_hours", 2.0)
+    chip = {
+        "high":   "[OK ]",
+        "medium": "[-- ]",
+        "low":    "[?? ]",
+    }.get(data.get("confidence", "low"), "[?? ]")
+    print(f"Cron recommendation  {chip}")
+    print()
+    print(
+        f"  recommended interval:  "
+        f"{interval:.0f}h  "
+        f"(confidence: {data.get('confidence', 'low')})"
+    )
+    print(f"  reason:                {data.get('reason', '')}")
+    print()
+    sig = data.get("signals") or {}
+    print(
+        f"  signals: cycles_7d={sig.get('cycles_7d', 0)}  "
+        f"actions_per_cycle="
+        f"{sig.get('actions_per_cycle', 0):.2f}  "
+        f"drift/day="
+        f"{sig.get('verdict_drift_per_day', 0):.2f}  "
+        f"crit_anom="
+        f"{sig.get('critical_anomaly_count', 0)}  "
+        f"failure_rate="
+        f"{sig.get('cycles_failure_rate', 0):.1%}"
+    )
+    print()
+    print("  Install on this platform:")
+    print(f"    {data.get('platform_template', '')}")
+    print()
+    print("  Cron (POSIX):")
+    print(f"    {data.get('cron_line', '')}")
+    print()
+    print("  Windows schtasks:")
+    print(f"    {data.get('windows_task', '')}")
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -57773,6 +57836,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "anomalies":
         _cmd_anomalies(args)
+        return
+
+    if args.command == "cron-recommend":
+        _cmd_cron_recommend(args)
         return
 
     if args.command == "welcome":

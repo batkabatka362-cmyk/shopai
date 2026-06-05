@@ -443,6 +443,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "agi_evening_brief",     # W963-55: day-end "what happened today?" complement
     "agi_week_review",       # W963-56: 7-day macro aggregator with verdict timeline
     "agi_anomaly_detector",  # W963-57: MAD-based sudden anomaly detector
+    "cron_recommender",      # W963-59: tunes cron interval to observed signal velocity
 })
 
 
