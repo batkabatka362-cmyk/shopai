@@ -30710,6 +30710,42 @@ def _cmd_cycle_run(args) -> None:
             "substrate-fire bridge raised: %s", exc,
         )
 
+    # W963-62: post-cycle Phase 4 snapshot persistence.
+    # Opt-in via SHOPAI_CYCLE_RECORD_BRIEF=1 (default OFF).
+    # When enabled, every live cycle stamps an
+    # agi_earnings_history snapshot so the W963-50 trend +
+    # W963-57 anomaly detector populate without a separate
+    # daily cron. Best-effort; never fails the cycle.
+    if os.environ.get("SHOPAI_CYCLE_RECORD_BRIEF") == "1":
+        try:
+            from engines.agi_earnings_summary.summarizer \
+                import compute_summary as _w963_62_summary
+            from engines.agi_earnings_history import (
+                store as _w963_62_history,
+            )
+            _s = _w963_62_summary(days=7)
+            _w963_62_history.record_snapshot({
+                "ts": time.time(),
+                "days": 7,
+                "verdict": _s.verdict,
+                "gross_profit": _s.fleet_gross_profit,
+                "attribution_pct":
+                    _s.fleet_attribution_pct,
+                "monthly_run_rate": _s.monthly_run_rate,
+                "trend_verdict": _s.trend_verdict,
+                "store_count": _s.store_count,
+                "orphan_action_count": 0,
+            })
+            logger.info(
+                "W963-62: recorded earnings snapshot "
+                "(verdict=%s, profit=$%.0f)",
+                _s.verdict, _s.fleet_gross_profit,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "W963-62 snapshot raised: %s", exc,
+            )
+
     # Wave 251: post-cycle autonomy-doctor snapshot. Cheap
     # (cached AST audits + per-domain summary calls); catches
     # substrate breakage that bridge fire alone wouldn't expose.
