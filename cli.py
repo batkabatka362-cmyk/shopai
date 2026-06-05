@@ -2842,6 +2842,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     adh_p.add_argument("--json", action="store_true")
 
+    # W963-87: earn-config -- env-var setup wizard.
+    ec_p = sub.add_parser(
+        "earn-config",
+        help=(
+            "One-command setup wizard. Detects unset "
+            "env-vars from go-live warnings and applies "
+            "safe defaults to .env. --apply commits; "
+            "--print emits shell exports."
+        ),
+    )
+    ec_p.add_argument(
+        "--apply", action="store_true",
+        help="Write safe defaults to .env",
+    )
+    ec_p.add_argument(
+        "--print", dest="print_exports",
+        action="store_true",
+        help="Print shell export commands for paste",
+    )
+    ec_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12447,6 +12468,104 @@ def _cmd_pnl_history(args) -> None:
                     f"({t.get('slope_pct')}%)"
                 )
     print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_earn_config(args) -> None:
+    """W963-87: env-var setup wizard."""
+    from engines.earn_config import EarnConfigEngine
+
+    as_json = bool(getattr(args, "json", False))
+    apply_flag = bool(getattr(args, "apply", False))
+    print_flag = bool(getattr(args, "print_exports", False))
+    action = (
+        "apply" if apply_flag
+        else ("print" if print_flag else "inspect")
+    )
+    payload = {"data": {"action": action}}
+    result = EarnConfigEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    print(f"Earn config ({action})")
+    print()
+    print(f"  {data.get('headline', '')}")
+    print()
+
+    keys = data.get("keys") or []
+    set_keys = [
+        k for k in keys
+        if k.get("is_set_env") or k.get("is_set_file")
+    ]
+    if set_keys:
+        print(f"  Already set ({len(set_keys)}):")
+        for k in set_keys:
+            print(
+                f"    [OK ] {k.get('name', '?'):<40s}"
+            )
+        print()
+
+    applicable = [
+        k for k in keys
+        if not (k.get("is_set_env") or k.get("is_set_file"))
+        and not k.get("operator_specific")
+    ]
+    if applicable:
+        marker = (
+            "Applied" if action == "apply"
+            else "Would apply"
+        )
+        print(f"  {marker} ({len(applicable)}):")
+        for k in applicable:
+            print(
+                f"    [+] {k.get('name', '?'):<40s} = "
+                f"{k.get('default', '?')}"
+            )
+            r = k.get("rationale", "")
+            if r:
+                print(f"        why: {r[:70]}")
+        print()
+
+    op_specific = [
+        k for k in keys
+        if not (k.get("is_set_env") or k.get("is_set_file"))
+        and k.get("operator_specific")
+    ]
+    if op_specific:
+        print(
+            f"  Need operator input ({len(op_specific)}):"
+        )
+        for k in op_specific:
+            print(
+                f"    [!] {k.get('name', '?')}"
+            )
+            print(
+                f"        fix: {k.get('fix_command', '')}"
+            )
+        print()
+
+    if action == "print":
+        exports = data.get("exports") or []
+        if exports:
+            print("  Shell exports:")
+            for exp in exports:
+                print(f"    {exp}")
+            print()
+
+    if action == "apply":
+        n = data.get("applied_count", 0)
+        if n > 0:
+            print(
+                f"  [OK ] wrote {n} key(s) to "
+                f"{data.get('env_file_path', '.env')}"
+            )
+        else:
+            print(
+                "  [-- ] no defaults applied"
+            )
+        print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
 
@@ -58837,6 +58956,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "auto-disarm-history":
         _cmd_auto_disarm_history(args)
+        return
+
+    if args.command == "earn-config":
+        _cmd_earn_config(args)
         return
 
     if args.command == "welcome":

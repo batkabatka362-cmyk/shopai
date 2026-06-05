@@ -448,6 +448,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "agi_recommend_streak",  # W963-70: consecutive un-acted recommendation streaks
     "agi_orphan_investigator", # W963-78: drill into orphan AGI attribution claims
     "agi_arm_recommender",   # W963-80: Phase 5 -- arm/disarm recommender (verdict->engines)
+    "earn_config",           # W963-87: env-var setup wizard
 })
 
 
