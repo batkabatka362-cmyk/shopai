@@ -845,6 +845,58 @@ def collect_alerts() -> list[NotifyAlert]:
             exc,
         )
 
+    # W963-75: AGI brief-diff probe. When the W963-68 diff
+    # reports a REGRESSED direction with a significant profit
+    # delta, push Slack. Anomaly detector (W963-57) handles
+    # SUDDEN events; brief-diff handles day-over-day verdict
+    # transitions that the anomaly detector may not catch
+    # until N more snapshots accumulate.
+    try:
+        from engines.agi_brief_diff.differ import (
+            compute_diff as _bd_compute,
+        )
+        diff = _bd_compute()
+        if (
+            diff.sufficient
+            and diff.direction == "regressed"
+        ):
+            sev = (
+                "critical"
+                if (
+                    diff.verdict_change == "regressed"
+                    or abs(diff.gross_profit_delta) >= 50.0
+                )
+                else "warn"
+            )
+            sign = (
+                "+" if diff.gross_profit_delta >= 0
+                else "-"
+            )
+            alerts.append(NotifyAlert(
+                kind="agi_brief_regression",
+                severity=sev,
+                message=(
+                    f"AGI brief diff: REGRESSED "
+                    f"{diff.previous_verdict} -> "
+                    f"{diff.current_verdict} "
+                    f"({sign}$"
+                    f"{abs(diff.gross_profit_delta):.0f} "
+                    "profit)"
+                ),
+                context={
+                    "previous_verdict": diff.previous_verdict,
+                    "current_verdict": diff.current_verdict,
+                    "gross_profit_delta":
+                        diff.gross_profit_delta,
+                    "attribution_pct_delta":
+                        diff.attribution_pct_delta,
+                },
+            ))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "notify: brief_diff probe raised: %s", exc,
+        )
+
     # W963-71: AGI attention streak probe. When a streak
     # (loss / no_data / anomaly) reaches CRITICAL severity
     # (default: 6+ consecutive snapshots), push Slack so the

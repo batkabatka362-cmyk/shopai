@@ -126,6 +126,16 @@ _PROBES: list[dict[str, Any]] = [
         ),
         "min_occurrences": 2,
     },
+    # W963-75: brief-diff regression alert
+    {
+        "name": "notify_brief_diff_alert",
+        "path": "engines/_notify.py",
+        "needles": (
+            "agi_brief_regression",
+            "agi_brief_diff",
+        ),
+        "min_occurrences": 2,
+    },
     {
         "name": "ai_strategies_phase4_helper",
         "path": "engines/_ai_strategies.py",
