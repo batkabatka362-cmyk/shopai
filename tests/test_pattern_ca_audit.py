@@ -35,9 +35,10 @@ class TestRunPatternCaAudit:
                 for v in report.violations
             )
         )
-        # 7 canonical surfaces
-        assert report.probes_run == 7
-        assert report.clean_probes == 7
+        # 8 canonical surfaces (7 from W963-67 + 1 from
+        # W963-69 morning-brief diff wiring)
+        assert report.probes_run == 8
+        assert report.clean_probes == 8
 
     def test_missing_file_violates(self):
         with patch(
@@ -46,7 +47,7 @@ class TestRunPatternCaAudit:
         ):
             report = run_pattern_ca_audit()
         assert report.has_violations is True
-        assert len(report.violations) == 7
+        assert len(report.violations) == 8
         for v in report.violations:
             assert "missing" in v.detail.lower()
 

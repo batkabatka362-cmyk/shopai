@@ -154,6 +154,13 @@ class TestNextAction:
         assert "CRITICAL anomaly" in out
         assert "VERDICT_FLIP" in out
 
+    def test_brief_has_diff_fields(self):
+        b = MorningBrief(store_id="")
+        # Defaults
+        assert b.diff_direction == "no_data"
+        assert b.diff_headline == ""
+        assert b.diff_gross_profit_delta == 0.0
+
     def test_warn_anomaly_does_not_escalate(self):
         b = MorningBrief(
             store_id="",

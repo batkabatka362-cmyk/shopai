@@ -12761,6 +12761,22 @@ def _cmd_morning_brief(args) -> None:
     )
     if data.get("snapshot_recorded"):
         print("  [snapshot recorded into W963-50 history]")
+    # W963-69: brief-diff inline. Surfaces only when
+    # direction is improved / regressed (skip unchanged
+    # to avoid clutter; skip no_data when history empty).
+    diff_dir = data.get("diff_direction", "no_data")
+    if diff_dir in ("improved", "regressed"):
+        dchip = {
+            "improved":  "[OK ]",
+            "regressed": "[!! ]",
+        }.get(diff_dir, "[?? ]")
+        delta = data.get("diff_gross_profit_delta", 0.0)
+        sign = "+" if delta >= 0 else ""
+        print(
+            f"  {dchip} since prior snapshot: "
+            f"{diff_dir.upper()}  ({sign}${delta:.0f} "
+            "profit) -- shopai brief-diff"
+        )
     anomalies = data.get("anomalies") or []
     crit_n = data.get("anomaly_critical_count", 0)
     if anomalies:

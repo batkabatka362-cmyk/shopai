@@ -100,6 +100,16 @@ _PROBES: list[dict[str, Any]] = [
         ),
         "min_occurrences": 1,
     },
+    # W963-69: brief-diff wired into morning-brief
+    {
+        "name": "morning_brief_diff_wiring",
+        "path": "engines/agi_morning_brief/briefer.py",
+        "needles": (
+            "agi_brief_diff",
+            "_gather_brief_diff",
+        ),
+        "min_occurrences": 2,
+    },
 ]
 
 

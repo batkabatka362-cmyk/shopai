@@ -34,6 +34,10 @@ class MorningBrief:
         default_factory=list,
     )
     anomaly_critical_count: int = 0
+    # W963-69: brief-diff context
+    diff_direction: str = "no_data"
+    diff_headline: str = ""
+    diff_gross_profit_delta: float = 0.0
     headline: str = ""
     next_action: str = ""
 
@@ -272,6 +276,21 @@ def _build_next_action(brief: MorningBrief) -> str:
     )
 
 
+def _gather_brief_diff(brief: MorningBrief) -> None:
+    try:
+        from engines.agi_brief_diff.differ import (
+            compute_diff,
+        )
+        d = compute_diff()
+        brief.diff_direction = d.direction
+        brief.diff_headline = d.headline
+        brief.diff_gross_profit_delta = (
+            d.gross_profit_delta
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("brief: diff raised: %s", exc)
+
+
 def _gather_anomalies(brief: MorningBrief) -> None:
     try:
         from engines.agi_anomaly_detector.detector import (
@@ -310,6 +329,7 @@ def build_morning_brief(
     _gather_proposals(brief)
     _gather_critiques(brief)
     _gather_anomalies(brief)
+    _gather_brief_diff(brief)
     _maybe_record_snapshot(brief, persist_snapshot)
     brief.headline = _build_headline(brief)
     brief.next_action = _build_next_action(brief)
