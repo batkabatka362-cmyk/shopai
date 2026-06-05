@@ -3988,8 +3988,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cycle_schedule_p.add_argument(
         "--frequency", default="hourly",
-        choices=["hourly", "every-15min", "daily", "every-6h"],
+        choices=[
+            "hourly", "every-15min",
+            "every-2h", "every-4h", "every-6h",
+            "daily",
+        ],
         help="How often to run (default hourly)",
+    )
+    cycle_schedule_p.add_argument(
+        "--recommend", action="store_true",
+        help=(
+            "Override --frequency with the W963-59 cron "
+            "recommender's tuned interval based on observed "
+            "signal velocity."
+        ),
     )
     cycle_schedule_p.add_argument(
         # W959 bugfix: default=None lets the handler auto-
@@ -28032,20 +28044,35 @@ def _cmd_outcomes_report(args) -> None:
 _CRON_FREQUENCY = {
     "hourly":      "0 * * * *",
     "every-15min": "*/15 * * * *",
-    "daily":       "0 3 * * *",
+    "every-2h":    "0 */2 * * *",
+    "every-4h":    "0 */4 * * *",
     "every-6h":    "0 */6 * * *",
+    "daily":       "0 3 * * *",
 }
 _SYSTEMD_ON_CALENDAR = {
     "hourly":      "hourly",
     "every-15min": "*:0/15",
-    "daily":       "*-*-* 03:00:00",
+    "every-2h":    "0/2:00:00",
+    "every-4h":    "0/4:00:00",
     "every-6h":    "0/6:00:00",
+    "daily":       "*-*-* 03:00:00",
 }
 _WINDOWS_TASK_TRIGGER = {
     "hourly":      "/sc HOURLY /mo 1",
     "every-15min": "/sc MINUTE /mo 15",
-    "daily":       "/sc DAILY /st 03:00",
+    "every-2h":    "/sc HOURLY /mo 2",
+    "every-4h":    "/sc HOURLY /mo 4",
     "every-6h":    "/sc HOURLY /mo 6",
+    "daily":       "/sc DAILY /st 03:00",
+}
+
+# W963-60: interval-hours mapping for cron_recommender
+_INTERVAL_TO_FREQ = {
+    1.0:  "hourly",
+    2.0:  "every-2h",
+    4.0:  "every-4h",
+    6.0:  "every-6h",
+    24.0: "daily",
 }
 
 
@@ -29731,6 +29758,36 @@ def _cmd_cycle_schedule(args) -> None:
     """Print ready-to-paste schedule config for the empire cycle."""
     import os as _os
     freq = (getattr(args, "frequency", None) or "hourly").strip()
+    recommended_msg = ""
+    if getattr(args, "recommend", False):
+        # W963-60: override frequency via cron_recommender
+        try:
+            from engines.cron_recommender.recommender import (
+                recommend as _cron_rec,
+            )
+            rec = _cron_rec()
+            mapped = _INTERVAL_TO_FREQ.get(
+                rec.interval_hours,
+            )
+            if mapped is not None:
+                freq = mapped
+                recommended_msg = (
+                    f"  [W963-60] Recommender picked "
+                    f"{rec.interval_hours:.0f}h "
+                    f"({rec.confidence}) -- {rec.reason}"
+                )
+            else:
+                recommended_msg = (
+                    f"  [W963-60] Recommender returned "
+                    f"{rec.interval_hours:.0f}h "
+                    "(no canned freq match -- using "
+                    f"--frequency={freq})"
+                )
+        except Exception as exc:  # noqa: BLE001
+            recommended_msg = (
+                f"  [W963-60] Recommender unavailable "
+                f"({exc!r}); using --frequency={freq}"
+            )
     # W959 bugfix: auto-detect platform if user didn't specify.
     # Pre-fix the default was "cron" regardless of host OS, so
     # Windows operators got Linux/Mac syntax that wouldn't work.
@@ -29752,6 +29809,8 @@ def _cmd_cycle_schedule(args) -> None:
     )
 
     print(f"Empire cycle schedule ({freq}, {platform})")
+    if recommended_msg:
+        print(recommended_msg)
     print()
 
     if platform == "cron":
