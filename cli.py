@@ -2764,6 +2764,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cr_p.add_argument("--json", action="store_true")
 
+    # W963-68: brief-diff — day-over-day Phase 4 diff.
+    bd_p = sub.add_parser(
+        "brief-diff",
+        help=(
+            "Day-over-day Phase 4 verdict diff. Answers "
+            "'what changed since the last morning brief?' "
+            "Reads the two newest W963-50 snapshots + "
+            "classifies improved / regressed / unchanged."
+        ),
+    )
+    bd_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12368,6 +12380,66 @@ def _cmd_pnl_history(args) -> None:
                     f"delta=${t.get('delta', 0):>+7.2f} "
                     f"({t.get('slope_pct')}%)"
                 )
+    print()
+    print(f"  NEXT: {data.get('next_action', '')}")
+
+
+def _cmd_brief_diff(args) -> None:
+    """W963-68: day-over-day Phase 4 verdict diff."""
+    from engines.agi_brief_diff import AgiBriefDiffEngine
+
+    as_json = bool(getattr(args, "json", False))
+    result = AgiBriefDiffEngine().run({})
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    direction = data.get("direction", "no_data")
+    chip = {
+        "improved":   "[OK ]",
+        "regressed":  "[!! ]",
+        "unchanged":  "[-- ]",
+        "no_data":    "[.. ]",
+        "shifted":    "[?? ]",
+    }.get(direction, "[?? ]")
+
+    print("AGI brief diff (vs prior snapshot)")
+    print()
+    print(f"  {chip} {data.get('headline', '')}")
+    print()
+    if not data.get("sufficient"):
+        print(
+            f"  samples available: "
+            f"{data.get('samples_available', 0)}"
+        )
+        print()
+        print(f"  NEXT: {data.get('next_action', '')}")
+        return
+    print(
+        f"  previous verdict:  "
+        f"{data.get('previous_verdict', '?')}  -->  "
+        f"current: {data.get('current_verdict', '?')}"
+    )
+    print(
+        f"  gross_profit:      "
+        f"{'+' if data.get('gross_profit_delta', 0) >= 0 else ''}"
+        f"${data.get('gross_profit_delta', 0):.0f}"
+    )
+    print(
+        f"  attribution_pct:   "
+        f"{'+' if data.get('attribution_pct_delta', 0) >= 0 else ''}"
+        f"{data.get('attribution_pct_delta', 0):.1f}pp"
+    )
+    print(
+        f"  monthly run-rate:  "
+        f"{'+' if data.get('monthly_run_rate_delta', 0) >= 0 else ''}"
+        f"${data.get('monthly_run_rate_delta', 0):.0f}/mo"
+    )
+    notes = data.get("drift_notes") or []
+    if notes:
+        print()
+        print(f"  Drift: {', '.join(notes)}")
     print()
     print(f"  NEXT: {data.get('next_action', '')}")
 
@@ -58054,6 +58126,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "cron-recommend":
         _cmd_cron_recommend(args)
+        return
+
+    if args.command == "brief-diff":
+        _cmd_brief_diff(args)
         return
 
     if args.command == "welcome":
