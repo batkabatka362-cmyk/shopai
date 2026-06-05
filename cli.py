@@ -12493,20 +12493,23 @@ def _cmd_brief_diff(args) -> None:
         f"{data.get('previous_verdict', '?')}  -->  "
         f"current: {data.get('current_verdict', '?')}"
     )
+    gp_delta = data.get("gross_profit_delta", 0)
+    gp_sign = "+" if gp_delta >= 0 else "-"
     print(
         f"  gross_profit:      "
-        f"{'+' if data.get('gross_profit_delta', 0) >= 0 else ''}"
-        f"${data.get('gross_profit_delta', 0):.0f}"
+        f"{gp_sign}${abs(gp_delta):.0f}"
     )
+    ap_delta = data.get("attribution_pct_delta", 0)
+    ap_sign = "+" if ap_delta >= 0 else "-"
     print(
         f"  attribution_pct:   "
-        f"{'+' if data.get('attribution_pct_delta', 0) >= 0 else ''}"
-        f"{data.get('attribution_pct_delta', 0):.1f}pp"
+        f"{ap_sign}{abs(ap_delta):.1f}pp"
     )
+    rr_delta = data.get("monthly_run_rate_delta", 0)
+    rr_sign = "+" if rr_delta >= 0 else "-"
     print(
         f"  monthly run-rate:  "
-        f"{'+' if data.get('monthly_run_rate_delta', 0) >= 0 else ''}"
-        f"${data.get('monthly_run_rate_delta', 0):.0f}/mo"
+        f"{rr_sign}${abs(rr_delta):.0f}/mo"
     )
     notes = data.get("drift_notes") or []
     if notes:
@@ -12859,10 +12862,10 @@ def _cmd_morning_brief(args) -> None:
             "regressed": "[!! ]",
         }.get(diff_dir, "[?? ]")
         delta = data.get("diff_gross_profit_delta", 0.0)
-        sign = "+" if delta >= 0 else ""
+        sign = "+" if delta >= 0 else "-"
         print(
             f"  {dchip} since prior snapshot: "
-            f"{diff_dir.upper()}  ({sign}${delta:.0f} "
+            f"{diff_dir.upper()}  ({sign}${abs(delta):.0f} "
             "profit) -- shopai brief-diff"
         )
     anomalies = data.get("anomalies") or []
@@ -17312,6 +17315,35 @@ def _cmd_empire(args) -> None:
             "empire anomaly block raised: %s", exc,
         )
 
+    # W963-71: empire attention streak inline. Same shape
+    # as the anomalies block; surfaces only when streak is
+    # warn+ (info-level stays in `shopai attention` only).
+    try:
+        from engines.agi_recommend_streak.detector import (
+            detect_streaks as _emp_streak,
+        )
+        _emp_sr = _emp_streak(threshold_days=3)
+        if _emp_sr.attention_needed:
+            top = getattr(
+                _emp_sr, _emp_sr.top_streak or "", None,
+            )
+            if top is not None:
+                _emp_strk_chip = {
+                    "critical": "[BAD]",
+                    "warn":     "[WRN]",
+                }.get(top.severity, "[ ? ]")
+                print(
+                    f"    attention:          "
+                    f"{_emp_strk_chip} {top.name} = "
+                    f"{top.count} cycle(s) "
+                    f"({top.severity})"
+                )
+                print("    -> shopai attention")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "empire attention block raised: %s", exc,
+        )
+
     # W963-49: composed AGI earnings verdict (one-liner).
     # Surfaces only when verdict != no_data (empire has
     # activity); silent on idle days.
@@ -17609,58 +17641,6 @@ def _cmd_empire(args) -> None:
                 f"    top cluster:        "
                 f"{revenue_block['top_cluster']}"
             )
-
-    # W963-48: AGI earnings summary verdict (one-line)
-    try:
-        from engines.agi_earnings_summary.summarizer import (
-            compute_summary as _agi_summary,
-        )
-        _agi = _agi_summary(days=7)
-        _v = _agi.verdict
-        _chip = {
-            "earning":         "[OK ]",
-            "attributed_loss": "[BAD]",
-            "organic_only":    "[WRN]",
-            "no_data":         "[-- ]",
-        }.get(_v, "[?? ]")
-        # Surface only when the empire has activity (skip
-        # spam when idle)
-        if _v != "no_data":
-            print(
-                f"  AGI earnings:         {_chip} "
-                f"{_v:<16s} "
-                f"profit=${_agi.fleet_gross_profit:>7.0f}  "
-                f"attr={_agi.fleet_attribution_pct:>5.1f}%  "
-                f"trend={_agi.trend_verdict}"
-            )
-    except Exception as _exc:  # noqa: BLE001
-        logger.debug(
-            "daily-brief: agi_earnings_summary raised: %s",
-            _exc,
-        )
-
-    # W963-58: anomaly watcher one-liner
-    try:
-        from engines.agi_anomaly_detector.detector import (
-            detect as _anomaly_detect,
-        )
-        _ar = _anomaly_detect(window=14)
-        if _ar.anomalies:
-            _crit = sum(
-                1 for a in _ar.anomalies
-                if a.severity == "critical"
-            )
-            _achip = "[BAD]" if _crit > 0 else "[WRN]"
-            print(
-                f"  Anomalies:            {_achip} "
-                f"{len(_ar.anomalies)} flagged "
-                f"({_crit} critical) "
-                "-- shopai anomalies"
-            )
-    except Exception as _exc:  # noqa: BLE001
-        logger.debug(
-            "daily-brief: anomalies raised: %s", _exc,
-        )
 
     # Spend
     if spend_block:
@@ -19180,6 +19160,87 @@ def _cmd_daily_brief(args) -> None:
         logger.debug(
             "daily-brief revenue-readiness block raised: %s",
             exc,
+        )
+
+    # W963-48: daily-brief AGI earnings verdict one-liner.
+    # Surfaces only when verdict != no_data so idle empires
+    # stay quiet.
+    try:
+        from engines.agi_earnings_summary.summarizer import (
+            compute_summary as _db_agi_summary,
+        )
+        _db_agi = _db_agi_summary(days=7)
+        if _db_agi.verdict != "no_data":
+            _db_v_chip = {
+                "earning":         "[OK ]",
+                "attributed_loss": "[BAD]",
+                "organic_only":    "[WRN]",
+            }.get(_db_agi.verdict, "[?? ]")
+            print(
+                f"  AGI earnings:  {_db_v_chip} "
+                f"{_db_agi.verdict:<16s} "
+                f"profit=${_db_agi.fleet_gross_profit:>7.0f}  "
+                f"attr={_db_agi.fleet_attribution_pct:>5.1f}%  "
+                f"trend={_db_agi.trend_verdict}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief earnings block raised: %s", exc,
+        )
+
+    # W963-58: daily-brief AGI anomaly inline. Surfaces only
+    # when any anomaly present. The empire dashboard already
+    # carries this block, but the daily-brief is the
+    # operator's primary morning surface so it MUST also
+    # show the signal.
+    try:
+        from engines.agi_anomaly_detector.detector import (
+            detect as _db_anom_detect,
+        )
+        _db_ar = _db_anom_detect(window=14)
+        if _db_ar.anomalies:
+            _db_crit = sum(
+                1 for a in _db_ar.anomalies
+                if a.severity == "critical"
+            )
+            _db_chip = (
+                "[BAD]" if _db_crit > 0 else "[WRN]"
+            )
+            print(
+                f"  Anomalies:     {_db_chip} "
+                f"{len(_db_ar.anomalies)} flagged "
+                f"({_db_crit} critical) "
+                "-- shopai anomalies"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief anomaly block raised: %s", exc,
+        )
+
+    # W963-71: daily-brief attention streak inline.
+    try:
+        from engines.agi_recommend_streak.detector import (
+            detect_streaks as _db_streak,
+        )
+        _db_sr = _db_streak(threshold_days=3)
+        if _db_sr.attention_needed:
+            top = getattr(
+                _db_sr, _db_sr.top_streak or "", None,
+            )
+            if top is not None:
+                _ds_chip = {
+                    "critical": "[BAD]",
+                    "warn":     "[WRN]",
+                }.get(top.severity, "[ ? ]")
+                print(
+                    f"  Attention:     {_ds_chip} "
+                    f"{top.name} = {top.count} cycle(s) "
+                    f"({top.severity}) "
+                    "-- shopai attention"
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief attention block raised: %s", exc,
         )
 
     # Wave 906: verdict-flip thrash row. Surfaces only when

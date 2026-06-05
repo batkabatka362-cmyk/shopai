@@ -36,17 +36,20 @@ class TestClassifyWeekVerdict:
         assert _classify_week_verdict(r) == "running_blind"
 
     def test_growing_strong(self):
+        # attributed_loss (1) -> earning (3) = +2 -> growing
+        # (post-W963-72 rank fix: attributed_loss=1,
+        # organic_only=2, earning=3)
         timeline = [
-            {"verdict": "organic_only"},
+            {"verdict": "attributed_loss"},
             {"verdict": "earning"},
         ]
         r = _wr(timeline=timeline, snapshot_count=2)
         assert _classify_week_verdict(r) == "growing"
 
     def test_recovering_one_step(self):
-        # attributed_loss (2) -> earning (3) = +1
+        # organic_only (2) -> earning (3) = +1 -> recovering
         timeline = [
-            {"verdict": "attributed_loss"},
+            {"verdict": "organic_only"},
             {"verdict": "earning"},
         ]
         r = _wr(timeline=timeline, snapshot_count=2)
@@ -61,10 +64,10 @@ class TestClassifyWeekVerdict:
         assert _classify_week_verdict(r) == "regressing"
 
     def test_softening_one_step(self):
-        # earning (3) -> attributed_loss (2) = -1
+        # earning (3) -> organic_only (2) = -1 -> softening
         timeline = [
             {"verdict": "earning"},
-            {"verdict": "attributed_loss"},
+            {"verdict": "organic_only"},
         ]
         r = _wr(timeline=timeline, snapshot_count=2)
         assert _classify_week_verdict(r) == "softening"

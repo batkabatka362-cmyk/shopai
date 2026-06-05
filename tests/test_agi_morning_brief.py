@@ -280,6 +280,38 @@ class TestBuildMorningBrief:
             verdict="earning",
         )
 
+        # W963-71+: also mock anomaly + streak + diff so
+        # real history snapshots don't bleed into the test.
+        @dataclass
+        class _FakeAnomReport:
+            anomalies: list = field(default_factory=list)
+
+        @dataclass
+        class _FakeStreak:
+            name: str = "loss_streak"
+            count: int = 0
+            severity: str = "info"
+
+        @dataclass
+        class _FakeStreakReport:
+            attention_needed: bool = False
+            top_streak: str = ""
+            loss_streak: _FakeStreak = field(
+                default_factory=_FakeStreak,
+            )
+            no_data_streak: _FakeStreak = field(
+                default_factory=_FakeStreak,
+            )
+            anomaly_streak: _FakeStreak = field(
+                default_factory=_FakeStreak,
+            )
+
+        @dataclass
+        class _FakeDiff:
+            direction: str = "no_data"
+            headline: str = ""
+            gross_profit_delta: float = 0.0
+
         with patch(
             "engines.agi_earnings_summary.summarizer."
             "compute_summary",
@@ -303,6 +335,16 @@ class TestBuildMorningBrief:
         ), patch(
             "engines.llm_action_proposer.proposer.propose",
             return_value=fake_props,
+        ), patch(
+            "engines.agi_anomaly_detector.detector.detect",
+            return_value=_FakeAnomReport(),
+        ), patch(
+            "engines.agi_recommend_streak.detector."
+            "detect_streaks",
+            return_value=_FakeStreakReport(),
+        ), patch(
+            "engines.agi_brief_diff.differ.compute_diff",
+            return_value=_FakeDiff(),
         ), patch(
             "engines.llm_action_critic.critic.critique",
         ) as fake_critique:
@@ -364,6 +406,16 @@ class TestBuildMorningBrief:
         ), patch(
             "engines.llm_action_proposer.proposer.propose",
             side_effect=RuntimeError("c"),
+        ), patch(
+            "engines.agi_anomaly_detector.detector.detect",
+            side_effect=RuntimeError("d"),
+        ), patch(
+            "engines.agi_recommend_streak.detector."
+            "detect_streaks",
+            side_effect=RuntimeError("e"),
+        ), patch(
+            "engines.agi_brief_diff.differ.compute_diff",
+            side_effect=RuntimeError("f"),
         ):
             b = build_morning_brief()
         assert b.verdict == "no_data"

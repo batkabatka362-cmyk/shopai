@@ -8,10 +8,20 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+# Verdict severity ladder (higher = healthier).
+#   no_data:          0  idle / no signal
+#   attributed_loss:  1  WORST -- AGI attributed + bleeding
+#   organic_only:     2  neutral -- revenue exists but AGI
+#                        not the cause
+#   earning:          3  BEST -- AGI driving profit
+# attributed_loss is below organic_only because the empire
+# is ACTIVELY LOSING under AGI control vs merely failing to
+# attribute. A change from organic_only -> attributed_loss
+# is a REGRESSION, not improvement.
 _VERDICT_RANK = {
     "no_data":         0,
-    "organic_only":    1,
-    "attributed_loss": 2,
+    "attributed_loss": 1,
+    "organic_only":    2,
     "earning":         3,
 }
 
@@ -80,22 +90,30 @@ def _classify_direction(
 
 
 def _build_drift_notes(diff: BriefDiff) -> list[str]:
+    """Drift notes use sign-prefix-before-$ form so
+    negative values render as '-$300' not '$-300'."""
     notes: list[str] = []
     if abs(diff.gross_profit_delta) >= 5.0:
+        sign = "+" if diff.gross_profit_delta >= 0 else "-"
         notes.append(
-            f"gross_profit {'+' if diff.gross_profit_delta >= 0 else ''}"
-            f"${diff.gross_profit_delta:.0f}"
+            f"gross_profit {sign}$"
+            f"{abs(diff.gross_profit_delta):.0f}"
         )
     if abs(diff.attribution_pct_delta) >= 0.5:
+        sign = (
+            "+" if diff.attribution_pct_delta >= 0 else "-"
+        )
         notes.append(
-            f"attribution {'+' if diff.attribution_pct_delta >= 0 else ''}"
-            f"{diff.attribution_pct_delta:.1f}pp"
+            f"attribution {sign}"
+            f"{abs(diff.attribution_pct_delta):.1f}pp"
         )
     if abs(diff.monthly_run_rate_delta) >= 20.0:
+        sign = (
+            "+" if diff.monthly_run_rate_delta >= 0 else "-"
+        )
         notes.append(
-            f"run-rate "
-            f"{'+' if diff.monthly_run_rate_delta >= 0 else ''}"
-            f"${diff.monthly_run_rate_delta:.0f}/mo"
+            f"run-rate {sign}$"
+            f"{abs(diff.monthly_run_rate_delta):.0f}/mo"
         )
     if (
         diff.history_trend_previous

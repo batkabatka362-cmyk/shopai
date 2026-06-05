@@ -9,10 +9,14 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+# Verdict ladder (higher = healthier). attributed_loss is
+# BELOW organic_only because the empire is actively losing
+# under AGI control vs merely failing to attribute -- the
+# former is strictly worse.
 _VERDICT_RANK = {
     "no_data":         0,
-    "organic_only":    1,
-    "attributed_loss": 2,
+    "attributed_loss": 1,
+    "organic_only":    2,
     "earning":         3,
 }
 
