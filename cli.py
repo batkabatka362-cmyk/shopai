@@ -6185,6 +6185,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_bz_p.add_argument("--json", action="store_true")
 
+    # W963-67: Pattern CA -- Phase 4 substrate wiring audit.
+    pattern_ca_p = sub.add_parser(
+        "pattern-ca-audit",
+        help=(
+            "W963-67: verify Phase 4 ritual substrate "
+            "(W963-54..66) is wired across the 7 canonical "
+            "surfaces (daily-brief / morning-brief / cycle "
+            "record-brief hook / notify anomaly alert / "
+            "ai_strategies helper / world-model section / "
+            "go-live phase4 check)."
+        ),
+    )
+    pattern_ca_p.add_argument("--json", action="store_true")
+
     # Wave 926: thrash guardrail status CLI
     thrash_guardrail_p = sub.add_parser(
         "thrash-guardrail",
@@ -38895,6 +38909,50 @@ def _cmd_pattern_bz_audit(args) -> None:
         )
 
 
+def _cmd_pattern_ca_audit(args) -> None:
+    """W963-67: Phase 4 substrate wiring across 7 canonical
+    surfaces."""
+    from engines._pattern_ca_audit import (
+        run_pattern_ca_audit,
+    )
+    as_json = bool(getattr(args, "json", False))
+    report = run_pattern_ca_audit()
+    if as_json:
+        print(json.dumps({
+            "probes_run": report.probes_run,
+            "clean_probes": report.clean_probes,
+            "violations": [
+                {
+                    "surface": v.surface,
+                    "path": v.path,
+                    "detail": v.detail,
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern CA FAILED -- "
+            f"{len(report.violations)} Phase 4 wiring "
+            "regression(s):"
+        )
+        for v in report.violations:
+            print(
+                f"  [{v.surface}] {v.path}: {v.detail}"
+            )
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern CA OK -- "
+            f"{report.clean_probes}/{report.probes_run} "
+            "Phase 4 substrate wiring probe(s) honored."
+        )
+
+
 def _cmd_pattern_bn_audit(args) -> None:
     """Wave 893: autonomy-overview output schema."""
     from engines._pattern_bn_audit import run_pattern_bn_audit
@@ -48822,6 +48880,25 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_ca":
+            # W963-67: Phase 4 substrate wiring across 7
+            # canonical surfaces.
+            from engines._pattern_ca_audit import (
+                run_pattern_ca_audit,
+            )
+            r = run_pattern_ca_audit()
+            return {
+                "ok": not r.has_violations,
+                "clean_probes": r.clean_probes,
+                "violations": [
+                    {
+                        "surface": v.surface,
+                        "path": v.path,
+                        "detail": v.detail,
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -48850,6 +48927,8 @@ _AUDIT_ORDER = (
     "pattern_bq", "pattern_br", "pattern_bs", "pattern_bt",
     "pattern_bu", "pattern_bv", "pattern_bw", "pattern_bx",
     "pattern_by", "pattern_bz",
+    # W963-67: Pattern CA -- Phase 4 substrate wiring
+    "pattern_ca",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -48924,6 +49003,7 @@ _AUDIT_LABELS = {
     "pattern_bx": "Pattern BX (empire guardrail-override row)",
     "pattern_by": "Pattern BY (thrash block log chain)",
     "pattern_bz": "Pattern BZ (daily-brief thrash blocks row)",
+    "pattern_ca": "Pattern CA (Phase 4 substrate wiring)",
 }
 
 
@@ -58660,6 +58740,10 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "pattern-bz-audit":
         _cmd_pattern_bz_audit(args)
+        return
+
+    if args.command == "pattern-ca-audit":
+        _cmd_pattern_ca_audit(args)
         return
 
     if args.command == "autonomy-env":
