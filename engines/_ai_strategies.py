@@ -78,6 +78,12 @@ def _agi_phase4_context() -> dict[str, Any]:
         "history_trend_14d": "unknown",
         "critical_anomaly_count": 0,
         "top_anomaly_type": None,
+        # W963-76: trajectory + escalation signals
+        "diff_direction": "no_data",
+        "diff_gross_profit_delta": 0.0,
+        "streak_top": None,
+        "streak_severity": "info",
+        "streak_count": 0,
     }
     try:
         from engines.agi_earnings_summary.summarizer import (
@@ -114,6 +120,33 @@ def _agi_phase4_context() -> dict[str, Any]:
         ctx["critical_anomaly_count"] = len(crit)
         if crit:
             ctx["top_anomaly_type"] = crit[0].type
+    except Exception:  # noqa: BLE001
+        pass
+    # W963-76: brief-diff trajectory
+    try:
+        from engines.agi_brief_diff.differ import (
+            compute_diff,
+        )
+        d = compute_diff()
+        if d.sufficient:
+            ctx["diff_direction"] = d.direction
+            ctx["diff_gross_profit_delta"] = round(
+                d.gross_profit_delta, 2,
+            )
+    except Exception:  # noqa: BLE001
+        pass
+    # W963-76: recommend-streak top
+    try:
+        from engines.agi_recommend_streak.detector import (
+            detect_streaks,
+        )
+        sr = detect_streaks(threshold_days=3)
+        if sr.attention_needed and sr.top_streak:
+            top = getattr(sr, sr.top_streak, None)
+            if top is not None:
+                ctx["streak_top"] = top.name
+                ctx["streak_severity"] = top.severity
+                ctx["streak_count"] = top.count
     except Exception:  # noqa: BLE001
         pass
     return ctx

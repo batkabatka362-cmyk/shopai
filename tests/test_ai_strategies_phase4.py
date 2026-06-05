@@ -40,6 +40,10 @@ class TestAgiPhase4Context:
             "verdict", "gross_profit", "attribution_pct",
             "trend_verdict", "history_trend_14d",
             "critical_anomaly_count", "top_anomaly_type",
+            # W963-76 fields
+            "diff_direction", "diff_gross_profit_delta",
+            "streak_top", "streak_severity",
+            "streak_count",
         ):
             assert key in ctx
 

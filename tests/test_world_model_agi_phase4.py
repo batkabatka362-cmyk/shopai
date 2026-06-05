@@ -46,6 +46,11 @@ class TestSectionAgiPhase4:
             "history_snapshots", "history_trend",
             "anomalies_critical", "anomalies_total",
             "anomalies_top",
+            # W963-76 fields
+            "diff_direction", "diff_gross_profit_delta",
+            "diff_verdict_change",
+            "streak_top", "streak_severity",
+            "streak_count",
         ):
             assert key in section
         assert section["checked"] is True
@@ -118,6 +123,100 @@ class TestSectionAgiPhase4:
         assert section["anomalies_top"]["type"] == (
             "VERDICT_FLIP"
         )
+
+    def test_diff_population(self):
+        """W963-76: brief-diff direction should be exposed."""
+        wm = WorldModel()
+
+        @dataclass
+        class _FakeDiff:
+            sufficient: bool = True
+            direction: str = "regressed"
+            verdict_change: str = "regressed"
+            gross_profit_delta: float = -100.0
+
+        with patch(
+            "engines.agi_brief_diff.differ.compute_diff",
+            return_value=_FakeDiff(),
+        ):
+            section = wm._section_agi_phase4()
+        assert section["diff_direction"] == "regressed"
+        assert section["diff_gross_profit_delta"] == -100.0
+        assert section["diff_verdict_change"] == "regressed"
+
+    def test_diff_insufficient_keeps_default(self):
+        wm = WorldModel()
+
+        @dataclass
+        class _FakeDiff:
+            sufficient: bool = False
+            direction: str = "no_data"
+            verdict_change: str = "no_change"
+            gross_profit_delta: float = 0.0
+
+        with patch(
+            "engines.agi_brief_diff.differ.compute_diff",
+            return_value=_FakeDiff(),
+        ):
+            section = wm._section_agi_phase4()
+        # When sufficient=False, fields stay at default
+        assert section["diff_direction"] is None
+        assert section["diff_verdict_change"] is None
+
+    def test_streak_population(self):
+        wm = WorldModel()
+
+        @dataclass
+        class _FakeStreak:
+            name: str = "loss_streak"
+            count: int = 5
+            severity: str = "warn"
+
+        @dataclass
+        class _FakeStreakReport:
+            attention_needed: bool = True
+            top_streak: str = "loss_streak"
+            loss_streak: _FakeStreak = field(
+                default_factory=_FakeStreak,
+            )
+            no_data_streak: _FakeStreak = field(
+                default_factory=_FakeStreak,
+            )
+            anomaly_streak: _FakeStreak = field(
+                default_factory=_FakeStreak,
+            )
+
+        with patch(
+            "engines.agi_recommend_streak.detector."
+            "detect_streaks",
+            return_value=_FakeStreakReport(),
+        ):
+            section = wm._section_agi_phase4()
+        assert section["streak_top"] == "loss_streak"
+        assert section["streak_severity"] == "warn"
+        assert section["streak_count"] == 5
+
+    def test_streak_failure_fails_open(self):
+        wm = WorldModel()
+        with patch(
+            "engines.agi_recommend_streak.detector."
+            "detect_streaks",
+            side_effect=RuntimeError("x"),
+        ):
+            section = wm._section_agi_phase4()
+        assert section["checked"] is True
+        assert section["streak_top"] is None
+        assert section["streak_severity"] == "info"
+
+    def test_diff_failure_fails_open(self):
+        wm = WorldModel()
+        with patch(
+            "engines.agi_brief_diff.differ.compute_diff",
+            side_effect=RuntimeError("x"),
+        ):
+            section = wm._section_agi_phase4()
+        assert section["checked"] is True
+        assert section["diff_direction"] is None
 
     def test_anomaly_failure_fails_open(self):
         wm = WorldModel()
