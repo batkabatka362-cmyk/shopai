@@ -190,6 +190,16 @@ _PROBES: list[dict[str, Any]] = [
         ),
         "min_occurrences": 2,
     },
+    # W963-89: morning-brief surfaces earn-path
+    {
+        "name": "morning_brief_earn_path_wiring",
+        "path": "engines/agi_morning_brief/briefer.py",
+        "needles": (
+            "earn_path",
+            "_gather_earn_path",
+        ),
+        "min_occurrences": 2,
+    },
     # ── Non-cli probes: file-level scan
     {
         "name": "notify_agi_anomaly_alert",

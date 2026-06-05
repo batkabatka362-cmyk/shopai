@@ -47,6 +47,11 @@ class MorningBrief:
     arm_override_active: str | None = None
     arm_recommended_count: int = 0
     arm_disarm_count: int = 0
+    # W963-89: earn-path on-ramp progress
+    earn_path_completed: int = 0
+    earn_path_total: int = 0
+    earn_path_next_command: str | None = None
+    earn_path_next_title: str | None = None
     headline: str = ""
     next_action: str = ""
 
@@ -316,6 +321,21 @@ def _gather_attention_streak(brief: MorningBrief) -> None:
         )
 
 
+def _gather_earn_path(brief: MorningBrief) -> None:
+    """W963-89: surface on-ramp progress when incomplete."""
+    try:
+        from engines.earn_path.guide import build_path
+        report = build_path()
+        brief.earn_path_completed = report.completed_count
+        brief.earn_path_total = report.total_count
+        brief.earn_path_next_command = report.next_command
+        brief.earn_path_next_title = report.next_title
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "brief: earn_path raised: %s", exc,
+        )
+
+
 def _gather_arm_recommender(brief: MorningBrief) -> None:
     """W963-81: surface arm-recommender override into the
     morning brief so operator sees it on AM scan."""
@@ -392,6 +412,7 @@ def build_morning_brief(
     _gather_brief_diff(brief)
     _gather_attention_streak(brief)
     _gather_arm_recommender(brief)
+    _gather_earn_path(brief)
     _maybe_record_snapshot(brief, persist_snapshot)
     brief.headline = _build_headline(brief)
     brief.next_action = _build_next_action(brief)

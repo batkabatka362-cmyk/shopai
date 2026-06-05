@@ -283,6 +283,14 @@ class TestBuildMorningBrief:
         # W963-71+: also mock anomaly + streak + diff so
         # real history snapshots don't bleed into the test.
         # W963-81+: also mock arm-recommender.
+        # W963-89+: also mock earn-path.
+        @dataclass
+        class _FakeEarnPath:
+            completed_count: int = 8
+            total_count: int = 8
+            next_command: str | None = None
+            next_title: str | None = None
+
         @dataclass
         class _FakeArmReport:
             override_applied: str | None = None
@@ -361,6 +369,9 @@ class TestBuildMorningBrief:
             "recommend",
             return_value=_FakeArmReport(),
         ), patch(
+            "engines.earn_path.guide.build_path",
+            return_value=_FakeEarnPath(),
+        ), patch(
             "engines.llm_action_critic.critic.critique",
         ) as fake_critique:
             fake_q.return_value.list_by_status\
@@ -435,6 +446,9 @@ class TestBuildMorningBrief:
             "engines.agi_arm_recommender.recommender."
             "recommend",
             side_effect=RuntimeError("g"),
+        ), patch(
+            "engines.earn_path.guide.build_path",
+            side_effect=RuntimeError("h"),
         ):
             b = build_morning_brief()
         assert b.verdict == "no_data"

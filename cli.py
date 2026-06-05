@@ -13305,6 +13305,21 @@ def _cmd_morning_brief(args) -> None:
             f"DISARM={data.get('arm_disarm_count', 0)}) "
             "-- shopai arm-recommend"
         )
+    # W963-89: earn-path on-ramp progress. Surfaces only
+    # when on-ramp INCOMPLETE (operator hasn't reached
+    # "earning" stage yet).
+    ep_done = data.get("earn_path_completed", 0)
+    ep_total = data.get("earn_path_total", 0)
+    ep_next = data.get("earn_path_next_command")
+    if ep_total and ep_done < ep_total and ep_next:
+        ep_title = (
+            data.get("earn_path_next_title") or "?"
+        )
+        print(
+            f"  [>>>] ON-RAMP: "
+            f"{ep_done}/{ep_total}  next: {ep_title}"
+            f"  -- shopai earn-path"
+        )
     # W963-69: brief-diff inline. Surfaces only when
     # direction is improved / regressed (skip unchanged
     # to avoid clutter; skip no_data when history empty).
