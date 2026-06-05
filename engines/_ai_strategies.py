@@ -65,6 +65,60 @@ from engines._orchestrator import (
 )
 
 
+def _agi_phase4_context() -> dict[str, Any]:
+    """W963-65: compact AGI verdict + trend + anomaly count
+    for the captain LLM prompt. Best-effort: any substrate
+    failure leaves the field as a safe default so the LLM
+    still gets a usable structure."""
+    ctx: dict[str, Any] = {
+        "verdict": "unknown",
+        "gross_profit": 0.0,
+        "attribution_pct": 0.0,
+        "trend_verdict": "unknown",
+        "history_trend_14d": "unknown",
+        "critical_anomaly_count": 0,
+        "top_anomaly_type": None,
+    }
+    try:
+        from engines.agi_earnings_summary.summarizer import (
+            compute_summary,
+        )
+        s = compute_summary(days=7)
+        ctx["verdict"] = s.verdict
+        ctx["gross_profit"] = round(
+            s.fleet_gross_profit, 2,
+        )
+        ctx["attribution_pct"] = round(
+            s.fleet_attribution_pct, 1,
+        )
+        ctx["trend_verdict"] = s.trend_verdict
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from engines.agi_earnings_history import store as h
+        t = h.compute_trend(days=14)
+        ctx["history_trend_14d"] = str(
+            t.get("verdict") or "unknown",
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from engines.agi_anomaly_detector.detector import (
+            detect,
+        )
+        r = detect(window=14)
+        crit = [
+            a for a in r.anomalies
+            if a.severity == "critical"
+        ]
+        ctx["critical_anomaly_count"] = len(crit)
+        if crit:
+            ctx["top_anomaly_type"] = crit[0].type
+    except Exception:  # noqa: BLE001
+        pass
+    return ctx
+
+
 def _ai_enabled() -> bool:
     """Env-var gate. AI strategies are opt-in."""
     return bool(os.environ.get("SHOPAI_AI_STRATEGY"))
@@ -181,6 +235,12 @@ class AICaptainStrategy:
             cluster, wired_members,
         )
 
+        # W963-65: feed the W963-48 fleet AGI verdict so the
+        # LLM can condition on macro empire signal
+        # ("attributed_loss -> avoid spend engines";
+        # "earning + improving -> compound").
+        agi_phase4_context = _agi_phase4_context()
+
         # Wave 75: niche signal (orchestrator threads it
         # through ``signals["niche"]``). Captain LLM uses it
         # to bias selection (e.g. beauty store retention -->
@@ -210,8 +270,11 @@ class AICaptainStrategy:
             "an autonomous Shopify merchant. Given cluster "
             "definition + signals + recent memory + per-engine "
             "revenue attribution (with trend) + store niche + "
-            "orchestrator cluster ordering, recommend which "
-            "member engines to fire THIS cycle. "
+            "orchestrator cluster ordering + the fleet-wide "
+            "AGI verdict (W963-48: earning / attributed_loss "
+            "/ organic_only / no_data + 14d trend + critical "
+            "anomaly count), recommend which member engines "
+            "to fire THIS cycle. "
             "Return JSON: {\"fire\": [\"engine_name\", ...], "
             "\"rationale\": \"...\"}. Only return engines "
             "from the wired_members list. The deterministic "
@@ -230,7 +293,14 @@ class AICaptainStrategy:
             "niche-favoured -- lean toward firing MORE "
             "members. When it's None or >5, this cluster is "
             "off-priority for the store's niche -- be more "
-            "selective."
+            "selective. AGI verdict signals: 'attributed_loss' "
+            "= empire is BLEEDING -- avoid ad-spend / paid "
+            "growth engines this round; 'organic_only' = AGI "
+            "not attributed yet -- prefer revenue-driving "
+            "engines that establish attribution; 'earning' + "
+            "trend=improving = compound the existing wins; "
+            "critical anomaly present = act conservatively, "
+            "fewer engines."
         )
         user = json.dumps({
             "cluster": cluster.name,
@@ -244,6 +314,7 @@ class AICaptainStrategy:
             "deterministic_selection": base,
             "memory_summary": memory_summary,
             "attribution_7d": attribution_context,
+            "agi_phase4": agi_phase4_context,
         })
 
         resp = self._llm.chat_json(system, user)
