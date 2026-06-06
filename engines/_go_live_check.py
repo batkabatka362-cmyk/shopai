@@ -409,7 +409,60 @@ def run_go_live_check() -> list[CheckResult]:
         _check_revenue_readiness(),  # W963-1
         _check_phase4_substrate(),  # W963-61
         _check_phase5_autonomy(),   # W963-83
+        _check_api_inventory(),     # W963-98
     ]
+
+
+def _check_api_inventory() -> CheckResult:
+    """W963-98: API inventory -- categorised credential check.
+
+    Surfaces 'incomplete' categories (configured count
+    below the minimum) as warnings, with the top blocker
+    inline. Distinguished from individual env-var checks
+    (notify_webhook / ai_strategy) by being CATEGORY-
+    level: shows that e.g. 'no ad channel adapter is
+    configured' even when no individual env-var probe
+    fires. Doesn't fail go-live -- categorical visibility
+    is advisory; the individual probes still gate.
+    """
+    try:
+        from engines.api_inventory.inventory import (
+            build_inventory,
+        )
+        report = build_inventory()
+    except Exception as exc:  # noqa: BLE001
+        return CheckResult(
+            name="api_inventory",
+            status="warn",
+            detail=f"probe failed: {exc}",
+            fix="Verify engines.api_inventory imports",
+        )
+
+    incomplete = report.incomplete_categories
+    n_set = report.configured_count
+    n_tot = report.total_aliases
+
+    if not incomplete:
+        return CheckResult(
+            name="api_inventory",
+            status="pass",
+            detail=(
+                f"{n_set}/{n_tot} adapter alias(es) set; "
+                "every required category at minimum"
+            ),
+        )
+
+    titles = [c.title.split(" --")[0] for c in incomplete[:3]]
+    return CheckResult(
+        name="api_inventory",
+        status="warn",
+        detail=(
+            f"{len(incomplete)} categor(y/ies) below "
+            f"minimum -- {n_set}/{n_tot} alias(es) set. "
+            f"Top: {', '.join(titles)}"
+        ),
+        fix="shopai api-status --missing-only",
+    )
 
 
 def _check_phase5_autonomy() -> CheckResult:

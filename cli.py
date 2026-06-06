@@ -17926,6 +17926,30 @@ def _cmd_empire(args) -> None:
             "empire autonomy block raised: %s", exc,
         )
 
+    # W963-98: api-status inline. Surfaces only when
+    # categories are below minimum (launch-blocking). Silent
+    # when the empire is API-ready -- doesn't clutter the
+    # dashboard once creds are configured.
+    try:
+        from engines.api_inventory.inventory import (
+            build_inventory as _api_emp_inv,
+        )
+        _api_emp = _api_emp_inv()
+        _api_incomplete = _api_emp.incomplete_categories
+        if _api_incomplete:
+            _api_top = _api_incomplete[0]
+            print(
+                f"    api keys:           [WRN] "
+                f"{len(_api_incomplete)} categor(y/ies) "
+                f"below min  "
+                f"(top: {_api_top.key})"
+            )
+            print("    -> shopai api-status --missing-only")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "empire api-status block raised: %s", exc,
+        )
+
     # W963-58: anomaly watcher inline. Always surface when
     # any anomaly present (these are SUDDEN events the
     # operator must see immediately).

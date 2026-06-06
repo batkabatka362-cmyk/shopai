@@ -111,6 +111,17 @@ class ColdStartOrchestratorEngine:
                 "shopai pinterest connect --token X  "
                 "(visual organic traffic)"
             )
+        if not ch.get("instagram_ready"):
+            report["next_actions"].append(
+                "Set INSTAGRAM_ACCESS_TOKEN + "
+                "INSTAGRAM_ACCOUNT_ID  "
+                "(visual + paid social via Meta Graph API)"
+            )
+        if not ch.get("tiktok_ready"):
+            report["next_actions"].append(
+                "shopai tiktok connect --token X "
+                "--business-id Y  (short-form video)"
+            )
 
         # ── Step 6: Earnings snapshot ─────────────────────
         report["steps"]["earnings"] = self._step_earnings(
@@ -293,6 +304,7 @@ class ColdStartOrchestratorEngine:
             "email_ready": False,
             "pinterest_ready": False,
             "tiktok_ready": False,
+            "instagram_ready": False,
         }
         # Ads
         try:
@@ -332,6 +344,21 @@ class ColdStartOrchestratorEngine:
                 get_status as tiktok_status,
             )
             out["tiktok_ready"] = tiktok_status(
+                skip_live=True,
+            ).ready
+        except Exception:  # noqa: BLE001
+            pass
+        # Instagram (W963-99 follow-up: Instagram adapter
+        # exists + bootstrap registers it; cold-start chain
+        # was previously missing the channel-readiness
+        # surface for it, so operators using the cold-start
+        # orchestrator wouldn't see Instagram in the next-
+        # actions list even with credentials missing).
+        try:
+            from engines.instagram_publisher.status import (
+                get_status as instagram_status,
+            )
+            out["instagram_ready"] = instagram_status(
                 skip_live=True,
             ).ready
         except Exception:  # noqa: BLE001

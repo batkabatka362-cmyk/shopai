@@ -126,9 +126,25 @@ class TestChannelReadiness:
         # On a clean machine none of these are wired.
         assert ch["ads_ready"] is False
         assert ch["pinterest_ready"] is False
-        # Email + TikTok same
+        # Email + TikTok + Instagram same
         assert "email_ready" in ch
         assert "tiktok_ready" in ch
+        # W963-99: Instagram channel check added
+        assert "instagram_ready" in ch
+        assert ch["instagram_ready"] is False
+
+    def test_instagram_next_action_when_unconfigured(self):
+        """W963-99 regression: cold-start was missing the
+        Instagram channel-readiness surface. Now operator
+        sees the fix hint in next_actions when not
+        configured."""
+        result = ColdStartOrchestratorEngine().run({
+            "data": {"niche": "beauty"},
+        })
+        actions = result["data"]["next_actions"]
+        assert any(
+            "INSTAGRAM_ACCESS_TOKEN" in a for a in actions
+        )
 
 
 # ── Apply mode ────────────────────────────────────────────
