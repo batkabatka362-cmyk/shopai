@@ -2875,6 +2875,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ep_p.add_argument("--json", action="store_true")
 
+    # W963-98: api-status -- ROLE-grouped credential view.
+    ais_p = sub.add_parser(
+        "api-status",
+        help=(
+            "Show every adapter credential's status grouped "
+            "by ROLE (what unlocks revenue / brain / "
+            "channels / etc.). Surfaces what's missing and "
+            "what each unlocks."
+        ),
+    )
+    ais_p.add_argument(
+        "--missing-only", action="store_true",
+        help="Show only categories below their minimum.",
+    )
+    ais_p.add_argument(
+        "--category", default="",
+        help="Show only this category (e.g. ad_channels).",
+    )
+    ais_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12564,6 +12584,93 @@ def _cmd_earn_path(args) -> None:
             "  NEXT: empire is earning -- monitor "
             "via shopai morning-brief"
         )
+
+
+def _cmd_api_status(args) -> None:
+    """W963-98: ROLE-grouped credential view."""
+    from engines.api_inventory import ApiInventoryEngine
+
+    as_json = bool(getattr(args, "json", False))
+    missing_only = bool(getattr(args, "missing_only", False))
+    cat_filter = (
+        getattr(args, "category", "") or ""
+    ).strip().lower()
+
+    result = ApiInventoryEngine().run({})
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success" or not data:
+        err = result.get("error") or "unknown error"
+        print(f"api-status: ERROR  {err}")
+        return
+
+    n_total = data.get("total_aliases", 0)
+    n_set = data.get("configured_count", 0)
+    ready = data.get("ready_for_launch", False)
+    ready_chip = "[OK ]" if ready else "[!! ]"
+
+    print(
+        f"API status  --  {n_set}/{n_total} alias(es) "
+        f"configured  {ready_chip} "
+        f"{'READY FOR LAUNCH' if ready else 'INCOMPLETE'}"
+    )
+    print()
+    print(f"  {data.get('headline', '')}")
+    print()
+
+    categories = data.get("categories") or []
+    for c in categories:
+        key = c.get("key", "")
+        if cat_filter and key != cat_filter:
+            continue
+        status = c.get("status", "?")
+        if missing_only and status != "incomplete":
+            continue
+        chip = {
+            "ready":      "[OK ]",
+            "incomplete": "[!! ]",
+            "optional":   "[ . ]",
+        }.get(status, "[ ? ]")
+        cn = c.get("configured_count", 0)
+        tn = c.get("total_count", 0)
+        minimum = c.get("minimum", 0)
+        title = c.get("title", key)
+        min_str = (
+            f"min={minimum}" if minimum > 0 else "optional"
+        )
+        print(
+            f"  {chip} {title}  "
+            f"({cn}/{tn} set, {min_str})"
+        )
+        # Show blocks_msg only when incomplete OR when
+        # operator focused on a single category
+        if status == "incomplete" or cat_filter:
+            blocks_msg = c.get("blocks_msg", "")
+            if blocks_msg:
+                print(f"        why: {blocks_msg[:200]}")
+        # Show alias detail when filtered to one category
+        # OR when category is incomplete
+        if status == "incomplete" or cat_filter:
+            aliases = c.get("aliases") or []
+            for a in aliases:
+                a_chip = (
+                    "[OK ]"
+                    if a.get("configured")
+                    else "[-- ]"
+                )
+                print(
+                    f"        {a_chip} {a.get('env_var', '')}  "
+                    f"-- {a.get('role_label', '')}"
+                )
+        print()
+
+    print()
+    nxt = data.get("next_action", "")
+    if nxt:
+        print(f"  NEXT: {nxt}")
 
 
 def _cmd_earn_config(args) -> None:
@@ -59240,6 +59347,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "earn-path":
         _cmd_earn_path(args)
+        return
+
+    if args.command == "api-status":
+        _cmd_api_status(args)
         return
 
     if args.command == "welcome":

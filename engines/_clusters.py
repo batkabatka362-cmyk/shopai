@@ -450,6 +450,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "agi_arm_recommender",   # W963-80: Phase 5 -- arm/disarm recommender (verdict->engines)
     "earn_config",           # W963-87: env-var setup wizard
     "earn_path",             # W963-88: smart on-ramp / "what's next?" guide
+    "api_inventory",         # W963-98: ROLE-grouped credential view (operator query)
 })
 
 
