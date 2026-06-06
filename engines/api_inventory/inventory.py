@@ -103,6 +103,9 @@ SIGNUP_URLS: dict[str, str] = {
     "cj_email":    "https://developers.cjdropshipping.com/  "
                    "-- free signup",
     "cj_password": "same as CJ_DROPSHIPPING_EMAIL signup",
+    "autods":      "https://www.autods.com/  "
+                   "-- Dashboard -> Developer Settings -> "
+                   "Generate API Token",
     "pexels":      "https://www.pexels.com/api/  -- "
                    "free key",
     "elevenlabs":  "https://elevenlabs.io/app/settings/api-keys",
@@ -182,6 +185,8 @@ ALIAS_ROLES: dict[str, tuple[str, str]] = {
         ("cold_start", "CJ Dropshipping email"),
     "cj_password":
         ("cold_start", "CJ Dropshipping password"),
+    "autods":
+        ("cold_start", "AutoDS (paid dropshipping platform)"),
     "pexels":
         ("cold_start", "Pexels (stock video)"),
     "pixabay":

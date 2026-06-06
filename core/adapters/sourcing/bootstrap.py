@@ -12,6 +12,7 @@ from __future__ import annotations
 from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
+from .autods import AutoDSAdapter
 from .cj_dropshipping import CJDropshippingAdapter
 
 logger = get_logger("adapters.sourcing.bootstrap")
@@ -19,6 +20,7 @@ logger = get_logger("adapters.sourcing.bootstrap")
 
 _SOURCING_ADAPTER_CLASSES = (
     CJDropshippingAdapter,
+    AutoDSAdapter,
 )
 
 

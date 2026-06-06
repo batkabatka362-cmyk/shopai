@@ -263,6 +263,10 @@ ENV_ALIASES: dict[str, str] = {
     # CJ Dropshipping uses email + password → access token exchange.
     "cj_email":         "CJ_DROPSHIPPING_EMAIL",
     "cj_password":      "CJ_DROPSHIPPING_PASSWORD",
+    # AutoDS: single API token (Bearer auth). Paid SaaS
+    # ($10-30/mo) with broader supplier coverage than CJ
+    # (AliExpress / Walmart / Costco / etc).
+    "autods":           "AUTODS_API_TOKEN",
 }
 
 
