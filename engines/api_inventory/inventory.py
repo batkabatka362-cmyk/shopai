@@ -32,6 +32,99 @@ from dataclasses import dataclass, field
 #  12. vector_db         -- AI memory backend
 #  13. analytics         -- advanced metrics
 
+# Where to sign up + get an API key. Maps alias -> URL.
+# Only populated for the launch-critical signups (brain /
+# ad_channels / email / cold_start / social / shopify);
+# the rest fall back to the env-var name being self-
+# documenting (and the operator's signup is rare or
+# already-completed by the time they reach api-status).
+SIGNUP_URLS: dict[str, str] = {
+    # ── shopify ──
+    "shopify_url": (
+        "https://partners.shopify.com/ -> Create store"
+    ),
+    "shopify_key": (
+        "Shopify Admin -> Apps -> Develop apps -> "
+        "Admin API access token"
+    ),
+    # ── brain ──
+    "openai":    "https://platform.openai.com/api-keys",
+    "anthropic": "https://console.anthropic.com/settings/keys",
+    "groq":      "https://console.groq.com/keys",
+    "gemini":    "https://aistudio.google.com/app/apikey",
+    "deepseek":  "https://platform.deepseek.com/api_keys",
+    "mistral":   "https://console.mistral.ai/api-keys/",
+    "openrouter": "https://openrouter.ai/keys",
+    # ── ad_channels ──
+    "meta_ads_access_token": (
+        "https://developers.facebook.com/ -> Create app "
+        "-> Marketing API -> long-lived token"
+    ),
+    "meta_ads_account_id": (
+        "Meta Business Suite -> Ad Accounts -> "
+        "Account ID (15 digits)"
+    ),
+    "google_ads_developer_token": (
+        "https://ads.google.com/aw/apicenter -> "
+        "Developer token"
+    ),
+    "google_ads_client_id": (
+        "https://console.cloud.google.com/ -> "
+        "OAuth 2.0 credentials"
+    ),
+    "google_ads_client_secret": (
+        "same page as GOOGLE_ADS_CLIENT_ID"
+    ),
+    "google_ads_refresh_token": (
+        "OAuth playground / one-time auth flow"
+    ),
+    # ── email ──
+    "klaviyo":  "Klaviyo Account -> Settings -> "
+                "API Keys -> Private API Key",
+    "resend":   "https://resend.com/api-keys",
+    "sendgrid": "https://app.sendgrid.com/settings/api_keys",
+    "brevo":    "https://app.brevo.com/settings/keys/api",
+    "postmark": "Postmark -> Servers -> API Tokens",
+    # ── social ──
+    "pinterest": (
+        "https://developers.pinterest.com/ -> "
+        "Create app -> Generate access token"
+    ),
+    "tiktok": (
+        "https://business-api.tiktok.com/ -> "
+        "Content Posting API"
+    ),
+    "instagram": (
+        "https://developers.facebook.com/ -> Instagram "
+        "Graph API (needs IG Business Account linked to "
+        "a Facebook Page)"
+    ),
+    # ── cold_start ──
+    "cj_email":    "https://developers.cjdropshipping.com/  "
+                   "-- free signup",
+    "cj_password": "same as CJ_DROPSHIPPING_EMAIL signup",
+    "pexels":      "https://www.pexels.com/api/  -- "
+                   "free key",
+    "elevenlabs":  "https://elevenlabs.io/app/settings/api-keys",
+    "runway":      "https://app.runwayml.com/ -> "
+                   "Settings -> API",
+    "stability_ai": "https://platform.stability.ai/account/keys",
+    "removebg":    "https://www.remove.bg/api -- free key",
+    "replicate":   "https://replicate.com/account/api-tokens",
+    # ── reviews ──
+    "judgeme":     "https://judge.me/ -> Settings -> API",
+    # ── support ──
+    "intercom":    "https://app.intercom.com/ -> "
+                   "Settings -> Developer Hub -> API key",
+}
+
+
+def signup_url_for(alias: str) -> str:
+    """Return the sign-up URL hint for an alias, or empty
+    string when not catalogued."""
+    return SIGNUP_URLS.get(alias, "")
+
+
 # alias -> (category, role_label)
 ALIAS_ROLES: dict[str, tuple[str, str]] = {
     # ── shopify (mandatory) ──
@@ -362,6 +455,7 @@ class AliasStatus:
     env_var: str
     role_label: str
     configured: bool
+    signup_url: str = ""
 
 
 @dataclass
@@ -463,6 +557,7 @@ def build_inventory(
             env_var=env_var,
             role_label=role_label,
             configured=alias in configured,
+            signup_url=SIGNUP_URLS.get(alias, ""),
         ))
 
     # Build per-category reports in priority order

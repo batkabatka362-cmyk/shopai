@@ -231,3 +231,65 @@ class TestCatalogSanity:
     def test_priority_unique(self):
         prios = [c["priority"] for c in CATEGORIES]
         assert len(prios) == len(set(prios))
+
+
+# ── W963-101: signup URL hints ────────────────────────────
+
+
+class TestSignupUrls:
+    """W963-101: each launch-critical alias has a sign-up
+    URL hint so the operator knows where to GET the
+    credential. Threaded through AliasStatus.signup_url."""
+
+    def test_signup_url_threaded_into_alias_status(self):
+        r = build_inventory(
+            env_aliases_override={
+                "openai": "OPENAI_API_KEY",
+            },
+            configured_aliases_override=[],
+        )
+        brain_cat = next(
+            c for c in r.categories if c.key == "brain"
+        )
+        openai_status = next(
+            a for a in brain_cat.aliases
+            if a.alias == "openai"
+        )
+        assert openai_status.signup_url
+        assert "platform.openai.com" in (
+            openai_status.signup_url
+        )
+
+    def test_uncategorised_alias_has_no_signup_url(self):
+        r = build_inventory(
+            env_aliases_override={
+                "totally_made_up": "FAKE_VAR",
+            },
+            configured_aliases_override=[],
+        )
+        other_cat = next(
+            c for c in r.categories if c.key == "other"
+        )
+        assert other_cat.aliases[0].signup_url == ""
+
+    def test_top_priority_categories_have_signup_urls(self):
+        """At least one alias in each of the launch-critical
+        categories (brain, ad_channels, email, cold_start,
+        social) has a signup_url so the operator gets a
+        sign-up hint when starting from zero."""
+        from engines.api_inventory.inventory import (
+            ALIAS_ROLES, SIGNUP_URLS,
+        )
+        critical_cats = {
+            "brain", "ad_channels", "email",
+            "cold_start", "social", "shopify",
+        }
+        cats_with_urls: set[str] = set()
+        for alias, (cat, _label) in ALIAS_ROLES.items():
+            if alias in SIGNUP_URLS:
+                cats_with_urls.add(cat)
+        missing = critical_cats - cats_with_urls
+        assert not missing, (
+            "launch-critical categories without a single "
+            f"signup URL hint: {missing}"
+        )

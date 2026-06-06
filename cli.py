@@ -12665,6 +12665,11 @@ def _cmd_api_status(args) -> None:
                     f"        {a_chip} {a.get('env_var', '')}  "
                     f"-- {a.get('role_label', '')}"
                 )
+                # Signup URL hint, only when alias is
+                # unconfigured + URL is catalogued
+                signup = a.get("signup_url", "")
+                if signup and not a.get("configured"):
+                    print(f"             where: {signup}")
         print()
 
     print()
