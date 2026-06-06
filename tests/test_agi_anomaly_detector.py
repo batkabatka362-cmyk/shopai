@@ -151,9 +151,18 @@ class TestDetect:
         assert len(outs) == 1
         assert outs[0].severity == "warn"
 
-    def test_zero_mad_skips_outlier(self):
+    def test_zero_mad_with_stable_history_fires_outlier(self):
+        """W963-97 regression: pre-fix, mad==0 short-
+        circuited and the function returned WITHOUT
+        flagging anything. But mad=0 specifically means
+        'history was perfectly stable' -- a zero-variance
+        baseline. Any non-negligible deviation from that
+        stable median IS the outlier we're meant to detect.
+        Pre-fix: empire had $100 profit for 3 snapshots
+        then $200 on snapshot 4 -- a 2x change -- NO
+        anomaly fired because mad=0 masked it."""
         snaps = [
-            _snap(profit=200.0),
+            _snap(profit=200.0),  # latest, deviates from 100 baseline
             _snap(profit=100.0),
             _snap(profit=100.0),
             _snap(profit=100.0),
@@ -163,7 +172,41 @@ class TestDetect:
             a for a in r.anomalies
             if a.type == "PROFIT_OUTLIER"
         ]
-        # MAD=0 -> skip
+        assert len(outs) == 1
+        assert outs[0].severity == "warn"  # spike, not drop
+        assert "stable history" in outs[0].description.lower()
+        assert outs[0].delta == 100.0
+
+    def test_zero_mad_with_stable_history_fires_critical_on_drop(self):
+        """Symmetric case: drop on stable history -> critical."""
+        snaps = [
+            _snap(profit=-500.0),  # latest, big drop
+            _snap(profit=100.0),
+            _snap(profit=100.0),
+            _snap(profit=100.0),
+        ]
+        r = detect(snaps_override=snaps)
+        outs = [
+            a for a in r.anomalies
+            if a.type == "PROFIT_OUTLIER"
+        ]
+        assert len(outs) == 1
+        assert outs[0].severity == "critical"
+
+    def test_zero_mad_with_latest_matching_stays_quiet(self):
+        """Sanity: when latest matches the stable baseline,
+        no anomaly (no real deviation)."""
+        snaps = [
+            _snap(profit=100.0),  # latest matches baseline
+            _snap(profit=100.0),
+            _snap(profit=100.0),
+            _snap(profit=100.0),
+        ]
+        r = detect(snaps_override=snaps)
+        outs = [
+            a for a in r.anomalies
+            if a.type == "PROFIT_OUTLIER"
+        ]
         assert outs == []
 
     def test_attribution_collapse(self):

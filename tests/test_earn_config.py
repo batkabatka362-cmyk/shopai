@@ -219,6 +219,97 @@ class TestApplyDefaults:
         r = cfg.apply_defaults()
         assert r.applied_count == 0
 
+    def test_preserves_operator_comments_and_blanks(
+        self, _tmp_env, monkeypatch,
+    ):
+        """W963-97 regression: pre-fix the apply path
+        re-wrote the entire .env in alphabetical order via
+        sorted(current.items()), silently destroying every
+        operator-authored comment + blank line + manual
+        ordering. Operators hand-edit .env to annotate why
+        a webhook URL was set or when a value was changed."""
+        monkeypatch.setattr(
+            cfg, "_is_test_environment",
+            lambda: False,
+        )
+        _tmp_env.write_text(
+            "# Production deploy 2026-01-15\n"
+            "# DO NOT delete\n"
+            "SHOPAI_NOTIFY_WEBHOOK_URL=https://hooks.slack.com/services/T01/B01/x\n"
+            "\n"
+            "# Operator notes:\n"
+            "SHOPAI_SPEND_CAP_DAILY_USD=100\n",
+            encoding="utf-8",
+        )
+        r = cfg.apply_defaults()
+        body = _tmp_env.read_text(encoding="utf-8")
+        # All comments preserved
+        assert "# Production deploy 2026-01-15" in body
+        assert "# DO NOT delete" in body
+        assert "# Operator notes:" in body
+        # Pre-existing values preserved (cap=100 not the
+        # default 50)
+        assert "SHOPAI_SPEND_CAP_DAILY_USD=100" in body
+        assert "SHOPAI_SPEND_CAP_DAILY_USD=50" not in body
+        # New defaults appended at end (not sorted into
+        # existing positions)
+        assert "SHOPAI_AI_STRATEGY=1" in body
+        # Operator-specific webhook url unchanged
+        assert (
+            "SHOPAI_NOTIFY_WEBHOOK_URL=https://"
+            "hooks.slack.com/services/T01/B01/x"
+        ) in body
+        # Comment order preserved (production deploy line
+        # comes BEFORE the webhook url it annotates)
+        idx_comment = body.index("# Production deploy")
+        idx_webhook = body.index("SHOPAI_NOTIFY_WEBHOOK_URL")
+        assert idx_comment < idx_webhook
+        # And applied_count counts the actually-written
+        # safe defaults: 7 total, 1 pre-set (cap),
+        # webhook is operator-specific = 6 new
+        assert r.applied_count == 6
+
+    def test_preserves_ordering_when_replacing_in_place(
+        self, _tmp_env, monkeypatch,
+    ):
+        """W963-97 regression: when a key in the existing
+        .env matches an entry being written, the value is
+        replaced IN PLACE (preserving line position), not
+        moved to the bottom alphabetically."""
+        monkeypatch.setattr(
+            cfg, "_is_test_environment",
+            lambda: False,
+        )
+        # Pre-write a file with intentional ordering
+        _tmp_env.write_text(
+            "# z-section\n"
+            "ZZZ_OPERATOR_KEY=alpha\n"
+            "\n"
+            "# a-section\n"
+            "SHOPAI_SPEND_CAP_DAILY_USD=999\n"
+            "AAA_OPERATOR_KEY=beta\n",
+            encoding="utf-8",
+        )
+        cfg.apply_defaults()
+        body = _tmp_env.read_text(encoding="utf-8")
+        lines = body.splitlines()
+        # ZZZ stays before AAA (operator's ordering)
+        idx_zzz = next(
+            (i for i, l in enumerate(lines)
+             if l.startswith("ZZZ_OPERATOR_KEY"))
+        )
+        idx_aaa = next(
+            (i for i, l in enumerate(lines)
+             if l.startswith("AAA_OPERATOR_KEY"))
+        )
+        assert idx_zzz < idx_aaa, (
+            f"Pre-existing ordering destroyed: "
+            f"ZZZ at {idx_zzz}, AAA at {idx_aaa}"
+        )
+        # Pre-existing cap=999 preserved (not overwritten
+        # by default 50)
+        assert "SHOPAI_SPEND_CAP_DAILY_USD=999" in body
+
 
 # ── print_exports ─────────────────────────────────────────
 

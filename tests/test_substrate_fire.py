@@ -209,9 +209,18 @@ class TestPerStoreArmedFire:
             for o in r2.outcomes
         )
 
-    def test_fleet_call_walks_every_armed_entry(
+    def test_fleet_call_fires_only_fleet_wide_entries(
         self, _disable_pytest_guards, monkeypatch,
     ):
+        """W963-97 regression: fleet-wide call MUST only
+        fire entries armed without a store_id. Per-store
+        entries are the per-store loop's responsibility.
+
+        Pre-fix: list_armed() (no filter) returned BOTH
+        fleet-wide and per-store entries, so per-store-
+        armed domains fired here AND again in the per-
+        store loop. Operator paid for / logged each
+        per-store-armed domain twice per cycle."""
         from core.automation.autonomy_armed import arm
         from core.automation.payload_discoverer import (
             register_discoverer,
@@ -236,12 +245,50 @@ class TestPerStoreArmedFire:
                 store_id=store_id,
             ),
         )
-        # Fleet-wide invocation iterates BOTH entries
+        # Fleet-wide invocation should fire ONLY the
+        # fleet-wide entry. Pre-fix this was 2; post-fix 1.
         r = fire_armed_substrate_domains()
-        assert len(r.outcomes) == 2
-        store_ids = {o.store_id for o in r.outcomes}
-        assert None in store_ids or "" in store_ids
-        assert "store-1" in store_ids
+        assert len(r.outcomes) == 1
+        # The single outcome is the fleet-wide one (no
+        # store_id attached)
+        assert not r.outcomes[0].store_id
+
+    def test_per_store_loop_fires_per_store_armed(
+        self, _disable_pytest_guards, monkeypatch,
+    ):
+        """W963-97: companion to the above. Per-store call
+        STILL fires per-store-armed entries -- it's the
+        ONLY path that should."""
+        from core.automation.autonomy_armed import arm
+        from core.automation.payload_discoverer import (
+            register_discoverer,
+        )
+        monkeypatch.setenv(
+            "SHOPAI_AUTONOMY_FIRE_CONFIRM", "1",
+        )
+        arm(
+            "shipping_alert", reason="fleet",
+        )
+        arm(
+            "shipping_alert", reason="per",
+            store_id="store-1",
+        )
+        register_discoverer(
+            "shipping_alert",
+            lambda *, store_id=None: DiscoveryResult(
+                domain="shipping_alert",
+                payload=[{"order_id": "x"}],
+                source="test",
+                store_id=store_id,
+            ),
+        )
+        r = fire_armed_substrate_domains(store_id="store-1")
+        # Per-store entry fires for store-1
+        assert any(
+            o.domain == "shipping_alert"
+            and o.store_id == "store-1"
+            for o in r.outcomes
+        )
 
 
 class TestReportDataclass:

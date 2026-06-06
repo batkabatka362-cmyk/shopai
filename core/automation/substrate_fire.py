@@ -107,14 +107,32 @@ def fire_armed_substrate_domains(
         )
         return report
 
-    # W872: when store_id is supplied, narrow to that store's
-    # armed entries (exact match). When None/empty, walk every
-    # armed entry (fleet-wide + per-store) -- legacy fleet-
-    # wide invocation continues to work.
+    # W872 + W963-97 fix: when store_id is supplied, narrow
+    # to that store's armed entries (exact match). When
+    # None/empty (fleet-wide call), iterate ONLY fleet-wide
+    # entries (entry.store_id is None).
+    #
+    # Pre-fix, fleet-wide call iterated EVERY armed entry
+    # including per-store ones. The cli.py cycle-hook then
+    # ran a per-store loop AFTER the fleet-wide call, firing
+    # each per-store-armed entry AGAIN. Result: per-store-
+    # armed domains fired twice per cycle (logged twice,
+    # billed twice, double-counted in attribution).
+    #
+    # Post-fix:
+    #   - Fleet-wide call fires fleet-wide-scoped entries
+    #     (entry.store_id is None) -- these are entries
+    #     armed without a --store flag.
+    #   - Per-store call (cli's per-store loop) fires
+    #     entries scoped to that store (entry.store_id
+    #     matches the call's store_id).
     if store_id:
         armed_iter = list_armed(store_id=store_id)
     else:
-        armed_iter = list_armed()
+        armed_iter = [
+            e for e in list_armed()
+            if not getattr(e, "store_id", None)
+        ]
     for entry in armed_iter:
         domain = entry.domain
         if DOMAIN_FIRING_MODE.get(domain) != "substrate":

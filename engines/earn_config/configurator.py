@@ -188,20 +188,75 @@ def _load_env_file() -> dict[str, str]:
 
 
 def _atomic_write_env(entries: dict[str, str]) -> bool:
-    """Write the env entries to ./.env atomically.
-    Preserves keys NOT in entries via merge with current
-    file contents.
+    """Write the env entries to ./.env atomically while
+    preserving the operator's comments + blank lines +
+    manual ordering.
 
     W963-92: delegates the actual write to the canonical
     atomic_write_text() so any future atomic-write fix
     (e.g. fsync-before-replace) lives in one place.
+
+    W963-97 fix: previously the function did
+    ``sorted(_load_env_file() ∪ entries)`` and re-wrote the
+    file in alphabetical order. That dropped:
+      - operator's ``# Production deploy`` style comments
+      - blank lines used for organisation
+      - the operator's manual key ordering
+    On the FIRST ``shopai earn-config --apply`` run after
+    operator hand-editing, every annotation vanished
+    silently. Operators are expected to hand-edit .env to
+    add notes (e.g. ``# Set 2026-01-15`` next to webhook
+    URLs); destroying those is a real operator-facing data
+    loss.
+
+    Post-fix algorithm:
+      1. Walk the existing .env line by line.
+      2. Comments + blank lines + malformed lines pass
+         through verbatim.
+      3. KEY=VALUE lines: if KEY is in entries, REPLACE the
+         value in place (preserving the surrounding lines'
+         positions); otherwise pass through verbatim.
+      4. Any keys in entries that were NOT in the existing
+         file get appended at the end (separated by a blank
+         line so they're visually distinct).
     """
-    current = _load_env_file()
-    current.update(entries)
-    lines = [
-        f"{k}={v}" for k, v in sorted(current.items())
-    ]
-    body = "\n".join(lines) + "\n"
+    to_write = dict(entries)
+    new_lines: list[str] = []
+
+    if _ENV_FILE.exists():
+        try:
+            raw_text = _ENV_FILE.read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.debug("earn_config: env read: %s", exc)
+            return False
+        for raw in raw_text.splitlines():
+            stripped = raw.strip()
+            if (
+                not stripped
+                or stripped.startswith("#")
+                or "=" not in stripped
+            ):
+                # Preserve comments / blanks / malformed
+                # lines exactly as written.
+                new_lines.append(raw)
+                continue
+            k = stripped.split("=", 1)[0].strip()
+            if k in to_write:
+                new_lines.append(f"{k}={to_write.pop(k)}")
+            else:
+                new_lines.append(raw)
+
+    # Append keys that weren't already in the file. Add a
+    # blank separator before the new block when the existing
+    # file's last line is non-blank, so the new block reads
+    # as a visually-distinct section.
+    if to_write:
+        if new_lines and new_lines[-1].strip():
+            new_lines.append("")
+        for k in sorted(to_write.keys()):
+            new_lines.append(f"{k}={to_write[k]}")
+
+    body = "\n".join(new_lines) + "\n"
     return _atomic_write_text(_ENV_FILE, body)
 
 

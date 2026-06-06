@@ -235,6 +235,83 @@ class TestRecommend:
         for rec in r.arm_recommendations:
             assert rec.priority == "normal"
 
+    def test_loss_streak_preserves_base_rationale_for_pre_existing(self):
+        """W963-97 regression: when loss_streak critical
+        fires under verdict=attributed_loss, the base recipe
+        ALREADY disarms _SPEND_ENGINES. Override adds the
+        same _SPEND_ENGINES (zero new). Pre-fix, every
+        disarm engine got override label + critical priority
+        even though they were already in the base recipe.
+        Post-fix: pre-existing engines keep base_rationale +
+        normal; only override-ADDED engines escalate."""
+        r = recommend(
+            signals_override={
+                "verdict": "attributed_loss",
+                "trajectory": "flat",
+                "streak_top": "loss_streak",
+                "streak_severity": "critical",
+            },
+        )
+        assert r.override_applied is not None
+        assert "critical_loss_streak" in r.override_applied
+        # All arm engines are CONSERVATION (pre-existing in
+        # base recipe). They should keep normal priority +
+        # base_rationale, NOT the override label.
+        for rec in r.arm_recommendations:
+            assert rec.priority == "normal", (
+                f"arm {rec.engine} priority should be normal "
+                f"(pre-existing in base recipe), got "
+                f"{rec.priority}"
+            )
+            assert "Attributed loss" in rec.rationale, (
+                f"arm {rec.engine} rationale should be base "
+                "recipe, not override label"
+            )
+        # Disarm engines are SPEND (pre-existing in base
+        # recipe too -- override added nothing new). Same
+        # check.
+        for rec in r.disarm_recommendations:
+            assert rec.priority == "normal", (
+                f"disarm {rec.engine} priority should be "
+                f"normal, got {rec.priority}"
+            )
+
+    def test_critical_anomaly_under_earning_escalates_only_destructive(self):
+        """W963-97 regression: verdict=earning + trajectory=
+        improved arms _EXPLORATION_ENGINES. Critical anomaly
+        override adds _DESTRUCTIVE_ENGINES to disarm. Pre-fix
+        the EXPLORATION arm engines got critical priority +
+        anomaly label even though they pre-existed. Post-fix:
+        EXPLORATION (pre-existing arms) stay normal; only
+        DESTRUCTIVE (added disarms) escalate."""
+        r = recommend(
+            signals_override={
+                "verdict": "earning",
+                "trajectory": "improved",
+                "critical_anomaly_count": 2,
+            },
+        )
+        assert r.override_applied is not None
+        assert "critical_anomaly" in r.override_applied
+        # EXPLORATION arm engines pre-existed in base recipe
+        for rec in r.arm_recommendations:
+            assert rec.priority == "normal", (
+                f"arm {rec.engine} should be normal (pre-"
+                f"existing exploration), got {rec.priority}"
+            )
+            assert "compound" in rec.rationale.lower() or \
+                   "exploring" in rec.rationale.lower(), (
+                f"arm {rec.engine} should keep base "
+                "exploration rationale"
+            )
+        # DESTRUCTIVE disarm engines added by override
+        for rec in r.disarm_recommendations:
+            assert rec.priority == "critical", (
+                f"disarm {rec.engine} should be critical "
+                "(added by anomaly override)"
+            )
+            assert "anomaly" in rec.rationale.lower()
+
 
 # ── headline / next_action ────────────────────────────────
 

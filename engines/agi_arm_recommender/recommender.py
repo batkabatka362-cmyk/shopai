@@ -326,42 +326,48 @@ def recommend(
     arm_list, disarm_list, base_rationale = _verdict_recipe(
         report.verdict, report.trajectory,
     )
+    # W963-97 fix: keep the pre-override sets so we can tell
+    # which engines were ALREADY in the base recipe (use
+    # base_rationale + normal) vs ADDED by an override (use
+    # override label + critical). Pre-fix every engine in the
+    # final arm/disarm got the override label even when its
+    # presence pre-dated the override -- misleading operators
+    # into thinking the override caused arming of engines
+    # that were already going to be armed.
+    pre_arm_set = set(arm_list)
+    pre_disarm_set = set(disarm_list)
     arm_list, disarm_list, override = _maybe_override(
         sig, arm_list, disarm_list,
     )
     report.override_applied = override
 
+    def _rec_for(engine: str, pre_set: set[str]) -> tuple[str, str]:
+        added_by_override = (
+            bool(override) and engine not in pre_set
+        )
+        if added_by_override:
+            return (override, "critical")
+        return (base_rationale, "normal")
+
     # Build per-engine recommendations
     for eng in dict.fromkeys(arm_list):  # dedupe preserving order
+        rationale, priority = _rec_for(eng, pre_arm_set)
         report.arm_recommendations.append(
             EngineRecommendation(
                 engine=eng,
                 action="arm",
-                rationale=(
-                    override
-                    if override
-                    else base_rationale
-                ),
-                priority=(
-                    "critical"
-                    if override else "normal"
-                ),
+                rationale=rationale,
+                priority=priority,
             )
         )
     for eng in dict.fromkeys(disarm_list):
+        rationale, priority = _rec_for(eng, pre_disarm_set)
         report.disarm_recommendations.append(
             EngineRecommendation(
                 engine=eng,
                 action="disarm",
-                rationale=(
-                    override
-                    if override
-                    else base_rationale
-                ),
-                priority=(
-                    "critical"
-                    if override else "normal"
-                ),
+                rationale=rationale,
+                priority=priority,
             )
         )
     report.headline = _build_headline(report)

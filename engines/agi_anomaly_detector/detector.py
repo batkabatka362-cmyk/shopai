@@ -114,20 +114,36 @@ def _check_profit_outlier(
             continue
     if not values:
         return
-    med = statistics.median(values)
-    mad = _mad(values)
-    if mad == 0.0:
-        return
     try:
         latest_v = float(
             latest.get("gross_profit", 0) or 0,
         )
     except (TypeError, ValueError):
         return
-    devs = abs(latest_v - med)
-    # 3-MAD is roughly 4.45σ for normal data
-    if devs < 3.0 * mad:
-        return
+    med = statistics.median(values)
+    mad = _mad(values)
+    dev = abs(latest_v - med)
+
+    # W963-97 fix: pre-fix, mad==0.0 short-circuited and the
+    # function returned WITHOUT flagging anything. But mad=0
+    # specifically means "history was perfectly stable" -- a
+    # zero-variance baseline. Any non-negligible deviation
+    # from that stable median IS the outlier we're meant to
+    # detect. Pre-fix: empire goes from $0 profit for 13
+    # snapshots to -$50k on snapshot 14, NO ANOMALY fires
+    # because mad==0 masked it. Post-fix: zero-variance
+    # history with a deviating latest emits the anomaly
+    # (with a tolerance of $0.50 for floating-point noise).
+    if mad == 0.0:
+        if dev < 0.5:
+            return
+        threshold_detail = "stable history (mad=0)"
+    else:
+        # 3-MAD is roughly 4.45σ for normal data
+        if dev < 3.0 * mad:
+            return
+        threshold_detail = ">=3 MAD"
+
     direction = "drop" if latest_v < med else "spike"
     sev = "critical" if direction == "drop" else "warn"
     anomalies.append(Anomaly(
@@ -136,7 +152,8 @@ def _check_profit_outlier(
         delta=round(latest_v - med, 2),
         description=(
             f"gross_profit={latest_v:.0f} is a {direction} "
-            f"vs rolling median {med:.0f} (>=3 MAD)."
+            f"vs rolling median {med:.0f} "
+            f"({threshold_detail})."
         ),
         occurred_at=float(latest.get("ts", 0) or 0),
     ))
