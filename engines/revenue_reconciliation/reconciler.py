@@ -153,14 +153,41 @@ def _list_fleet_stores() -> list[str]:
 def _hydrate_orders(
     store_id: str, limit: int = 250,
 ) -> list[dict[str, Any]]:
+    """W963-99: wrap the hydrate call in active_store(sid)
+    so the adapter router can scope the Shopify call to
+    that store's credentials.
+
+    Pre-fix, the store_id parameter was ACCEPTED but never
+    threaded through to hydrate(). For multi-store empires,
+    each per-store iteration in reconcile_fleet then fetched
+    the SAME orders from the singleton Shopify connection;
+    fleet_revenue = N_stores * actual_revenue. Single-store
+    empires worked by accident (one connection, one set of
+    orders).
+
+    Today this is a no-op for credential routing (the
+    Shopify adapter doesn't yet consult active_store to
+    swap creds), but it establishes the contract: 'when
+    you call _hydrate_orders(sid), the result is scoped
+    to sid'. The router refactor lands separately.
+    """
     try:
         from engines._shopify_hydrator import hydrate
-        return hydrate(
-            supplied=[],
-            capability_name="SHOPIFY_FETCH_ORDERS",
-            list_field="orders",
-            limit=int(limit),
-        ) or []
+        from core.context import active_store
+        sid = (store_id or "").strip() or None
+        import contextlib
+        ctx = (
+            active_store(sid)
+            if sid
+            else contextlib.nullcontext()
+        )
+        with ctx:
+            return hydrate(
+                supplied=[],
+                capability_name="SHOPIFY_FETCH_ORDERS",
+                list_field="orders",
+                limit=int(limit),
+            ) or []
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "reconciliation: order hydrate raised: %s", exc,

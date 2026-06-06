@@ -344,6 +344,55 @@ class TestComputeFleetPnl:
         assert r.by_store[0].store_id == "onlyme"
 
 
+# ── W963-99: per-store active_store wrap ──────────────────
+
+
+class TestPerStoreActiveStore:
+    """W963-99: tracker.py shares the same hydrate bug as
+    revenue_reconciliation. _hydrate_orders(store_id) wraps
+    in active_store(sid) so adapter router can scope creds."""
+
+    def test_hydrate_runs_under_active_store_context(self):
+        from unittest.mock import patch
+        from engines.store_pnl_tracker import tracker
+
+        captured = {"sid": "MISSING"}
+
+        def fake_hydrate(*, supplied, capability_name,
+                         list_field, limit):
+            from core.context import get_active_store_id
+            captured["sid"] = get_active_store_id()
+            return []
+
+        with patch(
+            "engines._shopify_hydrator.hydrate",
+            side_effect=fake_hydrate,
+        ):
+            tracker._hydrate_orders("store_b", limit=10)
+
+        assert captured["sid"] == "store_b"
+
+    def test_empty_store_id_uses_nullcontext(self):
+        from unittest.mock import patch
+        from engines.store_pnl_tracker import tracker
+
+        captured = {"sid": "MISSING"}
+
+        def fake_hydrate(*, supplied, capability_name,
+                         list_field, limit):
+            from core.context import get_active_store_id
+            captured["sid"] = get_active_store_id()
+            return []
+
+        with patch(
+            "engines._shopify_hydrator.hydrate",
+            side_effect=fake_hydrate,
+        ):
+            tracker._hydrate_orders("", limit=10)
+
+        assert captured["sid"] is None
+
+
 # ── Engine envelope ────────────────────────────────────────
 
 

@@ -103,14 +103,27 @@ def _list_fleet_stores() -> list[str]:
 def _hydrate_orders(
     store_id: str, limit: int = 250,
 ) -> list[dict[str, Any]]:
+    """W963-99: see engines.revenue_reconciliation.reconciler.
+    _hydrate_orders for the rationale. Same fix applies here
+    (compute_fleet_pnl iterates per-store and previously
+    multi-counted orders across stores)."""
     try:
         from engines._shopify_hydrator import hydrate
-        return hydrate(
-            supplied=[],
-            capability_name="SHOPIFY_FETCH_ORDERS",
-            list_field="orders",
-            limit=int(limit),
-        ) or []
+        from core.context import active_store
+        sid = (store_id or "").strip() or None
+        import contextlib
+        ctx = (
+            active_store(sid)
+            if sid
+            else contextlib.nullcontext()
+        )
+        with ctx:
+            return hydrate(
+                supplied=[],
+                capability_name="SHOPIFY_FETCH_ORDERS",
+                list_field="orders",
+                limit=int(limit),
+            ) or []
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "pnl: order hydrate raised: %s", exc,

@@ -324,6 +324,63 @@ class TestReconcileFleet:
         assert r.fleet_organic_revenue == 200.0
 
 
+# ── W963-99: per-store active_store wrap ──────────────────
+
+
+class TestPerStoreActiveStore:
+    """W963-99: _hydrate_orders(store_id) wraps the hydrate
+    call in active_store(store_id) so the adapter router can
+    scope per-store credentials. Pre-fix the store_id was
+    accepted but never threaded; multi-store fleet iteration
+    fetched the same orders against every store from the
+    singleton Shopify connection."""
+
+    def test_hydrate_runs_under_active_store_context(self):
+        from unittest.mock import patch
+        from engines.revenue_reconciliation import reconciler
+
+        captured = {"sid": "MISSING"}
+
+        def fake_hydrate(*, supplied, capability_name,
+                         list_field, limit):
+            from core.context import get_active_store_id
+            captured["sid"] = get_active_store_id()
+            return []
+
+        with patch(
+            "engines._shopify_hydrator.hydrate",
+            side_effect=fake_hydrate,
+        ):
+            reconciler._hydrate_orders("store_a", limit=10)
+
+        assert captured["sid"] == "store_a", (
+            f"Expected active_store('store_a') during "
+            f"hydrate; got {captured['sid']!r}"
+        )
+
+    def test_empty_store_id_uses_nullcontext(self):
+        """Empty store_id should NOT set active_store
+        (preserves any outer context the caller set up)."""
+        from unittest.mock import patch
+        from engines.revenue_reconciliation import reconciler
+
+        captured = {"sid": "MISSING"}
+
+        def fake_hydrate(*, supplied, capability_name,
+                         list_field, limit):
+            from core.context import get_active_store_id
+            captured["sid"] = get_active_store_id()
+            return []
+
+        with patch(
+            "engines._shopify_hydrator.hydrate",
+            side_effect=fake_hydrate,
+        ):
+            reconciler._hydrate_orders("", limit=10)
+
+        assert captured["sid"] is None
+
+
 # ── Envelope (Pattern Q) ──────────────────────────────────
 
 
