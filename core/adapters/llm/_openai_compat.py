@@ -56,7 +56,9 @@ class OpenAICompatAdapter(LLMBaseAdapter):
             return False
         if not self.config_alias:
             return False
-        return bool(get_config().get(self.config_alias))
+        # W963-117: per-store credential routing
+        from .._per_store_credentials import resolve_per_store
+        return bool((resolve_per_store(self.config_alias) or get_config().get(self.config_alias)))
 
     def extra_headers(self) -> dict[str, str]:
         """Override to add vendor-specific headers (e.g.
@@ -64,7 +66,8 @@ class OpenAICompatAdapter(LLMBaseAdapter):
         return {}
 
     def _api_key(self) -> str:
-        key = get_config().get(self.config_alias)
+        from .._per_store_credentials import resolve_per_store
+        key = (resolve_per_store(self.config_alias) or get_config().get(self.config_alias))
         if not key:
             env_var = get_config().env_var_for(self.config_alias)
             raise AdapterNotConfigured(

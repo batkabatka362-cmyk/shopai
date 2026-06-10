@@ -128,10 +128,15 @@ class EmailBaseAdapter(BaseAdapter):
             return False
         if not self.base_url or not self.config_alias:
             return False
-        return bool(get_config().get(self.config_alias))
+        # W963-117: per-store credential routing via
+        # active_store thread-local. Falls back to the
+        # fleet-wide env var when no per-store override.
+        from .._per_store_credentials import resolve_per_store
+        return bool((resolve_per_store(self.config_alias) or get_config().get(self.config_alias)))
 
     def _api_key(self) -> str:
-        key = get_config().get(self.config_alias)
+        from .._per_store_credentials import resolve_per_store
+        key = (resolve_per_store(self.config_alias) or get_config().get(self.config_alias))
         if not key:
             env = get_config().env_var_for(self.config_alias)
             raise AdapterNotConfigured(

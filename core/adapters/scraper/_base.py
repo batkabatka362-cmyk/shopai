@@ -63,6 +63,9 @@ from ..base import (
     BaseAdapter,
     Capability,
 )
+from .._per_store_credentials import (
+    resolve_per_store as _resolve_per_store,
+)
 from ..config import get_config
 from ..errors import (
     AdapterAuthError,
@@ -125,10 +128,10 @@ class ScraperBaseAdapter(BaseAdapter):
             return False
         if not self.base_url or not self.config_alias:
             return False
-        return bool(get_config().get(self.config_alias))
+        return bool((_resolve_per_store(self.config_alias) or get_config().get(self.config_alias)))
 
     def _api_key(self) -> str:
-        key = get_config().get(self.config_alias)
+        key = (_resolve_per_store(self.config_alias) or get_config().get(self.config_alias))
         if not key:
             env = get_config().env_var_for(self.config_alias)
             raise AdapterNotConfigured(

@@ -53,14 +53,17 @@ class HuggingFaceAdapter(LLMBaseAdapter):
     def is_configured(self) -> bool:
         if not super().is_configured():
             return False
+        # W963-117: per-store routing via active_store
         # HF free API works without a token but rate limits are
         # tighter; we treat the adapter as "configured" iff a
         # token is set so the router prefers vendors with
         # explicit auth.
-        return bool(get_config().get(self.config_alias))
+        from .._per_store_credentials import resolve_per_store
+        return bool((resolve_per_store(self.config_alias) or get_config().get(self.config_alias)))
 
     def _api_key(self) -> str:
-        key = get_config().get(self.config_alias)
+        from .._per_store_credentials import resolve_per_store
+        key = (resolve_per_store(self.config_alias) or get_config().get(self.config_alias))
         if not key:
             env = get_config().env_var_for(self.config_alias)
             raise AdapterNotConfigured(
