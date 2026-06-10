@@ -26,6 +26,7 @@ from .groq import GroqAdapter
 from .huggingface import HuggingFaceAdapter
 from .mistral import MistralAdapter
 from .ollama import OllamaAdapter
+from .openai import OpenAIAdapter
 from .openrouter import OpenRouterAdapter
 
 logger = get_logger("adapters.llm.bootstrap")
@@ -34,6 +35,7 @@ logger = get_logger("adapters.llm.bootstrap")
 _LLM_ADAPTER_CLASSES = (
     GroqAdapter,
     GeminiAdapter,
+    OpenAIAdapter,
     DeepSeekAdapter,
     MistralAdapter,
     OllamaAdapter,
