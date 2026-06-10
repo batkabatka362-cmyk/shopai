@@ -452,6 +452,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "earn_path",             # W963-88: smart on-ramp / "what's next?" guide
     "api_inventory",         # W963-98: ROLE-grouped credential view (operator query)
     "earn_readiness",        # W963-108: pre-launch composer (5-probe aggregate)
+    "api_test",              # W963-112: live health check per configured adapter
 })
 
 

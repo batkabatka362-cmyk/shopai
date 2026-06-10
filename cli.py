@@ -2908,6 +2908,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     er_p.add_argument("--json", action="store_true")
 
+    # W963-112: api-test -- live health check per adapter.
+    at_p = sub.add_parser(
+        "api-test",
+        help=(
+            "Make ONE minimal real API call per configured "
+            "adapter to verify the keys actually work. "
+            "Catches wrong env values, missing scopes, "
+            "endpoint drift, network issues. Run before "
+            "shopai cycle run --yes."
+        ),
+    )
+    at_p.add_argument(
+        "--alias", default="",
+        help=(
+            "Test only one adapter (e.g. openai). "
+            "Default: test every configured adapter."
+        ),
+    )
+    at_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12701,6 +12721,82 @@ def _cmd_api_status(args) -> None:
     nxt = data.get("next_action", "")
     if nxt:
         print(f"  NEXT: {nxt}")
+
+
+def _cmd_api_test(args) -> None:
+    """W963-112: make 1 real API call per configured
+    adapter to verify keys / endpoints / scopes are live.
+    """
+    from engines.api_test import ApiTestEngine
+
+    as_json = bool(getattr(args, "json", False))
+    only = (getattr(args, "alias", "") or "").strip()
+
+    payload = {"data": {"only_alias": only} if only else {}}
+    result = ApiTestEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        if (result.get("data") or {}).get(
+            "fail_count", 0,
+        ) > 0:
+            sys.exit(2)
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success" or not data:
+        err = result.get("error") or "unknown error"
+        print(f"api-test: ERROR  {err}")
+        sys.exit(1)
+
+    ok_n = data.get("ok_count", 0)
+    fail_n = data.get("fail_count", 0)
+    skip_n = data.get("skipped_count", 0)
+    cfg_n = data.get("configured_count", 0)
+    all_ok = data.get("all_configured_ok", False)
+
+    overall = (
+        "[OK ]" if all_ok
+        else "[!! ]" if fail_n > 0
+        else "[ - ]"
+    )
+    print(
+        f"API test  --  {overall} "
+        f"{ok_n}/{cfg_n} live  "
+        f"({fail_n} fail, {skip_n} skipped)"
+    )
+    print()
+    print(f"  {data.get('headline', '')}")
+    print()
+
+    results = data.get("results") or []
+    for r in results:
+        cls = r.get("cls", "skipped")
+        if cls == "skipped":
+            chip = "[ . ]"
+            badge = "skipped (no key)"
+        elif cls == "ok":
+            chip = "[OK ]"
+            badge = (
+                f"{r.get('latency_ms', 0):.0f}ms  "
+                f"{r.get('detail', '')}"
+            )
+        else:
+            chip = "[BAD]"
+            badge = (
+                f"FAILED: {r.get('error', '?')[:120]}"
+            )
+        print(
+            f"  {chip} {r.get('adapter', '?'):<14s} "
+            f"{badge}"
+        )
+    print()
+
+    nxt = data.get("next_action", "")
+    if nxt:
+        print(f"  NEXT: {nxt}")
+
+    if fail_n > 0:
+        sys.exit(2)
 
 
 def _cmd_earn_readiness(args) -> None:
@@ -59696,6 +59792,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "earn-readiness":
         _cmd_earn_readiness(args)
+        return
+
+    if args.command == "api-test":
+        _cmd_api_test(args)
         return
 
     if args.command == "welcome":
