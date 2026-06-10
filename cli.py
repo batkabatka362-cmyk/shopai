@@ -59228,6 +59228,43 @@ def _maybe_bootstrap_secondary_adapters() -> None:
         register_all()
     except Exception:  # noqa: BLE001
         pass
+    # W963-111: 5 more categories whose bootstrap modules
+    # existed but were never invoked at startup. Same gap
+    # class as W963-106. Each adapter category has its own
+    # env-var contract; operators setting STABILITY_API_KEY
+    # / IMAGEKIT_PUBLIC_KEY / MINEA_API_KEY / etc. would
+    # see api-status flag the category as ready but no
+    # router path to route through.
+    # Ad intelligence / spy (Minea, PiPiAds, BigSpy)
+    try:
+        from core.adapters.ads_spy.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
+    # Image generation (Stability AI, etc.)
+    try:
+        from core.adapters.image.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
+    # Image CDN (ImageKit)
+    try:
+        from core.adapters.image_cdn.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
+    # Payment processors (PayPal, Stripe)
+    try:
+        from core.adapters.payment.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
+    # Knowledge base (Obsidian)
+    try:
+        from core.adapters.obsidian.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _maybe_bootstrap_shopify_adapters() -> None:
