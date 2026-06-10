@@ -2908,6 +2908,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     er_p.add_argument("--json", action="store_true")
 
+    # W963-118: cost -- per-store cost attribution.
+    cost_p = sub.add_parser(
+        "cost",
+        help=(
+            "Per-store cost attribution view. Shows spend "
+            "/ calls / failure rate / avg latency for "
+            "each store across an N-hour window. "
+            "Foundation for per-store quota tracking + "
+            "autopause downstream."
+        ),
+    )
+    cost_p.add_argument(
+        "--store", default="",
+        help="Restrict to one store (empty = all stores).",
+    )
+    cost_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+        help="Time window in hours (default: 168 = 7 days).",
+    )
+    cost_p.add_argument(
+        "--by", choices=("summary", "by_store", "by_adapter", "recent_events"),
+        default="by_store",
+        help="View shape.",
+    )
+    cost_p.add_argument(
+        "--limit", type=int, default=20,
+        help="Max events when --by recent_events.",
+    )
+    cost_p.add_argument(
+        "--include-archive", action="store_true",
+        help="Include rotated archive log.",
+    )
+    cost_p.add_argument("--json", action="store_true")
+
     # W963-112: api-test -- live health check per adapter.
     at_p = sub.add_parser(
         "api-test",
@@ -12721,6 +12755,155 @@ def _cmd_api_status(args) -> None:
     nxt = data.get("next_action", "")
     if nxt:
         print(f"  NEXT: {nxt}")
+
+
+def _cmd_cost(args) -> None:
+    """W963-118: per-store cost attribution view."""
+    from engines.per_store_costs import PerStoreCostsEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload: dict[str, Any] = {
+        "data": {
+            "store_id": getattr(args, "store", "") or "",
+            "window_hours": float(
+                getattr(args, "window_hours", 168.0),
+            ),
+            "view": getattr(args, "by", "by_store"),
+            "limit": int(getattr(args, "limit", 20)),
+            "include_archive": bool(
+                getattr(args, "include_archive", False),
+            ),
+        },
+    }
+    result = PerStoreCostsEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success" or not data:
+        err = result.get("error") or "unknown error"
+        print(f"cost: ERROR  {err}")
+        sys.exit(1)
+
+    view = data.get("view", "?")
+    wh = data.get("window_hours", 168.0)
+
+    if view == "summary":
+        s = data.get("summary") or {}
+        print(
+            f"Cost summary  --  store={s.get('store_id')}"
+            f"  window={wh:.0f}h"
+        )
+        print()
+        print(
+            f"  total cost:    ${s.get('total_cost_usd', 0):.4f}"
+        )
+        print(
+            f"  total calls:   {s.get('total_calls', 0)}"
+        )
+        print(
+            f"  failed:        {s.get('failed_calls', 0)}  "
+            f"({s.get('failure_rate', 0):.1%})"
+        )
+        print(
+            f"  avg latency:   {s.get('avg_latency_ms', 0):.1f}ms"
+        )
+        return
+
+    if view == "by_store":
+        stores = data.get("stores") or []
+        if not stores:
+            print(
+                f"Per-store cost  --  window={wh:.0f}h  "
+                "no events recorded"
+            )
+            return
+        print(
+            f"Per-store cost  --  window={wh:.0f}h  "
+            f"({len(stores)} store(s))"
+        )
+        print()
+        print(
+            f"  {'store':<22} {'calls':>8} "
+            f"{'failed':>8} {'cost':>12} {'avg':>10}"
+        )
+        print("  " + "-" * 64)
+        stores.sort(
+            key=lambda s: -float(
+                s.get("total_cost_usd", 0) or 0,
+            ),
+        )
+        for s in stores:
+            print(
+                f"  {s.get('store_id', '?'):<22} "
+                f"{s.get('total_calls', 0):>8} "
+                f"{s.get('failed_calls', 0):>8} "
+                f"${s.get('total_cost_usd', 0):>10.4f}"
+                f" {s.get('avg_latency_ms', 0):>8.0f}ms"
+            )
+        return
+
+    if view == "by_adapter":
+        adapters = data.get("adapters") or []
+        if not adapters:
+            print(
+                f"Per-adapter cost  --  window={wh:.0f}h  "
+                "no events"
+            )
+            return
+        print(
+            f"Per-adapter cost  --  store="
+            f"{data.get('store_id')}  window={wh:.0f}h"
+        )
+        print()
+        adapters.sort(
+            key=lambda a: -float(
+                a.get("cost_usd", 0) or 0,
+            ),
+        )
+        print(
+            f"  {'adapter':<22} {'calls':>8} "
+            f"{'failed':>8} {'cost':>12}"
+        )
+        print("  " + "-" * 54)
+        for a in adapters:
+            print(
+                f"  {a.get('adapter', '?'):<22} "
+                f"{a.get('calls', 0):>8} "
+                f"{a.get('failed', 0):>8} "
+                f"${a.get('cost_usd', 0):>10.4f}"
+            )
+        return
+
+    if view == "recent_events":
+        events = data.get("events") or []
+        if not events:
+            print("no recent events")
+            return
+        print(
+            f"Recent events  --  store="
+            f"{data.get('store_id')}  ({len(events)} shown)"
+        )
+        print()
+        import datetime as _dt
+        for e in events:
+            ts = e.get("ts", 0)
+            try:
+                t = _dt.datetime.fromtimestamp(
+                    float(ts),
+                ).strftime("%m-%d %H:%M:%S")
+            except Exception:  # noqa: BLE001
+                t = "?"
+            ok = "[OK ]" if e.get("ok") else "[BAD]"
+            print(
+                f"  {t}  {ok} "
+                f"{e.get('store_id', '(fleet)'):<14} "
+                f"{e.get('adapter', '?'):<14} "
+                f"{e.get('capability', '?'):<24} "
+                f"${e.get('cost_usd', 0):>7.4f}  "
+                f"{e.get('latency_ms', 0):>5.0f}ms"
+            )
 
 
 def _cmd_api_test(args) -> None:
@@ -59806,6 +59989,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "api-test":
         _cmd_api_test(args)
+        return
+
+    if args.command == "cost":
+        _cmd_cost(args)
         return
 
     if args.command == "welcome":

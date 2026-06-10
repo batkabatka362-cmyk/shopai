@@ -453,6 +453,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "api_inventory",         # W963-98: ROLE-grouped credential view (operator query)
     "earn_readiness",        # W963-108: pre-launch composer (5-probe aggregate)
     "api_test",              # W963-112: live health check per configured adapter
+    "per_store_costs",       # W963-118: per-store cost attribution + query
 })
 
 

@@ -789,9 +789,11 @@ class BaseAdapter(ABC):
                 "adapter %s failed (%s): %s",
                 self.name, type(exc).__name__, exc.reason,
             )
-            return AdapterResult.failure(
+            fail = AdapterResult.failure(
                 self.name, cap.value, exc, latency_ms=round(elapsed, 2),
             )
+            self._record_call_safe(fail)
+            return fail
         except Exception as exc:  # noqa: BLE001
             # Vendor / library raised something we don't know
             # how to classify — wrap as generic AdapterError so
@@ -802,9 +804,11 @@ class BaseAdapter(ABC):
                 self.name, type(exc).__name__,
             )
             err = AdapterError(self.name, f"{type(exc).__name__}: {exc}")
-            return AdapterResult.failure(
+            fail = AdapterResult.failure(
                 self.name, cap.value, err, latency_ms=round(elapsed, 2),
             )
+            self._record_call_safe(fail)
+            return fail
 
         # _execute is allowed to return a fully-formed
         # AdapterResult OR raise. Patch the latency in if it
@@ -824,7 +828,35 @@ class BaseAdapter(ABC):
         if not result.capability:
             result.capability = cap.value
 
+        # W963-118: per-store cost attribution.
+        self._record_call_safe(result)
         return result
+
+    def _record_call_safe(
+        self, result: AdapterResult,
+    ) -> None:
+        """Record this adapter call into the per-store cost
+        log. Best-effort: any failure is swallowed so it
+        cannot break adapter throughput. The recorder
+        internally short-circuits under pytest (Pattern J).
+        """
+        try:
+            from engines.per_store_costs.recorder import (
+                record_call,
+            )
+            record_call(
+                adapter=getattr(self, "name", "?"),
+                capability=str(
+                    result.capability or "?",
+                ),
+                cost_usd=result.cost_usd,
+                latency_ms=result.latency_ms,
+                ok=result.ok,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "per_store_costs record raised: %s", exc,
+            )
 
     @abstractmethod
     def _execute(
