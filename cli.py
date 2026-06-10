@@ -2895,6 +2895,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ais_p.add_argument("--json", action="store_true")
 
+    # W963-108: earn-readiness -- pre-launch composer.
+    er_p = sub.add_parser(
+        "earn-readiness",
+        help=(
+            "Aggregate 5 launch-readiness signals "
+            "(api credentials + go-live pre-flight + "
+            "autonomy domains + cycle history + wired "
+            "engines) into a single READY/WARN/NOT-READY "
+            "verdict. Run before firing the first cycle."
+        ),
+    )
+    er_p.add_argument("--json", action="store_true")
+
     # W963-12: tiktok — TikTok for Business Content Posting.
     tiktok_p = sub.add_parser(
         "tiktok",
@@ -12673,6 +12686,66 @@ def _cmd_api_status(args) -> None:
         print()
 
     print()
+    nxt = data.get("next_action", "")
+    if nxt:
+        print(f"  NEXT: {nxt}")
+
+
+def _cmd_earn_readiness(args) -> None:
+    """W963-108: pre-launch composer.
+
+    Aggregates 5 launch-readiness signals into a single
+    READY/WARN/NOT-READY verdict. Operator runs this once
+    before `shopai cycle run --yes` to know what's
+    blocking.
+    """
+    from engines.earn_readiness import EarnReadinessEngine
+
+    as_json = bool(getattr(args, "json", False))
+    result = EarnReadinessEngine().run({})
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success" or not data:
+        err = result.get("error") or "unknown error"
+        print(f"earn-readiness: ERROR  {err}")
+        return
+
+    verdict = data.get("overall_verdict", "?")
+    chip = {
+        "ready":     "[OK ]",
+        "warn":      "[WRN]",
+        "not_ready": "[BAD]",
+    }.get(verdict, "[ ? ]")
+
+    print(
+        f"Earn readiness  --  {chip} "
+        f"{verdict.upper().replace('_', ' ')}"
+    )
+    print()
+    print(f"  {data.get('headline', '')}")
+    print()
+
+    # Per-check breakdown
+    checks = data.get("checks") or []
+    for c in checks:
+        cls = c.get("cls", "?")
+        c_chip = {
+            "ok":   "[OK ]",
+            "warn": "[WRN]",
+            "fail": "[BAD]",
+        }.get(cls, "[ ? ]")
+        name = c.get("name", "?")
+        headline = c.get("headline", "")
+        print(f"  {c_chip} {name:<20s} {headline}")
+        if cls in ("warn", "fail"):
+            fix = c.get("fix", "")
+            if fix:
+                print(f"        fix: {fix}")
+    print()
+
     nxt = data.get("next_action", "")
     if nxt:
         print(f"  NEXT: {nxt}")
@@ -59427,6 +59500,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "api-status":
         _cmd_api_status(args)
+        return
+
+    if args.command == "earn-readiness":
+        _cmd_earn_readiness(args)
         return
 
     if args.command == "welcome":
