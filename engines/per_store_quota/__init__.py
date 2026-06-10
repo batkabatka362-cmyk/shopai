@@ -30,6 +30,11 @@ as W963-116's credential helper:
 Empty / unset / 0.0 means unlimited. The tracker honours
 the most specific cap that resolves to a positive value.
 """
+from .autopause import (
+    AutopauseAction,
+    AutopauseReport,
+    maybe_autopause,
+)
 from .budget_config import (
     resolve_cap,
     resolve_warn_ratio,
@@ -48,10 +53,13 @@ __all__ = [
     "PerStoreQuotaEngine",
     "QuotaSnapshot",
     "QuotaState",
+    "AutopauseAction",
+    "AutopauseReport",
     "compute_all_snapshots",
     "compute_snapshot",
     "critical_stores",
     "warn_stores",
+    "maybe_autopause",
     "resolve_cap",
     "resolve_warn_ratio",
 ]

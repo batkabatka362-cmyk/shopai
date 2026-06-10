@@ -32099,6 +32099,38 @@ def _cmd_cycle_run(args) -> None:
             "budget-quarantine bridge failed: %s", exc,
         )
 
+    # W963-120: per-store quota autopause bridge. Reads
+    # W963-118 cost log + W963-119 caps, autopauses
+    # spend-class autonomy domains for stores exceeding
+    # their cap. Env-gated via SHOPAI_QUOTA_AUTOPAUSE=1
+    # (default OFF). When OFF, the bridge still logs
+    # WOULD-pause decisions without disarming.
+    try:
+        from engines.per_store_quota import (
+            maybe_autopause as _maybe_quota_autopause,
+        )
+        quota_report = _maybe_quota_autopause(
+            window_hours=24.0,
+        )
+        if quota_report.applied_count > 0:
+            logger.info(
+                "per-store quota autopause: %d "
+                "domain(s) paused across %d store(s)",
+                quota_report.applied_count,
+                quota_report.critical_store_count,
+            )
+        elif quota_report.would_apply_count > 0:
+            logger.info(
+                "per-store quota autopause OFF but %d "
+                "domain(s) would be paused "
+                "(SHOPAI_QUOTA_AUTOPAUSE=1 to enable)",
+                quota_report.would_apply_count,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "per-store quota autopause failed: %s", exc,
+        )
+
     # Wave 130: fulfillment auto-pause bridge. Env-gated via
     # SHOPAI_AUTO_PAUSE_FULFILLMENT_ON_FAILURE.
     try:
