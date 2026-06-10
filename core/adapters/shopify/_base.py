@@ -114,19 +114,66 @@ class ShopifyBaseAdapter(BaseAdapter):
         super().__init__()
         self._shop_url_override = shop_url
         self._token_override = access_token
-        self._client: Any = None  # ShopifyGraphQL, lazy
+        # Back-compat: tests sometimes inject ``self._client``
+        # directly to a mock object before any call. If set,
+        # _make_client returns it instead of consulting the
+        # cache.
+        self._client: Any = None
+        # W963-115: per-credential client cache so the same
+        # adapter instance can service multiple stores in
+        # sequence (or concurrently across threads, each in
+        # its own ``with active_store(sid):`` block). Cache
+        # key is the (shop_url, token) tuple. When credentials
+        # rotate, the old client lingers in the cache but the
+        # new resolve_credentials returns the fresh tuple
+        # so subsequent calls naturally pick up a new client.
+        self._client_cache: dict[tuple[str, str], Any] = {}
 
     # ── Configuration ──────────────────────────────────────────
 
     def _resolve_credentials(self) -> tuple[str, str]:
-        """Return ``(shop_url, access_token)`` from override fields
-        first, falling back to ``AdapterConfig`` env vars.
+        """Return ``(shop_url, access_token)`` resolved with
+        this priority chain:
 
-        Empty strings indicate "missing" — caller should treat
-        the adapter as not configured.
+        1. Constructor override (highest priority -- explicit
+           per-adapter scoping, e.g. bootstrap-time)
+        2. W963-115: active_store(sid) thread-local plus
+           StoreManager.get_credentials(sid). Enables multi-
+           store empires: the autonomous controller wraps
+           each cycle in ``with active_store(sid):`` and the
+           adapter automatically resolves THAT store's
+           credentials -- no per-cycle adapter re-registration
+           needed.
+        3. AdapterConfig env vars (single-store fallback)
+
+        Empty strings indicate "missing" -- caller should
+        treat the adapter as not configured.
         """
         if self._shop_url_override and self._token_override:
-            return self._shop_url_override, self._token_override
+            return (
+                self._shop_url_override,
+                self._token_override,
+            )
+        # W963-115: per-store routing via active_store
+        try:
+            from core.context import get_active_store_id
+            sid = get_active_store_id()
+        except Exception:  # noqa: BLE001
+            sid = None
+        if sid:
+            try:
+                from data_pipeline.store.store_manager import (
+                    StoreManager,
+                )
+                creds = StoreManager().get_credentials(sid) or {}
+                shop = str(creds.get("shop_url") or "")
+                tok = str(creds.get("api_key") or "")
+                if shop and tok:
+                    return shop, tok
+            except Exception:  # noqa: BLE001
+                # StoreManager init failure / unknown store
+                # falls through to env-var resolution below.
+                pass
         cfg = get_config()
         return (
             self._shop_url_override or cfg.get("shopify_url"),
@@ -140,14 +187,23 @@ class ShopifyBaseAdapter(BaseAdapter):
     # ── GraphQL client ─────────────────────────────────────────
 
     def _make_client(self) -> Any:
-        """Lazily build the underlying ``ShopifyGraphQL`` client.
+        """Lazily build (and cache) the ``ShopifyGraphQL``
+        client matching the CURRENT credentials.
 
         Imported inside the method (not at module top) so the
         adapter package can be imported in environments where
-        ``data_pipeline`` is missing — useful for unit tests
+        ``data_pipeline`` is missing -- useful for unit tests
         that mock ``_gql`` directly without touching the real
         HTTP layer.
+
+        W963-115: client cache keyed by (shop_url, token).
+        Lets a single adapter instance service multiple
+        stores in sequence -- cycle A for store_a builds
+        client_a; cycle B for store_b builds client_b; both
+        live in the cache. Future cycle for either store
+        reuses the cached client (no HTTP rebuild cost).
         """
+        # Back-compat: test-injected single client wins.
         if self._client is not None:
             return self._client
 
@@ -158,6 +214,11 @@ class ShopifyBaseAdapter(BaseAdapter):
                 "missing SHOPAI_SHOPIFY_URL / SHOPAI_SHOPIFY_KEY",
             )
 
+        key = (shop, token)
+        cached = self._client_cache.get(key)
+        if cached is not None:
+            return cached
+
         try:
             from data_pipeline.ingestion.api.shopify_graphql import ShopifyGraphQL
         except Exception as exc:  # noqa: BLE001
@@ -165,8 +226,9 @@ class ShopifyBaseAdapter(BaseAdapter):
                 self.name, f"shopify_graphql import failed: {exc}",
             ) from exc
 
-        self._client = ShopifyGraphQL(shop, token)
-        return self._client
+        client = ShopifyGraphQL(shop, token)
+        self._client_cache[key] = client
+        return client
 
     def _gql(
         self,

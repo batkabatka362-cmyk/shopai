@@ -92,6 +92,177 @@ class TestShopifyBaseAdapter:
         assert shop == "explicit.myshopify.com"
         assert token == "explicit_token"
 
+    # ── W963-115: per-store cred routing via active_store ──
+
+    def test_active_store_resolves_credentials_from_store_manager(
+        self, monkeypatch,
+    ):
+        """W963-115: when active_store(sid) is set + the
+        StoreManager has credentials for sid, the adapter
+        resolves THOSE credentials (not the env fallback).
+
+        This is the unblock for 20-store autonomous AGI: the
+        autonomous controller wraps each cycle in
+        with active_store(sid): and the adapter
+        automatically uses the right store's credentials
+        without needing per-cycle re-registration of every
+        Shopify adapter."""
+        from unittest.mock import MagicMock, patch
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        from core.context import active_store
+
+        # Env fallback (would win without active_store)
+        monkeypatch.setenv(
+            "SHOPAI_SHOPIFY_URL", "fallback.myshopify.com",
+        )
+        monkeypatch.setenv(
+            "SHOPAI_SHOPIFY_KEY", "fallback_token",
+        )
+        reset_config()
+
+        # Mock StoreManager to return per-store creds
+        fake_sm = MagicMock()
+        fake_sm.get_credentials.return_value = {
+            "shop_url": "store_a.myshopify.com",
+            "api_key": "store_a_token",
+        }
+        with patch(
+            "data_pipeline.store.store_manager.StoreManager",
+            return_value=fake_sm,
+        ):
+            a = ShopifyRiskAdapter()
+            with active_store("store_a"):
+                shop, token = a._resolve_credentials()
+
+        assert shop == "store_a.myshopify.com"
+        assert token == "store_a_token"
+        # StoreManager was queried with the active sid
+        fake_sm.get_credentials.assert_called_with("store_a")
+
+    def test_active_store_falls_back_to_env_when_store_missing(
+        self, monkeypatch,
+    ):
+        """When active_store is set but StoreManager has no
+        credentials for that sid (returns empty dict), the
+        adapter falls back to env -- doesn't crash + doesn't
+        block on missing per-store creds."""
+        from unittest.mock import MagicMock, patch
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        from core.context import active_store
+
+        monkeypatch.setenv(
+            "SHOPAI_SHOPIFY_URL", "env.myshopify.com",
+        )
+        monkeypatch.setenv(
+            "SHOPAI_SHOPIFY_KEY", "env_token",
+        )
+        reset_config()
+
+        fake_sm = MagicMock()
+        fake_sm.get_credentials.return_value = {}
+        with patch(
+            "data_pipeline.store.store_manager.StoreManager",
+            return_value=fake_sm,
+        ):
+            a = ShopifyRiskAdapter()
+            with active_store("unknown_store"):
+                shop, token = a._resolve_credentials()
+
+        assert shop == "env.myshopify.com"
+        assert token == "env_token"
+
+    def test_constructor_override_wins_over_active_store(
+        self, monkeypatch,
+    ):
+        """Constructor-passed creds REMAIN highest priority
+        (back-compat: existing test_constructor_overrides_env).
+        Per-store routing only kicks in when there's no
+        explicit override."""
+        from unittest.mock import MagicMock, patch
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        from core.context import active_store
+
+        fake_sm = MagicMock()
+        fake_sm.get_credentials.return_value = {
+            "shop_url": "store_a.myshopify.com",
+            "api_key": "store_a_token",
+        }
+        with patch(
+            "data_pipeline.store.store_manager.StoreManager",
+            return_value=fake_sm,
+        ):
+            a = ShopifyRiskAdapter(
+                shop_url="explicit.myshopify.com",
+                access_token="explicit_token",
+            )
+            with active_store("store_a"):
+                shop, token = a._resolve_credentials()
+
+        # Constructor override wins
+        assert shop == "explicit.myshopify.com"
+        assert token == "explicit_token"
+
+    def test_client_cache_keyed_by_credentials(
+        self, monkeypatch,
+    ):
+        """W963-115: same adapter instance servicing
+        multiple stores should produce DIFFERENT clients
+        per credential set + cache them so the second cycle
+        for store_a reuses store_a's client (no HTTP
+        rebuild)."""
+        from unittest.mock import MagicMock, patch
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        from core.context import active_store
+
+        # Two distinct stores
+        def get_creds(sid):
+            if sid == "store_a":
+                return {
+                    "shop_url": "a.myshopify.com",
+                    "api_key": "tok_a",
+                }
+            if sid == "store_b":
+                return {
+                    "shop_url": "b.myshopify.com",
+                    "api_key": "tok_b",
+                }
+            return {}
+
+        fake_sm = MagicMock()
+        fake_sm.get_credentials.side_effect = get_creds
+
+        with patch(
+            "data_pipeline.store.store_manager.StoreManager",
+            return_value=fake_sm,
+        ), patch(
+            "data_pipeline.ingestion.api.shopify_graphql.ShopifyGraphQL"
+        ) as mock_gql:
+            mock_gql.side_effect = (
+                lambda s, t: MagicMock(_shop=s, _token=t)
+            )
+
+            a = ShopifyRiskAdapter()
+
+            with active_store("store_a"):
+                client_a1 = a._make_client()
+                client_a2 = a._make_client()
+            with active_store("store_b"):
+                client_b1 = a._make_client()
+            with active_store("store_a"):
+                client_a3 = a._make_client()
+
+        # store_a's two calls return the SAME client
+        # (cache hit)
+        assert client_a1 is client_a2
+        # store_b builds a different client
+        assert client_b1 is not client_a1
+        # store_a's third call (after store_b) returns the
+        # ORIGINAL store_a client (cache survived)
+        assert client_a3 is client_a1
+        # ShopifyGraphQL constructor was called exactly
+        # twice -- once per unique credential tuple
+        assert mock_gql.call_count == 2
+
     def test_category_is_shopify_native(self):
         from core.adapters.shopify.risk import ShopifyRiskAdapter
         from core.adapters.shopify.inventory import ShopifyInventoryAdapter
