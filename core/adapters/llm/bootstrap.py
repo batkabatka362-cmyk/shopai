@@ -20,6 +20,7 @@ from __future__ import annotations
 from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
+from .anthropic import AnthropicAdapter
 from .deepseek import DeepSeekAdapter
 from .gemini import GeminiAdapter
 from .groq import GroqAdapter
@@ -36,6 +37,7 @@ _LLM_ADAPTER_CLASSES = (
     GroqAdapter,
     GeminiAdapter,
     OpenAIAdapter,
+    AnthropicAdapter,
     DeepSeekAdapter,
     MistralAdapter,
     OllamaAdapter,
