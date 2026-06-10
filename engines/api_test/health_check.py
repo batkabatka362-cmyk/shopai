@@ -128,6 +128,200 @@ def _short_http_error(
     return f"HTTP {status_code}: {msg[:240]}"
 
 
+# W963-114: per-adapter fix-hint heuristics. Each entry is
+# (adapter_name, regex pattern, fix_hint_template). Patterns
+# match against the FULL error string (case-insensitive).
+# First match wins; remaining patterns are not consulted.
+#
+# Operator value: instead of just showing the vendor error
+# ("You exceeded your current quota"), we surface the
+# concrete next step ("add billing at <URL>"). Tested live
+# against real OpenAI quota + Brevo IP errors.
+_FIX_HINTS: list[tuple[str, str, str]] = [
+    # ── OpenAI ──
+    (
+        "openai",
+        r"exceeded your current quota|billing",
+        (
+            "Add billing + credits at "
+            "https://platform.openai.com/account/billing "
+            "(new accounts need a payment method before "
+            "the API responds; ~$5 is enough to start)"
+        ),
+    ),
+    (
+        "openai",
+        r"invalid.{0,40}api.?key|incorrect.{0,20}key",
+        (
+            "Regenerate the key at "
+            "https://platform.openai.com/api-keys + "
+            "update OPENAI_API_KEY in .env"
+        ),
+    ),
+    (
+        "openai",
+        r"rate limit|429",
+        (
+            "Either quota exhausted (add billing) OR true "
+            "rate-limit (wait a few seconds + retry)"
+        ),
+    ),
+    # ── Anthropic ──
+    (
+        "anthropic",
+        r"invalid.{0,40}api.?key|authentication_error",
+        (
+            "Regenerate the key at "
+            "https://console.anthropic.com/settings/keys "
+            "+ update ANTHROPIC_API_KEY in .env"
+        ),
+    ),
+    (
+        "anthropic",
+        r"credit balance|insufficient.{0,20}credit",
+        (
+            "Add credit balance at "
+            "https://console.anthropic.com/settings/billing"
+        ),
+    ),
+    # ── Brevo ──
+    (
+        "brevo",
+        r"unrecognised IP address ([\d.]+)",
+        (
+            "Whitelist that IP at "
+            "https://app.brevo.com/security/authorised_ips "
+            "(SMTP & API -> Authorized IPs -> Add IP)"
+        ),
+    ),
+    (
+        "brevo",
+        r"invalid.{0,20}(api.?key|token)",
+        (
+            "Regenerate the key at "
+            "https://app.brevo.com/settings/keys/api -> "
+            "API Keys -> Generate a new API key + "
+            "update BREVO_API_KEY in .env"
+        ),
+    ),
+    # ── Klaviyo ──
+    (
+        "klaviyo",
+        r"invalid.{0,20}api.?key|not authenticated",
+        (
+            "Regenerate the key at "
+            "https://www.klaviyo.com/account#api-keys-tab "
+            "(needs Full Access for ShopAI's events + "
+            "metrics endpoints)"
+        ),
+    ),
+    # ── Meta Ads ──
+    (
+        "meta_ads",
+        r"access.{0,5}token.{0,30}(expired|invalid)",
+        (
+            "Regenerate the long-lived access token at "
+            "https://business.facebook.com/settings/system-users "
+            "(System Users -> token -> ads_management + "
+            "business_management permissions)"
+        ),
+    ),
+    (
+        "meta_ads",
+        r"oauth",
+        (
+            "OAuth flow needed -- regenerate token via "
+            "Business Manager -> System Users -> "
+            "Generate New Token"
+        ),
+    ),
+    # ── Pexels ──
+    (
+        "pexels",
+        r"invalid.{0,20}(api.?key|token)|unauthorized",
+        (
+            "Regenerate the key at pexels.com/api/new/ + "
+            "update PEXELS_API_KEY in .env (Pexels free "
+            "tier resets monthly; check quota at "
+            "pexels.com/api/keys)"
+        ),
+    ),
+    # ── ElevenLabs ──
+    (
+        "elevenlabs",
+        r"missing.{0,30}permission|forbidden",
+        (
+            "Key is missing required scope. Generate a "
+            "new key at "
+            "https://elevenlabs.io/app/settings/api-keys "
+            "with: Text to Speech: Access + Voices: Read "
+            "+ Models: Access"
+        ),
+    ),
+    (
+        "elevenlabs",
+        r"invalid.{0,20}(api.?key|token)|unauthorized",
+        (
+            "Regenerate at "
+            "https://elevenlabs.io/app/settings/api-keys "
+            "+ update ELEVENLABS_API_KEY in .env"
+        ),
+    ),
+    # ── Shopify ──
+    (
+        "shopify",
+        r"invalid.{0,20}token|401",
+        (
+            "Reinstall the ShopAI custom app on the store "
+            "+ copy the new Admin API access token to "
+            "SHOPAI_SHOPIFY_KEY"
+        ),
+    ),
+    # ── Generic network ──
+    (
+        "*",
+        r"connection.{0,10}(refused|reset|aborted)",
+        (
+            "Network unreachable -- check internet, "
+            "firewall, and VPN settings"
+        ),
+    ),
+    (
+        "*",
+        r"timeout|timed out",
+        (
+            "Vendor slow or unreachable -- retry; if "
+            "persistent check vendor's status page"
+        ),
+    ),
+    (
+        "*",
+        r"name.{0,15}not.{0,5}(known|resolved)|dns",
+        (
+            "DNS failure -- check internet / VPN; vendor "
+            "host unreachable from this machine"
+        ),
+    ),
+]
+
+
+def _fix_hint_for(adapter: str, error: str) -> str:
+    """Pattern-match adapter + error against the catalogue
+    + return the first matching fix hint.
+
+    Returns '' when nothing matches (caller surfaces just
+    the raw vendor message).
+    """
+    if not error:
+        return ""
+    for cat_adapter, pattern, hint in _FIX_HINTS:
+        if cat_adapter not in (adapter, "*"):
+            continue
+        if re.search(pattern, error, re.IGNORECASE):
+            return hint
+    return ""
+
+
 @dataclass
 class HealthCheckResult:
     """Per-adapter probe result."""
@@ -138,6 +332,11 @@ class HealthCheckResult:
     latency_ms: float = 0.0
     detail: str = ""
     error: str = ""
+    # W963-114: specific actionable fix surfaced inline.
+    # Vendors return error messages that describe WHAT
+    # went wrong; this field translates that to WHAT
+    # OPERATOR SHOULD DO RIGHT NOW.
+    fix_hint: str = ""
 
     @property
     def cls(self) -> str:
@@ -640,6 +839,14 @@ def run_api_test(
                     f"probe crashed: "
                     f"{type(exc).__name__}: {exc}"
                 )[:200],
+            )
+        # W963-114: attach fix hint when result is in
+        # failure cls. Catalogue translates vendor errors
+        # ("you exceeded your quota") to concrete
+        # operator actions ("add billing at <URL>").
+        if result.cls == "fail" and not result.fix_hint:
+            result.fix_hint = _fix_hint_for(
+                alias, result.error,
             )
         report.results.append(result)
 

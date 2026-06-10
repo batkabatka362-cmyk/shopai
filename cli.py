@@ -12793,6 +12793,12 @@ def _cmd_api_test(args) -> None:
             f"  {chip} {r.get('adapter', '?'):<14s} "
             f"{badge}"
         )
+        # W963-114: surface fix hint inline on the next
+        # line so operator sees both the vendor message
+        # AND the concrete action they need to take.
+        fix = r.get("fix_hint") or ""
+        if fix:
+            print(f"                 -> FIX: {fix}")
     print()
 
     nxt = data.get("next_action", "")

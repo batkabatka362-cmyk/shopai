@@ -9,6 +9,7 @@ from engines.api_test.health_check import (
     HealthCheckResult,
     PROBES,
     _extract_error_message,
+    _fix_hint_for,
     _short_http_error,
     run_api_test,
 )
@@ -97,6 +98,193 @@ class TestExtractErrorMessage:
             _extract_error_message(body)
             == "Invalid OAuth token"
         )
+
+
+class TestFixHintFor:
+    """W963-114: vendor errors get translated to concrete
+    operator fix actions."""
+
+    def test_openai_quota_message(self):
+        hint = _fix_hint_for(
+            "openai",
+            "AdapterRateLimited: You exceeded your current "
+            "quota, please check your plan and billing.",
+        )
+        assert "billing" in hint.lower()
+        assert (
+            "platform.openai.com/account/billing" in hint
+        )
+
+    def test_openai_invalid_key(self):
+        hint = _fix_hint_for(
+            "openai",
+            "AdapterAuthError: Invalid API key provided",
+        )
+        assert "regenerate" in hint.lower()
+        assert "openai.com/api-keys" in hint
+
+    def test_brevo_ip_whitelist_captures_real_message(self):
+        hint = _fix_hint_for(
+            "brevo",
+            "HTTP 401: We have detected you are using an "
+            "unrecognised IP address 202.126.90.149.",
+        )
+        assert "whitelist" in hint.lower()
+        assert "brevo.com/security/authorised_ips" in hint
+
+    def test_anthropic_credit_balance(self):
+        hint = _fix_hint_for(
+            "anthropic",
+            "Your credit balance is too low to access "
+            "the Claude API.",
+        )
+        assert "credit balance" in hint.lower() or (
+            "billing" in hint.lower()
+        )
+
+    def test_klaviyo_invalid_key(self):
+        hint = _fix_hint_for(
+            "klaviyo",
+            "HTTP 401: Invalid API key",
+        )
+        assert "klaviyo.com/account#api-keys-tab" in hint
+
+    def test_meta_ads_expired_token(self):
+        hint = _fix_hint_for(
+            "meta_ads",
+            "OAuthException: Access token has expired",
+        )
+        assert "system-users" in hint.lower() or (
+            "regenerate" in hint.lower()
+        )
+
+    def test_elevenlabs_missing_scope(self):
+        hint = _fix_hint_for(
+            "elevenlabs",
+            "Missing the required permission "
+            "text_to_speech.",
+        )
+        assert "scope" in hint.lower() or (
+            "Text to Speech: Access" in hint
+        )
+
+    def test_pexels_invalid_key(self):
+        hint = _fix_hint_for(
+            "pexels",
+            "HTTP 401 Unauthorized",
+        )
+        assert "pexels.com/api" in hint.lower()
+
+    def test_shopify_invalid_token(self):
+        hint = _fix_hint_for(
+            "shopify",
+            "HTTP 401 Invalid API token",
+        )
+        assert "shopai_shopify_key" in hint.lower() or (
+            "reinstall" in hint.lower()
+        )
+
+    def test_generic_network_failure(self):
+        """When the error doesn't match an adapter-
+        specific pattern, the generic catalogue (catalogue
+        entries with adapter='*') is consulted."""
+        hint = _fix_hint_for(
+            "openai",
+            "ConnectionError: Connection refused",
+        )
+        # Either generic network hint OR adapter-specific
+        # fallback is acceptable.
+        assert (
+            "network" in hint.lower()
+            or "internet" in hint.lower()
+            or "firewall" in hint.lower()
+        )
+
+    def test_no_match_returns_empty(self):
+        """Unknown error pattern produces no false-
+        positive hint."""
+        hint = _fix_hint_for(
+            "elevenlabs",
+            "Something completely unrelated to known "
+            "patterns",
+        )
+        assert hint == ""
+
+    def test_empty_error_returns_empty(self):
+        assert _fix_hint_for("openai", "") == ""
+
+    def test_unknown_adapter_falls_through_to_generic(
+        self,
+    ):
+        """Adapter not in catalogue still gets the
+        generic-network fallbacks."""
+        hint = _fix_hint_for(
+            "totally_unknown_adapter",
+            "Connection timed out",
+        )
+        assert "timeout" in hint.lower() or (
+            "vendor" in hint.lower()
+        )
+
+
+class TestRunApiTestAttachesFixHint:
+    """W963-114: aggregator attaches fix_hint to every
+    failing result before returning."""
+
+    def test_fix_hint_set_on_fail(self):
+        from engines.api_test import health_check as hc
+
+        def fake_probe():
+            return HealthCheckResult(
+                adapter="brevo",
+                configured=True,
+                reachable=True,
+                authenticated=False,
+                error=(
+                    "HTTP 401: unrecognised IP address "
+                    "1.2.3.4"
+                ),
+            )
+
+        with patch.object(
+            hc, "PROBES", [("brevo", fake_probe)],
+        ):
+            report = run_api_test()
+        assert (
+            "whitelist"
+            in report.results[0].fix_hint.lower()
+        )
+
+    def test_fix_hint_empty_on_ok(self):
+        from engines.api_test import health_check as hc
+
+        def fake_probe():
+            return HealthCheckResult(
+                adapter="brevo",
+                configured=True,
+                reachable=True,
+                authenticated=True,
+            )
+
+        with patch.object(
+            hc, "PROBES", [("brevo", fake_probe)],
+        ):
+            report = run_api_test()
+        assert report.results[0].fix_hint == ""
+
+    def test_fix_hint_empty_on_skipped(self):
+        from engines.api_test import health_check as hc
+
+        def fake_probe():
+            return HealthCheckResult(
+                adapter="brevo", configured=False,
+            )
+
+        with patch.object(
+            hc, "PROBES", [("brevo", fake_probe)],
+        ):
+            report = run_api_test()
+        assert report.results[0].fix_hint == ""
 
 
 class TestShortHttpError:
