@@ -58953,6 +58953,53 @@ def _maybe_bootstrap_secondary_adapters() -> None:
         register_all()
     except Exception:  # noqa: BLE001
         pass
+    # W963-106: previously missing from the bootstrap chain
+    # -- adapters existed but never registered at startup,
+    # so engines that route via Capability.SOURCING_* /
+    # VIDEO_* / VOICE_* found no live adapters even when
+    # the operator's creds were set. Fixed here:
+    # Sourcing (CJ Dropshipping, AutoDS)
+    try:
+        from core.adapters.sourcing.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
+    # Video generation (Pexels, Pixabay, Higgsfield, Replicate)
+    try:
+        from core.adapters.video_gen.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
+    # Voice / TTS (ElevenLabs)
+    try:
+        from core.adapters.voice.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
+    # Reviews / UGC (Judge.me)
+    try:
+        from core.adapters.reviews.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
+    # SMS (Twilio, MessageBird)
+    try:
+        from core.adapters.sms.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
+    # Translation (DeepL)
+    try:
+        from core.adapters.translation.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
+    # Scraper (Firecrawl, Apify)
+    try:
+        from core.adapters.scraper.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _maybe_bootstrap_shopify_adapters() -> None:
