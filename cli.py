@@ -6524,8 +6524,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     autonomy_arm_p.add_argument(
-        "domain", type=str,
-        help="domain name (e.g. shipping_alert)",
+        "domain", type=str, nargs="?", default="",
+        help=(
+            "domain name (e.g. shipping_alert). Omit when "
+            "using --safe-defaults."
+        ),
     )
     autonomy_arm_p.add_argument(
         "--reason", type=str, default="",
@@ -6544,6 +6547,15 @@ def build_parser() -> argparse.ArgumentParser:
             "W859: bypass the re-arm cooldown after an "
             "auto-disarm (default refuses for "
             "SHOPAI_AUTO_DISARM_COOLDOWN_HOURS hours)"
+        ),
+    )
+    autonomy_arm_p.add_argument(
+        "--safe-defaults", action="store_true",
+        help=(
+            "W963-109: arm every production autonomy domain "
+            "(10 in total) in one call. The canonical "
+            "'go-live' posture -- each domain has its own "
+            "safety gates so the full set is safe by design."
         ),
     )
     autonomy_arm_p.add_argument(
@@ -43472,15 +43484,102 @@ def _cmd_autonomy_status(args) -> None:
 
 
 def _cmd_autonomy_arm(args) -> None:
-    """Wave 812: arm a domain so cycle fires its appliers."""
+    """Wave 812 + W963-109: arm domain(s) so cycle fires
+    appliers. --safe-defaults arms all 10 production domains
+    at once."""
     from core.automation.autonomy_armed import (
         ArmCooldownError, DOMAIN_APPLY_FLAGS, arm,
-        firing_mode_for_domain,
+        arm_safe_defaults, firing_mode_for_domain,
     )
     domain = (getattr(args, "domain", "") or "").strip()
     reason = (getattr(args, "reason", "") or "").strip()
     force = bool(getattr(args, "force", False))
     as_json = bool(getattr(args, "json", False))
+    safe_defaults = bool(
+        getattr(args, "safe_defaults", False),
+    )
+
+    # W963-109: --safe-defaults branch arms all 10 domains.
+    if safe_defaults:
+        store = (getattr(args, "store", "") or "").strip()
+        summary = arm_safe_defaults(
+            reason=reason or (
+                "shopai autonomy-arm --safe-defaults"
+            ),
+            store_id=store,
+            force=force,
+        )
+        if as_json:
+            print(json.dumps({
+                "ok": True,
+                "mode": "safe_defaults",
+                "store": store,
+                **summary,
+            }, indent=2, default=str))
+            return
+        scope = (
+            f"store={store}" if store else "fleet-wide"
+        )
+        print(
+            f"autonomy-arm --safe-defaults  "
+            f"({scope})  "
+            f"-- {summary['total']} domain(s) attempted"
+        )
+        if summary["newly_armed"]:
+            print()
+            print(
+                f"  [NEW] {len(summary['newly_armed'])} "
+                "freshly armed:"
+            )
+            for d in summary["newly_armed"]:
+                print(f"        - {d}")
+        if summary["already_armed"]:
+            print()
+            print(
+                f"  [-- ] {len(summary['already_armed'])} "
+                "already armed:"
+            )
+            for d in summary["already_armed"]:
+                print(f"        - {d}")
+        if summary["cooldown_blocked"]:
+            print()
+            print(
+                f"  [WRN] "
+                f"{len(summary['cooldown_blocked'])} "
+                "blocked by cooldown (re-run with --force):"
+            )
+            for entry in summary["cooldown_blocked"]:
+                print(
+                    f"        - {entry['domain']}  "
+                    f"({entry['hours_remaining']:.1f}h "
+                    "remaining)"
+                )
+        print()
+        if not summary["newly_armed"] and not (
+            summary["cooldown_blocked"]
+        ):
+            print(
+                "  NEXT: all domains already armed -- "
+                "fire via `shopai cycle run --yes`"
+            )
+        elif summary["cooldown_blocked"]:
+            print(
+                "  NEXT: investigate cooldowns via "
+                "`shopai autonomy-disarm-history`"
+            )
+        else:
+            print(
+                "  NEXT: `shopai cycle run --yes` to "
+                "fire the armed substrate"
+            )
+        return
+
+    if not domain:
+        print(
+            "ERROR: domain is required (or use "
+            "--safe-defaults to arm all 10)"
+        )
+        sys.exit(1)
     if domain not in DOMAIN_APPLY_FLAGS:
         msg = (
             f"unknown domain: {domain!r}. Known: "

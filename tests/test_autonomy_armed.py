@@ -13,6 +13,7 @@ from core.automation.autonomy_armed import (
     ArmedState,
     apply_flags_for_domain,
     arm,
+    arm_safe_defaults,
     disarm,
     disarm_all,
     firing_mode_for_domain,
@@ -175,6 +176,124 @@ class TestArmDisarm:
         assert names == [
             "marketing", "shipping_alert", "inventory",
         ]
+
+
+class TestArmSafeDefaults:
+    """W963-109: arm every production autonomy domain in
+    one call. Designed for the cold-start go-live workflow."""
+
+    def test_arms_every_known_domain_when_idle(self):
+        result = arm_safe_defaults(reason="dogfood")
+        assert result["total"] == len(DOMAIN_APPLY_FLAGS)
+        assert (
+            set(result["newly_armed"])
+            == set(DOMAIN_APPLY_FLAGS.keys())
+        )
+        assert result["already_armed"] == []
+        assert result["cooldown_blocked"] == []
+        # Every domain now armed
+        armed_names = {e.domain for e in list_armed()}
+        assert armed_names == set(DOMAIN_APPLY_FLAGS.keys())
+
+    def test_idempotent_when_already_armed(self):
+        """Re-running --safe-defaults after a fresh arm
+        produces no new arms."""
+        arm_safe_defaults(reason="first")
+        result = arm_safe_defaults(reason="second")
+        assert result["newly_armed"] == []
+        assert (
+            set(result["already_armed"])
+            == set(DOMAIN_APPLY_FLAGS.keys())
+        )
+
+    def test_partial_pre_armed_distinguishes_new_vs_existing(
+        self,
+    ):
+        """When some domains were already armed manually,
+        the summary reports newly_armed for the rest +
+        already_armed for the pre-existing."""
+        arm("marketing", reason="manual")
+        arm("inventory", reason="manual")
+        result = arm_safe_defaults(reason="safe-defaults")
+        assert set(result["already_armed"]) == {
+            "marketing", "inventory",
+        }
+        assert (
+            set(result["newly_armed"])
+            == set(DOMAIN_APPLY_FLAGS.keys())
+            - {"marketing", "inventory"}
+        )
+
+    def test_per_store_scope(self):
+        """W963-109 honours store_id so each store can be
+        armed independently."""
+        result = arm_safe_defaults(
+            reason="store-a", store_id="store-a",
+        )
+        assert len(result["newly_armed"]) == len(
+            DOMAIN_APPLY_FLAGS,
+        )
+        for e in list_armed():
+            assert e.store_id == "store-a"
+
+    def test_cooldown_blocked_listed_with_hours_remaining(
+        self, monkeypatch,
+    ):
+        """When a domain is in cooldown, it appears in
+        cooldown_blocked with hours_remaining. Other
+        domains still arm cleanly."""
+        # Disarm + immediately re-arm should be blocked by
+        # cooldown for the disarmed domain. Patch
+        # last_disarm_at to return a recent timestamp ONLY
+        # for marketing.
+        import time as _time
+
+        def fake_last_disarm_at(domain, store_id=None):
+            if domain == "marketing":
+                return _time.time() - 100.0  # 100 sec ago
+            return None
+
+        with patch(
+            "core.automation.substrate_fire_disarm_log."
+            "last_disarm_at",
+            side_effect=fake_last_disarm_at,
+        ):
+            result = arm_safe_defaults(reason="dogfood")
+
+        blocked = [
+            e["domain"] for e in result["cooldown_blocked"]
+        ]
+        assert "marketing" in blocked
+        # Others armed despite the cooldown on marketing
+        assert "marketing" not in result["newly_armed"]
+        assert (
+            len(result["newly_armed"])
+            == len(DOMAIN_APPLY_FLAGS) - 1
+        )
+
+    def test_force_bypasses_cooldown(self):
+        """--force lets operator bypass the cooldown gate."""
+        import time as _time
+
+        def fake_last_disarm_at(domain, store_id=None):
+            return _time.time() - 100.0
+
+        with patch(
+            "core.automation.substrate_fire_disarm_log."
+            "last_disarm_at",
+            side_effect=fake_last_disarm_at,
+        ):
+            result = arm_safe_defaults(
+                reason="forced", force=True,
+            )
+
+        # With --force, EVERY domain gets armed even though
+        # cooldown probe says all are blocked.
+        assert (
+            set(result["newly_armed"])
+            == set(DOMAIN_APPLY_FLAGS.keys())
+        )
+        assert result["cooldown_blocked"] == []
 
 
 class TestCooldownEnvKnobs:

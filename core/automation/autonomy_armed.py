@@ -342,6 +342,79 @@ def arm(
         return entry
 
 
+def arm_safe_defaults(
+    reason: str = "shopai autonomy-arm --safe-defaults",
+    *,
+    store_id: str = "",
+    force: bool = False,
+) -> dict[str, Any]:
+    """W963-109: arm every production autonomy domain in one
+    call.
+
+    Designed for the cold-start / first-real-cycle workflow:
+    operator finishes setting up credentials, runs
+    earn-readiness, sees their domains are still idle, and
+    needs ONE command to enable all 10 production autonomy
+    loops at once.
+
+    All 10 domains in DOMAIN_APPLY_FLAGS are designed with
+    their own internal safety gates (per-cycle caps,
+    env-var overrides, dry-run defaults). Arming the full
+    set is the canonical "go live with autonomous loop"
+    posture.
+
+    Per-domain results:
+      * ``armed``       -- freshly armed by this call
+      * ``already_armed`` -- was already armed, no change
+      * ``cooldown``    -- skipped (auto-disarm cooldown
+                            active); operator can re-run
+                            with --force to bypass
+
+    Returns a summary:
+      {
+        "total":         int,  # 10
+        "newly_armed":   list[str],
+        "already_armed": list[str],
+        "cooldown_blocked": list[{domain, hours_remaining}],
+      }
+
+    Idempotent: re-running adds nothing for already-armed
+    domains.
+    """
+    summary: dict[str, Any] = {
+        "total": len(DOMAIN_APPLY_FLAGS),
+        "newly_armed": [],
+        "already_armed": [],
+        "cooldown_blocked": [],
+    }
+    for domain in sorted(DOMAIN_APPLY_FLAGS.keys()):
+        try:
+            existed = is_armed(domain, store_id=store_id)
+            arm(
+                domain,
+                reason=reason,
+                force=force,
+                store_id=store_id,
+            )
+            if existed:
+                summary["already_armed"].append(domain)
+            else:
+                summary["newly_armed"].append(domain)
+        except ArmCooldownError as exc:
+            summary["cooldown_blocked"].append({
+                "domain": domain,
+                "hours_remaining": round(
+                    exc.hours_remaining, 1,
+                ),
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "arm_safe_defaults: %s raised: %s",
+                domain, exc,
+            )
+    return summary
+
+
 def disarm(domain: str, store_id: str = "") -> bool:
     """Disarm the (domain, store_id) tuple. Idempotent.
 
