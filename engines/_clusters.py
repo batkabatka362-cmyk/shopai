@@ -454,6 +454,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "earn_readiness",        # W963-108: pre-launch composer (5-probe aggregate)
     "api_test",              # W963-112: live health check per configured adapter
     "per_store_costs",       # W963-118: per-store cost attribution + query
+    "per_store_quota",       # W963-119: per-store budget caps + alerts
 })
 
 

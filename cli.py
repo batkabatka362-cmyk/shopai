@@ -2942,6 +2942,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cost_p.add_argument("--json", action="store_true")
 
+    # W963-119: quota -- per-store budget cap tracking.
+    q_p = sub.add_parser(
+        "quota",
+        help=(
+            "Per-store budget cap tracking. Reads W963-118 "
+            "costs + joins with SHOPAI_STORE_<SID>_<...>_"
+            "DAILY_BUDGET_USD caps to surface WARN / "
+            "CRITICAL stores. Used by autopause bridges + "
+            "operator dashboards."
+        ),
+    )
+    q_p.add_argument(
+        "--store", default="",
+        help="Restrict to one store.",
+    )
+    q_p.add_argument(
+        "--adapter", default="",
+        help="Restrict to one adapter (--store required).",
+    )
+    q_p.add_argument(
+        "--window-hours", type=float, default=24.0,
+        help="Time window (default: 24h).",
+    )
+    q_p.add_argument(
+        "--view", choices=("all", "warn", "critical", "single"),
+        default="all",
+        help="View shape.",
+    )
+    q_p.add_argument("--json", action="store_true")
+
     # W963-112: api-test -- live health check per adapter.
     at_p = sub.add_parser(
         "api-test",
@@ -12755,6 +12785,141 @@ def _cmd_api_status(args) -> None:
     nxt = data.get("next_action", "")
     if nxt:
         print(f"  NEXT: {nxt}")
+
+
+def _cmd_quota(args) -> None:
+    """W963-119: per-store budget quota view."""
+    from engines.per_store_quota import PerStoreQuotaEngine
+
+    as_json = bool(getattr(args, "json", False))
+    view = getattr(args, "view", "all")
+    store_id = (getattr(args, "store", "") or "").strip()
+    adapter = (getattr(args, "adapter", "") or "").strip()
+    # When --store is supplied, switch to single view by
+    # default so operator sees the specific store's
+    # cap state.
+    if store_id and view == "all":
+        view = "single"
+
+    payload: dict[str, Any] = {
+        "data": {
+            "view": view,
+            "store_id": store_id,
+            "adapter": adapter,
+            "window_hours": float(
+                getattr(args, "window_hours", 24.0),
+            ),
+        },
+    }
+    result = PerStoreQuotaEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success" or not data:
+        err = result.get("error") or "unknown error"
+        print(f"quota: ERROR  {err}")
+        sys.exit(1)
+
+    actual_view = data.get("view", "?")
+    wh = data.get("window_hours", 24.0)
+
+    if actual_view == "single":
+        s = data.get("snapshot") or {}
+        chip = {
+            "ok":        "[OK ]",
+            "warn":      "[WRN]",
+            "critical":  "[BAD]",
+            "unlimited": "[ - ]",
+        }.get(s.get("state", "?"), "[ ? ]")
+        print(
+            f"Quota  --  store={s.get('store_id')} "
+            f"adapter={s.get('adapter')} "
+            f"window={wh:.0f}h"
+        )
+        print()
+        print(
+            f"  {chip} state: {s.get('state', '?')}"
+        )
+        print(
+            f"        spend:    "
+            f"${s.get('spend_usd', 0):.4f}"
+        )
+        cap = s.get("cap_usd", 0)
+        if cap and cap > 0:
+            print(
+                f"        cap:      ${cap:.2f}  "
+                f"({s.get('pct_used', 0):.1f}% used)"
+            )
+            print(
+                f"        headroom: "
+                f"${s.get('headroom_usd', 0):.4f}"
+            )
+        else:
+            print("        cap:      (unlimited)")
+        return
+
+    snapshots = data.get("snapshots") or []
+    if actual_view in ("warn", "critical"):
+        count = data.get("count", 0)
+        if count == 0:
+            print(
+                f"Quota {actual_view.upper()}  --  "
+                f"window={wh:.0f}h  none"
+            )
+            return
+        print(
+            f"Quota {actual_view.upper()}  --  "
+            f"window={wh:.0f}h  ({count} hit)"
+        )
+        print()
+    else:  # all
+        crit = data.get("critical_count", 0)
+        warn = data.get("warn_count", 0)
+        total = data.get("total_snapshots", 0)
+        if total == 0:
+            print(
+                f"Quota  --  window={wh:.0f}h  "
+                "no activity"
+            )
+            return
+        print(
+            f"Quota  --  window={wh:.0f}h  "
+            f"{total} row(s)  "
+            f"{crit} critical, {warn} warn"
+        )
+        print()
+
+    print(
+        f"  {'state':<10} {'store':<14} "
+        f"{'adapter':<22} {'spend':>10} "
+        f"{'cap':>10} {'used':>7}"
+    )
+    print("  " + "-" * 76)
+    for s in snapshots:
+        chip = {
+            "ok":        "[OK ]",
+            "warn":      "[WRN]",
+            "critical":  "[BAD]",
+            "unlimited": "[ - ]",
+        }.get(s.get("state", "?"), "[ ? ]")
+        cap = s.get("cap_usd", 0)
+        used_str = (
+            f"{s.get('pct_used', 0):.0f}%"
+            if cap > 0 else "-"
+        )
+        cap_str = (
+            f"${cap:.2f}" if cap > 0 else "unlimited"
+        )
+        print(
+            f"  {chip:<10} "
+            f"{s.get('store_id', '?'):<14} "
+            f"{s.get('adapter', '?'):<22} "
+            f"${s.get('spend_usd', 0):>8.4f} "
+            f"{cap_str:>10} "
+            f"{used_str:>7}"
+        )
 
 
 def _cmd_cost(args) -> None:
@@ -59993,6 +60158,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "cost":
         _cmd_cost(args)
+        return
+
+    if args.command == "quota":
+        _cmd_quota(args)
         return
 
     if args.command == "welcome":
