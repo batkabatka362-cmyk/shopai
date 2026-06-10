@@ -376,20 +376,52 @@ def arm_safe_defaults(
         "newly_armed":   list[str],
         "already_armed": list[str],
         "cooldown_blocked": list[{domain, hours_remaining}],
+        "errors":        list[{domain, error}],
       }
 
     Idempotent: re-running adds nothing for already-armed
     domains.
+
+    W963-110 fixes:
+      * Cooldown probe runs BEFORE the existing-entry check
+        inside arm(). A domain that is ALREADY ARMED but has
+        a recent disarm-log entry within cooldown would
+        previously be reported as cooldown_blocked, hiding
+        the fact that it is in fact armed. Now we consult
+        `existed` from is_armed() before bucketing the
+        cooldown error and route to already_armed when the
+        domain was already armed.
+      * Unexpected exceptions (e.g. _save_state I/O failure,
+        permission denied, JSON serialisation issue)
+        previously vanished into a debug log -- the domain
+        disappeared from every list in the summary, leaving
+        the operator with a misleadingly-green view of a
+        partial failure. Now they land in an "errors" bucket
+        with the str(exc) message.
     """
     summary: dict[str, Any] = {
         "total": len(DOMAIN_APPLY_FLAGS),
         "newly_armed": [],
         "already_armed": [],
         "cooldown_blocked": [],
+        "errors": [],
     }
     for domain in sorted(DOMAIN_APPLY_FLAGS.keys()):
+        existed = False
         try:
             existed = is_armed(domain, store_id=store_id)
+        except Exception as exc:  # noqa: BLE001
+            # If the is_armed probe itself fails the domain
+            # is effectively in an unknown state; record it
+            # in errors and skip the arm() call so we do not
+            # double-fault.
+            summary["errors"].append({
+                "domain": domain,
+                "error": f"is_armed probe raised: {exc}",
+            })
+            continue
+
+        try:
             arm(
                 domain,
                 reason=reason,
@@ -401,17 +433,38 @@ def arm_safe_defaults(
             else:
                 summary["newly_armed"].append(domain)
         except ArmCooldownError as exc:
-            summary["cooldown_blocked"].append({
-                "domain": domain,
-                "hours_remaining": round(
-                    exc.hours_remaining, 1,
-                ),
-            })
+            # W963-110: when a domain is ALREADY ARMED and
+            # the cooldown probe fires (e.g. operator
+            # force-armed after auto-disarm), the entry is
+            # still armed from the prior call. Route to
+            # already_armed instead of cooldown_blocked so
+            # the operator does not see a misleading
+            # "blocked, re-run with --force" message for a
+            # domain that is in fact armed and ready to
+            # fire.
+            if existed:
+                summary["already_armed"].append(domain)
+            else:
+                summary["cooldown_blocked"].append({
+                    "domain": domain,
+                    "hours_remaining": round(
+                        exc.hours_remaining, 1,
+                    ),
+                })
         except Exception as exc:  # noqa: BLE001
+            # W963-110: surface unexpected failures to the
+            # caller rather than swallowing them into a
+            # debug log. _save_state I/O issues, permission
+            # denied, and JSON serialisation problems all
+            # land here -- the operator should see them.
             logger.debug(
                 "arm_safe_defaults: %s raised: %s",
                 domain, exc,
             )
+            summary["errors"].append({
+                "domain": domain,
+                "error": str(exc) or type(exc).__name__,
+            })
     return summary
 
 

@@ -191,6 +191,8 @@ class TestArmSafeDefaults:
         )
         assert result["already_armed"] == []
         assert result["cooldown_blocked"] == []
+        # W963-110: errors bucket present
+        assert result["errors"] == []
         # Every domain now armed
         armed_names = {e.domain for e in list_armed()}
         assert armed_names == set(DOMAIN_APPLY_FLAGS.keys())
@@ -294,6 +296,171 @@ class TestArmSafeDefaults:
             == set(DOMAIN_APPLY_FLAGS.keys())
         )
         assert result["cooldown_blocked"] == []
+
+    # ── W963-110 round-6 regression tests ──────────────────
+
+    def test_cooldown_on_already_armed_routes_to_already_armed(
+        self,
+    ):
+        """W963-110 BUG α: when a domain is ALREADY ARMED
+        but has a recent disarm-log entry within cooldown
+        window, arm() raises ArmCooldownError. Pre-fix that
+        bucketed the domain as cooldown_blocked even though
+        the entry was still armed -- operator saw 'blocked,
+        re-run with --force' when the domain was in fact
+        armed and would fire on the next cycle.
+        Post-fix: such domains land in already_armed."""
+        import time as _time
+
+        # Step 1: arm marketing manually (no cooldown
+        # blocker yet).
+        arm("marketing", reason="manual")
+        assert is_armed("marketing")
+
+        # Step 2: probe disarm-log to claim marketing was
+        # auto-disarmed recently. Pre-fix arm() raises
+        # ArmCooldownError; arm_safe_defaults previously
+        # bucketed marketing as cooldown_blocked.
+        def fake_last_disarm_at(domain, store_id=None):
+            if domain == "marketing":
+                return _time.time() - 100.0
+            return None
+
+        with patch(
+            "core.automation.substrate_fire_disarm_log."
+            "last_disarm_at",
+            side_effect=fake_last_disarm_at,
+        ):
+            result = arm_safe_defaults(reason="defaults")
+
+        # Post-fix: marketing is in already_armed (the
+        # entry was still armed before this call), NOT in
+        # cooldown_blocked.
+        assert "marketing" in result["already_armed"]
+        blocked_domains = [
+            e["domain"] for e in result["cooldown_blocked"]
+        ]
+        assert "marketing" not in blocked_domains
+
+    def test_cooldown_on_idle_domain_still_routes_to_blocked(
+        self,
+    ):
+        """Companion to the above: a domain that is NOT
+        currently armed but hits cooldown still goes to
+        cooldown_blocked (operator must --force to bypass).
+        """
+        import time as _time
+
+        def fake_last_disarm_at(domain, store_id=None):
+            if domain == "marketing":
+                return _time.time() - 100.0
+            return None
+
+        # No manual arm of marketing -- it is idle when the
+        # cooldown error fires.
+        with patch(
+            "core.automation.substrate_fire_disarm_log."
+            "last_disarm_at",
+            side_effect=fake_last_disarm_at,
+        ):
+            result = arm_safe_defaults(reason="defaults")
+
+        blocked_domains = [
+            e["domain"] for e in result["cooldown_blocked"]
+        ]
+        assert "marketing" in blocked_domains
+        # Other 9 domains armed fine
+        assert "marketing" not in result["newly_armed"]
+        assert (
+            len(result["newly_armed"])
+            == len(DOMAIN_APPLY_FLAGS) - 1
+        )
+
+    def test_unexpected_arm_exception_surfaces_in_errors_bucket(
+        self,
+    ):
+        """W963-110 BUG β: pre-fix, a bare except Exception
+        swallowed unexpected arm() failures into a debug
+        log -- the domain disappeared from every summary
+        list, leaving operator with a deceptively-green
+        view. Post-fix: such failures land in the errors
+        bucket with the str(exc) message so operator can
+        act.
+
+        Trigger: patch arm() to raise PermissionError for
+        one domain. The other domains arm cleanly; the
+        affected domain appears in errors."""
+        from core.automation import autonomy_armed as mod
+
+        real_arm = mod.arm
+
+        def selective_raising_arm(domain, *args, **kwargs):
+            if domain == "marketing":
+                raise PermissionError(
+                    "test: simulated disk write failure",
+                )
+            return real_arm(domain, *args, **kwargs)
+
+        with patch.object(
+            mod, "arm", side_effect=selective_raising_arm,
+        ):
+            result = mod.arm_safe_defaults(reason="dogfood")
+
+        # marketing landed in errors with the message
+        err_domains = [e["domain"] for e in result["errors"]]
+        assert err_domains == ["marketing"]
+        err_msg = result["errors"][0]["error"]
+        assert "simulated disk write failure" in err_msg
+        # marketing NOT in newly_armed / already_armed /
+        # cooldown_blocked
+        assert "marketing" not in result["newly_armed"]
+        assert "marketing" not in result["already_armed"]
+        blocked = [
+            e["domain"] for e in result["cooldown_blocked"]
+        ]
+        assert "marketing" not in blocked
+        # Other 9 domains armed normally
+        assert (
+            len(result["newly_armed"])
+            == len(DOMAIN_APPLY_FLAGS) - 1
+        )
+
+    def test_is_armed_probe_failure_lands_in_errors_bucket(
+        self,
+    ):
+        """Companion: if the is_armed() probe itself fails
+        (corrupt state file, etc.), the domain goes to
+        errors and arm() is NOT called (avoid double-fault).
+        """
+        from core.automation import autonomy_armed as mod
+
+        real_is_armed = mod.is_armed
+
+        def selective_raising_is_armed(
+            domain, *args, **kwargs
+        ):
+            if domain == "inventory":
+                raise RuntimeError(
+                    "test: corrupt state file",
+                )
+            return real_is_armed(
+                domain, *args, **kwargs,
+            )
+
+        with patch.object(
+            mod, "is_armed",
+            side_effect=selective_raising_is_armed,
+        ):
+            result = mod.arm_safe_defaults(reason="dogfood")
+
+        err_domains = [e["domain"] for e in result["errors"]]
+        assert "inventory" in err_domains
+        assert "is_armed probe raised" in (
+            next(
+                e["error"] for e in result["errors"]
+                if e["domain"] == "inventory"
+            )
+        )
 
 
 class TestCooldownEnvKnobs:

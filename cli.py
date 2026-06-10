@@ -43509,13 +43509,34 @@ def _cmd_autonomy_arm(args) -> None:
             store_id=store,
             force=force,
         )
+        # W963-110: compute ok + exit code from summary
+        # state rather than hard-coding ok=True. Pre-fix
+        # the JSON envelope always reported ok=True even
+        # when every domain was blocked by cooldown or hit
+        # an unexpected error -- inconsistent with the
+        # single-domain path (which returns ok=False + exit
+        # 2 on the same cooldown condition). Now any
+        # arm-state miss (no newly_armed AND no already_
+        # armed) signals failure to scripts checking
+        # result['ok'].
+        had_arm_state = bool(
+            summary["newly_armed"]
+            or summary["already_armed"]
+        )
+        had_errors = bool(summary.get("errors") or [])
+        ok = had_arm_state and not had_errors
         if as_json:
             print(json.dumps({
-                "ok": True,
+                "ok": ok,
                 "mode": "safe_defaults",
                 "store": store,
                 **summary,
             }, indent=2, default=str))
+            if not ok:
+                # Match the single-domain cooldown exit
+                # code so cron / shell scripts can branch
+                # on `$?`.
+                sys.exit(2)
             return
         scope = (
             f"store={store}" if store else "fleet-wide"
@@ -43554,8 +43575,36 @@ def _cmd_autonomy_arm(args) -> None:
                     f"({entry['hours_remaining']:.1f}h "
                     "remaining)"
                 )
+        # W963-110: surface unexpected errors so the operator
+        # is not left with a deceptively-green summary when
+        # _save_state / I/O paths fail.
+        if summary.get("errors"):
+            print()
+            print(
+                f"  [BAD] {len(summary['errors'])} "
+                "domain(s) hit unexpected error:"
+            )
+            for entry in summary["errors"]:
+                err = (
+                    entry.get("error") or "(no message)"
+                )[:120]
+                print(
+                    f"        - {entry['domain']}  -- "
+                    f"{err}"
+                )
         print()
-        if not summary["newly_armed"] and not (
+        if had_errors:
+            print(
+                "  NEXT: investigate the errors above "
+                "(check .env permissions + disk space)"
+            )
+        elif not had_arm_state and summary["cooldown_blocked"]:
+            print(
+                "  NEXT: every domain blocked by cooldown "
+                "-- run shopai autonomy-disarm-history "
+                "or re-run with --force"
+            )
+        elif not summary["newly_armed"] and not (
             summary["cooldown_blocked"]
         ):
             print(
@@ -43563,8 +43612,13 @@ def _cmd_autonomy_arm(args) -> None:
                 "fire via `shopai cycle run --yes`"
             )
         elif summary["cooldown_blocked"]:
+            # Some armed + some blocked: surface BOTH
+            # actions so operator can act on the blocked
+            # ones while running the armed ones.
             print(
-                "  NEXT: investigate cooldowns via "
+                "  NEXT: `shopai cycle run --yes` for "
+                "armed domains; "
+                "investigate blocked via "
                 "`shopai autonomy-disarm-history`"
             )
         else:
@@ -43572,6 +43626,8 @@ def _cmd_autonomy_arm(args) -> None:
                 "  NEXT: `shopai cycle run --yes` to "
                 "fire the armed substrate"
             )
+        if not ok:
+            sys.exit(2)
         return
 
     if not domain:
