@@ -2972,6 +2972,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     q_p.add_argument("--json", action="store_true")
 
+    # W963-121: adapter-pnl -- per-store P&L based on
+    # adapter-call cost (LLM tokens, ad APIs, etc.) vs
+    # revenue. Complements the W963-45 'pnl' command which
+    # uses approval-outcome ad/ESP/shipping costs.
+    pnl_p = sub.add_parser(
+        "adapter-pnl",
+        help=(
+            "Per-store profit-and-loss based on adapter-"
+            "call cost (W963-118) vs revenue attribution. "
+            "Different question than 'shopai pnl' (which "
+            "uses ad-spend / ESP / shipping outcome costs)."
+        ),
+    )
+    pnl_p.add_argument(
+        "--store", default="",
+        help="Restrict to one store.",
+    )
+    pnl_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+        help="Time window (default: 168h = 7 days).",
+    )
+    pnl_p.add_argument("--json", action="store_true")
+
     # W963-112: api-test -- live health check per adapter.
     at_p = sub.add_parser(
         "api-test",
@@ -12785,6 +12808,128 @@ def _cmd_api_status(args) -> None:
     nxt = data.get("next_action", "")
     if nxt:
         print(f"  NEXT: {nxt}")
+
+
+def _cmd_adapter_pnl(args) -> None:
+    """W963-121: per-store adapter-cost P&L view."""
+    from engines.per_store_pnl import PerStorePnLEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload: dict[str, Any] = {
+        "data": {
+            "store_id": (
+                getattr(args, "store", "") or ""
+            ).strip(),
+            "window_hours": float(
+                getattr(args, "window_hours", 168.0),
+            ),
+        },
+    }
+    result = PerStorePnLEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success" or not data:
+        err = result.get("error") or "unknown error"
+        print(f"pnl: ERROR  {err}")
+        sys.exit(1)
+
+    view = data.get("view")
+    wh = data.get("window_hours", 168.0)
+
+    _STATE_CHIP = {
+        "thriving":  "[++ ]",
+        "healthy":   "[OK ]",
+        "breakeven": "[ ~ ]",
+        "losing":    "[BAD]",
+        "cold":      "[ . ]",
+    }
+
+    if view == "single":
+        s = data.get("snapshot") or {}
+        chip = _STATE_CHIP.get(
+            s.get("state", "?"), "[ ? ]",
+        )
+        print(
+            f"P&L  --  store={s.get('store_id')}  "
+            f"window={wh:.0f}h"
+        )
+        print()
+        print(
+            f"  {chip} state: "
+            f"{s.get('state', '?').upper()}"
+        )
+        print(
+            f"        spend:    "
+            f"${s.get('spend_usd', 0):.4f}"
+        )
+        print(
+            f"        revenue:  "
+            f"${s.get('revenue_usd', 0):.2f}  "
+            f"(attributed: "
+            f"${s.get('attributed_revenue_usd', 0):.2f})"
+        )
+        print(
+            f"        profit:   "
+            f"${s.get('profit_usd', 0):.2f}  "
+            f"({s.get('margin_pct', 0):.1f}% margin)"
+        )
+        print(
+            f"        roas:     "
+            f"{s.get('roas_ratio', 0):.2f}x"
+        )
+        for note in s.get("notes") or []:
+            print(f"        note:     {note}")
+        return
+
+    # fleet view
+    snaps = data.get("snapshots") or []
+    if not snaps:
+        print(
+            f"P&L  --  window={wh:.0f}h  no stores "
+            "registered"
+        )
+        return
+
+    totals = data.get("fleet_totals") or {}
+    losing = data.get("losing_count", 0)
+    thriving = data.get("thriving_count", 0)
+    n = data.get("store_count", len(snaps))
+    print(
+        f"P&L (fleet)  --  window={wh:.0f}h  "
+        f"{n} store(s)  "
+        f"{losing} losing, {thriving} thriving"
+    )
+    print()
+    print(
+        f"  fleet totals: "
+        f"spend ${totals.get('total_spend_usd', 0):.2f}  "
+        f"revenue ${totals.get('total_revenue_usd', 0):.2f}  "
+        f"profit ${totals.get('total_profit_usd', 0):.2f}  "
+        f"({totals.get('fleet_margin_pct', 0):.1f}% margin, "
+        f"{totals.get('fleet_roas_ratio', 0):.2f}x ROAS)"
+    )
+    print()
+    print(
+        f"  {'state':<8} {'store':<18} {'spend':>10} "
+        f"{'revenue':>12} {'profit':>12} "
+        f"{'margin':>8} {'roas':>8}"
+    )
+    print("  " + "-" * 78)
+    for s in snaps:
+        chip = _STATE_CHIP.get(
+            s.get("state", "?"), "[ ? ]",
+        )
+        print(
+            f"  {chip:<8} {s.get('store_id', '?'):<18} "
+            f"${s.get('spend_usd', 0):>8.4f} "
+            f"${s.get('revenue_usd', 0):>10.2f} "
+            f"${s.get('profit_usd', 0):>10.2f} "
+            f"{s.get('margin_pct', 0):>6.1f}% "
+            f"{s.get('roas_ratio', 0):>6.2f}x"
+        )
 
 
 def _cmd_quota(args) -> None:
@@ -60194,6 +60339,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "quota":
         _cmd_quota(args)
+        return
+
+    if args.command == "adapter-pnl":
+        _cmd_adapter_pnl(args)
         return
 
     if args.command == "welcome":
