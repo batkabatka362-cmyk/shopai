@@ -12762,7 +12762,8 @@ def _cmd_api_test(args) -> None:
     print(
         f"API test  --  {overall} "
         f"{ok_n}/{cfg_n} live  "
-        f"({fail_n} fail, {skip_n} skipped)"
+        f"({fail_n} fail, "
+        f"{skip_n} not configured)"
     )
     print()
     print(f"  {data.get('headline', '')}")
@@ -12782,8 +12783,11 @@ def _cmd_api_test(args) -> None:
             )
         else:
             chip = "[BAD]"
+            # W963-113: error budget bumped 120 -> 280 so
+            # full vendor message reaches the operator (the
+            # actionable bit is sometimes at chars 80-200).
             badge = (
-                f"FAILED: {r.get('error', '?')[:120]}"
+                f"FAILED: {r.get('error', '?')[:280]}"
             )
         print(
             f"  {chip} {r.get('adapter', '?'):<14s} "

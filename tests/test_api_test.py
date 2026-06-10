@@ -1,4 +1,4 @@
-"""Tests for engines.api_test -- W963-112."""
+"""Tests for engines.api_test -- W963-112 + W963-113."""
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -8,8 +8,117 @@ from engines.api_test.health_check import (
     ApiTestReport,
     HealthCheckResult,
     PROBES,
+    _extract_error_message,
+    _short_http_error,
     run_api_test,
 )
+
+
+# ── W963-113 error parsing ────────────────────────────────
+
+
+class TestExtractErrorMessage:
+    """Vendor error bodies come in JSON-nested shapes that
+    bury the operator-actionable message. The extractor
+    pulls it out + falls back gracefully when the JSON is
+    truncated by upstream snippeting."""
+
+    def test_openai_nested_shape(self):
+        body = (
+            '{"error": {"message": "Invalid API key", '
+            '"type": "auth_error"}}'
+        )
+        assert (
+            _extract_error_message(body) == "Invalid API key"
+        )
+
+    def test_brevo_flat_shape(self):
+        body = (
+            '{"code": "unauthorized", '
+            '"message": "Bad key"}'
+        )
+        assert _extract_error_message(body) == "Bad key"
+
+    def test_klaviyo_errors_list(self):
+        body = (
+            '{"errors": [{"detail": "Invalid token", '
+            '"title": "Auth failed"}]}'
+        )
+        assert (
+            _extract_error_message(body) == "Invalid token"
+        )
+
+    def test_plain_text_returned_as_is(self):
+        body = "Not authorised"
+        assert _extract_error_message(body) == "Not authorised"
+
+    def test_empty_returns_empty(self):
+        assert _extract_error_message("") == ""
+
+    def test_truncated_json_with_closed_message(self):
+        """Upstream sometimes truncates the JSON body at
+        char N, but if the message itself fit, the regex
+        fallback should still find it."""
+        body = (
+            'openai: rate limit (429): {\n'
+            '    "error": {\n'
+            '        "message": "You exceeded your quota."\n'
+            '        '
+        )
+        result = _extract_error_message(body)
+        assert result == "You exceeded your quota."
+
+    def test_truncated_json_with_truncated_message(self):
+        """W963-113 BUG fix: when upstream snippeting cuts
+        OFF the closing quote of "message": "...", the
+        regex must still extract everything up to the
+        truncation point. Pre-fix the regex required the
+        closing quote so this path returned the full raw
+        body unchanged."""
+        body = (
+            'openai: rate limit (429): {\n'
+            '    "error": {\n'
+            '        "message": "You exceeded your quota, '
+            'please check your billing'
+        )
+        result = _extract_error_message(body)
+        assert "You exceeded your quota" in result
+        assert "please check your billing" in result
+        # NOT the raw JSON body
+        assert '"error"' not in result
+        assert '"message"' not in result
+
+    def test_meta_ads_nested_shape(self):
+        body = (
+            '{"error": {"message": "Invalid OAuth token", '
+            '"code": 190, "type": "OAuthException"}}'
+        )
+        assert (
+            _extract_error_message(body)
+            == "Invalid OAuth token"
+        )
+
+
+class TestShortHttpError:
+    def test_brevo_401_extracts_clean_message(self):
+        body = (
+            '{"message": "We have detected you are using '
+            'an unrecognised IP address 1.2.3.4"}'
+        )
+        result = _short_http_error(401, body)
+        assert "HTTP 401:" in result
+        assert "unrecognised IP address" in result
+        # JSON braces stripped
+        assert '"{' not in result
+
+    def test_plain_html_body_passes_through(self):
+        result = _short_http_error(500, "<html>Server Error</html>")
+        assert "HTTP 500" in result
+        assert "Server Error" in result
+
+    def test_empty_body(self):
+        result = _short_http_error(503, "")
+        assert "HTTP 503" in result
 
 
 # ── HealthCheckResult cls property ────────────────────────

@@ -21,12 +21,111 @@ still run. The aggregator returns every result.
 """
 from __future__ import annotations
 
+import json as _json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_error_message(text: str) -> str:
+    """Try to pull the operator-actionable message out of a
+    vendor JSON error body.
+
+    Vendors return errors in nested shapes:
+      OpenAI:  {"error": {"message": "...", "type": "..."}}
+      Brevo:   {"code": "...", "message": "..."}
+      Klaviyo: {"errors": [{"detail": "..."}]}
+      Pexels:  {"error": "..."} or plain text
+      Meta:    {"error": {"message": "...", "code": N}}
+
+    Returns the deepest free-text message it finds, or the
+    raw text if nothing matches. Always strips JSON noise
+    so the operator sees the actionable content first.
+
+    Handles TRUNCATED JSON bodies (which happen when the
+    upstream HTTP handler clips the body before it reaches
+    us): falls back to a regex scan for "message": "...".
+    """
+    if not text:
+        return ""
+    # Try to parse as JSON first -- handles every vendor's
+    # nested shape uniformly.
+    try:
+        parsed = _json.loads(text)
+    except (_json.JSONDecodeError, ValueError):
+        # Truncated JSON or plain text. Try two regex
+        # fallbacks before giving up:
+        # 1. "message": "..."  -- closed quote form
+        # 2. "message": "...   -- truncated form (no closing
+        #    quote because upstream snippeted the body
+        #    before it reached us)
+        for key in ("message", "detail", "title"):
+            m = re.search(
+                rf'"{key}"\s*:\s*"((?:[^"\\]|\\.)*)"',
+                text,
+            )
+            if m:
+                raw = m.group(1)
+                return raw.replace("\\n", " ").replace(
+                    '\\"', '"',
+                ).replace("\\\\", "\\").strip()
+            # Truncated form -- take everything up to end
+            # of text after the opening quote.
+            m = re.search(
+                rf'"{key}"\s*:\s*"((?:[^"\\]|\\.)*)$',
+                text,
+            )
+            if m:
+                raw = m.group(1)
+                return raw.replace("\\n", " ").replace(
+                    '\\"', '"',
+                ).replace("\\\\", "\\").strip()
+        return text.strip()
+
+    # Walk known nested shapes
+    if isinstance(parsed, dict):
+        # OpenAI / Meta: {"error": {"message": "..."}}
+        err = parsed.get("error")
+        if isinstance(err, dict):
+            msg = err.get("message") or err.get("detail")
+            if msg:
+                return str(msg)
+            return _json.dumps(err)[:300]
+        if isinstance(err, str):
+            return err
+        # Brevo: {"code": "...", "message": "..."}
+        if parsed.get("message"):
+            return str(parsed["message"])
+        # Klaviyo: {"errors": [{"detail": "..."}]}
+        errs = parsed.get("errors")
+        if isinstance(errs, list) and errs:
+            first = errs[0]
+            if isinstance(first, dict):
+                msg = (
+                    first.get("detail")
+                    or first.get("message")
+                    or first.get("title")
+                )
+                if msg:
+                    return str(msg)
+        # Fallback: dump first 300 chars
+        return _json.dumps(parsed)[:300]
+    return str(parsed)[:300]
+
+
+def _short_http_error(
+    status_code: int, body: str,
+) -> str:
+    """Build a concise HTTP error message: 'HTTP 401: <message>'.
+
+    Used by every probe to keep error reporting uniform.
+    """
+    msg = _extract_error_message(body)
+    return f"HTTP {status_code}: {msg[:240]}"
 
 
 @dataclass
@@ -89,8 +188,15 @@ def _check_openai() -> HealthCheckResult:
         else:
             out.error = str(result.error or "")[:200]
     except Exception as exc:  # noqa: BLE001
-        out.error = f"{type(exc).__name__}: {exc}"[:200]
-        if "auth" in str(exc).lower() or "401" in str(exc):
+        # Adapter errors often carry the vendor JSON body
+        # in the message. The extractor's regex fallback
+        # handles truncated/embedded JSON.
+        raw = str(exc)
+        parsed_msg = _extract_error_message(raw)
+        out.error = (
+            f"{type(exc).__name__}: {parsed_msg}"[:300]
+        )
+        if "auth" in raw.lower() or "401" in raw:
             out.reachable = True
     return out
 
@@ -133,8 +239,15 @@ def _check_anthropic() -> HealthCheckResult:
         else:
             out.error = str(result.error or "")[:200]
     except Exception as exc:  # noqa: BLE001
-        out.error = f"{type(exc).__name__}: {exc}"[:200]
-        if "auth" in str(exc).lower() or "401" in str(exc):
+        # Adapter errors often carry the vendor JSON body
+        # in the message. The extractor's regex fallback
+        # handles truncated/embedded JSON.
+        raw = str(exc)
+        parsed_msg = _extract_error_message(raw)
+        out.error = (
+            f"{type(exc).__name__}: {parsed_msg}"[:300]
+        )
+        if "auth" in raw.lower() or "401" in raw:
             out.reachable = True
     return out
 
@@ -180,9 +293,8 @@ def _check_brevo() -> HealthCheckResult:
             except Exception:  # noqa: BLE001
                 out.detail = "account verified"
         else:
-            out.error = (
-                f"HTTP {resp.status_code}: "
-                f"{resp.text[:160]}"
+            out.error = _short_http_error(
+                resp.status_code, resp.text,
             )
     except Exception as exc:  # noqa: BLE001
         out.error = f"{type(exc).__name__}: {exc}"[:200]
@@ -224,9 +336,8 @@ def _check_pexels() -> HealthCheckResult:
             except Exception:  # noqa: BLE001
                 out.detail = "search ok"
         else:
-            out.error = (
-                f"HTTP {resp.status_code}: "
-                f"{resp.text[:160]}"
+            out.error = _short_http_error(
+                resp.status_code, resp.text,
             )
     except Exception as exc:  # noqa: BLE001
         out.error = f"{type(exc).__name__}: {exc}"[:200]
@@ -267,9 +378,8 @@ def _check_elevenlabs() -> HealthCheckResult:
             except Exception:  # noqa: BLE001
                 out.detail = "voices list ok"
         else:
-            out.error = (
-                f"HTTP {resp.status_code}: "
-                f"{resp.text[:160]}"
+            out.error = _short_http_error(
+                resp.status_code, resp.text,
             )
     except Exception as exc:  # noqa: BLE001
         out.error = f"{type(exc).__name__}: {exc}"[:200]
@@ -313,9 +423,8 @@ def _check_klaviyo() -> HealthCheckResult:
             except Exception:  # noqa: BLE001
                 out.detail = "accounts list ok"
         else:
-            out.error = (
-                f"HTTP {resp.status_code}: "
-                f"{resp.text[:160]}"
+            out.error = _short_http_error(
+                resp.status_code, resp.text,
             )
     except Exception as exc:  # noqa: BLE001
         out.error = f"{type(exc).__name__}: {exc}"[:200]
@@ -356,9 +465,8 @@ def _check_meta_ads() -> HealthCheckResult:
             except Exception:  # noqa: BLE001
                 out.detail = "auth ok"
         else:
-            out.error = (
-                f"HTTP {resp.status_code}: "
-                f"{resp.text[:160]}"
+            out.error = _short_http_error(
+                resp.status_code, resp.text,
             )
     except Exception as exc:  # noqa: BLE001
         out.error = f"{type(exc).__name__}: {exc}"[:200]
@@ -437,9 +545,8 @@ def _check_shopify() -> HealthCheckResult:
             except Exception:  # noqa: BLE001
                 out.detail = "shop.json ok"
         else:
-            out.error = (
-                f"HTTP {resp.status_code}: "
-                f"{resp.text[:160]}"
+            out.error = _short_http_error(
+                resp.status_code, resp.text,
             )
     except Exception as exc:  # noqa: BLE001
         out.error = f"{type(exc).__name__}: {exc}"[:200]
