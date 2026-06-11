@@ -274,6 +274,22 @@ class StoreManager:
 
     # ── Credentials ──────────────────────────────────────────
 
+    def has_store(self, store_id: str) -> bool:
+        """W963-124: return True iff store_id is a known
+        per-store entry (not just an env fallback).
+
+        Used by W963-115's _resolve_credentials to detect
+        the case where `active_store(sid)` was set for an
+        unknown sid -- without this check, get_credentials
+        falls back to env vars and the adapter silently
+        routes the call to the env-default store. Money-
+        class bug.
+        """
+        if not isinstance(store_id, str) or not store_id:
+            return False
+        with self._lock:
+            return store_id in self._store_credentials
+
     def get_credentials(self, store_id: str = "") -> dict[str, str]:
         """Get API credentials for a store. Supports OAuth auto-refresh."""
         with self._lock:

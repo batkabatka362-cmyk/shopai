@@ -238,10 +238,18 @@ def compute_fleet_snapshot(
             sid, window_hours=window_hours,
         ))
 
+    # W963-124: round-8 #5 fix. Previously the tiebreaker
+    # was `-s.profit_usd` which sorted ASCENDING by
+    # negated-profit -- the SMALLEST loss (e.g. -$5)
+    # surfaced FIRST and the BIGGEST loss (e.g. -$5000)
+    # last. Empire/daily-brief top_losers therefore drew
+    # operator attention to the least-bleeding stores.
+    # Using `s.profit_usd` (ascending) means -$5000 sorts
+    # before -$5 -- the worst offender surfaces first.
     out.sort(
         key=lambda s: (
             -s.state.severity_rank,
-            -s.profit_usd,
+            s.profit_usd,
             s.store_id,
         ),
     )

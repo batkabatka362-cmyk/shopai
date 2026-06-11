@@ -154,7 +154,16 @@ class ShopifyBaseAdapter(BaseAdapter):
                 self._shop_url_override,
                 self._token_override,
             )
-        # W963-115: per-store routing via active_store
+        # W963-115: per-store routing via active_store.
+        # W963-124: hard-fail when active_store(sid) is
+        # set for an UNKNOWN sid. Pre-fix the code called
+        # StoreManager.get_credentials(sid) which silently
+        # falls back to env vars when sid is unknown --
+        # the adapter then routed Shopify mutations to
+        # the ENV-DEFAULT store while the autonomous
+        # controller believed they were scoped to sid.
+        # Money-class bug. Now we check has_store(sid)
+        # first; absent sid -> raise.
         try:
             from core.context import get_active_store_id
             sid = get_active_store_id()
@@ -165,14 +174,32 @@ class ShopifyBaseAdapter(BaseAdapter):
                 from data_pipeline.store.store_manager import (
                     StoreManager,
                 )
-                creds = StoreManager().get_credentials(sid) or {}
+                sm = StoreManager()
+                if not sm.has_store(sid):
+                    raise AdapterNotConfigured(
+                        self.name,
+                        f"active_store({sid!r}) is set "
+                        f"but no per-store credentials "
+                        f"registered. Add via "
+                        f"`shopai store add {sid} <url> "
+                        f"--api-key ...` or unset "
+                        f"active_store.",
+                    )
+                creds = sm.get_credentials(sid) or {}
                 shop = str(creds.get("shop_url") or "")
                 tok = str(creds.get("api_key") or "")
                 if shop and tok:
                     return shop, tok
+            except AdapterNotConfigured:
+                # Re-raise so caller sees the routing
+                # failure rather than silently using env
+                # defaults.
+                raise
             except Exception:  # noqa: BLE001
-                # StoreManager init failure / unknown store
-                # falls through to env-var resolution below.
+                # Other StoreManager errors (DB unavail,
+                # etc.) fall through to env-var
+                # resolution. The unknown-sid path is the
+                # one we hard-fail on.
                 pass
         cfg = get_config()
         return (
