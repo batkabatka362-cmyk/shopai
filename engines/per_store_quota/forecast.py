@@ -83,18 +83,32 @@ def _rate_per_hour(
     store_id: str,
     adapter: str,
     sample_hours: float,
-) -> tuple[float, float]:
-    """Return (spend_in_sample, sample_hours).
+) -> tuple[float, float, float]:
+    """Return (spend_in_sample, sample_hours,
+    actual_data_span_hours).
 
-    sample_hours is returned unchanged so the caller can
-    log the actual sample window used (in case we ever
-    auto-tune).
+    W963-130 round-9 #1 fix: pre-fix returned only the
+    nominal sample window; the rate divisor was always
+    sample_hours even when the store's data span was
+    SHORTER (cold-start case). A store spending $5 in 1h
+    against $10 cap got rate=$5/6h=$0.83/h, projected
+    6h-to-cap, verdict=IMMINENT -- 6x too late. Now the
+    caller can divide by min(sample_hours, data_span)
+    so rate reflects the actual burn pattern.
+
+    W963-130 round-9 #3 fix: include_archive=True so
+    immediately-post-rotation reads do not blind the
+    forecaster (DATA_PATH wiped, last 24h in archive).
     """
     if sample_hours <= 0.0:
-        return 0.0, 0.0
-    cutoff = time.time() - sample_hours * 3600.0
+        return 0.0, 0.0, 0.0
+    now = time.time()
+    cutoff = now - sample_hours * 3600.0
     total = 0.0
-    for e in _stream_events(since_ts=cutoff):
+    oldest_ts = float("inf")
+    for e in _stream_events(
+        since_ts=cutoff, include_archive=True,
+    ):
         sid = str(e.get("store_id") or "")
         if store_id and sid != store_id:
             continue
@@ -106,7 +120,22 @@ def _rate_per_hour(
             total += float(e.get("cost_usd", 0.0) or 0.0)
         except (TypeError, ValueError):
             continue
-    return total, sample_hours
+        try:
+            ts = float(e.get("ts", 0.0) or 0.0)
+            if ts < oldest_ts:
+                oldest_ts = ts
+        except (TypeError, ValueError):
+            continue
+    # Actual span: from oldest matching event to now. When
+    # no matching events, span is 0 (caller falls back to
+    # nominal sample_hours).
+    if oldest_ts == float("inf"):
+        actual_span_hours = 0.0
+    else:
+        actual_span_hours = max(
+            0.0, (now - oldest_ts) / 3600.0,
+        )
+    return total, sample_hours, actual_span_hours
 
 
 def _classify(
@@ -120,6 +149,21 @@ def _classify(
         return ForecastVerdict.NO_CAP
     if spend_so_far >= cap:
         return ForecastVerdict.EXHAUSTED
+    # W963-130 round-9 #2 fix: near-exhaustion guard
+    # BEFORE the rate<=0 short-circuit. Pre-fix a store
+    # that burned 95% of its cap then went quiet returned
+    # NO_RATE (severity 0) -- it sorted to bottom of
+    # operator triage even though one more adapter call
+    # would push it past cap. Now check cap-fraction
+    # first.
+    if cap > 0:
+        cap_fraction = spend_so_far / cap
+        if cap_fraction >= 0.8:
+            return ForecastVerdict.CRITICAL
+        if cap_fraction >= 0.5 and rate <= 0:
+            # Quiet but already half-burned. Less urgent
+            # than CRITICAL but operator should see it.
+            return ForecastVerdict.IMMINENT
     if rate <= 0:
         return ForecastVerdict.NO_RATE
     if hours_to_cap <= 4.0:
@@ -156,18 +200,28 @@ def forecast_to_cap(
     )
 
     # Spend so far in the CAP window (typically 24h)
-    cap_spend, _ = _rate_per_hour(
+    cap_spend, _, _ = _rate_per_hour(
         store_id=store_id, adapter=adapter,
         sample_hours=cap_window_hours,
     )
 
-    # Recent spend rate from the SAMPLE window
-    sample_spend, sample = _rate_per_hour(
+    # Recent spend rate from the SAMPLE window.
+    # W963-130 round-9 #1 fix: divide by ACTUAL data
+    # span (capped at sample_hours) so cold-start stores
+    # show their real burn rate, not a window-averaged
+    # one. A store that burned $5 in 1h against a 6h
+    # sample window now gets rate=$5/h (not $5/6h).
+    sample_spend, sample, actual_span = _rate_per_hour(
         store_id=store_id, adapter=adapter,
         sample_hours=sample_hours,
     )
+    effective_span = (
+        min(sample, actual_span)
+        if actual_span > 0 else sample
+    )
     rate = (
-        sample_spend / sample if sample > 0 else 0.0
+        sample_spend / effective_span
+        if effective_span > 0 else 0.0
     )
 
     headroom = max(0.0, cap - cap_spend) if cap > 0 else 0.0

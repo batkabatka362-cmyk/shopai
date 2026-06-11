@@ -55,11 +55,35 @@ class TestClassify:
             spend_so_far=15,
         ) == ForecastVerdict.EXHAUSTED
 
-    def test_no_rate_when_zero_rate(self):
+    def test_no_rate_when_zero_rate_and_low_spend(self):
+        """W963-130 round-9 #2 fix: NO_RATE only fires
+        when spend_so_far is well below the near-
+        exhaustion threshold. With cap_fraction < 0.5
+        the rate<=0 branch still applies."""
         assert _classify(
             cap=10, rate=0, hours_to_cap=float("inf"),
-            spend_so_far=5,
+            spend_so_far=1,  # 10% used -> NO_RATE
         ) == ForecastVerdict.NO_RATE
+
+    def test_imminent_when_quiet_but_half_burned(self):
+        """W963-130 round-9 #2 fix: when rate=0 BUT
+        cap_fraction >= 0.5, the near-exhaustion guard
+        bumps to IMMINENT. Pre-fix this returned NO_RATE
+        and the store sorted to bottom of operator
+        triage."""
+        assert _classify(
+            cap=10, rate=0, hours_to_cap=float("inf"),
+            spend_so_far=6,  # 60% used -> IMMINENT
+        ) == ForecastVerdict.IMMINENT
+
+    def test_critical_when_quiet_but_80pct_burned(self):
+        """W963-130 round-9 #2 fix: 80%+ burned ->
+        CRITICAL regardless of rate. One more call tips
+        over cap."""
+        assert _classify(
+            cap=10, rate=0, hours_to_cap=float("inf"),
+            spend_so_far=9.5,
+        ) == ForecastVerdict.CRITICAL
 
     def test_critical_when_under_4_hours(self):
         assert _classify(
@@ -191,25 +215,40 @@ class TestForecastToCap:
     def test_imminent_when_hours_in_range(
         self, _isolated_costs_log, monkeypatch,
     ):
-        """Spent $2 of $10 cap recently; rate enough to
-        hit cap in ~24h (well within imminent range)."""
+        """W963-130 round-9 #1 + #2: spread events across
+        the full sample window so actual_span matches
+        sample_hours -- rate = $2 / 6h = $0.33/h,
+        h_to_cap = 8/0.33 = 24h -> IMMINENT.
+
+        Also keep spend_so_far below the W963-130 #2
+        near-exhaustion threshold (cap_fraction < 0.5)
+        so the new guard doesn't kick in."""
         monkeypatch.setenv(
             "SHOPAI_STORE_STORE_A_OPENAI_DAILY_BUDGET_USD",
             "10",
         )
-        _seed(_isolated_costs_log, [{
-            "ts": time.time() - 1800,
-            "store_id": "store_a",
-            "adapter": "openai", "capability": "chat",
-            "cost_usd": 2.0, "ok": True,
-        }])
+        now = time.time()
+        # Spread small events across 6h so actual_span
+        # ~= sample_hours -- replicates the OLD test
+        # semantics where rate was an average across the
+        # full window.
+        _seed(_isolated_costs_log, [
+            {
+                "ts": now - 3600 * h,
+                "store_id": "store_a",
+                "adapter": "openai", "capability": "chat",
+                "cost_usd": 0.4, "ok": True,
+            }
+            for h in (5, 4, 3, 2, 1)
+        ])
         snap = forecast_to_cap(
             "store_a", adapter="openai",
             sample_hours=6.0,
         )
-        # rate = 2/6 = 0.33/h, headroom = 8, h_to_cap = 24h
+        # Total spend $2 over 5h actual span -> rate
+        # ~0.4/h, headroom = 8, h_to_cap = ~20h -> IMMINENT
         assert snap.verdict == ForecastVerdict.IMMINENT
-        assert 20 < snap.hours_to_cap < 28
+        assert 15 < snap.hours_to_cap < 25
 
     def test_no_risk_when_slow_burn(
         self, _isolated_costs_log, monkeypatch,
