@@ -143,6 +143,22 @@ def costs_by_store(
     return out
 
 
+def _normalise_store_filter(store_id: str) -> str:
+    """W963-125 round-8 #7: costs_by_store buckets empty
+    store_id under the pretty key '(fleet)'. Filter
+    helpers like costs_by_adapter + costs_total compare
+    the filter against the RAW event store_id (empty
+    string). Operator who copy-pastes '(fleet)' from the
+    by_store view into a filter would get zero results.
+
+    Normalise the filter so '(fleet)' is treated as
+    empty string -- joinable on either form.
+    """
+    if store_id == "(fleet)":
+        return ""
+    return store_id
+
+
 def costs_by_adapter(
     *,
     store_id: str = "",
@@ -151,11 +167,13 @@ def costs_by_adapter(
 ) -> dict[str, dict[str, Any]]:
     """Aggregate spend per adapter.
 
-    When store_id is supplied, restrict to that store
-    (use '' for fleet-wide aggregation across all
-    stores).
+    When store_id is supplied, restrict to that store.
+    Accepts both the raw sid AND the '(fleet)' label
+    that costs_by_store uses for empty-sid events
+    (W963-125 round-8 #7).
     """
     cutoff = _cutoff_for_window(window_hours)
+    store_id = _normalise_store_filter(store_id)
     out: dict[str, dict[str, Any]] = {}
     for e in _stream_events(
         since_ts=cutoff, include_archive=include_archive,
@@ -194,8 +212,11 @@ def costs_total(
     + failure rate over the window.
 
     When store_id supplied, restricts to that store.
+    Accepts '(fleet)' as an alias for empty store_id
+    (W963-125 round-8 #7).
     """
     cutoff = _cutoff_for_window(window_hours)
+    store_id = _normalise_store_filter(store_id)
     total_cost = 0.0
     total_calls = 0
     failed = 0

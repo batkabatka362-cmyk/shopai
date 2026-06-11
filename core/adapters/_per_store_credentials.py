@@ -59,10 +59,43 @@ import os
 def _normalise_sid_for_env(sid: str) -> str:
     """Convert a store_id (often kebab-case like
     'store-a') to the ENV_VAR-friendly form (upper-case
-    with underscores: 'STORE_A')."""
+    with underscores: 'STORE_A').
+
+    NOTE: this mapping is LOSSY -- 'store-a' and
+    'store_a' both produce 'STORE_A'. The collision is
+    detected at StoreManager.add_store time (W963-125
+    round-8 #2 guard) which refuses to register a second
+    store whose sid normalises to a key already
+    registered. Operators get a clear error at the point
+    of registration instead of silent credential sharing
+    later.
+    """
     if not sid:
         return ""
     return sid.replace("-", "_").upper()
+
+
+def sid_normalises_to_same_env(
+    sid_a: str, sid_b: str,
+) -> bool:
+    """W963-125 round-8 #2: check if two distinct sids
+    would collide in their per-store env-var names. Used
+    by StoreManager.add_store to refuse colliding
+    registrations.
+
+    Returns False when either sid is empty or they are
+    identical. Returns True when sid_a != sid_b but they
+    map to the same normalised env-var key (e.g.
+    'store-a' and 'store_a').
+    """
+    if not sid_a or not sid_b:
+        return False
+    if sid_a == sid_b:
+        return False
+    return (
+        _normalise_sid_for_env(sid_a)
+        == _normalise_sid_for_env(sid_b)
+    )
 
 
 def _per_store_env_var(sid: str, env_name: str) -> str:

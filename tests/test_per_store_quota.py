@@ -79,10 +79,34 @@ class TestBudgetConfigHelpers:
         for w in ("unlimited", "none", "off", "0"):
             assert _parse_amount(w) == 0.0
 
-    def test_parse_amount_invalid_returns_zero(self):
-        assert _parse_amount("garbage") == 0.0
-        assert _parse_amount("") == 0.0
-        assert _parse_amount(None or "") == 0.0
+    def test_parse_amount_invalid_returns_none(self):
+        """W963-124 round-8 #4: typos like 'garbage' or
+        '1,000' (pre-fix returned 0.0 = silently uncapped
+        the wallet) now return None so the resolver
+        falls through to the next level instead of
+        treating a typo as 'unlimited'."""
+        assert _parse_amount("garbage") is None
+        assert _parse_amount("") is None
+        assert _parse_amount(None) is None
+
+    def test_parse_amount_thousands_separator(self):
+        """W963-124: '1,000' now parses correctly (was
+        treated as 0/unlimited pre-fix)."""
+        assert _parse_amount("1,000") == 1000.0
+        assert _parse_amount("5_000") == 5000.0
+        assert _parse_amount("$1,500.50") == 1500.50
+
+    def test_parse_amount_unlimited_distinct_from_unset(
+        self,
+    ):
+        """W963-124: 'unlimited' / 'none' / 'off' return
+        0.0 (explicit unlimited). 'unset' / '' / None
+        return None (no value)."""
+        assert _parse_amount("unlimited") == 0.0
+        assert _parse_amount("none") == 0.0
+        assert _parse_amount("off") == 0.0
+        assert _parse_amount("unset") is None
+        assert _parse_amount("null") is None
 
 
 class TestResolveCap:

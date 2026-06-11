@@ -191,6 +191,146 @@ class TestStoreManagerHasStore:
 # ── Round 8 #5: LOSING store sort order ───────────────────
 
 
+class TestBudgetParseSentinel:
+    """W963-125 round-8 #3 + #4: budget parse must
+    distinguish UNSET (None) from UNLIMITED (0.0)."""
+
+    def test_typo_returns_none_not_zero(self):
+        from engines.per_store_quota.budget_config import (
+            _parse_amount,
+        )
+        # Pre-fix returned 0.0 (silently uncapped). Now
+        # returns None so resolver falls through.
+        assert _parse_amount("garbage") is None
+        assert _parse_amount("xyz123") is None
+
+    def test_thousands_separator_now_parses(self):
+        from engines.per_store_quota.budget_config import (
+            _parse_amount,
+        )
+        # Pre-fix silently uncapped on '1,000' typo
+        assert _parse_amount("1,000") == 1000.0
+        assert _parse_amount("$1,000.50") == 1000.50
+
+    def test_explicit_unlimited_returns_zero(self):
+        from engines.per_store_quota.budget_config import (
+            _parse_amount,
+        )
+        assert _parse_amount("unlimited") == 0.0
+        assert _parse_amount("none") == 0.0
+
+    def test_explicit_unset_returns_none(self):
+        from engines.per_store_quota.budget_config import (
+            _parse_amount,
+        )
+        assert _parse_amount("unset") is None
+        assert _parse_amount("") is None
+        assert _parse_amount(None) is None
+
+    def test_per_store_unlimited_short_circuits(
+        self, monkeypatch,
+    ):
+        """W963-125 round-8 #3: level 1 ('unlimited' at
+        per-store-per-adapter) must short-circuit the
+        chain so fleet caps do NOT apply to that store
+        + adapter."""
+        from engines.per_store_quota import resolve_cap
+
+        monkeypatch.setenv(
+            "SHOPAI_DAILY_BUDGET_USD", "100",
+        )
+        monkeypatch.setenv(
+            "SHOPAI_STORE_STORE_A_OPENAI_DAILY_BUDGET_USD",
+            "unlimited",
+        )
+        # Level 1 says unlimited -> 0.0 returned
+        assert resolve_cap(
+            store_id="store_a", adapter="openai",
+        ) == 0.0
+        # Other adapter for same store still hits fleet
+        assert resolve_cap(
+            store_id="store_a", adapter="anthropic",
+        ) == 100.0
+
+
+class TestSidCollisionGuard:
+    """W963-125 round-8 #2: add_store refuses sids that
+    normalise to a key already registered."""
+
+    def test_sid_normalises_to_same_env_detects(self):
+        from core.adapters._per_store_credentials import (
+            sid_normalises_to_same_env,
+        )
+        # Different sids that normalise the same
+        assert sid_normalises_to_same_env(
+            "store-a", "store_a",
+        ) is True
+        # Same sid -> no collision
+        assert sid_normalises_to_same_env(
+            "store_a", "store_a",
+        ) is False
+        # Distinct sids
+        assert sid_normalises_to_same_env(
+            "store_a", "store_b",
+        ) is False
+
+    def test_sid_normalises_empty_returns_false(self):
+        from core.adapters._per_store_credentials import (
+            sid_normalises_to_same_env,
+        )
+        assert sid_normalises_to_same_env(
+            "", "store_a",
+        ) is False
+        assert sid_normalises_to_same_env(
+            "store_a", "",
+        ) is False
+
+
+class TestCostFilterFleetAlias:
+    """W963-125 round-8 #7: costs_total / costs_by_adapter
+    accept '(fleet)' as an alias for empty store_id (the
+    display key costs_by_store uses for empty-sid
+    events)."""
+
+    def test_costs_total_accepts_fleet_label(
+        self, tmp_path, monkeypatch,
+    ):
+        import json, time
+        from engines.per_store_costs import recorder as cr
+        from engines.per_store_costs.query import (
+            costs_total,
+        )
+
+        live = tmp_path / "per_store_costs.jsonl"
+        archive = (
+            tmp_path / "per_store_costs.archive.jsonl"
+        )
+        monkeypatch.setattr(cr, "DATA_PATH", live)
+        monkeypatch.setattr(cr, "ARCHIVE_PATH", archive)
+        from engines.per_store_costs import query as qmod
+        monkeypatch.setattr(qmod, "DATA_PATH", live)
+        monkeypatch.setattr(
+            qmod, "ARCHIVE_PATH", archive,
+        )
+
+        live.parent.mkdir(parents=True, exist_ok=True)
+        with open(live, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": time.time(),
+                "store_id": "",  # fleet
+                "adapter": "openai",
+                "capability": "chat",
+                "cost_usd": 5.0,
+                "ok": True,
+            }) + "\n")
+
+        # Filter with '(fleet)' should join on the
+        # empty-store events
+        out = costs_total(store_id="(fleet)")
+        assert out["total_calls"] == 1
+        assert out["total_cost_usd"] == 5.0
+
+
 class TestLosingSortOrder:
     """compute_fleet_snapshot must surface the BIGGEST
     losing store first, not the smallest. The empire +
