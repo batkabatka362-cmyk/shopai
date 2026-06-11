@@ -153,10 +153,20 @@ class StoreManager:
             from core.adapters._per_store_credentials import (
                 sid_normalises_to_same_env,
             )
+            # W963-129 round-9 #5 fix: collision check
+            # consults DB (authoritative store list), not
+            # the in-memory cache. Pre-fix a fresh process
+            # (CLI `shopai store add` invocation) had an
+            # empty cache + the guard always passed --
+            # even when the colliding sid was already
+            # persisted to the DB. The collision then
+            # silently bit at credential-resolution time.
             with self._lock:
-                existing = list(
+                cache_keys = set(
                     self._store_credentials.keys(),
                 )
+            db_keys = self._list_persisted_store_ids()
+            existing = cache_keys | db_keys
             for other in existing:
                 if sid_normalises_to_same_env(
                     store_id, other,
@@ -316,29 +326,70 @@ class StoreManager:
 
     # ── Credentials ──────────────────────────────────────────
 
+    def _list_persisted_store_ids(self) -> set[str]:
+        """W963-129 round-9 #5: helper that reads the
+        AUTHORITATIVE store_id list from the DB. The
+        in-memory _store_credentials cache is per-process
+        and only populated by add_store/set_credentials
+        calls INSIDE that process. Webhooks, CLI commands,
+        and any out-of-band handler instantiate a fresh
+        StoreManager() whose cache is empty until they
+        explicitly add stores -- the DB is the source of
+        truth.
+
+        Returns the set of store_ids currently active in
+        the DB. Failure to read returns empty set (degrade
+        safely; callers see the same as cold-start)."""
+        try:
+            rows = self._db.list_stores()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "_list_persisted_store_ids raised: %s",
+                exc,
+            )
+            return set()
+        out: set[str] = set()
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            sid = row.get("store_id")
+            if isinstance(sid, str) and sid:
+                out.add(sid)
+        return out
+
     def has_store(self, store_id: str) -> bool:
         """W963-124: return True iff store_id is a known
         per-store entry (not just an env fallback).
 
-        Used by W963-115's _resolve_credentials to detect
-        the case where `active_store(sid)` was set for an
-        unknown sid -- without this check, get_credentials
-        falls back to env vars and the adapter silently
-        routes the call to the env-default store. Money-
-        class bug.
+        W963-129 round-9 #5 fix: pre-fix only checked
+        in-memory _store_credentials, which is per-process
+        + only populated on add_store inside the SAME
+        process. Webhook handlers + CLI commands run in
+        fresh processes -- the cache was always empty,
+        so has_store ALWAYS returned False for stores
+        registered in the DB, defeating W963-124's hard-
+        fail (every unknown-sid case raised, even known
+        ones). Now we fall back to the DB.
         """
         if not isinstance(store_id, str) or not store_id:
             return False
         with self._lock:
-            return store_id in self._store_credentials
+            if store_id in self._store_credentials:
+                return True
+        # Cache miss -> consult DB (authoritative source)
+        return store_id in self._list_persisted_store_ids()
 
     def find_by_shop_url(self, shop_url: str) -> str:
         """W963-128: reverse lookup from shop URL to
-        store_id. Shopify webhooks include the shop URL
-        in X-Shopify-Shop-Domain but engines reference
-        stores by store_id. The webhook handler uses this
-        to map back so engine.run can be wrapped in
-        active_store(sid) for per-store routing.
+        store_id.
+
+        W963-129 round-9 #4/#11/#12 fix: pre-fix only
+        scanned in-memory _store_credentials cache. Fresh
+        process (webhook server, CLI subcommand) has empty
+        cache + returned '' for EVERY shop URL, so the
+        W963-128 active_store wrap never fired in
+        production -- per-store substrate dormant on the
+        webhook path. Now consults DB on cache miss.
 
         Returns the matching store_id, or empty string
         when no store matches. Tolerates the leading
@@ -347,24 +398,43 @@ class StoreManager:
         """
         if not isinstance(shop_url, str) or not shop_url:
             return ""
-        normalised = (
-            shop_url.replace("https://", "")
-            .replace("http://", "")
-            .rstrip("/")
-            .lower()
-        )
+
+        def _normalise(s: str) -> str:
+            return (
+                s.replace("https://", "")
+                .replace("http://", "")
+                .rstrip("/")
+                .lower()
+            )
+
+        normalised = _normalise(shop_url)
+
+        # Pass 1: in-memory cache (fast path)
         with self._lock:
             for sid, creds in self._store_credentials.items():
-                stored = str(
-                    creds.get("shop_url", ""),
-                )
-                stored_norm = (
-                    stored.replace("https://", "")
-                    .replace("http://", "")
-                    .rstrip("/")
-                    .lower()
-                )
-                if stored_norm == normalised:
+                stored = str(creds.get("shop_url", ""))
+                if _normalise(stored) == normalised:
+                    return sid
+
+        # Pass 2: DB fallback (W963-129). The cache may be
+        # empty in fresh-process contexts (webhook handler,
+        # CLI subcommand) but the DB always has the
+        # canonical row.
+        try:
+            rows = self._db.list_stores()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "find_by_shop_url DB fallback raised: %s",
+                exc,
+            )
+            return ""
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            stored = str(row.get("shop_url", ""))
+            if _normalise(stored) == normalised:
+                sid = row.get("store_id")
+                if isinstance(sid, str) and sid:
                     return sid
         return ""
 

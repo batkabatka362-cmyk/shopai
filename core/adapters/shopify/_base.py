@@ -208,7 +208,27 @@ class ShopifyBaseAdapter(BaseAdapter):
         )
 
     def is_configured(self) -> bool:
-        shop, token = self._resolve_credentials()
+        """W963-129 round-9 #7 fix: catch AdapterNotConfigured
+        from _resolve_credentials and return False.
+
+        W963-124 made _resolve_credentials raise when
+        active_store(sid) is set for an unknown sid. But
+        is_configured is called by Registry.find_for_capability
+        inside list comprehensions + sort-key lambdas without
+        their own try/except -- the exception would
+        propagate out of routing for EVERY Shopify adapter,
+        not just the targeted one. The router contract
+        (per the base docstring) is that is_configured
+        returns False for unconfigured adapters so the
+        smart router silently skips them. Restoring that
+        contract here; the hard-fail still fires at
+        _make_client / _gql time where actual routing
+        decisions have already been made.
+        """
+        try:
+            shop, token = self._resolve_credentials()
+        except AdapterNotConfigured:
+            return False
         return bool(shop and token)
 
     # ── GraphQL client ─────────────────────────────────────────
