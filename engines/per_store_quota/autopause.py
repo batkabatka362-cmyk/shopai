@@ -159,6 +159,32 @@ def maybe_autopause(
     if not stores_at_critical:
         return report
 
+    # W963-126 round-8 #6: detect fleet-wide armed
+    # domains BEFORE attempting per-store disarm.
+    # autonomy_armed.disarm(domain, store_id=sid) only
+    # removes the exact (domain, sid) tuple -- it does
+    # NOT match the fleet-wide (domain, '') entry. So
+    # when operator armed customer_outreach fleet-wide,
+    # the per-store autopause attempt is a silent no-op:
+    # the spend domain keeps firing for the offending
+    # store. Bug class: autopause-that-does-not-pause.
+    #
+    # Fix: detect the fleet-wide arm, surface a clear
+    # error per action telling the operator to either
+    # (a) lift the fleet arm + re-arm per-store for the
+    # stores that should keep firing, or (b) accept the
+    # known limitation. Bridge no longer silently fails.
+    fleet_armed_domains: set[str] = set()
+    try:
+        from core.automation.autonomy_armed import is_armed
+        for d in spend_domains:
+            if is_armed(d, store_id=""):
+                fleet_armed_domains.add(d)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "autopause: fleet-arm probe raised: %s", exc,
+        )
+
     # Plan + (optionally) apply.
     for sid in sorted(stores_at_critical):
         for domain in spend_domains:
@@ -171,21 +197,35 @@ def maybe_autopause(
                 ),
             )
             if enabled:
-                try:
-                    from core.automation.autonomy_armed import (
-                        disarm,
+                if domain in fleet_armed_domains:
+                    # W963-126: fleet-arm collision.
+                    # Per-store disarm is a no-op against
+                    # the fleet entry. Surface honestly.
+                    action.error = (
+                        f"fleet-wide arm prevents "
+                        f"per-store disarm of {domain!r} "
+                        f"for {sid!r}. Lift the fleet "
+                        f"arm with `shopai autonomy-"
+                        f"disarm {domain}` then re-arm "
+                        f"per-store for stores that "
+                        f"should keep firing."
                     )
-                    removed = disarm(
-                        domain, store_id=sid,
-                    )
-                    action.applied = bool(removed)
-                except Exception as exc:  # noqa: BLE001
-                    action.error = str(exc)[:160]
-                    logger.debug(
-                        "autopause: disarm raised "
-                        "for %s/%s: %s",
-                        sid, domain, exc,
-                    )
+                else:
+                    try:
+                        from core.automation.autonomy_armed import (
+                            disarm,
+                        )
+                        removed = disarm(
+                            domain, store_id=sid,
+                        )
+                        action.applied = bool(removed)
+                    except Exception as exc:  # noqa: BLE001
+                        action.error = str(exc)[:160]
+                        logger.debug(
+                            "autopause: disarm raised "
+                            "for %s/%s: %s",
+                            sid, domain, exc,
+                        )
             report.actions.append(action)
 
     return report

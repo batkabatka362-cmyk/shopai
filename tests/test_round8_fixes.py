@@ -331,6 +331,126 @@ class TestCostFilterFleetAlias:
         assert out["total_cost_usd"] == 5.0
 
 
+class TestAutopauseFleetArmCollision:
+    """W963-126 round-8 #6: when a domain is armed
+    fleet-wide, the per-store disarm is a no-op. The
+    bridge must surface that honestly rather than
+    silently fail."""
+
+    def test_fleet_armed_surfaces_clear_error(
+        self, tmp_path, monkeypatch,
+    ):
+        import json, time
+        from engines.per_store_costs import recorder as cr
+        from engines.per_store_quota import maybe_autopause
+
+        live = tmp_path / "per_store_costs.jsonl"
+        archive = tmp_path / "per_store_costs.archive.jsonl"
+        monkeypatch.setattr(cr, "DATA_PATH", live)
+        monkeypatch.setattr(cr, "ARCHIVE_PATH", archive)
+        from engines.per_store_costs import query as qmod
+        monkeypatch.setattr(qmod, "DATA_PATH", live)
+        monkeypatch.setattr(qmod, "ARCHIVE_PATH", archive)
+
+        # Seed: store_a over cap
+        monkeypatch.setenv(
+            "SHOPAI_QUOTA_AUTOPAUSE", "1",
+        )
+        monkeypatch.setenv(
+            "SHOPAI_STORE_STORE_A_OPENAI_DAILY_BUDGET_USD",
+            "5",
+        )
+        live.parent.mkdir(parents=True, exist_ok=True)
+        with open(live, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": time.time(),
+                "store_id": "store_a",
+                "adapter": "openai",
+                "capability": "chat",
+                "cost_usd": 50.0,
+                "ok": True,
+            }) + "\n")
+
+        # Mock: is_armed returns True for fleet entries
+        # (store_id="") for the spend domains
+        from unittest.mock import patch
+        with patch(
+            "core.automation.autonomy_armed.is_armed",
+            side_effect=lambda d, store_id="":
+                store_id == "",
+        ), patch(
+            "core.automation.autonomy_armed.disarm",
+        ) as mock_disarm:
+            report = maybe_autopause()
+
+        # disarm was NOT called for fleet-armed domains
+        assert mock_disarm.call_count == 0
+        # Every action carries the clear error
+        for action in report.actions:
+            assert "fleet-wide arm" in action.error
+            assert "shopai autonomy-disarm" in action.error
+            assert action.applied is False
+
+    def test_per_store_armed_disarms_normally(
+        self, tmp_path, monkeypatch,
+    ):
+        """When the domain is armed PER-STORE (not
+        fleet-wide), the bridge disarms normally without
+        the fleet-collision warning."""
+        import json, time
+        from engines.per_store_costs import recorder as cr
+        from engines.per_store_quota import maybe_autopause
+
+        live = tmp_path / "per_store_costs.jsonl"
+        archive = tmp_path / "per_store_costs.archive.jsonl"
+        monkeypatch.setattr(cr, "DATA_PATH", live)
+        monkeypatch.setattr(cr, "ARCHIVE_PATH", archive)
+        from engines.per_store_costs import query as qmod
+        monkeypatch.setattr(qmod, "DATA_PATH", live)
+        monkeypatch.setattr(qmod, "ARCHIVE_PATH", archive)
+
+        monkeypatch.setenv(
+            "SHOPAI_QUOTA_AUTOPAUSE", "1",
+        )
+        monkeypatch.setenv(
+            "SHOPAI_STORE_STORE_A_OPENAI_DAILY_BUDGET_USD",
+            "5",
+        )
+        live.parent.mkdir(parents=True, exist_ok=True)
+        with open(live, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": time.time(),
+                "store_id": "store_a",
+                "adapter": "openai",
+                "capability": "chat",
+                "cost_usd": 50.0,
+                "ok": True,
+            }) + "\n")
+
+        # Mock: is_armed returns False for fleet entries
+        # (per-store-only arms)
+        from unittest.mock import patch
+        with patch(
+            "core.automation.autonomy_armed.is_armed",
+            return_value=False,
+        ), patch(
+            "core.automation.autonomy_armed.disarm",
+            return_value=True,
+        ) as mock_disarm:
+            report = maybe_autopause()
+
+        # disarm called per-store as expected
+        assert mock_disarm.call_count > 0
+        for call in mock_disarm.call_args_list:
+            assert call.kwargs.get(
+                "store_id",
+            ) == "store_a"
+        # No fleet-collision errors
+        for action in report.actions:
+            assert "fleet-wide arm" not in action.error
+            assert action.applied is True
+
+
 class TestLosingSortOrder:
     """compute_fleet_snapshot must surface the BIGGEST
     losing store first, not the smallest. The empire +
