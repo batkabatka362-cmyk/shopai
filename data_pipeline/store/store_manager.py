@@ -332,6 +332,42 @@ class StoreManager:
         with self._lock:
             return store_id in self._store_credentials
 
+    def find_by_shop_url(self, shop_url: str) -> str:
+        """W963-128: reverse lookup from shop URL to
+        store_id. Shopify webhooks include the shop URL
+        in X-Shopify-Shop-Domain but engines reference
+        stores by store_id. The webhook handler uses this
+        to map back so engine.run can be wrapped in
+        active_store(sid) for per-store routing.
+
+        Returns the matching store_id, or empty string
+        when no store matches. Tolerates the leading
+        'https://' or trailing '/' that some webhook
+        clients send: normalised before comparison.
+        """
+        if not isinstance(shop_url, str) or not shop_url:
+            return ""
+        normalised = (
+            shop_url.replace("https://", "")
+            .replace("http://", "")
+            .rstrip("/")
+            .lower()
+        )
+        with self._lock:
+            for sid, creds in self._store_credentials.items():
+                stored = str(
+                    creds.get("shop_url", ""),
+                )
+                stored_norm = (
+                    stored.replace("https://", "")
+                    .replace("http://", "")
+                    .rstrip("/")
+                    .lower()
+                )
+                if stored_norm == normalised:
+                    return sid
+        return ""
+
     def get_credentials(self, store_id: str = "") -> dict[str, str]:
         """Get API credentials for a store. Supports OAuth auto-refresh."""
         with self._lock:

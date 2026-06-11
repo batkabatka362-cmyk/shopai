@@ -197,6 +197,36 @@ class ShopifyWebhookHandler:
         # Normalize payload for engines
         normalized = self._normalize_payload(topic, payload)
 
+        # W963-128: map webhook's shop URL back to
+        # store_id so engine.run is wrapped in
+        # active_store(sid). Pre-fix every webhook-
+        # triggered engine resolved env-default
+        # credentials -- a fulfillment webhook for
+        # store_b would hit Shopify with store_a's
+        # token if store_a was the env default. Now the
+        # right store's adapters fire + cost / quota /
+        # P&L attribute correctly.
+        webhook_sid = ""
+        if shop:
+            try:
+                from data_pipeline.store.store_manager import (
+                    StoreManager,
+                )
+                webhook_sid = (
+                    StoreManager().find_by_shop_url(shop)
+                    or ""
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "webhook sid lookup raised: %s", exc,
+                )
+        try:
+            from core.context import (
+                active_store as _w963_128_active_store,
+            )
+        except Exception:  # noqa: BLE001
+            _w963_128_active_store = None
+
         # Execute engines
         results = []
         for mapping in mappings:
@@ -210,12 +240,19 @@ class ShopifyWebhookHandler:
 
             # Wrap the normalised payload under ``data_key`` so
             # every engine sees a consistent ``{data_key: ...}``
-            # envelope. Pre-audit this was list-vs-dict
-            # branched, which meant engines for dict-topic
-            # payloads never received the expected ``data_key``
-            # wrapper.
+            # envelope.
             engine_data = {data_key: normalized}
-            result = self._trigger_engine(engine_name, engine_data, priority, event.event_id)
+            if webhook_sid and _w963_128_active_store is not None:
+                with _w963_128_active_store(webhook_sid):
+                    result = self._trigger_engine(
+                        engine_name, engine_data,
+                        priority, event.event_id,
+                    )
+            else:
+                result = self._trigger_engine(
+                    engine_name, engine_data, priority,
+                    event.event_id,
+                )
             results.append(result)
 
         # Run custom handlers
