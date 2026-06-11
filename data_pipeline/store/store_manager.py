@@ -140,6 +140,48 @@ class StoreManager:
         if not isinstance(shop_url, str) or not shop_url:
             return {"error": "shop_url required"}
 
+        # W963-125 round-8 #2: refuse registration when
+        # this sid normalises to the SAME per-store
+        # env-var key as an already-registered sid.
+        # Without this guard, operator adding both
+        # 'store-a' and 'store_a' would silently share
+        # one set of SHOPAI_STORE_STORE_A_* credentials
+        # for ALL adapter categories (Meta Ads tokens,
+        # OpenAI keys, etc.), routing spend + mutations
+        # to the wrong account.
+        try:
+            from core.adapters._per_store_credentials import (
+                sid_normalises_to_same_env,
+            )
+            with self._lock:
+                existing = list(
+                    self._store_credentials.keys(),
+                )
+            for other in existing:
+                if sid_normalises_to_same_env(
+                    store_id, other,
+                ):
+                    return {
+                        "error": (
+                            f"store_id {store_id!r} "
+                            f"collides with existing "
+                            f"{other!r} -- they normalise "
+                            "to the same per-store env-var "
+                            "key (W963-125 guard). Pick a "
+                            "distinct sid; e.g. use "
+                            "'store_a_2' instead of "
+                            "'store-a' when 'store_a' "
+                            "already exists."
+                        ),
+                    }
+        except Exception as exc:  # noqa: BLE001
+            # Collision check failure must not block
+            # registration -- log + continue (degraded
+            # mode).
+            logger.debug(
+                "sid collision check raised: %s", exc,
+            )
+
         # Write the DB row FIRST. If the DB add fails, we don't
         # want the in-memory credentials to be left hanging.
         # Audit pass 48.
