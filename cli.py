@@ -2971,6 +2971,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="View shape.",
     )
     q_p.add_argument("--json", action="store_true")
+    q_p.add_argument(
+        "--forecast", action="store_true",
+        help=(
+            "W963-123: predict when each (store, adapter) "
+            "pair will hit its cap based on recent spend "
+            "rate. Sorts EXHAUSTED + CRITICAL first."
+        ),
+    )
+    q_p.add_argument(
+        "--sample-hours", type=float, default=6.0,
+        help="Forecast rolling-rate window (default 6h).",
+    )
 
     # W963-121: adapter-pnl -- per-store P&L based on
     # adapter-call cost (LLM tokens, ad APIs, etc.) vs
@@ -12932,8 +12944,148 @@ def _cmd_adapter_pnl(args) -> None:
         )
 
 
+def _cmd_quota_forecast(args) -> None:
+    """W963-123: per-store cap forecast."""
+    from engines.per_store_quota import (
+        fleet_forecasts,
+        forecast_to_cap,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    store_id = (
+        getattr(args, "store", "") or ""
+    ).strip()
+    adapter = (
+        getattr(args, "adapter", "") or ""
+    ).strip()
+    sample = float(getattr(args, "sample_hours", 6.0))
+    cap_window = float(
+        getattr(args, "window_hours", 24.0),
+    )
+
+    if store_id:
+        snap = forecast_to_cap(
+            store_id, adapter=adapter,
+            sample_hours=sample,
+            cap_window_hours=cap_window,
+        )
+        forecasts = [snap]
+    else:
+        forecasts = fleet_forecasts(
+            sample_hours=sample,
+            cap_window_hours=cap_window,
+        )
+
+    if as_json:
+        print(json.dumps({
+            "status": "success",
+            "data": {
+                "view": "forecast",
+                "window_hours": cap_window,
+                "sample_hours": sample,
+                "store_id": store_id or "(all stores)",
+                "forecasts": [
+                    {
+                        "store_id": f.store_id,
+                        "adapter": f.adapter or "(all)",
+                        "cap_usd": f.cap_usd,
+                        "spend_so_far_usd": (
+                            f.spend_so_far_usd
+                        ),
+                        "rate_per_hour_usd": (
+                            f.rate_per_hour_usd
+                        ),
+                        "headroom_usd": f.headroom_usd,
+                        "hours_to_cap": f.hours_to_cap,
+                        "verdict": f.verdict.value,
+                        "sample_hours": f.sample_hours,
+                    }
+                    for f in forecasts
+                ],
+            },
+            "meta": {
+                "engine": "per_store_quota_forecast",
+            },
+            "error": None,
+        }, indent=2, default=str))
+        return
+
+    chip = {
+        "no_cap":    "[ - ]",
+        "no_rate":   "[ - ]",
+        "no_risk":   "[OK ]",
+        "imminent":  "[WRN]",
+        "critical":  "[BAD]",
+        "exhausted": "[!!]",
+    }
+    if not forecasts:
+        print(
+            f"Forecast  --  window={cap_window:.0f}h  "
+            "no per-store activity"
+        )
+        return
+
+    urgent = sum(
+        1 for f in forecasts
+        if f.verdict.value in ("critical", "exhausted")
+    )
+    imm = sum(
+        1 for f in forecasts
+        if f.verdict.value == "imminent"
+    )
+    print(
+        f"Cost forecast  --  cap-window={cap_window:.0f}h  "
+        f"rate-window={sample:.0f}h  "
+        f"({urgent} urgent, {imm} imminent)"
+    )
+    print()
+    print(
+        f"  {'verdict':<11} {'store':<14} "
+        f"{'adapter':<18} {'spent':>8} "
+        f"{'cap':>8} {'rate':>10} {'hours':>8}"
+    )
+    print("  " + "-" * 72)
+    for f in forecasts:
+        c = chip.get(f.verdict.value, "[ ? ]")
+        cap_str = (
+            f"${f.cap_usd:.2f}" if f.cap_usd > 0
+            else "unl."
+        )
+        rate_str = (
+            f"${f.rate_per_hour_usd:.4f}/h"
+            if f.rate_per_hour_usd > 0 else "-"
+        )
+        hours_str = (
+            "exhausted"
+            if f.verdict.value == "exhausted"
+            else (
+                "-" if f.hours_to_cap >= 9999.0
+                or f.cap_usd <= 0
+                or f.rate_per_hour_usd <= 0
+                else f"{f.hours_to_cap:.1f}h"
+            )
+        )
+        print(
+            f"  {c:<11} "
+            f"{f.store_id:<14} "
+            f"{(f.adapter or '(all)'):<18} "
+            f"${f.spend_so_far_usd:>6.4f} "
+            f"{cap_str:>8} "
+            f"{rate_str:>10} "
+            f"{hours_str:>8}"
+        )
+
+
 def _cmd_quota(args) -> None:
-    """W963-119: per-store budget quota view."""
+    """W963-119: per-store budget quota view.
+    W963-123: optionally renders forecast (--forecast).
+    """
+    # W963-123: forecast mode -- short-circuit to the
+    # cost predictor instead of the static cap view.
+    if getattr(args, "forecast", False):
+        _cmd_quota_forecast(args)
+        return
+
     from engines.per_store_quota import PerStoreQuotaEngine
 
     as_json = bool(getattr(args, "json", False))

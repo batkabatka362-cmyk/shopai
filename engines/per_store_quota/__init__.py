@@ -39,6 +39,12 @@ from .budget_config import (
     resolve_cap,
     resolve_warn_ratio,
 )
+from .forecast import (
+    ForecastSnapshot,
+    ForecastVerdict,
+    fleet_forecasts,
+    forecast_to_cap,
+)
 from .flow import PerStoreQuotaEngine
 from .tracker import (
     QuotaSnapshot,
@@ -55,11 +61,15 @@ __all__ = [
     "QuotaState",
     "AutopauseAction",
     "AutopauseReport",
+    "ForecastSnapshot",
+    "ForecastVerdict",
     "compute_all_snapshots",
     "compute_snapshot",
     "critical_stores",
     "warn_stores",
     "maybe_autopause",
+    "fleet_forecasts",
+    "forecast_to_cap",
     "resolve_cap",
     "resolve_warn_ratio",
 ]
