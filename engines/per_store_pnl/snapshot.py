@@ -238,18 +238,27 @@ def compute_fleet_snapshot(
             sid, window_hours=window_hours,
         ))
 
-    # W963-124: round-8 #5 fix. Previously the tiebreaker
-    # was `-s.profit_usd` which sorted ASCENDING by
-    # negated-profit -- the SMALLEST loss (e.g. -$5)
-    # surfaced FIRST and the BIGGEST loss (e.g. -$5000)
-    # last. Empire/daily-brief top_losers therefore drew
-    # operator attention to the least-bleeding stores.
-    # Using `s.profit_usd` (ascending) means -$5000 sorts
-    # before -$5 -- the worst offender surfaces first.
+    # W963-131 round-9 #8 fix: sort tiebreaker SPLIT BY
+    # SIGN to honour the docstring's promise that
+    # 'highest-margin store surfaces above same-state
+    # peers'.
+    #
+    # W963-124 fixed the LOSING case by sorting ascending
+    # on raw profit_usd: -$5000 < -$5 so biggest loser
+    # surfaces first. But the same key applied to
+    # HEALTHY/THRIVING/BREAKEVEN inverts the docstring
+    # -- a THRIVING store earning $100 sorted BEFORE one
+    # earning $10,000.
+    #
+    # Fix: ascending profit_usd for LOSING (worst-first);
+    # DESCENDING for everything else (best-first within
+    # the band).
     out.sort(
         key=lambda s: (
             -s.state.severity_rank,
-            s.profit_usd,
+            s.profit_usd
+            if s.state == PnLState.LOSING
+            else -s.profit_usd,
             s.store_id,
         ),
     )

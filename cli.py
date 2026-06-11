@@ -32387,16 +32387,30 @@ def _cmd_cycle_run(args) -> None:
         # captures attribution scoped to that store so cycle
         # status --store X has trend history. Failure on one
         # store doesn't block others.
+        #
+        # W963-131 round-9 #10 fix: wrap record_snapshot in
+        # active_store(sid) so its internal
+        # attribute_revenue -> SHOPIFY_LIST_ORDERS path
+        # resolves the right per-store credentials.
+        # Pre-fix the snapshot called the adapter with no
+        # active_store context -> ShopifyBaseAdapter fell
+        # through to env-default creds -> snapshot stored
+        # orders FROM ENV-DEFAULT STORE against store_id.
+        # Cross-store attribution corruption.
+        from core.context import (
+            active_store as _w963_131_active_store,
+        )
         for sr in per_store_results:
             store_id = sr.get("store_id")
             if not store_id:
                 continue
             try:
-                record_snapshot(
-                    window_hours=168.0,
-                    store_id=store_id,
-                    cycle_run_id=cycle_run_id,
-                )
+                with _w963_131_active_store(store_id):
+                    record_snapshot(
+                        window_hours=168.0,
+                        store_id=store_id,
+                        cycle_run_id=cycle_run_id,
+                    )
             except Exception as exc:  # noqa: BLE001
                 logger.debug(
                     "per-store snapshot failed for %s: %s",

@@ -253,6 +253,174 @@ class TestIsConfiguredSwallowNotConfigured:
         assert adapter.is_configured() is True
 
 
+class TestPnLSortPositiveBandFix:
+    """Round-9 #8: compute_fleet_snapshot tiebreaker must
+    surface HIGHEST-margin store first within positive-
+    profit bands (THRIVING/HEALTHY/BREAKEVEN). Pre-fix
+    used s.profit_usd ascending which inverted it for
+    positive-profit -- a $100 store sorted before a
+    $10000 store within the THRIVING band."""
+
+    def test_thriving_highest_profit_first(
+        self, tmp_path, monkeypatch,
+    ):
+        import json, time
+        from unittest.mock import MagicMock, patch
+        from engines.per_store_costs import recorder as cr
+        from engines.per_store_pnl import (
+            PnLState, compute_fleet_snapshot,
+        )
+
+        live = tmp_path / "per_store_costs.jsonl"
+        archive = (
+            tmp_path / "per_store_costs.archive.jsonl"
+        )
+        monkeypatch.setattr(cr, "DATA_PATH", live)
+        monkeypatch.setattr(cr, "ARCHIVE_PATH", archive)
+        from engines.per_store_costs import query as qmod
+        monkeypatch.setattr(qmod, "DATA_PATH", live)
+        monkeypatch.setattr(
+            qmod, "ARCHIVE_PATH", archive,
+        )
+
+        # Two stores, both spending $1, both highly
+        # profitable. store_big earns $10000, store_small
+        # earns $100. Both -> THRIVING (margin >> 66%).
+        now = time.time()
+        live.parent.mkdir(parents=True, exist_ok=True)
+        with open(live, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": now,
+                "store_id": "store_small",
+                "adapter": "openai",
+                "capability": "chat",
+                "cost_usd": 1.0,
+                "ok": True,
+            }) + "\n")
+            f.write(json.dumps({
+                "ts": now,
+                "store_id": "store_big",
+                "adapter": "openai",
+                "capability": "chat",
+                "cost_usd": 1.0,
+                "ok": True,
+            }) + "\n")
+
+        def fake_attr(
+            *args, window_hours=168.0, store_id=None,
+            **kwargs,
+        ):
+            fake = MagicMock()
+            if store_id == "store_big":
+                fake.total_revenue_in_window = 10000.0
+                fake.attributed_revenue = 8000.0
+            elif store_id == "store_small":
+                fake.total_revenue_in_window = 100.0
+                fake.attributed_revenue = 80.0
+            else:
+                fake.total_revenue_in_window = 0.0
+                fake.attributed_revenue = 0.0
+            return fake
+
+        with patch(
+            "data_pipeline.store.store_manager.StoreManager",
+        ) as MockSM:
+            MockSM.return_value.list_stores.return_value = [
+                {"store_id": "store_small"},
+                {"store_id": "store_big"},
+            ]
+            with patch(
+                "engines._revenue_attribution."
+                "attribute_revenue",
+                side_effect=fake_attr,
+            ):
+                snaps = compute_fleet_snapshot()
+
+        thriving = [
+            s for s in snaps
+            if s.state == PnLState.THRIVING
+        ]
+        assert len(thriving) == 2
+        # HIGHEST profit surfaces first (post-fix)
+        assert thriving[0].store_id == "store_big"
+        assert thriving[0].profit_usd > thriving[1].profit_usd
+        assert thriving[1].store_id == "store_small"
+
+    def test_losing_still_biggest_loss_first(
+        self, tmp_path, monkeypatch,
+    ):
+        """Round-9 #8 fix must NOT regress the W963-124
+        LOSING-first behaviour. Verify biggest LOSS still
+        surfaces first."""
+        import json, time
+        from unittest.mock import MagicMock, patch
+        from engines.per_store_costs import recorder as cr
+        from engines.per_store_pnl import (
+            PnLState, compute_fleet_snapshot,
+        )
+
+        live = tmp_path / "per_store_costs.jsonl"
+        archive = (
+            tmp_path / "per_store_costs.archive.jsonl"
+        )
+        monkeypatch.setattr(cr, "DATA_PATH", live)
+        monkeypatch.setattr(cr, "ARCHIVE_PATH", archive)
+        from engines.per_store_costs import query as qmod
+        monkeypatch.setattr(qmod, "DATA_PATH", live)
+        monkeypatch.setattr(
+            qmod, "ARCHIVE_PATH", archive,
+        )
+
+        # store_big spends $5005, store_tiny $10. Both
+        # have $5 revenue -> both LOSING.
+        now = time.time()
+        live.parent.mkdir(parents=True, exist_ok=True)
+        with open(live, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": now,
+                "store_id": "store_big",
+                "adapter": "openai",
+                "capability": "chat",
+                "cost_usd": 5005.0,
+                "ok": True,
+            }) + "\n")
+            f.write(json.dumps({
+                "ts": now,
+                "store_id": "store_tiny",
+                "adapter": "openai",
+                "capability": "chat",
+                "cost_usd": 10.0,
+                "ok": True,
+            }) + "\n")
+
+        def fake_attr(
+            *args, window_hours=168.0, store_id=None,
+            **kwargs,
+        ):
+            fake = MagicMock()
+            fake.total_revenue_in_window = 5.0
+            fake.attributed_revenue = 5.0
+            return fake
+
+        with patch(
+            "data_pipeline.store.store_manager.StoreManager",
+        ) as MockSM:
+            MockSM.return_value.list_stores.return_value = [
+                {"store_id": "store_big"},
+                {"store_id": "store_tiny"},
+            ]
+            with patch(
+                "engines._revenue_attribution."
+                "attribute_revenue",
+                side_effect=fake_attr,
+            ):
+                snaps = compute_fleet_snapshot()
+
+        # Biggest loser (-$5000) still surfaces first
+        assert snaps[0].store_id == "store_big"
+        assert snaps[0].profit_usd == -5000.0
+
+
 class TestForecasterColdStart:
     """Round-9 #1: cold-start rate divisor must use the
     actual data span, not the nominal sample window. A
