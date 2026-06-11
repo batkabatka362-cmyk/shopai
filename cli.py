@@ -32239,12 +32239,29 @@ def _cmd_cycle_run(args) -> None:
                     "risk": member.get("risk"),
                     "approval_required": require_approval,
                 }
+                # W963-127: wrap data fetch + engine run
+                # in active_store(sid). Without this wrap
+                # every per-cycle adapter call resolved
+                # env-default credentials, leaving the
+                # W963-115..126 per-store substrate
+                # entirely dormant in production cycles
+                # (12 commits of substrate that never
+                # fired). With the wrap each engine.run
+                # sees the right store's Shopify creds,
+                # adapter cost events get attributed to
+                # the right store_id, and quota +
+                # autopause bridges have real data to
+                # work with.
+                from core.context import (
+                    active_store as _w963_127_active_store,
+                )
                 try:
-                    data = (
-                        DataProvider(sm).get_data_for_engine(
-                            engine_name, store_id,
-                        ) if store_id else {}
-                    )
+                    with _w963_127_active_store(store_id):
+                        data = (
+                            DataProvider(sm).get_data_for_engine(
+                                engine_name, store_id,
+                            ) if store_id else {}
+                        )
                     if not isinstance(data, dict):
                         data = {}
                     data[apply_flag] = True
@@ -32264,7 +32281,13 @@ def _cmd_cycle_run(args) -> None:
                         any_error = True
                         store_results.append(entry)
                         continue
-                    result = engine.run(data)
+                    # W963-127: same active_store wrap so
+                    # the engine's adapter calls (Shopify,
+                    # LLM, ads, voice, etc.) resolve the
+                    # right per-store credentials + cost
+                    # events tag with the right store_id.
+                    with _w963_127_active_store(store_id):
+                        result = engine.run(data)
                     if isinstance(result, dict):
                         entry["status"] = result.get("status", "?")
                         # Wave 38: capture WHY when status != ok.
