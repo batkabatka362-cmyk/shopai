@@ -261,8 +261,16 @@ def get_recent_events(
     include_archive: bool = False,
 ) -> list[dict[str, Any]]:
     """Newest-first event list, optionally filtered by
-    store. Limit is enforced AFTER sorting so the operator
-    sees the genuinely most-recent N."""
+    store. Limit is enforced AFTER sorting so the
+    operator sees the genuinely most-recent N.
+
+    W963-132 round-9 #6 fix: accepts '(fleet)' as alias
+    for empty store_id (same normalisation as
+    costs_by_adapter + costs_total). Operator copy-
+    pasting '(fleet)' from costs_by_store output gets the
+    expected events instead of empty list.
+    """
+    store_id = _normalise_store_filter(store_id)
     events = list(_stream_events(
         include_archive=include_archive,
     ))

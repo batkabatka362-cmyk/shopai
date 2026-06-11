@@ -32597,6 +32597,15 @@ def _cmd_cycle_run(args) -> None:
         quota_report = _maybe_quota_autopause(
             window_hours=24.0,
         )
+        # W963-132 round-9 #9 fix: the elif branch
+        # previously fired the misleading "OFF but ..."
+        # message whenever applied_count was 0 -- even
+        # when SHOPAI_QUOTA_AUTOPAUSE=1 (enabled) and the
+        # actions were BLOCKED by fleet-arm collisions
+        # (every action had .error set, applied stayed
+        # False). Operator was told to enable an already-
+        # enabled setting; the real cause (fleet-arm
+        # collision) was silently lost.
         if quota_report.applied_count > 0:
             logger.info(
                 "per-store quota autopause: %d "
@@ -32605,12 +32614,42 @@ def _cmd_cycle_run(args) -> None:
                 quota_report.critical_store_count,
             )
         elif quota_report.would_apply_count > 0:
-            logger.info(
-                "per-store quota autopause OFF but %d "
-                "domain(s) would be paused "
-                "(SHOPAI_QUOTA_AUTOPAUSE=1 to enable)",
-                quota_report.would_apply_count,
-            )
+            blocked_actions = [
+                a for a in quota_report.actions
+                if a.error
+            ]
+            if quota_report.enabled and blocked_actions:
+                # Enabled but every action errored -- log
+                # the FIRST error verbatim so operator
+                # sees the real cause.
+                first_err = blocked_actions[0]
+                logger.info(
+                    "per-store quota autopause: %d "
+                    "action(s) BLOCKED (e.g. %s/%s: %s)",
+                    len(blocked_actions),
+                    first_err.store_id,
+                    first_err.domain,
+                    first_err.error[:120],
+                )
+            elif quota_report.enabled:
+                # Enabled, would-apply > 0, no errors --
+                # shouldn't happen in practice but log
+                # honestly.
+                logger.info(
+                    "per-store quota autopause enabled: "
+                    "%d action(s) pending",
+                    quota_report.would_apply_count,
+                )
+            else:
+                # Truly OFF (dry-run mode) -- the original
+                # message is correct here.
+                logger.info(
+                    "per-store quota autopause OFF but "
+                    "%d domain(s) would be paused "
+                    "(SHOPAI_QUOTA_AUTOPAUSE=1 to "
+                    "enable)",
+                    quota_report.would_apply_count,
+                )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "per-store quota autopause failed: %s", exc,
