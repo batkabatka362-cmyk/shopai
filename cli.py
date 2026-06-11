@@ -18260,6 +18260,52 @@ def _cmd_empire(args) -> None:
     except Exception:  # noqa: BLE001
         pass
 
+    # ─ W963-121: per-store adapter P&L summary
+    # Surfaces the top-3 LOSING stores inline so operator
+    # sees who is bleeding money on adapter costs without
+    # needing a separate command.
+    adapter_pnl_block = None
+    try:
+        from engines.per_store_pnl import (
+            compute_fleet_snapshot,
+        )
+        pnl_snaps = compute_fleet_snapshot(window_hours=168.0)
+        if pnl_snaps:
+            losing = [
+                s for s in pnl_snaps
+                if s.state.value == "losing"
+            ]
+            thriving = [
+                s for s in pnl_snaps
+                if s.state.value == "thriving"
+            ]
+            total_spend = sum(s.spend_usd for s in pnl_snaps)
+            total_revenue = sum(
+                s.revenue_usd for s in pnl_snaps
+            )
+            total_profit = total_revenue - total_spend
+            adapter_pnl_block = {
+                "store_count": len(pnl_snaps),
+                "losing_count": len(losing),
+                "thriving_count": len(thriving),
+                "total_spend_usd": round(total_spend, 4),
+                "total_revenue_usd": round(total_revenue, 2),
+                "total_profit_usd": round(total_profit, 2),
+                "top_losers": [
+                    {
+                        "store_id": s.store_id,
+                        "spend_usd": s.spend_usd,
+                        "revenue_usd": s.revenue_usd,
+                        "profit_usd": s.profit_usd,
+                    }
+                    for s in losing[:3]
+                ],
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "empire adapter-pnl block raised: %s", exc,
+        )
+
     # ─ Cluster health verdicts
     health_block = None
     try:
@@ -18547,6 +18593,7 @@ def _cmd_empire(args) -> None:
             "revenue": revenue_block,
             "approvals": approvals_block,
             "spend": spend_block,
+            "adapter_pnl": adapter_pnl_block,
             "cluster_health": health_block,
             "engine_alerts": alerts_block,
             "transfers": transfers_block,
@@ -19033,6 +19080,48 @@ def _cmd_empire(args) -> None:
             print(
                 "    auto-pause off (SHOPAI_AUTO_PAUSE_ON_OVERSPEND=0)"
             )
+
+    # W963-122: per-store adapter P&L summary inline.
+    # Surfaces only when the loop has ACTIVITY (cost or
+    # revenue measurable) so a cold-start empire stays
+    # quiet. When any store is LOSING, that count + the
+    # worst offender's profit lead the line.
+    if adapter_pnl_block:
+        spend_total = adapter_pnl_block["total_spend_usd"]
+        revenue_total = adapter_pnl_block[
+            "total_revenue_usd"
+        ]
+        if spend_total > 0 or revenue_total > 0:
+            losing = adapter_pnl_block["losing_count"]
+            thriving = adapter_pnl_block["thriving_count"]
+            profit = adapter_pnl_block["total_profit_usd"]
+            if losing > 0:
+                marker = "[BAD]"
+            elif thriving > 0:
+                marker = "[OK ]"
+            else:
+                marker = "[ - ]"
+            print(
+                f"  Adapter P&L (7d):     {marker} "
+                f"spend ${spend_total:.2f}  "
+                f"revenue ${revenue_total:.2f}  "
+                f"profit ${profit:.2f}  "
+                f"({losing} losing, "
+                f"{thriving} thriving)"
+            )
+            for loser in adapter_pnl_block["top_losers"]:
+                print(
+                    f"    *** LOSING: "
+                    f"{loser['store_id']} "
+                    f"(spend ${loser['spend_usd']:.2f}  "
+                    f"revenue ${loser['revenue_usd']:.2f}  "
+                    f"profit ${loser['profit_usd']:.2f})"
+                )
+            if losing > 0:
+                print(
+                    "    -> `shopai adapter-pnl` for "
+                    "fleet drill-down"
+                )
 
     # Approvals
     if approvals_block:
@@ -20391,6 +20480,68 @@ def _cmd_daily_brief(args) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "daily-brief autonomy block raised: %s", exc,
+        )
+
+    # W963-122: per-store adapter P&L row. Surfaces only
+    # when there's measurable activity (cost or revenue)
+    # AND at least one store is in LOSING state. Quiet
+    # substrate stays silent.
+    try:
+        from engines.per_store_pnl import (
+            compute_fleet_snapshot,
+        )
+        pnl_snaps = compute_fleet_snapshot(
+            window_hours=window_hours,
+        )
+        if pnl_snaps:
+            losing_snaps = [
+                s for s in pnl_snaps
+                if s.state.value == "losing"
+            ]
+            total_spend = sum(
+                s.spend_usd for s in pnl_snaps
+            )
+            total_revenue = sum(
+                s.revenue_usd for s in pnl_snaps
+            )
+            # Only surface when there is REAL activity
+            # OR a losing store -- skip cold-start empires.
+            if (
+                losing_snaps
+                or total_spend > 0
+                or total_revenue > 0
+            ):
+                profit = total_revenue - total_spend
+                if losing_snaps:
+                    mk = "[BAD]"
+                elif profit > 0:
+                    mk = "[OK ]"
+                else:
+                    mk = "[ - ]"
+                print(
+                    f"  Adapter P&L:  {mk} "
+                    f"spend ${total_spend:.2f}  "
+                    f"revenue ${total_revenue:.2f}  "
+                    f"profit ${profit:.2f}  "
+                    f"({len(losing_snaps)} losing)"
+                )
+                # Surface top loser for immediate
+                # operator attention
+                if losing_snaps:
+                    worst = losing_snaps[0]
+                    print(
+                        f"    *** LOSING: "
+                        f"{worst.store_id} "
+                        f"(spend ${worst.spend_usd:.2f}  "
+                        f"revenue ${worst.revenue_usd:.2f}"
+                        f")  "
+                        f"-> `shopai adapter-pnl --store "
+                        f"{worst.store_id}`"
+                    )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief adapter-pnl block raised: %s",
+            exc,
         )
 
     # Wave 843: substrate-fire activity row. Surfaces only when
