@@ -58,6 +58,14 @@ _STRICT_FILES = (
     "core/autonomous/",
     "core/webhooks/",
     "core/approval/",
+    # W963-158: autonomy_fire is an entry point for direct
+    # applier invocation (shopai autonomy-fire CLI + the
+    # cycle's fire_armed_substrate_domains bridge). The W963-
+    # 156 live test surfaced applied=False because per-row
+    # store_id never reached active_store. The fire() wrap
+    # now groups by store_id + invokes per-group inside
+    # active_store(sid).
+    "core/automation/autonomy_fire.py",
 )
 
 # Exempt paths (caller-driven, test code, or legacy)

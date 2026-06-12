@@ -130,32 +130,57 @@ def fire(
         # Pre-flight succeeded; do not invoke
         return res
     t0 = time.perf_counter()
+
+    # W963-158: Pattern CD wrap. Group payload rows by their
+    # `store_id` field + invoke the applier once per group
+    # inside `active_store(sid)`. Without this every applier
+    # call resolved credentials via the env-default chain --
+    # the W963-156 live stress test caught the failure mode
+    # (`applied: false` for every catalog_quality row even
+    # though the writer was invoked). Same money-class symptom
+    # the cycle / webhook / approval-executor wraps closed.
     try:
-        events = fn(payload or [])
-    except TypeError as exc:
-        # Some appliers want positional + keyword; try with
-        # an explicit payload kwarg + see if that lands.
-        try:
-            events = fn(payload=payload or [])
-        except Exception as exc2:  # noqa: BLE001
-            res.error = (
-                f"{fn_name} raised: {exc!s:.150} / "
-                f"retry: {exc2!s:.100}"
-            )
-            res.duration_ms = (
-                time.perf_counter() - t0
-            ) * 1000.0
-            return res
+        from core.context import active_store
+    except Exception as exc:  # noqa: BLE001
+        active_store = None  # type: ignore[assignment]
+
+    grouped: dict[str, list[dict]] = {}
+    for row in payload or []:
+        if not isinstance(row, dict):
+            grouped.setdefault("", []).append(row)
+            continue
+        sid = str(row.get("store_id") or "")
+        grouped.setdefault(sid, []).append(row)
+
+    collected: list = []
+    try:
+        for sid, rows in grouped.items():
+            def _invoke(_rows: list[dict] = rows) -> list:
+                try:
+                    out = fn(_rows)
+                except TypeError as exc:
+                    try:
+                        out = fn(payload=_rows)
+                    except Exception as exc2:  # noqa: BLE001
+                        raise RuntimeError(
+                            f"{exc!s:.150} / "
+                            f"retry: {exc2!s:.100}",
+                        ) from exc2
+                return out if isinstance(out, list) else [out]
+
+            if sid and active_store is not None:
+                with active_store(sid):
+                    collected.extend(_invoke())
+            else:
+                collected.extend(_invoke())
     except Exception as exc:  # noqa: BLE001
         res.error = f"{fn_name} raised: {exc!s:.200}"
         res.duration_ms = (
             time.perf_counter() - t0
         ) * 1000.0
         return res
+
     res.invoked = True
     res.duration_ms = (time.perf_counter() - t0) * 1000.0
-    if isinstance(events, list):
-        res.events = events
-    else:
-        res.events = [events]
+    res.events = collected
     return res
