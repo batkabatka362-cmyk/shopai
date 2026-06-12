@@ -62,6 +62,36 @@ EVENT_ENGINE_MAP: dict[str, list[dict[str, str]]] = {
     # for future Measurement Protocol callbacks if
     # Google ships them.
 
+    # ── Loox (W963-152) ─────────────────────────────
+    "loox.review.created": [
+        {
+            "engine": "reviews_management",
+            "data_key": "review",
+        },
+        {
+            "engine": "customer_outreach",
+            "data_key": "review",
+        },
+    ],
+    "loox.review.published": [
+        {
+            "engine": "reviews_management",
+            "data_key": "review",
+        },
+    ],
+    "loox.review.declined": [
+        {
+            "engine": "customer_support",
+            "data_key": "review",
+        },
+    ],
+    "loox.review.media_added": [
+        {
+            "engine": "reviews_management",
+            "data_key": "review",
+        },
+    ],
+
     # ── Klaviyo (W963-151) ──────────────────────────
     "klaviyo.unsubscribe": [
         {
