@@ -4,6 +4,7 @@ from .ga4 import GA4VendorHandler
 from .gorgias import GorgiasVendorHandler
 from .klaviyo import KlaviyoVendorHandler
 from .loox import LooxVendorHandler
+from .paypal import PayPalVendorHandler
 from .stripe import StripeVendorHandler
 
 __all__ = [
@@ -12,5 +13,6 @@ __all__ = [
     "GorgiasVendorHandler",
     "KlaviyoVendorHandler",
     "LooxVendorHandler",
+    "PayPalVendorHandler",
     "StripeVendorHandler",
 ]

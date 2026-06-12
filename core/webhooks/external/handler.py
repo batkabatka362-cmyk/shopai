@@ -92,6 +92,52 @@ EVENT_ENGINE_MAP: dict[str, list[dict[str, str]]] = {
         },
     ],
 
+    # ── PayPal (W963-154) ───────────────────────────
+    "paypal.payment.capture.completed": [
+        {
+            "engine": "revenue_attribution",
+            "data_key": "paypal_event",
+        },
+    ],
+    "paypal.payment.capture.refunded": [
+        {
+            "engine": "returns_management",
+            "data_key": "paypal_event",
+        },
+    ],
+    "paypal.payment.capture.reversed": [
+        {
+            "engine": "returns_management",
+            "data_key": "paypal_event",
+        },
+        {
+            "engine": "fraud_detection",
+            "data_key": "paypal_event",
+        },
+    ],
+    "paypal.customer.dispute.created": [
+        {
+            "engine": "customer_support",
+            "data_key": "paypal_event",
+        },
+        {
+            "engine": "fraud_detection",
+            "data_key": "paypal_event",
+        },
+    ],
+    "paypal.customer.dispute.resolved": [
+        {
+            "engine": "returns_management",
+            "data_key": "paypal_event",
+        },
+    ],
+    "paypal.billing.subscription.cancelled": [
+        {
+            "engine": "churn_prediction",
+            "data_key": "paypal_event",
+        },
+    ],
+
     # ── Klaviyo (W963-151) ──────────────────────────
     "klaviyo.unsubscribe": [
         {

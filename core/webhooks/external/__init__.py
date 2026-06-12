@@ -37,6 +37,7 @@ from .vendors.ga4 import GA4VendorHandler
 from .vendors.gorgias import GorgiasVendorHandler
 from .vendors.klaviyo import KlaviyoVendorHandler
 from .vendors.loox import LooxVendorHandler
+from .vendors.paypal import PayPalVendorHandler
 from .vendors.stripe import StripeVendorHandler
 
 __all__ = [
@@ -49,5 +50,6 @@ __all__ = [
     "GorgiasVendorHandler",
     "KlaviyoVendorHandler",
     "LooxVendorHandler",
+    "PayPalVendorHandler",
     "StripeVendorHandler",
 ]
