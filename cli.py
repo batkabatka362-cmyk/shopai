@@ -60921,6 +60921,12 @@ def _maybe_bootstrap_secondary_adapters() -> None:
         register_all()
     except Exception:  # noqa: BLE001
         pass
+    # Helpdesk (W963-145 -- Gorgias + future)
+    try:
+        from core.adapters.helpdesk.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
     # LLM (Ollama, etc)
     try:
         from core.adapters.llm.bootstrap import register_all

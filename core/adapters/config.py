@@ -167,6 +167,16 @@ ENV_ALIASES: dict[str, str] = {
     # notifications + delivery_feedback engine.
     "aftership_api_key": "AFTERSHIP_API_KEY",
 
+    # ── Customer support / helpdesk (W963-145) ──
+    # Gorgias: Shopify-native helpdesk. Unlocks the
+    # customer_support_autonomy domain auto-reply +
+    # auto-tag pipeline. Multi-store empires have one
+    # Gorgias subdomain per store -- the URL is built
+    # from gorgias_subdomain per active_store.
+    "gorgias_api_key":   "GORGIAS_API_KEY",
+    "gorgias_username":  "GORGIAS_USERNAME",
+    "gorgias_subdomain": "GORGIAS_SUBDOMAIN",
+
     # ── Ads intelligence / spy ──────────
     # Minea: paid SaaS ($49/mo) — dropshipping-focused winning
     # product discovery across Meta, TikTok, Pinterest. Primary

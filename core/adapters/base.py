@@ -579,6 +579,12 @@ class Capability(str, Enum):
     HELPDESK_SEND_REPLY = "helpdesk_send_reply"
     HELPDESK_SEARCH_CONTACTS = "helpdesk_search_contacts"
     HELPDESK_CREATE_TICKET = "helpdesk_create_ticket"
+    # W963-145: Gorgias-class extensions
+    HELPDESK_GET_TICKET = "helpdesk_get_ticket"
+    HELPDESK_LIST_TICKETS = "helpdesk_list_tickets"
+    HELPDESK_UPDATE_TICKET_TAGS = (
+        "helpdesk_update_ticket_tags"
+    )
 
     # ── Analytics ─────────────────────────
     ANALYTICS_TRACK_EVENT = "analytics_track_event"
