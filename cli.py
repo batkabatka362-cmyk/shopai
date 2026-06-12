@@ -18522,14 +18522,24 @@ def _cmd_empire(args) -> None:
         fcs = fleet_forecasts(
             sample_hours=6.0, cap_window_hours=24.0,
         )
+        # W963-137 round-10 #3 fix: include EXHAUSTED
+        # (cap already exceeded). Pre-fix the most-actionable
+        # bucket was silently dropped -- a store that just
+        # crossed cap showed in quota_block but not forecast,
+        # leaving operator without the proactive signal.
         urgent = [
             f for f in fcs if f.verdict in (
+                ForecastVerdict.EXHAUSTED,
                 ForecastVerdict.CRITICAL,
                 ForecastVerdict.IMMINENT,
             )
         ]
         if urgent:
             forecast_block = {
+                "exhausted_count": sum(
+                    1 for f in urgent
+                    if f.verdict == ForecastVerdict.EXHAUSTED
+                ),
                 "critical_count": sum(
                     1 for f in urgent
                     if f.verdict == ForecastVerdict.CRITICAL
@@ -19407,16 +19417,34 @@ def _cmd_empire(args) -> None:
                 " for drill-down"
             )
 
-    # W963-136: cost forecast row -- proactive signal
+    # W963-136 + W963-137: cost forecast row.
+    # W963-137 round-10 #3 added EXHAUSTED to the urgent
+    # filter so the most-actionable bucket surfaces.
+    # W963-137 round-10 #5 fixed broken drill hint --
+    # `shopai forecast` is not a real subcommand, use
+    # `shopai quota --forecast` instead.
     if forecast_block:
+        f_exh = forecast_block.get("exhausted_count", 0)
         f_crit = forecast_block["critical_count"]
         f_imm = forecast_block["imminent_count"]
-        mk = "[BAD]" if f_crit > 0 else "[WRN]"
-        print(
-            f"  Forecast (24h):       {mk} "
-            f"{f_crit} hits-cap-soon, "
-            f"{f_imm} approaching"
-        )
+        if f_exh > 0 or f_crit > 0:
+            mk = "[BAD]"
+        else:
+            mk = "[WRN]"
+        # When EXHAUSTED present, lead with that count
+        if f_exh > 0:
+            print(
+                f"  Forecast (24h):       {mk} "
+                f"{f_exh} exhausted, "
+                f"{f_crit} hits-cap-soon, "
+                f"{f_imm} approaching"
+            )
+        else:
+            print(
+                f"  Forecast (24h):       {mk} "
+                f"{f_crit} hits-cap-soon, "
+                f"{f_imm} approaching"
+            )
         for u in forecast_block["top_urgent"]:
             hours = u["hours_to_cap"]
             hours_str = (
@@ -19431,7 +19459,7 @@ def _cmd_empire(args) -> None:
                 f"(burn ${rate:.2f}/h)"
             )
         print(
-            "    -> `shopai forecast` for fleet "
+            "    -> `shopai quota --forecast` for fleet "
             "drill-down"
         )
 
@@ -20916,13 +20944,22 @@ def _cmd_daily_brief(args) -> None:
         fcs = fleet_forecasts(
             sample_hours=6.0, cap_window_hours=24.0,
         )
+        # W963-137 round-10 #3: include EXHAUSTED in
+        # urgent. #5: drill hint is `shopai quota
+        # --forecast` -- `shopai forecast` is not a
+        # registered subcommand.
         urgent = [
             f for f in fcs if f.verdict in (
+                ForecastVerdict.EXHAUSTED,
                 ForecastVerdict.CRITICAL,
                 ForecastVerdict.IMMINENT,
             )
         ]
         if urgent:
+            exh_n = sum(
+                1 for f in urgent
+                if f.verdict == ForecastVerdict.EXHAUSTED
+            )
             crit_n = sum(
                 1 for f in urgent
                 if f.verdict == ForecastVerdict.CRITICAL
@@ -20931,12 +20968,23 @@ def _cmd_daily_brief(args) -> None:
                 1 for f in urgent
                 if f.verdict == ForecastVerdict.IMMINENT
             )
-            mk = "[BAD]" if crit_n > 0 else "[WRN]"
-            print(
-                f"  Forecast:     {mk} "
-                f"{crit_n} hits-cap-soon, "
-                f"{imm_n} approaching"
-            )
+            if exh_n > 0 or crit_n > 0:
+                mk = "[BAD]"
+            else:
+                mk = "[WRN]"
+            if exh_n > 0:
+                print(
+                    f"  Forecast:     {mk} "
+                    f"{exh_n} exhausted, "
+                    f"{crit_n} hits-cap-soon, "
+                    f"{imm_n} approaching"
+                )
+            else:
+                print(
+                    f"  Forecast:     {mk} "
+                    f"{crit_n} hits-cap-soon, "
+                    f"{imm_n} approaching"
+                )
             worst = urgent[0]
             hours_str = (
                 f"{worst.hours_to_cap:.1f}h"
@@ -20947,7 +20995,7 @@ def _cmd_daily_brief(args) -> None:
                 f"{worst.store_id}/"
                 f"{worst.adapter or '(all)'}  "
                 f"hits cap in {hours_str}  "
-                f"-> `shopai forecast`"
+                f"-> `shopai quota --forecast`"
             )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
