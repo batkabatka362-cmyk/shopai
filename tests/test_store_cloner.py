@@ -11,7 +11,12 @@ def _make_cloner():
 
 
 class TestExtractConfigParallel:
-    def test_fetches_all_three_endpoints(self, monkeypatch):
+    def test_fetches_pages_and_collections(self, monkeypatch):
+        # W963-157: price_rules.json was dropped from the
+        # source-fetch path (deprecated read_price_rules
+        # scope -> live 403). Discount cloning is now caller-
+        # driven via the GraphQL _discount_compat helper, so
+        # the source fetch only needs pages + collections.
         cloner = _make_cloner()
         calls: list[str] = []
 
@@ -21,18 +26,17 @@ class TestExtractConfigParallel:
                 return {"pages": [{"id": 1}, {"id": 2}]}
             if path == "smart_collections.json":
                 return {"smart_collections": [{"id": 10}]}
-            if path == "price_rules.json":
-                return {"price_rules": [{"id": 100}, {"id": 101}, {"id": 102}]}
             return {}
 
         monkeypatch.setattr(cloner, "_api_get", fake_get)
         config = cloner._extract_config("src.myshopify.com", "tok")
         assert sorted(calls) == sorted([
-            "pages.json", "smart_collections.json", "price_rules.json",
+            "pages.json", "smart_collections.json",
         ])
         assert len(config["pages"]) == 2
         assert len(config["collections"]) == 1
-        assert len(config["discounts"]) == 3
+        # discounts key no longer present in config
+        assert "discounts" not in config
 
     def test_missing_endpoint_falls_back_to_empty_list(self, monkeypatch):
         cloner = _make_cloner()
@@ -40,13 +44,12 @@ class TestExtractConfigParallel:
         def fake_get(shop_url, path, h):
             if path == "pages.json":
                 raise RuntimeError("401 unauth")
-            return {"smart_collections": [], "price_rules": []}
+            return {"smart_collections": []}
 
         monkeypatch.setattr(cloner, "_api_get", fake_get)
         config = cloner._extract_config("src.myshopify.com", "tok")
         assert config["pages"] == []
         assert config["collections"] == []
-        assert config["discounts"] == []
 
     def test_runs_in_parallel(self, monkeypatch):
         """Three 300ms calls should finish in ~300ms parallel, not ~900ms.
@@ -144,44 +147,53 @@ class TestClonePagesParallel:
 
 
 class TestCloneDiscountsParallel:
-    def test_creates_rule_and_discount_code(self, monkeypatch):
+    def test_creates_rule_via_graphql_compat(self, monkeypatch):
+        # W963-157: clone goes through _discount_compat.
+        # create_code_discount -> router/GraphQL. Patch the
+        # compat module's create_code_discount to capture the
+        # call instead of the legacy REST POST mock.
         cloner = _make_cloner()
-        calls: list[str] = []
-        lock = threading.Lock()
+        captured: list[dict] = []
 
-        def fake_post(shop_url, path, h, payload):
-            with lock:
-                calls.append(path)
-            if path == "price_rules.json":
-                return {"price_rule": {"id": 42}}
-            return {"discount_code": {"id": 1}}
+        def fake_create(*, code, value_pct, **kw):
+            captured.append({
+                "code": code, "value_pct": value_pct,
+            })
+            return {
+                "ok": True, "discount_id": "gid://x/42",
+                "code": code,
+            }
 
-        monkeypatch.setattr(cloner, "_api_post", fake_post)
+        monkeypatch.setattr(
+            "execution._discount_compat.create_code_discount",
+            fake_create,
+        )
         count = cloner._clone_discounts(
             [{"title": "SALE10", "value": "-10"}],
             "t.myshopify.com", "tok",
         )
         assert count == 1
-        assert "price_rules.json" in calls
-        assert any("discount_codes.json" in c for c in calls)
+        assert len(captured) == 1
+        assert captured[0]["code"] == "SALE10"
+        assert captured[0]["value_pct"] == -10.0
 
-    def test_rule_failure_skips_discount_code(self, monkeypatch):
+    def test_rule_failure_returns_zero(self, monkeypatch):
         cloner = _make_cloner()
-        calls: list[str] = []
 
-        def fake_post(shop_url, path, h, payload):
-            calls.append(path)
-            if path == "price_rules.json":
-                return {"error": "HTTP 422"}
-            return {"discount_code": {"id": 1}}
+        def fake_create(*, code, value_pct, **kw):
+            return {
+                "ok": False, "error": "HTTP 422",
+                "code": code,
+            }
 
-        monkeypatch.setattr(cloner, "_api_post", fake_post)
+        monkeypatch.setattr(
+            "execution._discount_compat.create_code_discount",
+            fake_create,
+        )
         count = cloner._clone_discounts(
             [{"title": "BAD"}], "t.myshopify.com", "tok",
         )
         assert count == 0
-        # Should not have attempted the discount_codes endpoint
-        assert not any("discount_codes" in c for c in calls)
 
     def test_empty_list(self):
         cloner = _make_cloner()
@@ -217,16 +229,20 @@ class TestCloneFlow:
         )
         assert result["status"] == "cloned"
         steps = result["results"]["steps"]
-        # Extract step should show 2 pages and 1 discount
+        # W963-157: extract no longer fetches discounts
+        # (deprecated read_price_rules scope). Source-list
+        # cloning is dropped; the discount-clone path stays
+        # for caller-driven invocations but ends up firing
+        # against an empty list here.
         extract = next(s for s in steps if "extract" in s)
         assert extract["pages"] == 2
-        assert extract["discounts"] == 1
+        assert extract["discounts"] == 0
         # Pages clone step — both non-legal titles created
         pages_step = next(s for s in steps if "pages" in s and "extract" not in s)
         assert pages_step["pages"] == 2
-        # Discount clone step
+        # Discount clone step (now 0 because extract is empty)
         discounts_step = next(s for s in steps if "discounts" in s and "extract" not in s)
-        assert discounts_step["discounts"] == 1
+        assert discounts_step["discounts"] == 0
 
 
 class TestGetStoreCloner:

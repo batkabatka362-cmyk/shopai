@@ -29,6 +29,12 @@ from typing import Any, Optional
 from utils.logger import get_logger
 from utils.shopify_client import ShopifyClient
 
+# W963-157: GraphQL compat for the deprecated
+# read_price_rules / write_price_rules REST scopes.
+from ._discount_compat import (
+    list_existing_discount_titles as _existing_discount_titles,
+)
+
 logger = get_logger("store.configurator")
 
 
@@ -583,9 +589,9 @@ class StoreConfigurator:
           generous   → BEAUTY20
           moderate   → SAVE10
         """
-        existing_resp = client.get("price_rules.json")
-        existing = existing_resp.get("price_rules", []) if "error" not in existing_resp else []
-        existing_titles = set(r["title"] for r in existing)
+        # W963-157: was REST price_rules.json -> 403 in
+        # live test (deprecated read_price_rules scope).
+        existing_titles = _existing_discount_titles(client)
         created: list[str] = []
 
         def _add(code: str, value: float, **kwargs: Any) -> None:
@@ -1045,9 +1051,9 @@ class StoreConfigurator:
         """Create a referral program: a FRIEND10 code + metafield config."""
         # The discount itself (created idempotently — it's fine if it
         # already exists because _create_discount checks existing)
-        existing_resp = client.get("price_rules.json")
-        existing = existing_resp.get("price_rules", []) if "error" not in existing_resp else []
-        existing_titles = {r["title"] for r in existing}
+        # W963-157: was REST price_rules.json -> 403 in
+        # live test (deprecated read_price_rules scope).
+        existing_titles = _existing_discount_titles(client)
         code = "FRIEND10"
         code_created = False
         if code not in existing_titles:
