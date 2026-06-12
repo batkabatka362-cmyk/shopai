@@ -189,6 +189,8 @@ class Capability(str, Enum):
     SHOPIFY_UPDATE_PRODUCT = "shopify_update_product"
     SHOPIFY_DELETE_PRODUCT = "shopify_delete_product"
     SHOPIFY_UPDATE_VARIANTS = "shopify_update_variants"
+    SHOPIFY_TAG_PRODUCT = "shopify_tag_product"
+    SHOPIFY_UNTAG_PRODUCT = "shopify_untag_product"
     SHOPIFY_LIST_ORDERS = "shopify_list_orders"
     SHOPIFY_GET_ORDER = "shopify_get_order"
     SHOPIFY_UPDATE_ORDER = "shopify_update_order"

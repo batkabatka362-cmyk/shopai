@@ -19,6 +19,13 @@ Capabilities:
   * ``SHOPIFY_UPDATE_VARIANTS``  — bulk update variant price /
     compareAtPrice / sku via ``productVariantsBulkUpdate``. This is
     the primary surface the pricing engine drives.
+  * ``SHOPIFY_TAG_PRODUCT``      — additive tag write via ``tagsAdd``.
+    Unlike SHOPIFY_UPDATE_PRODUCT which REPLACES the tag list, this
+    APPENDS tags non-destructively (Shopify's tagsAdd mutation is a
+    merge). Used by catalog_quality_autonomy + future tag-class
+    appliers that just want to attach a flag without re-reading the
+    full tag list to avoid wiping.
+  * ``SHOPIFY_UNTAG_PRODUCT``    — symmetric removal via ``tagsRemove``.
 
 Friendly call shapes:
 
@@ -251,6 +258,8 @@ class ShopifyProductsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_PRODUCT,
         Capability.SHOPIFY_DELETE_PRODUCT,
         Capability.SHOPIFY_UPDATE_VARIANTS,
+        Capability.SHOPIFY_TAG_PRODUCT,
+        Capability.SHOPIFY_UNTAG_PRODUCT,
     }
     # read_products covers list/get; write_products covers
     # create/update/delete and the variant mutation surface.
@@ -273,6 +282,10 @@ class ShopifyProductsAdapter(ShopifyBaseAdapter):
             return self._delete(params)
         if capability == Capability.SHOPIFY_UPDATE_VARIANTS:
             return self._update_variants(params)
+        if capability == Capability.SHOPIFY_TAG_PRODUCT:
+            return self._tag(params, add=True)
+        if capability == Capability.SHOPIFY_UNTAG_PRODUCT:
+            return self._tag(params, add=False)
         raise AdapterValidationError(
             self.name, f"unsupported capability: {capability.value}",
         )
@@ -716,3 +729,85 @@ class ShopifyProductsAdapter(ShopifyBaseAdapter):
             "barcode": node.get("barcode", "") or "",
             "position": int(node.get("position") or 0),
         }
+
+    # ── Tag / Untag (W963-159) ─────────────────────────────────────
+
+    def _tag(self, params: dict[str, Any], add: bool) -> Any:
+        """Additive tagsAdd / tagsRemove against a product.
+
+        Shopify's ``tagsAdd`` mutation merges -- existing tags are
+        preserved (unlike productUpdate which replaces). Same shape
+        used by orders.py + customers.py tag paths.
+        """
+        product_id = (
+            params.get("id") or params.get("product_id")
+        )
+        if not isinstance(product_id, str) or not product_id.strip():
+            raise AdapterValidationError(
+                self.name,
+                "'id' (Shopify GID for the product) is required",
+            )
+        raw_tags = params.get("tags")
+        if isinstance(raw_tags, str):
+            raw_tags = [
+                t.strip() for t in raw_tags.split(",")
+                if t.strip()
+            ]
+        if (
+            not isinstance(raw_tags, list)
+            or not raw_tags
+            or not all(isinstance(t, str) for t in raw_tags)
+        ):
+            raise AdapterValidationError(
+                self.name,
+                "'tags' must be a non-empty list of strings or "
+                "comma-separated string",
+            )
+        mutation = (
+            _PRODUCT_TAGS_ADD_MUTATION if add
+            else _PRODUCT_TAGS_REMOVE_MUTATION
+        )
+        mutation_name = "tagsAdd" if add else "tagsRemove"
+        capability = (
+            Capability.SHOPIFY_TAG_PRODUCT if add
+            else Capability.SHOPIFY_UNTAG_PRODUCT
+        )
+        data = self._gql(mutation, {
+            "id": product_id.strip(),
+            "tags": raw_tags,
+        })
+        self._check_user_errors(data, mutation_name)
+        payload = data.get(mutation_name) or {}
+        node = payload.get("node") or {}
+        return self._success(
+            capability,
+            data={
+                "id": node.get("id", "") or "",
+                "tags": list(node.get("tags") or []),
+            },
+        )
+
+
+_PRODUCT_TAGS_ADD_MUTATION = """
+mutation tagsAdd($id: ID!, $tags: [String!]!) {
+  tagsAdd(id: $id, tags: $tags) {
+    node {
+      id
+      ... on Product { tags }
+    }
+    userErrors { field message }
+  }
+}
+"""
+
+_PRODUCT_TAGS_REMOVE_MUTATION = """
+mutation tagsRemove($id: ID!, $tags: [String!]!) {
+  tagsRemove(id: $id, tags: $tags) {
+    node {
+      id
+      ... on Product { tags }
+    }
+    userErrors { field message }
+  }
+}
+"""

@@ -1301,6 +1301,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_UPDATE_PRODUCT).name == "shopify_products"
         assert router.route(Capability.SHOPIFY_DELETE_PRODUCT).name == "shopify_products"
         assert router.route(Capability.SHOPIFY_UPDATE_VARIANTS).name == "shopify_products"
+        # W963-159: tag/untag on products
+        assert router.route(Capability.SHOPIFY_TAG_PRODUCT).name == "shopify_products"
+        assert router.route(Capability.SHOPIFY_UNTAG_PRODUCT).name == "shopify_products"
         assert router.route(Capability.SHOPIFY_LIST_ORDERS).name == "shopify_orders"
         assert router.route(Capability.SHOPIFY_FETCH_ORDERS).name == "shopify_orders"
         assert router.route(Capability.SHOPIFY_GET_ORDER).name == "shopify_orders"
@@ -9591,6 +9594,74 @@ class TestShopifyProductsAdapter:
     def test_normalise_variant_handles_non_dict(self):
         from core.adapters.shopify.products import ShopifyProductsAdapter
         assert ShopifyProductsAdapter._normalise_variant(None) == {}
+
+    # ── W963-159: tag / untag ─────────────────────────────────
+
+    def test_tag_requires_id(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_TAG_PRODUCT, {
+            "tags": ["x"],
+        })
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_tag_requires_tags(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_TAG_PRODUCT, {
+            "id": "gid://shopify/Product/1",
+        })
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_tag_happy_path(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"tagsAdd": {
+                "node": {"id": v["id"], "tags": v["tags"]},
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_TAG_PRODUCT, {
+                "id": "gid://shopify/Product/1",
+                "tags": ["shopai-quality-needs-images"],
+            })
+        assert result.ok
+        assert captured["tags"] == ["shopai-quality-needs-images"]
+        assert result.data["tags"] == ["shopai-quality-needs-images"]
+
+    def test_tag_accepts_comma_string(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"tagsAdd": {
+            "node": {"id": "gid://shopify/Product/1", "tags": ["a", "b"]},
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_TAG_PRODUCT, {
+                "id": "gid://shopify/Product/1",
+                "tags": "a, b",
+            })
+        assert result.ok
+
+    def test_untag_happy_path(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"tagsRemove": {
+            "node": {"id": "gid://shopify/Product/1", "tags": []},
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_UNTAG_PRODUCT, {
+                "id": "gid://shopify/Product/1",
+                "tags": ["legacy-tag"],
+            })
+        assert result.ok
+        assert result.data["tags"] == []
 
 
 # ── ShopifyOrdersAdapter ──────────────────────────────────
