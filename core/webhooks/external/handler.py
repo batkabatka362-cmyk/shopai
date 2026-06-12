@@ -61,6 +61,42 @@ EVENT_ENGINE_MAP: dict[str, list[dict[str, str]]] = {
     # GA4 is push-out only; no incoming events. Reserved
     # for future Measurement Protocol callbacks if
     # Google ships them.
+
+    # ── Stripe (W963-150) ──────────────────────────
+    "stripe.charge.dispute.created": [
+        {
+            "engine": "fraud_detection",
+            "data_key": "dispute",
+        },
+        {
+            "engine": "refund_processing",
+            "data_key": "dispute",
+        },
+    ],
+    "stripe.charge.dispute.closed": [
+        {
+            "engine": "refund_processing",
+            "data_key": "dispute",
+        },
+    ],
+    "stripe.charge.refunded": [
+        {
+            "engine": "returns_management",
+            "data_key": "charge",
+        },
+    ],
+    "stripe.payout.created": [
+        {
+            "engine": "revenue_attribution",
+            "data_key": "payout",
+        },
+    ],
+    "stripe.payment_intent.payment_failed": [
+        {
+            "engine": "customer_support",
+            "data_key": "payment_intent",
+        },
+    ],
 }
 
 
@@ -252,9 +288,15 @@ class ExternalWebhookHandler:
                 self._stats["rejected"] += 1
             return outcome
         outcome.topic = topic
-        topic_key = f"{vendor}.{topic}" if (
-            "." not in topic
-        ) else topic
+        # W963-150 fix: always prefix with vendor name so
+        # vendors that already use dotted topics (Stripe:
+        # charge.dispute.created) still route through
+        # consistent map keys. Skip prefix only if topic
+        # ALREADY starts with vendor name.
+        if topic.startswith(f"{vendor}."):
+            topic_key = topic
+        else:
+            topic_key = f"{vendor}.{topic}"
 
         # Dedup
         if event_id and not _mark_seen(event_id):

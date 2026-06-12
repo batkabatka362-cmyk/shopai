@@ -2,9 +2,11 @@
 from .aftership import AfterShipVendorHandler
 from .ga4 import GA4VendorHandler
 from .gorgias import GorgiasVendorHandler
+from .stripe import StripeVendorHandler
 
 __all__ = [
     "AfterShipVendorHandler",
     "GA4VendorHandler",
     "GorgiasVendorHandler",
+    "StripeVendorHandler",
 ]

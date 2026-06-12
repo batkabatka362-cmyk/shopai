@@ -35,6 +35,7 @@ from .handler import (
 from .vendors.aftership import AfterShipVendorHandler
 from .vendors.ga4 import GA4VendorHandler
 from .vendors.gorgias import GorgiasVendorHandler
+from .vendors.stripe import StripeVendorHandler
 
 __all__ = [
     "EVENT_ENGINE_MAP",
@@ -44,4 +45,5 @@ __all__ = [
     "AfterShipVendorHandler",
     "GA4VendorHandler",
     "GorgiasVendorHandler",
+    "StripeVendorHandler",
 ]
