@@ -2895,6 +2895,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ais_p.add_argument("--json", action="store_true")
 
+    # W963-142: store-creds -- per-store override view.
+    sc_p = sub.add_parser(
+        "store-creds",
+        help=(
+            "Show which per-store credential overrides "
+            "(SHOPAI_STORE_<SID>_<ALIAS>) are configured "
+            "for each registered store. Operator's view "
+            "of which stores use fleet defaults vs which "
+            "have explicit per-store keys for OpenAI / "
+            "Klaviyo / Meta Ads / etc."
+        ),
+    )
+    sc_p.add_argument(
+        "--store", default="",
+        help="Restrict to one store.",
+    )
+    sc_p.add_argument("--json", action="store_true")
+
     # W963-108: earn-readiness -- pre-launch composer.
     er_p = sub.add_parser(
         "earn-readiness",
@@ -12742,6 +12760,81 @@ def _cmd_earn_path(args) -> None:
             "  NEXT: empire is earning -- monitor "
             "via shopai morning-brief"
         )
+
+
+def _cmd_store_creds(args) -> None:
+    """W963-142: per-store credential override view."""
+    from engines.per_store_creds import PerStoreCredsEngine
+
+    as_json = bool(getattr(args, "json", False))
+    payload: dict[str, Any] = {
+        "data": {
+            "store_id": (
+                getattr(args, "store", "") or ""
+            ).strip(),
+        },
+    }
+    result = PerStoreCredsEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success" or not data:
+        err = result.get("error") or "unknown error"
+        print(f"store-creds: ERROR  {err}")
+        sys.exit(1)
+
+    n_total = data.get("store_count", 0)
+    n_with = data.get("stores_with_overrides", 0)
+    n_fleet = data.get("stores_using_fleet", 0)
+
+    if n_total == 0:
+        print(
+            "Per-store credentials  --  no stores "
+            "registered + no per-store env overrides"
+        )
+        print()
+        print(
+            "  Add a store: `shopai store add <id> "
+            "<url> --api-key <token>`"
+        )
+        print(
+            "  Set per-store overrides via env, e.g.:"
+        )
+        print(
+            "    SHOPAI_STORE_STORE_A_OPENAI_API_KEY=..."
+        )
+        return
+
+    print(
+        f"Per-store credentials  --  "
+        f"{n_total} store(s)  "
+        f"{n_with} with overrides, "
+        f"{n_fleet} using fleet defaults"
+    )
+    print()
+    stores = data.get("stores") or []
+    for s in stores:
+        sid = s.get("store_id", "?")
+        overrides = s.get("overrides") or []
+        if overrides:
+            short = [
+                o.replace("_API_KEY", "")
+                 .replace("_ACCESS_TOKEN", "")
+                 .replace("_API_TOKEN", "")
+                 .lower()
+                for o in overrides
+            ]
+            print(
+                f"  [{len(overrides):>2}]  {sid:<14} "
+                f"{', '.join(short)}"
+            )
+        else:
+            print(
+                f"  [  ]  {sid:<14}  "
+                f"(using fleet defaults)"
+            )
 
 
 def _cmd_api_status(args) -> None:
@@ -61172,6 +61265,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "api-status":
         _cmd_api_status(args)
+        return
+
+    if args.command == "store-creds":
+        _cmd_store_creds(args)
         return
 
     if args.command == "earn-readiness":
