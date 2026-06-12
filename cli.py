@@ -60927,6 +60927,12 @@ def _maybe_bootstrap_secondary_adapters() -> None:
         register_all()
     except Exception:  # noqa: BLE001
         pass
+    # Analytics (W963-146 -- GA4 + future)
+    try:
+        from core.adapters.analytics.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
     # LLM (Ollama, etc)
     try:
         from core.adapters.llm.bootstrap import register_all

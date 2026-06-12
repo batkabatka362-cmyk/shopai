@@ -216,7 +216,8 @@ def audit_engine_capabilities(
         # W963-144: tracking + sourcing packages also
         # contribute capability claims.
         # W963-145: helpdesk (Gorgias).
-        "sourcing", "tracking", "helpdesk",
+        # W963-146: analytics (GA4).
+        "sourcing", "tracking", "helpdesk", "analytics",
     ):
         try:
             pkg = __import__(

@@ -168,14 +168,16 @@ ENV_ALIASES: dict[str, str] = {
     "aftership_api_key": "AFTERSHIP_API_KEY",
 
     # ── Customer support / helpdesk (W963-145) ──
-    # Gorgias: Shopify-native helpdesk. Unlocks the
-    # customer_support_autonomy domain auto-reply +
-    # auto-tag pipeline. Multi-store empires have one
-    # Gorgias subdomain per store -- the URL is built
-    # from gorgias_subdomain per active_store.
     "gorgias_api_key":   "GORGIAS_API_KEY",
     "gorgias_username":  "GORGIAS_USERNAME",
     "gorgias_subdomain": "GORGIAS_SUBDOMAIN",
+
+    # ── Analytics (W963-146) ──
+    # GA4 Measurement Protocol: send purchase / add_to_cart
+    # / etc. events from every store. Multi-store empires
+    # have one measurement_id per store.
+    "ga4_measurement_id": "GA4_MEASUREMENT_ID",
+    "ga4_api_secret":     "GA4_API_SECRET",
 
     # ── Ads intelligence / spy ──────────
     # Minea: paid SaaS ($49/mo) — dropshipping-focused winning
