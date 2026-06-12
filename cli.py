@@ -20779,6 +20779,54 @@ def _cmd_daily_brief(args) -> None:
             exc,
         )
 
+    # W963-135: per-store quota state row in daily-brief.
+    # Mirrors W963-134's empire integration. Surfaces only
+    # when at least one capped store is in CRITICAL or
+    # WARN -- pure observability is the bonus; the
+    # operator's morning check sees budget pressure
+    # without typing `shopai quota` separately.
+    try:
+        from engines.per_store_quota import (
+            compute_all_snapshots,
+        )
+        q_snaps = compute_all_snapshots(window_hours=24.0)
+        crit_q = [
+            s for s in q_snaps
+            if s.state.value == "critical"
+        ]
+        warn_q = [
+            s for s in q_snaps
+            if s.state.value == "warn"
+        ]
+        if crit_q or warn_q:
+            if crit_q:
+                mk = "[BAD]"
+            else:
+                mk = "[WRN]"
+            print(
+                f"  Quota (24h):  {mk} "
+                f"{len(crit_q)} critical, "
+                f"{len(warn_q)} warn"
+            )
+            # Surface top critical store inline so the
+            # operator can act without extra commands.
+            if crit_q:
+                worst = crit_q[0]
+                print(
+                    f"    *** CRITICAL: "
+                    f"{worst.store_id}/"
+                    f"{worst.adapter or '(all)'}  "
+                    f"${worst.spend_usd:.2f} of "
+                    f"${worst.cap_usd:.2f} "
+                    f"({worst.pct_used:.0f}% used)  "
+                    f"-> `shopai quota --view critical`"
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief quota block raised: %s",
+            exc,
+        )
+
     # Wave 843: substrate-fire activity row. Surfaces only when
     # at least one outcome accrued in the window. Quiet
     # substrate stays silent.
