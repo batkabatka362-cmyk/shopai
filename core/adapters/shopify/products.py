@@ -69,7 +69,12 @@ from ._base import ShopifyBaseAdapter
 # ── GraphQL templates ───────────────────────────────────────────────
 
 
-_PRODUCT_FIELDS = """
+# W963-160: split into _BASE (no images) + _PRODUCT_FIELDS
+# (= _BASE + images(first:1) for LIST path image-count).
+# _WITH_VARIANTS uses _BASE + variants + images(first:20)
+# so the GraphQL fragment-merge doesn't see two images
+# selections with conflicting args.
+_PRODUCT_FIELDS_BASE = """
 id
 title
 handle
@@ -87,13 +92,18 @@ priceRangeV2 {
   maxVariantPrice { amount currencyCode }
 }
 seo { title description }
-images(first: 1) { edges { node { id } } }
 variantsCount { count }
 """.strip()
 
 
+_PRODUCT_FIELDS = f"""
+{_PRODUCT_FIELDS_BASE}
+images(first: 1) {{ edges {{ node {{ id }} }} }}
+""".strip()
+
+
 _PRODUCT_FIELDS_WITH_VARIANTS = f"""
-{_PRODUCT_FIELDS}
+{_PRODUCT_FIELDS_BASE}
 variants(first: 100) {{
   edges {{
     node {{
