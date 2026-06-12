@@ -161,6 +161,12 @@ ENV_ALIASES: dict[str, str] = {
     "meta_ads_access_token": "META_ADS_ACCESS_TOKEN",
     "meta_ads_account_id":   "META_ADS_ACCOUNT_ID",
 
+    # ── Order tracking aggregators (W963-144) ──
+    # AfterShip: 1000+ carrier tracking aggregator. Drives
+    # 'where is my order?' auto-responses + delivery
+    # notifications + delivery_feedback engine.
+    "aftership_api_key": "AFTERSHIP_API_KEY",
+
     # ── Ads intelligence / spy ──────────
     # Minea: paid SaaS ($49/mo) — dropshipping-focused winning
     # product discovery across Meta, TikTok, Pinterest. Primary

@@ -213,6 +213,12 @@ def audit_engine_capabilities(
     # avoid false positives like WEB_SEARCH (claimed by search/).
     for pkg_name in (
         "ads", "search", "email", "llm", "shipping", "social",
+        # W963-144: tracking + sourcing packages also
+        # contribute capability claims. Without them
+        # SOURCING_SEARCH_PRODUCTS / TRACKING_LOOKUP
+        # surface as 'unclaimed' even though their
+        # adapters claim them.
+        "sourcing", "tracking",
     ):
         try:
             pkg = __import__(

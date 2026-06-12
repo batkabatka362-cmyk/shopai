@@ -74,6 +74,7 @@ class AdapterCategory(str, Enum):
     CRM = "crm"                            # Customer relationship management (HubSpot)
     SOURCING = "sourcing"                  # Dropshipping suppliers (CJ, AutoDS, Spocket)
     SOCIAL = "social"                      # Social media publishing (Pinterest, future TikTok/IG)
+    TRACKING = "tracking"                  # Order tracking aggregators (AfterShip)
     OTHER = "other"
 
 
@@ -583,6 +584,11 @@ class Capability(str, Enum):
     ANALYTICS_TRACK_EVENT = "analytics_track_event"
     ANALYTICS_QUERY = "analytics_query"
     ANALYTICS_IDENTIFY = "analytics_identify"
+
+    # ── Tracking (W963-144) ──────────────
+    TRACKING_REGISTER = "tracking_register"
+    TRACKING_LOOKUP = "tracking_lookup"
+    TRACKING_LIST_RECENT = "tracking_list_recent"
 
     # ── CRM ──────────────────────────────
     CRM_SEARCH_CONTACTS = "crm_search_contacts"

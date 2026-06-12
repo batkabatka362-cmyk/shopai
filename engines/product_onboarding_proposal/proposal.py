@@ -131,7 +131,7 @@ def _safe_run_sourcing_lookup(
         return {}
     try:
         result = router.execute(
-            Capability.SOURCING_SEARCH_PRODUCT,
+            Capability.SOURCING_SEARCH_PRODUCTS,
             {"query": candidate_title, "limit": 1},
         )
         if not result.ok:

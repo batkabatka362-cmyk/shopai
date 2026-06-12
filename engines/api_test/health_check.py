@@ -755,6 +755,60 @@ def _check_shopify() -> HealthCheckResult:
 # ── Registry ──────────────────────────────────────────────
 
 
+def _check_aftership() -> HealthCheckResult:
+    """W963-144: AfterShip tracking aggregator.
+    GET /v4/trackings (small limit) verifies auth +
+    quota. Per-store routing via active_store + W963-117
+    helper consulted automatically."""
+    out = HealthCheckResult(adapter="aftership")
+    try:
+        from core.adapters.config import get_config
+        cfg = get_config()
+        if not cfg.has("aftership_api_key"):
+            return out
+        out.configured = True
+
+        import requests
+        start = time.monotonic()
+        resp = requests.get(
+            "https://api.aftership.com/v4/trackings"
+            "?limit=1",
+            headers={
+                "aftership-api-key": cfg.get(
+                    "aftership_api_key",
+                ),
+                "Accept": "application/json",
+            },
+            timeout=15.0,
+        )
+        out.latency_ms = round(
+            (time.monotonic() - start) * 1000.0, 1,
+        )
+        out.reachable = True
+        if resp.status_code == 200:
+            out.authenticated = True
+            try:
+                body = resp.json()
+                data = body.get("data") or {}
+                count = len(
+                    data.get("trackings") or [],
+                )
+                out.detail = (
+                    f"trackings_sample={count}"
+                )
+            except Exception:  # noqa: BLE001
+                out.detail = "list ok"
+        else:
+            out.error = _short_http_error(
+                resp.status_code, resp.text,
+            )
+    except Exception as exc:  # noqa: BLE001
+        out.error = (
+            f"{type(exc).__name__}: {exc}"
+        )[:200]
+    return out
+
+
 # Probes ordered by importance. Operator scanning output
 # sees the critical ones first.
 PROBES = [
@@ -766,6 +820,7 @@ PROBES = [
     ("meta_ads", _check_meta_ads),
     ("pexels", _check_pexels),
     ("elevenlabs", _check_elevenlabs),
+    ("aftership", _check_aftership),
     ("autods", _check_autods),
 ]
 

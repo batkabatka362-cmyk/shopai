@@ -60915,6 +60915,12 @@ def _maybe_bootstrap_secondary_adapters() -> None:
         register_all()
     except Exception:  # noqa: BLE001
         pass
+    # Tracking (W963-144 -- AfterShip + future)
+    try:
+        from core.adapters.tracking.bootstrap import register_all
+        register_all()
+    except Exception:  # noqa: BLE001
+        pass
     # LLM (Ollama, etc)
     try:
         from core.adapters.llm.bootstrap import register_all

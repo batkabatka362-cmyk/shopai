@@ -747,3 +747,134 @@ def _create_draft_article_dispatch(
         if not k.startswith("_")
     }
     return _router_call("SHOPIFY_CREATE_ARTICLE", adapter_params)
+
+
+# ── product_onboarding_proposal -> SHOPIFY_CREATE_PRODUCT batch ──
+
+
+@register_dispatcher("propose_product_batch")
+def _propose_product_batch_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """W963-143: replay the product onboarding proposal
+    batch by importing each approved candidate.
+
+    Params shape:
+      {
+        "niche": "beauty",
+        "candidates": [
+          {
+            "title": "Vitamin C serum",
+            "supplier": "cj",
+            "supplier_id": "cj_abc",
+            "cost_usd": 8.0,
+            "suggested_retail_usd": 22.4,
+            "risk_flags": [],
+          },
+          ...
+        ],
+      }
+
+    For each candidate with is_actionable (has title +
+    supplier + positive cost), call SHOPIFY_CREATE_PRODUCT
+    with the standard payload shape. Skip unsourced
+    candidates (risk_flag='unsourced') -- they need
+    supplier resolution outside the batch.
+
+    Returns (overall_success, result) where overall_success
+    is True iff ALL actionable candidates imported
+    successfully. Result carries per-candidate status so
+    operator can see which (if any) failed.
+    """
+    candidates = params.get("candidates") or []
+    if (
+        not isinstance(candidates, list)
+        or not candidates
+    ):
+        return False, {
+            "error": "no_candidates_in_batch",
+        }
+
+    imported: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    for raw in candidates:
+        if not isinstance(raw, dict):
+            continue
+        title = str(raw.get("title", "")).strip()
+        supplier = str(raw.get("supplier", "")).strip()
+        try:
+            cost = float(raw.get("cost_usd", 0) or 0)
+        except (TypeError, ValueError):
+            cost = 0.0
+        try:
+            retail = float(
+                raw.get("suggested_retail_usd", 0) or 0,
+            )
+        except (TypeError, ValueError):
+            retail = 0.0
+
+        if not title or not supplier or cost <= 0:
+            skipped.append({
+                "title": title or "(no_title)",
+                "reason": "missing_title_supplier_or_cost",
+            })
+            continue
+
+        # Standard SHOPIFY_CREATE_PRODUCT payload
+        payload = {
+            "title": title,
+            "vendor": supplier,
+            "status": "draft",      # operator can
+                                    # publish after review
+            "variants": [{
+                "price": str(retail) if retail > 0 else "",
+                "cost": str(cost),
+                "inventory_management": "shopify",
+            }],
+            "tags": [
+                f"niche:{params.get('niche', '')}",
+                f"supplier:{supplier}",
+                "imported:proposal_batch",
+            ],
+        }
+        try:
+            ok, result = _router_call(
+                "SHOPIFY_CREATE_PRODUCT", payload,
+            )
+            if ok:
+                imported.append({
+                    "title": title,
+                    "product_id": (
+                        result.get("id")
+                        if isinstance(result, dict)
+                        else ""
+                    ),
+                })
+            else:
+                failed.append({
+                    "title": title,
+                    "error": (
+                        result.get("error")
+                        if isinstance(result, dict)
+                        else str(result)
+                    )[:240],
+                })
+        except Exception as exc:  # noqa: BLE001
+            failed.append({
+                "title": title,
+                "error": f"dispatch_raised: {exc}"[:240],
+            })
+
+    overall_ok = (
+        bool(imported) and not failed
+    )
+    return overall_ok, {
+        "imported": imported,
+        "imported_count": len(imported),
+        "skipped": skipped,
+        "skipped_count": len(skipped),
+        "failed": failed,
+        "failed_count": len(failed),
+    }
