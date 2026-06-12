@@ -2913,6 +2913,47 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sc_p.add_argument("--json", action="store_true")
 
+    # W963-143: propose-products -- batch plan + queue.
+    pp_p = sub.add_parser(
+        "propose-products",
+        help=(
+            "Run product discovery for a store, generate "
+            "a batch import PLAN (top-N candidates with "
+            "scoring + supplier + projected margin + "
+            "risks), and submit ONE approval action to "
+            "the queue. Operator approves the BATCH "
+            "(single click) -- ShopAI then imports all "
+            "approved products."
+        ),
+    )
+    pp_p.add_argument(
+        "--store", required=True,
+        help="Target store_id (required).",
+    )
+    pp_p.add_argument(
+        "--niche", default="",
+        help=(
+            "Niche to drive discovery (defaults to the "
+            "store's tagged niche)."
+        ),
+    )
+    pp_p.add_argument(
+        "--count", type=int, default=10,
+        help="How many candidates to propose.",
+    )
+    pp_p.add_argument(
+        "--window-hours", type=float, default=168.0,
+        help="Discovery lookback window.",
+    )
+    pp_p.add_argument(
+        "--submit", action="store_true",
+        help=(
+            "Submit the proposal to the approval queue "
+            "(default: dry-run rendering only)."
+        ),
+    )
+    pp_p.add_argument("--json", action="store_true")
+
     # W963-108: earn-readiness -- pre-launch composer.
     er_p = sub.add_parser(
         "earn-readiness",
@@ -12759,6 +12800,138 @@ def _cmd_earn_path(args) -> None:
         print(
             "  NEXT: empire is earning -- monitor "
             "via shopai morning-brief"
+        )
+
+
+def _cmd_propose_products(args) -> None:
+    """W963-143: batch product onboarding proposal."""
+    from engines.product_onboarding_proposal import (
+        ProductOnboardingProposalEngine,
+    )
+
+    as_json = bool(getattr(args, "json", False))
+    submit = bool(getattr(args, "submit", False))
+    store_id = (
+        getattr(args, "store", "") or ""
+    ).strip()
+    payload: dict[str, Any] = {
+        "data": {
+            "store_id": store_id,
+            "niche": (
+                getattr(args, "niche", "") or ""
+            ).strip(),
+            "count": int(
+                getattr(args, "count", 10) or 10,
+            ),
+            "window_hours": float(
+                getattr(args, "window_hours", 168.0)
+                or 168.0,
+            ),
+            "submit_to_queue": submit,
+        },
+    }
+    result = ProductOnboardingProposalEngine().run(payload)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success" or not data:
+        err = result.get("error") or "unknown error"
+        print(f"propose-products: ERROR  {err}")
+        sys.exit(1)
+
+    proposed = data.get("proposed_count", 0)
+    discovered = data.get("discovered_count", 0)
+    total_cost = data.get(
+        "total_inventory_cost_usd", 0.0,
+    )
+    avg_margin = data.get(
+        "avg_projected_margin_pct", 0.0,
+    )
+
+    print(
+        f"Product onboarding proposal  -- "
+        f"store={data.get('store_id')}"
+    )
+    print()
+    print(
+        f"  Niche:           "
+        f"{data.get('niche', '(unspecified)')}"
+    )
+    print(
+        f"  Discovered:      {discovered} candidate(s)"
+    )
+    print(
+        f"  Proposed:        {proposed} product(s)"
+    )
+    print(
+        f"  Inventory cost:  ${total_cost:.2f}"
+    )
+    print(
+        f"  Avg margin:      {avg_margin:.1f}%"
+    )
+    print()
+
+    if data.get("notes"):
+        print("  Notes:")
+        for n in data["notes"]:
+            print(f"    - {n}")
+        print()
+
+    candidates = data.get("candidates") or []
+    if not candidates:
+        print(
+            "  (no candidates surfaced -- run "
+            "`shopai api-status --category sourcing` "
+            "to verify supplier adapters are wired)"
+        )
+        return
+
+    print(
+        f"  {'#':<3} {'title':<32} {'supplier':<10} "
+        f"{'cost':>7} {'retail':>8} "
+        f"{'margin':>7} {'score':>6}"
+    )
+    print("  " + "-" * 76)
+    for i, c in enumerate(candidates, start=1):
+        print(
+            f"  {i:<3} {c.get('title', '?')[:32]:<32} "
+            f"{(c.get('supplier') or '?'):<10} "
+            f"${c.get('cost_usd', 0):>5.2f} "
+            f"${c.get('suggested_retail_usd', 0):>6.2f} "
+            f"{c.get('projected_margin_pct', 0):>5.0f}% "
+            f"{c.get('niche_match_score', 0):>5.2f}"
+        )
+        risks = c.get("risk_flags") or []
+        if risks:
+            print(
+                f"      risks: {', '.join(risks)}"
+            )
+    print()
+    action_id = data.get("approval_action_id")
+    if action_id:
+        print(
+            f"  Approval action id: {action_id}"
+        )
+        print(
+            f"  -> `shopai approvals show {action_id} "
+            "--with-context`  to review"
+        )
+        print(
+            f"  -> `shopai approvals approve {action_id}"
+            "` to import the batch"
+        )
+    elif submit:
+        print(
+            "  -> queue submission failed -- run with "
+            "`--json` for error detail"
+        )
+    else:
+        print(
+            "  -> dry-run (no queue submission). "
+            "Re-run with `--submit` to enqueue the "
+            "approval action."
         )
 
 
@@ -61269,6 +61442,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "store-creds":
         _cmd_store_creds(args)
+        return
+
+    if args.command == "propose-products":
+        _cmd_propose_products(args)
         return
 
     if args.command == "earn-readiness":
