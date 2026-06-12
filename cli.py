@@ -18458,6 +18458,58 @@ def _cmd_empire(args) -> None:
             "empire adapter-pnl block raised: %s", exc,
         )
 
+    # ─ W963-134: per-store quota state summary
+    # Surfaces critical/warn store counts inline so the
+    # operator sees budget pressure WITHOUT a separate
+    # shopai quota call. Silent when no caps configured
+    # OR everyone is OK -- avoids alarm fatigue.
+    quota_block = None
+    try:
+        from engines.per_store_quota import (
+            compute_all_snapshots,
+        )
+        snaps = compute_all_snapshots(window_hours=24.0)
+        if snaps:
+            critical = [
+                s for s in snaps
+                if s.state.value == "critical"
+            ]
+            warn = [
+                s for s in snaps
+                if s.state.value == "warn"
+            ]
+            # Surface only when there's something to
+            # action OR a capped store has activity.
+            capped_with_activity = [
+                s for s in snaps
+                if s.cap_usd > 0 and s.spend_usd > 0
+            ]
+            if critical or warn or capped_with_activity:
+                quota_block = {
+                    "critical_count": len(critical),
+                    "warn_count": len(warn),
+                    "tracked_count": len(snaps),
+                    "top_critical": [
+                        {
+                            "store_id": s.store_id,
+                            "adapter": (
+                                s.adapter
+                                or "(all adapters)"
+                            ),
+                            "pct_used": round(
+                                s.pct_used, 1,
+                            ),
+                            "spend_usd": s.spend_usd,
+                            "cap_usd": s.cap_usd,
+                        }
+                        for s in critical[:3]
+                    ],
+                }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "empire quota block raised: %s", exc,
+        )
+
     # ─ Cluster health verdicts
     health_block = None
     try:
@@ -18746,6 +18798,7 @@ def _cmd_empire(args) -> None:
             "approvals": approvals_block,
             "spend": spend_block,
             "adapter_pnl": adapter_pnl_block,
+            "quota": quota_block,
             "cluster_health": health_block,
             "engine_alerts": alerts_block,
             "transfers": transfers_block,
@@ -19274,6 +19327,36 @@ def _cmd_empire(args) -> None:
                     "    -> `shopai adapter-pnl` for "
                     "fleet drill-down"
                 )
+
+    # W963-134: per-store quota state
+    if quota_block:
+        crit = quota_block["critical_count"]
+        warn = quota_block["warn_count"]
+        tracked = quota_block["tracked_count"]
+        if crit > 0:
+            marker = "[BAD]"
+        elif warn > 0:
+            marker = "[WRN]"
+        else:
+            marker = "[OK ]"
+        print(
+            f"  Quota (24h):          {marker} "
+            f"{crit} critical, {warn} warn  "
+            f"({tracked} tracked)"
+        )
+        for c in quota_block["top_critical"]:
+            print(
+                f"    *** CRITICAL: {c['store_id']}/"
+                f"{c['adapter']}  "
+                f"${c['spend_usd']:.4f} of "
+                f"${c['cap_usd']:.2f}  "
+                f"({c['pct_used']:.0f}% used)"
+            )
+        if crit > 0 or warn > 0:
+            print(
+                "    -> `shopai quota --view critical`"
+                " for drill-down"
+            )
 
     # Approvals
     if approvals_block:
