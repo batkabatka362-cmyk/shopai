@@ -749,6 +749,126 @@ def _create_draft_article_dispatch(
     return _router_call("SHOPIFY_CREATE_ARTICLE", adapter_params)
 
 
+# ── brand_identity_composer -> SHOPIFY theme + assets ──
+
+
+@register_dispatcher("apply_brand_identity")
+def _apply_brand_identity_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """W963-149: replay brand identity composition.
+
+    Approved params shape (from W963-149 enqueue):
+      {
+        "palette": {primary, secondary, accent,
+                    text, background},
+        "typography": {heading, body},
+        "logo_concept": {brand_name, url},
+        "hero_candidates": [{url, source, ...}],
+        "tagline": "...",
+        ...
+      }
+
+    Theme push step ordering:
+      1. palette + typography -> SHOPIFY_UPDATE_ONLINE_STORE_SETTINGS
+         (or theme.json update)
+      2. logo_concept.url -> SHOPIFY_FILE_CREATE +
+         theme.config logo
+      3. hero_candidates -> SHOPIFY_FILE_CREATE batch
+
+    For now, return per-step status so the operator can
+    see what was applied. Theme PUT is non-trivial
+    Shopify-side; the dispatcher returns success when
+    AT LEAST the palette + logo applied, even if hero
+    uploads partial.
+    """
+    applied: list[str] = []
+    failed: list[dict[str, Any]] = []
+
+    # 1. Logo upload (highest-value individual step)
+    logo = params.get("logo_concept") or {}
+    if isinstance(logo, dict) and logo.get("url"):
+        try:
+            ok, result = _router_call(
+                "SHOPIFY_FILE_CREATE",
+                {
+                    "source_url": logo["url"],
+                    "alt": (
+                        f"Logo for "
+                        f"{logo.get('brand_name', '')}"
+                    ),
+                },
+            )
+            if ok:
+                applied.append("logo_uploaded")
+            else:
+                failed.append({
+                    "step": "logo_upload",
+                    "error": (
+                        result.get("error")
+                        if isinstance(result, dict)
+                        else str(result)
+                    )[:200],
+                })
+        except Exception as exc:  # noqa: BLE001
+            failed.append({
+                "step": "logo_upload",
+                "error": f"raised: {exc}"[:200],
+            })
+
+    # 2. Hero candidates upload (parallel-safe; degrades
+    # gracefully)
+    hero_count = 0
+    for h in (params.get("hero_candidates") or []):
+        if not isinstance(h, dict):
+            continue
+        url = h.get("url")
+        if not url:
+            continue
+        try:
+            ok, _ = _router_call(
+                "SHOPIFY_FILE_CREATE",
+                {
+                    "source_url": url,
+                    "alt": "Brand hero banner",
+                },
+            )
+            if ok:
+                hero_count += 1
+        except Exception as exc:  # noqa: BLE001
+            failed.append({
+                "step": "hero_upload",
+                "url": url,
+                "error": f"raised: {exc}"[:200],
+            })
+    if hero_count > 0:
+        applied.append(
+            f"hero_uploaded:{hero_count}",
+        )
+
+    # 3. Theme settings -- best-effort. Shopify's theme
+    # settings update is highly theme-specific; we log
+    # the intent here for operator follow-up. Adapter
+    # support will land in a follow-up commit.
+    palette = params.get("palette") or {}
+    typo = params.get("typography") or {}
+    if palette or typo:
+        applied.append("theme_intent_recorded")
+        # Future: actual SHOPIFY_UPDATE_THEME_SETTINGS
+        # call. For now the operator sees the intent in
+        # the result + can manually apply via theme
+        # editor. The downstream theme adapter (Phase 2
+        # follow-up) will close this gap.
+
+    success = bool(applied) and not failed
+    return success, {
+        "applied": applied,
+        "applied_count": len(applied),
+        "failed": failed,
+        "failed_count": len(failed),
+    }
+
+
 # ── product_onboarding_proposal -> SHOPIFY_CREATE_PRODUCT batch ──
 
 

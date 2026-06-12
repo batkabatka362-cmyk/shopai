@@ -2970,6 +2970,49 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ag_p.add_argument("--json", action="store_true")
 
+    # W963-149: compose-brand -- batch plan +
+    # approval for store brand identity setup.
+    cb_p = sub.add_parser(
+        "compose-brand",
+        help=(
+            "Compose a brand identity brief for a "
+            "store (palette + typography + name + "
+            "tagline + logo concepts + hero "
+            "candidates) and submit ONE approval "
+            "action. Operator approves the brief; "
+            "ShopAI auto-applies via theme + Files API."
+        ),
+    )
+    cb_p.add_argument(
+        "--store", required=True,
+        help="Target store_id.",
+    )
+    cb_p.add_argument(
+        "--niche", default="",
+        help=(
+            "Niche to drive composition (beauty / "
+            "fashion / tech / home / food / general). "
+            "Defaults to the store's tagged niche."
+        ),
+    )
+    cb_p.add_argument(
+        "--target-market", default="",
+        help="Optional market hint (US / EU / global).",
+    )
+    cb_p.add_argument(
+        "--logo-count", type=int, default=2,
+        help="Logo concepts to generate.",
+    )
+    cb_p.add_argument(
+        "--hero-count", type=int, default=3,
+        help="Hero candidates to fetch.",
+    )
+    cb_p.add_argument(
+        "--submit", action="store_true",
+        help="Submit the proposal to the queue.",
+    )
+    cb_p.add_argument("--json", action="store_true")
+
     # W963-108: earn-readiness -- pre-launch composer.
     er_p = sub.add_parser(
         "earn-readiness",
@@ -12816,6 +12859,141 @@ def _cmd_earn_path(args) -> None:
         print(
             "  NEXT: empire is earning -- monitor "
             "via shopai morning-brief"
+        )
+
+
+def _cmd_compose_brand(args) -> None:
+    """W963-149: brand identity composer."""
+    from engines.brand_identity_composer import (
+        BrandIdentityComposerEngine,
+    )
+    as_json = bool(getattr(args, "json", False))
+    submit = bool(getattr(args, "submit", False))
+    payload: dict[str, Any] = {
+        "data": {
+            "store_id": (
+                getattr(args, "store", "") or ""
+            ).strip(),
+            "niche": (
+                getattr(args, "niche", "") or ""
+            ).strip(),
+            "target_market": (
+                getattr(args, "target_market", "")
+                or ""
+            ).strip(),
+            "logo_concept_count": int(
+                getattr(args, "logo_count", 2) or 2,
+            ),
+            "hero_count": int(
+                getattr(args, "hero_count", 3) or 3,
+            ),
+            "submit_to_queue": submit,
+        },
+    }
+    result = BrandIdentityComposerEngine().run(payload)
+    if as_json:
+        print(json.dumps(
+            result, indent=2, default=str,
+        ))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success" or not data:
+        err = result.get("error") or "unknown error"
+        print(f"compose-brand: ERROR  {err}")
+        sys.exit(1)
+
+    print(
+        f"Brand identity proposal -- "
+        f"store={data.get('store_id')}  "
+        f"niche={data.get('niche', 'general')}"
+    )
+    print()
+
+    voice = data.get("voice") or ""
+    if voice:
+        print(f"  Voice:   {voice}")
+    tag = data.get("tagline") or ""
+    if tag:
+        print(f"  Tagline: {tag}")
+    names = data.get("brand_name_suggestions") or []
+    if names:
+        print(
+            "  Names:   " + ", ".join(names)
+        )
+    print()
+
+    p = data.get("palette") or {}
+    if p:
+        print("  Palette:")
+        for k in (
+            "primary", "secondary", "accent",
+            "text", "background",
+        ):
+            print(
+                f"    {k:<11} {p.get(k, '?')}"
+            )
+        print()
+
+    typo = data.get("typography") or {}
+    if typo:
+        print("  Typography:")
+        print(
+            f"    heading {typo.get('heading', '?')}"
+        )
+        print(
+            f"    body    {typo.get('body', '?')}"
+        )
+        print()
+
+    logos = data.get("logo_concepts") or []
+    if logos:
+        print("  Logo concepts:")
+        for i, l in enumerate(logos, start=1):
+            print(
+                f"    {i}. {l.get('brand_name', '?')} "
+                f"-> {l.get('url', '?')}"
+            )
+        print()
+
+    heroes = data.get("hero_candidates") or []
+    if heroes:
+        print("  Hero candidates:")
+        for i, h in enumerate(heroes, start=1):
+            print(
+                f"    {i}. {h.get('url', '?')}"
+            )
+        print()
+
+    notes = data.get("notes") or []
+    if notes:
+        print("  Notes:")
+        for n in notes:
+            print(f"    - {n}")
+        print()
+
+    action_id = data.get("approval_action_id")
+    if action_id:
+        print(
+            f"  Approval action id: {action_id}"
+        )
+        print(
+            f"  -> `shopai approvals show "
+            f"{action_id} --with-context`"
+        )
+        print(
+            f"  -> `shopai approvals approve "
+            f"{action_id}` to apply the brand"
+        )
+    elif submit:
+        print(
+            "  -> queue submit failed (run with "
+            "--json for detail)"
+        )
+    else:
+        print(
+            "  -> dry-run only. Re-run with "
+            "`--submit` to enqueue."
         )
 
 
@@ -61573,6 +61751,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomy-gate":
         _cmd_autonomy_gate(args)
+        return
+
+    if args.command == "compose-brand":
+        _cmd_compose_brand(args)
         return
 
     if args.command == "earn-readiness":

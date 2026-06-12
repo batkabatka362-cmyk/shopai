@@ -217,7 +217,11 @@ def audit_engine_capabilities(
         # contribute capability claims.
         # W963-145: helpdesk (Gorgias).
         # W963-146: analytics (GA4).
+        # W963-149: image (DALL-E etc.) + video_gen
+        # (Pexels etc.) claim GENERATE_IMAGE +
+        # VIDEO_STOCK_SEARCH.
         "sourcing", "tracking", "helpdesk", "analytics",
+        "image", "video_gen",
     ):
         try:
             pkg = __import__(
