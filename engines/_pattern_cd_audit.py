@@ -96,6 +96,13 @@ _CALLER_WRAPPED = (
     # _trigger_engine call in active_store(webhook_sid)
     # (W963-128 design).
     ("core/webhooks/__init__.py", "_trigger_engine"),
+    # core/webhooks/external/handler.py: handle() wraps
+    # each _trigger_engine call in active_store(sid)
+    # when sid resolves (W963-147 design).
+    (
+        "core/webhooks/external/handler.py",
+        "_trigger_engine",
+    ),
 )
 
 
