@@ -205,6 +205,11 @@ def _record_outcome(
     """
     try:
         from engines._writeback_recorder import record_writeback
+        # W963-156: pass store_id explicitly because this fan-out
+        # runs OUTSIDE the active_store(sid) block above. Without
+        # it the writeback log shows store_id="" for every queue-
+        # path execution -- attribution + Phase 8 lose the per-
+        # store join.
         record_writeback(
             engine=action.engine,
             action_type=action.action_type,
@@ -212,6 +217,9 @@ def _record_outcome(
             params=dict(action.params) if isinstance(action.params, dict) else {},
             success=success,
             error=error,
+            store_id=(
+                getattr(action, "store_id", None) or None
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug(

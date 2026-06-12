@@ -69,6 +69,18 @@ class LandingPageEngine:
         brand_voice = str(data.get("brand_voice", "professional"))
 
         if not product:
+            # W963-156: auto-hydrate first product when caller
+            # leaves it empty (cycle batch invocation).
+            try:
+                from engines._shopify_hydrator import hydrate_one
+                product = hydrate_one(
+                    supplied=None,
+                    capability_name="SHOPIFY_LIST_PRODUCTS",
+                    list_field="products",
+                )
+            except Exception:  # noqa: BLE001
+                product = {}
+        if not product:
             return self._fail("Product data is required", 0.0)
 
         # ---- Stage 1: Read past pages (non-blocking) ----

@@ -80,10 +80,27 @@ def calculate_depth(
         avg_price, avg_cogs, avg_max_discount = _aggregate_products(margin_analyses)
 
         if avg_price <= 0:
+            # W963-156: cold-start fallback. Products without
+            # priced variants (fresh DRAFT catalogue) used to
+            # crash the cycle with status=error. Now emit a
+            # conservative 10% suggestion + confidence=0.1 so
+            # downstream consumers still receive a usable
+            # plan and the orchestrator records ok.
             return {
-                "status": "error",
-                "calculation": {},
-                "error": "Average price is zero — cannot compute depth",
+                "status": "success",
+                "calculation": {
+                    "sweet_spot_pct": 0.10,
+                    "min_depth": 0.10,
+                    "max_depth": 0.10,
+                    "expected_volume_lift": 1.0,
+                    "margin_at_sweet_spot": 0.0,
+                    "depth_rationale": (
+                        "cold-start fallback (no priced "
+                        "products yet)"
+                    ),
+                    "confidence": 0.1,
+                },
+                "error": "",
             }
 
         # --- Min depth: type-specific floor ---

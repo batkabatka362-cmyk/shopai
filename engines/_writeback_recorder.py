@@ -78,6 +78,7 @@ def record_writeback(
     success: bool,
     error: str | None = None,
     metrics: dict[str, Any] | None = None,
+    store_id: str | None = None,
 ) -> None:
     """Record a Phase 6/7 writeback to the autonomous learning systems.
 
@@ -137,12 +138,35 @@ def record_writeback(
     else:
         merged_metrics = dict(metrics)
 
+    # W963-156: enrich action + result with active store_id.
+    # Explicit param wins; otherwise read the thread-local
+    # set by every Pattern CD entry point (cycle / webhook /
+    # approval-executor wraps). Without this the writeback
+    # log carried store_id="" -- breaking the per-store join
+    # needed by attribution + Phase 8 learning. Some callers
+    # (e.g. core/approval/executor._record_outcome) fan to
+    # the recorder OUTSIDE the active_store(...) block; they
+    # must pass store_id explicitly.
+    sid = str(store_id or "")
+    if not sid:
+        try:
+            from core.context import get_active_store_id
+            sid = str(get_active_store_id() or "")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "record_writeback active-store lookup failed:"
+                " %s",
+                exc,
+            )
+
     score = _compute_score(success=success, metrics=merged_metrics)
     result_data: dict[str, Any] = {
         "success": bool(success),
         "capability": capability,
         "engine": engine,
     }
+    if sid:
+        result_data["store_id"] = sid
     if error is not None:
         result_data["error"] = str(error)
     if merged_metrics:
@@ -153,6 +177,8 @@ def record_writeback(
         "capability": capability,
         "params": params,
     }
+    if sid:
+        action_data["store_id"] = sid
 
     # ---- MemoryIntelligence ------------------------------------
     _record_in_memory_intel(
