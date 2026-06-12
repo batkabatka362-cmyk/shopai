@@ -198,6 +198,35 @@ class TestReply:
         assert result.ok
         assert result.data["reply_sent"] is True
 
+    def test_reply_body_html_escaped(self):
+        # W963-153: body_html must HTML-escape special
+        # chars + convert newlines so the customer-facing
+        # HTML email matches what the agent wrote in plain
+        # text.
+        from core.adapters.helpdesk.gorgias import (
+            GorgiasAdapter,
+        )
+        a = GorgiasAdapter()
+        out = a._build_reply_payload(
+            body="A & B\nLine 2",
+            channel="email",
+        )
+        assert out["body_text"] == "A & B\nLine 2"
+        # Special chars escaped + newline -> <br/>
+        assert out["body_html"] == "A &amp; B<br/>Line 2"
+
+    def test_reply_body_html_no_html_injection(self):
+        from core.adapters.helpdesk.gorgias import (
+            GorgiasAdapter,
+        )
+        a = GorgiasAdapter()
+        out = a._build_reply_payload(
+            body="<script>alert(1)</script>",
+            channel="email",
+        )
+        assert "<script>" not in out["body_html"]
+        assert "&lt;script&gt;" in out["body_html"]
+
 
 class TestUpdateTags:
     def test_tags_validation(self):

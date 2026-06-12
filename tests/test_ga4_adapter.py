@@ -60,12 +60,15 @@ class TestTrackEvent:
         )
         assert not result.ok
 
-    def test_payload_shape(self):
+    def test_payload_shape_with_explicit_user_id(self):
+        # Caller passed user_id explicitly -> account-bound
+        # event, body should set BOTH client_id + user_id.
         from core.adapters.analytics.ga4 import GA4Adapter
         a = GA4Adapter()
         body = a._build_event_payload(
             event_name="purchase",
             user_id="u1",
+            has_explicit_user_id=True,
             event_params={
                 "value": 49.99,
                 "currency": "USD",
@@ -77,6 +80,21 @@ class TestTrackEvent:
         params = body["events"][0]["params"]
         assert params["value"] == 49.99
         assert params["engagement_time_msec"] == 100
+
+    def test_payload_shape_client_id_only(self):
+        # W963-153: caller passed only client_id -> device-
+        # scope, body must NOT set user_id (would pollute
+        # GA4 cross-device attribution).
+        from core.adapters.analytics.ga4 import GA4Adapter
+        a = GA4Adapter()
+        body = a._build_event_payload(
+            event_name="purchase",
+            user_id="cid_1234.5678",
+            has_explicit_user_id=False,
+            event_params={},
+        )
+        assert body["client_id"] == "cid_1234.5678"
+        assert "user_id" not in body
 
     def test_track_happy_path(self):
         from core.adapters.base import Capability

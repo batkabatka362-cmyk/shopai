@@ -150,21 +150,26 @@ def _safe_autopause_fires(
     window_seconds: float,
 ) -> int:
     """How many quota autopause fires happened for this
-    store in the window."""
+    store in the window.
+
+    W963-153: must use READ-ONLY ``critical_stores()``
+    rather than ``maybe_autopause()``. The latter has
+    SIDE EFFECTS when ``SHOPAI_QUOTA_AUTOPAUSE=1`` (calls
+    ``disarm()`` on every critical pair). Using it here
+    means the gate PROBE silently disarms spend-class
+    domains across the empire -- once per store per
+    check_autonomy_gate call.
+    """
     try:
-        from engines.per_store_quota.autopause import (
-            maybe_autopause,
+        from engines.per_store_quota.tracker import (
+            critical_stores,
         )
-        # No persistent log of autopause fires today.
-        # Probe the CURRENT state: if the store is in
-        # critical_stores RIGHT NOW that counts as an
-        # incident.
-        report = maybe_autopause(
+        snapshots = critical_stores(
             window_hours=window_seconds / 3600.0,
         )
         return sum(
-            1 for a in report.actions
-            if a.store_id == store_id
+            1 for s in snapshots
+            if s.store_id == store_id
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug(

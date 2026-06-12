@@ -22,6 +22,7 @@ Status normalisation:
 from __future__ import annotations
 
 import base64
+import html
 from typing import Any
 
 from ..config import get_config
@@ -167,7 +168,7 @@ class GorgiasAdapter(HelpdeskBaseAdapter):
         channel = kwargs.get("channel", "email")
         return {
             "body_text": body,
-            "body_html": body,
+            "body_html": _plain_to_html(body),
             "channel": channel,
             "from_agent": True,
             "via": "api",
@@ -200,7 +201,7 @@ class GorgiasAdapter(HelpdeskBaseAdapter):
             "customer": {"email": email},
             "messages": [{
                 "body_text": body,
-                "body_html": body,
+                "body_html": _plain_to_html(body),
                 "channel": "email",
             }],
             "tags": [
@@ -254,3 +255,26 @@ class GorgiasAdapter(HelpdeskBaseAdapter):
             ),
             "created_at": raw.get("created_datetime", ""),
         }
+
+
+def _plain_to_html(text: Any) -> str:
+    """Convert plain text into safe HTML for Gorgias.
+
+    W963-153: ``body_html`` previously echoed ``body_text``
+    raw. Gorgias renders ``body_html`` preferentially in
+    the agent UI + the customer email, so:
+
+      - ``&``, ``<``, ``>`` in plain text rendered as
+        broken markup or got HTML-injected by accident.
+      - Newlines collapsed to spaces, making multi-paragraph
+        replies show as one wall of text.
+
+    The fix: html-escape the body + convert newlines to
+    ``<br/>`` so the rendered HTML matches what the agent
+    wrote in plain text.
+    """
+    s = str(text or "")
+    escaped = html.escape(s, quote=False)
+    return escaped.replace("\r\n", "\n").replace(
+        "\n", "<br/>",
+    )

@@ -128,11 +128,18 @@ class AnalyticsBaseAdapter(BaseAdapter):
             raise AdapterValidationError(
                 self.name, "event_name required",
             )
-        user_id = str(
-            params.get("user_id")
-            or params.get("client_id")
-            or "",
-        )
+        raw_user_id = str(
+            params.get("user_id") or "",
+        ).strip()
+        raw_client_id = str(
+            params.get("client_id") or "",
+        ).strip()
+        # GA4 distinguishes client_id (device-scope, anonymous)
+        # from user_id (account-scope, cross-device). Preserve
+        # the caller's intent: if they passed user_id, this is
+        # an account-bound event; if only client_id, it stays
+        # device-anonymous.
+        user_id = raw_user_id or raw_client_id
         if not user_id:
             raise AdapterValidationError(
                 self.name,
@@ -142,6 +149,7 @@ class AnalyticsBaseAdapter(BaseAdapter):
         payload = self._build_event_payload(
             event_name=event_name,
             user_id=user_id,
+            has_explicit_user_id=bool(raw_user_id),
             event_params=params.get(
                 "event_params", {},
             ),

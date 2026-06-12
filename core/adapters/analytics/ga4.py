@@ -123,15 +123,14 @@ class GA4Adapter(AnalyticsBaseAdapter):
             "events": [event],
         }
         # GA4 distinguishes client_id (device-scoped)
-        # from user_id (account-scoped). When the
-        # caller passed a "user_id" key we ALSO set
-        # the top-level user_id to enable cross-device
-        # attribution.
-        original = kwargs.get(
-            "user_id",
-        )
-        if original and isinstance(original, str):
-            body["user_id"] = original
+        # from user_id (account-scoped). Set the
+        # top-level user_id ONLY when the caller passed
+        # an EXPLICIT user_id (account binding). Falling
+        # back from client_id would pollute GA4's
+        # cross-device attribution by labelling every
+        # anonymous device as an account.
+        if kwargs.get("has_explicit_user_id"):
+            body["user_id"] = user_id
         if ts_int > 0:
             body["timestamp_micros"] = ts_int
         return body
