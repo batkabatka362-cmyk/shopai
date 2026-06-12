@@ -18510,6 +18510,54 @@ def _cmd_empire(args) -> None:
             "empire quota block raised: %s", exc,
         )
 
+    # ─ W963-136: per-store cost forecast.
+    # Quota row shows "who IS at cap"; forecast shows
+    # "who WILL be at cap". Together they're proactive.
+    # Silent when nothing IMMINENT or CRITICAL.
+    forecast_block = None
+    try:
+        from engines.per_store_quota import (
+            ForecastVerdict, fleet_forecasts,
+        )
+        fcs = fleet_forecasts(
+            sample_hours=6.0, cap_window_hours=24.0,
+        )
+        urgent = [
+            f for f in fcs if f.verdict in (
+                ForecastVerdict.CRITICAL,
+                ForecastVerdict.IMMINENT,
+            )
+        ]
+        if urgent:
+            forecast_block = {
+                "critical_count": sum(
+                    1 for f in urgent
+                    if f.verdict == ForecastVerdict.CRITICAL
+                ),
+                "imminent_count": sum(
+                    1 for f in urgent
+                    if f.verdict == ForecastVerdict.IMMINENT
+                ),
+                "top_urgent": [
+                    {
+                        "store_id": f.store_id,
+                        "adapter": (
+                            f.adapter or "(all adapters)"
+                        ),
+                        "verdict": f.verdict.value,
+                        "hours_to_cap": f.hours_to_cap,
+                        "rate_per_hour_usd": (
+                            f.rate_per_hour_usd
+                        ),
+                    }
+                    for f in urgent[:3]
+                ],
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "empire forecast block raised: %s", exc,
+        )
+
     # ─ Cluster health verdicts
     health_block = None
     try:
@@ -18799,6 +18847,7 @@ def _cmd_empire(args) -> None:
             "spend": spend_block,
             "adapter_pnl": adapter_pnl_block,
             "quota": quota_block,
+            "forecast": forecast_block,
             "cluster_health": health_block,
             "engine_alerts": alerts_block,
             "transfers": transfers_block,
@@ -19357,6 +19406,34 @@ def _cmd_empire(args) -> None:
                 "    -> `shopai quota --view critical`"
                 " for drill-down"
             )
+
+    # W963-136: cost forecast row -- proactive signal
+    if forecast_block:
+        f_crit = forecast_block["critical_count"]
+        f_imm = forecast_block["imminent_count"]
+        mk = "[BAD]" if f_crit > 0 else "[WRN]"
+        print(
+            f"  Forecast (24h):       {mk} "
+            f"{f_crit} hits-cap-soon, "
+            f"{f_imm} approaching"
+        )
+        for u in forecast_block["top_urgent"]:
+            hours = u["hours_to_cap"]
+            hours_str = (
+                f"{hours:.1f}h" if hours < 9999
+                else "..."
+            )
+            rate = u["rate_per_hour_usd"]
+            print(
+                f"    *** {u['verdict'].upper()}: "
+                f"{u['store_id']}/{u['adapter']}  "
+                f"hits cap in {hours_str}  "
+                f"(burn ${rate:.2f}/h)"
+            )
+        print(
+            "    -> `shopai forecast` for fleet "
+            "drill-down"
+        )
 
     # Approvals
     if approvals_block:
@@ -20824,6 +20901,57 @@ def _cmd_daily_brief(args) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "daily-brief quota block raised: %s",
+            exc,
+        )
+
+    # W963-136: cost forecast row in daily-brief.
+    # Proactive complement to W963-135's quota row --
+    # quota says "WHO IS at cap"; forecast says "WHO
+    # WILL be at cap soon". Operator sees both in the
+    # morning check.
+    try:
+        from engines.per_store_quota import (
+            ForecastVerdict, fleet_forecasts,
+        )
+        fcs = fleet_forecasts(
+            sample_hours=6.0, cap_window_hours=24.0,
+        )
+        urgent = [
+            f for f in fcs if f.verdict in (
+                ForecastVerdict.CRITICAL,
+                ForecastVerdict.IMMINENT,
+            )
+        ]
+        if urgent:
+            crit_n = sum(
+                1 for f in urgent
+                if f.verdict == ForecastVerdict.CRITICAL
+            )
+            imm_n = sum(
+                1 for f in urgent
+                if f.verdict == ForecastVerdict.IMMINENT
+            )
+            mk = "[BAD]" if crit_n > 0 else "[WRN]"
+            print(
+                f"  Forecast:     {mk} "
+                f"{crit_n} hits-cap-soon, "
+                f"{imm_n} approaching"
+            )
+            worst = urgent[0]
+            hours_str = (
+                f"{worst.hours_to_cap:.1f}h"
+                if worst.hours_to_cap < 9999 else "..."
+            )
+            print(
+                f"    *** {worst.verdict.value.upper()}: "
+                f"{worst.store_id}/"
+                f"{worst.adapter or '(all)'}  "
+                f"hits cap in {hours_str}  "
+                f"-> `shopai forecast`"
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "daily-brief forecast block raised: %s",
             exc,
         )
 
