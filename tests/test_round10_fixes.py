@@ -111,6 +111,119 @@ class TestExhaustedSurfacesInForecast:
         )
 
 
+class TestForecasterActualSpanFloor:
+    """Round-10 #1: W963-138 floors effective_span at
+    15 minutes (0.25h) so a single seconds-old cost
+    event does not extrapolate to astronomical rates."""
+
+    def test_single_fresh_event_no_false_critical(
+        self, _isolated_costs_log, monkeypatch,
+    ):
+        """A brand-new store with one $2 event 5 seconds
+        ago against a $100 cap previously produced
+        rate=$1440/h, hours_to_cap=0.07h, verdict=
+        CRITICAL. Floor makes the worst-case rate sane."""
+        from engines.per_store_quota import (
+            ForecastVerdict, fleet_forecasts,
+        )
+
+        monkeypatch.setenv(
+            "SHOPAI_STORE_STORE_A_OPENAI_DAILY_BUDGET_USD",
+            "100",
+        )
+        now = time.time()
+        with open(
+            _isolated_costs_log,
+            "w", encoding="utf-8",
+        ) as f:
+            f.write(json.dumps({
+                "ts": now - 5,
+                "store_id": "store_a",
+                "adapter": "openai",
+                "capability": "chat",
+                "cost_usd": 2.0,
+                "ok": True,
+            }) + "\n")
+        fcs = fleet_forecasts(
+            sample_hours=6.0, cap_window_hours=24.0,
+        )
+        # Focus on the per-adapter row where the cap
+        # is actually set (we only set the openai cap)
+        adapter_fcs = [
+            f for f in fcs
+            if f.store_id == "store_a"
+            and f.adapter == "openai"
+        ]
+        assert adapter_fcs
+        for f in adapter_fcs:
+            # Floor: rate <= $2 / 0.25h = $8/h
+            assert f.rate_per_hour_usd <= 8.5, (
+                f"Rate {f.rate_per_hour_usd}/h too "
+                f"high (expected <= $8/h with floor)"
+            )
+            # $98 headroom / $8/h = 12.25h
+            # No false CRITICAL on the first event
+            assert f.verdict != ForecastVerdict.CRITICAL, (
+                f"False CRITICAL on cold-start "
+                f"(verdict={f.verdict.value})"
+            )
+            assert f.hours_to_cap > 5.0, (
+                f"hours_to_cap {f.hours_to_cap} too "
+                f"low (floor should keep cold-start "
+                f"prediction reasonable)"
+            )
+
+    def test_steady_burn_pattern_still_critical(
+        self, _isolated_costs_log, monkeypatch,
+    ):
+        """Floor must NOT mask genuinely fast burns:
+        $10/h sustained over 5h is still $50 spent and
+        should still hit CRITICAL territory."""
+        from engines.per_store_quota import (
+            ForecastVerdict, fleet_forecasts,
+        )
+
+        monkeypatch.setenv(
+            "SHOPAI_STORE_STORE_A_OPENAI_DAILY_BUDGET_USD",
+            "60",
+        )
+        now = time.time()
+        # 5 events spread over 5 hours, $10 each = $50
+        # in 5h actual span -> rate = $10/h, headroom
+        # $10, hours_to_cap = 1h -> CRITICAL
+        with open(
+            _isolated_costs_log,
+            "w", encoding="utf-8",
+        ) as f:
+            for h in (5, 4, 3, 2, 1):
+                f.write(json.dumps({
+                    "ts": now - 3600 * h,
+                    "store_id": "store_a",
+                    "adapter": "openai",
+                    "capability": "chat",
+                    "cost_usd": 10.0,
+                    "ok": True,
+                }) + "\n")
+        fcs = fleet_forecasts(
+            sample_hours=6.0, cap_window_hours=24.0,
+        )
+        # Find the per-adapter row (not total)
+        adapter_fcs = [
+            f for f in fcs
+            if f.store_id == "store_a"
+            and f.adapter == "openai"
+        ]
+        assert adapter_fcs
+        # Should still be CRITICAL (fast burn near cap)
+        assert any(
+            f.verdict == ForecastVerdict.CRITICAL
+            for f in adapter_fcs
+        ), (
+            "Floor must not mask genuine fast-burn "
+            "CRITICAL signals"
+        )
+
+
 class TestForecastDrillHintIsValid:
     """Round-10 #5: drill hint `shopai forecast` is NOT
     a real subcommand. Correct: `shopai quota

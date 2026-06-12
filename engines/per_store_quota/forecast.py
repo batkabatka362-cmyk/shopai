@@ -215,10 +215,24 @@ def forecast_to_cap(
         store_id=store_id, adapter=adapter,
         sample_hours=sample_hours,
     )
-    effective_span = (
-        min(sample, actual_span)
-        if actual_span > 0 else sample
-    )
+    # W963-138 round-10 #1 fix: floor the effective_span
+    # at 15 minutes (0.25h). Pre-fix a single $2 cost
+    # event 5 seconds old produced actual_span = 0.001h,
+    # rate = $2/0.001 = $1440/h, hours_to_cap collapsed
+    # near 0, CRITICAL fired on a brand-new store with
+    # 2% of its cap used. The 15-min floor smooths the
+    # cold-start path: a single fresh event extrapolates
+    # to $8/h (still alarming for a $10 cap, but not
+    # astronomical), and 2+ events naturally drive
+    # actual_span past the floor.
+    _MIN_RATE_SPAN_HOURS = 0.25
+    if actual_span > 0:
+        effective_span = min(
+            sample,
+            max(actual_span, _MIN_RATE_SPAN_HOURS),
+        )
+    else:
+        effective_span = sample
     rate = (
         sample_spend / effective_span
         if effective_span > 0 else 0.0
