@@ -87,7 +87,34 @@ class AudienceTargetingEngine:
         )
 
         if not customers:
-            return self._fail("Customer list is required", 0.0)
+            # W963-161: cold-start success-skip (mirrors the
+            # W963-156 cycle-output fix pattern). Stores with
+            # 0 customers used to trip a hard error here. The
+            # right semantic is success + empty plan: engine
+            # ran, found no input, recommended nothing. Cycle
+            # records ok; downstream consumers see empty
+            # audiences list + skipped flag.
+            return {
+                "status": "success",
+                "data": {
+                    "audiences": [],
+                    "recommended_audience": None,
+                    "total_reachable": 0,
+                    "tagged_audiences": [],
+                    "skipped": True,
+                    "skip_reason": (
+                        "no_customers_yet (cold-start)"
+                    ),
+                },
+                "meta": {
+                    "engine": self.ENGINE_NAME,
+                    "timestamp": time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(),
+                    ),
+                    "elapsed_seconds": 0.0,
+                },
+                "error": None,
+            }
 
         # ---- Stage 1: Read past audiences (non-blocking) ----
         _past = read_past_audiences(limit=5)

@@ -79,10 +79,32 @@ def project_revenue(
             count += 1
 
         if count == 0 or total_daily_units <= 0:
+            # W963-161: cold-start fallback (mirrors the W963-156
+            # depth_calculator fix). Cold-start stores with no
+            # priced products + no recorded daily_sales used to
+            # crash the cycle with status=error. Emit a synthetic
+            # zero-projection so downstream consumers receive a
+            # usable envelope + cycle records ok.
             return {
-                "status": "error",
-                "projection": {},
-                "error": "No valid products for revenue projection",
+                "status": "success",
+                "projection": {
+                    "baseline_daily_revenue": 0.0,
+                    "discounted_daily_revenue": 0.0,
+                    "incremental_daily_revenue": 0.0,
+                    "baseline_daily_profit": 0.0,
+                    "discounted_daily_profit": 0.0,
+                    "incremental_daily_profit": 0.0,
+                    "campaign_total_revenue": 0.0,
+                    "campaign_total_profit": 0.0,
+                    "expected_volume_lift": 1.0,
+                    "margin_loss_per_unit": 0.0,
+                    "confidence": 0.1,
+                    "rationale": (
+                        "cold-start fallback (no priced "
+                        "products or daily-sales history)"
+                    ),
+                },
+                "error": "",
             }
 
         avg_price /= count

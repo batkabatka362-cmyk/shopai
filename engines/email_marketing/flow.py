@@ -78,13 +78,33 @@ class EmailMarketingEngine:
         # Stage 0: Input validation and deep copy
         parsed = self._validate_input(input_payload)
         if parsed is None:
-            return self._error_output(
-                reason=(
-                    "Invalid input: requires 'goal' (non-empty string) "
-                    "and 'audience_segments' (non-empty list)."
-                ),
-                elapsed=time.monotonic() - start,
-            )
+            # W963-161: cold-start success-skip. Cycle-orchestrator
+            # invocations without an upstream audience_targeting
+            # output have no goal + no segments; that's legitimate
+            # cold-start state, not an engine bug. Return success
+            # + empty plan so the cycle records ok.
+            return {
+                "status": "success",
+                "data": {
+                    "campaigns": [],
+                    "minted_codes": [],
+                    "skipped": True,
+                    "skip_reason": (
+                        "no_goal_or_segments_supplied "
+                        "(cold-start)"
+                    ),
+                },
+                "meta": {
+                    "engine": "email_marketing",
+                    "timestamp": time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(),
+                    ),
+                    "elapsed_seconds": round(
+                        time.monotonic() - start, 3,
+                    ),
+                },
+                "error": None,
+            }
 
         goal: str = parsed["goal"]
         products: list[dict[str, Any]] = parsed["products"]

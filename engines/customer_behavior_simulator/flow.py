@@ -65,7 +65,25 @@ class CustomerBehaviorSimulatorEngine:
         )
 
         if not customers:
-            return self._fail("Customer list is required", 0.0)
+            # W963-161: cold-start success-skip.
+            return {
+                "status": "success",
+                "data": {
+                    "simulations": [],
+                    "skipped": True,
+                    "skip_reason": (
+                        "no_customers_yet (cold-start)"
+                    ),
+                },
+                "meta": {
+                    "engine": self.ENGINE_NAME,
+                    "timestamp": time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(),
+                    ),
+                    "elapsed_seconds": 0.0,
+                },
+                "error": None,
+            }
         if not proposed_actions:
             return self._fail("At least one proposed action is required", 0.0)
 
