@@ -324,6 +324,88 @@ def _check_wired_engines() -> CheckSlice:
 # ── Composer ──────────────────────────────────────────────
 
 
+def _check_per_store_quota() -> CheckSlice:
+    """W963-140: per-store budget pressure check.
+
+    Surfaces stores already at CRITICAL/EXHAUSTED quota
+    BEFORE the operator launches a cycle. A 20-store
+    empire about to start automating but with one store
+    already over its cap needs to know -- the cycle would
+    autopause that store on first iteration.
+    """
+    try:
+        from engines.per_store_quota import (
+            critical_stores, warn_stores,
+        )
+        crit = critical_stores(window_hours=24.0)
+        warn = warn_stores(window_hours=24.0)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "earn-readiness per-store quota probe "
+            "raised: %s", exc,
+        )
+        return CheckSlice(
+            name="per_store_quota",
+            cls="warn",
+            headline=(
+                "Per-store quota probe unavailable"
+            ),
+            detail=str(exc)[:120],
+        )
+
+    if not crit and not warn:
+        return CheckSlice(
+            name="per_store_quota",
+            cls="ok",
+            headline=(
+                "No store is at WARN or CRITICAL budget"
+            ),
+        )
+
+    if crit:
+        # CRITICAL surfaces as warn (not fail) -- launching
+        # is still safe, the autopause bridge handles the
+        # over-cap store. But operator should know.
+        sample = crit[0]
+        return CheckSlice(
+            name="per_store_quota",
+            cls="warn",
+            headline=(
+                f"{len(crit)} store(s) over budget cap"
+            ),
+            detail=(
+                f"e.g. {sample.store_id}/"
+                f"{sample.adapter or '(all)'}: "
+                f"${sample.spend_usd:.2f} of "
+                f"${sample.cap_usd:.2f} "
+                f"({sample.pct_used:.0f}% used)"
+            ),
+            fix=(
+                "shopai quota --view critical -- review "
+                "+ raise caps OR enable autopause "
+                "(SHOPAI_QUOTA_AUTOPAUSE=1)"
+            ),
+        )
+
+    # Only WARN stores (no critical)
+    sample = warn[0]
+    return CheckSlice(
+        name="per_store_quota",
+        cls="warn",
+        headline=(
+            f"{len(warn)} store(s) approaching budget cap"
+        ),
+        detail=(
+            f"e.g. {sample.store_id}/"
+            f"{sample.adapter or '(all)'}: "
+            f"${sample.spend_usd:.2f} of "
+            f"${sample.cap_usd:.2f} "
+            f"({sample.pct_used:.0f}% used)"
+        ),
+        fix="shopai quota --view warn",
+    )
+
+
 def _compose_verdict(checks: list[CheckSlice]) -> str:
     """Map per-check verdicts to an overall verdict."""
     has_fail = any(c.cls == "fail" for c in checks)
@@ -366,6 +448,7 @@ def build_readiness() -> EarnReadinessReport:
         _check_go_live(),
         _check_autonomy_doctor(),
         _check_cycle_history(),
+        _check_per_store_quota(),
     ]
     report = EarnReadinessReport(
         checks=checks,

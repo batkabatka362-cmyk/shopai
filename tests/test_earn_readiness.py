@@ -108,10 +108,15 @@ class TestBuildReadiness:
             "engines.earn_readiness.composer."
             "_check_wired_engines",
             return_value=CheckSlice("wired_engines", "ok", "x"),
+        ), patch(
+            # W963-140: 6th probe (per-store quota)
+            "engines.earn_readiness.composer."
+            "_check_per_store_quota",
+            return_value=CheckSlice("per_store_quota", "ok", "x"),
         ):
             report = build_readiness()
         assert report.overall_verdict == "ready"
-        assert report.ok_count == 5
+        assert report.ok_count == 6  # W963-140: 5 -> 6
         assert report.fail_count == 0
         assert "READY TO LAUNCH" in report.headline
 
