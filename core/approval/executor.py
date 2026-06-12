@@ -132,8 +132,22 @@ def execute_action(action_id: str) -> ApprovalAction | None:
             },
         )
 
+    # W963-133: wrap dispatcher in active_store(action.
+    # store_id) so its adapter calls (Shopify mutations,
+    # LLM costs, etc.) resolve the right per-store
+    # credentials. Pre-fix every approved-action
+    # execution silently used env-default Shopify
+    # credentials regardless of which store the action
+    # was scoped to -- same money-class symptom W963-
+    # 127/128 closed for cycle + webhook paths.
+    sid = getattr(action, "store_id", None) or ""
     try:
-        success, result = dispatcher(action.params)
+        if sid:
+            from core.context import active_store
+            with active_store(sid):
+                success, result = dispatcher(action.params)
+        else:
+            success, result = dispatcher(action.params)
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "dispatcher %s raised for %s: %s",
