@@ -456,6 +456,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "per_store_costs",       # W963-118: per-store cost attribution + query
     "per_store_quota",       # W963-119: per-store budget caps + alerts
     "per_store_pnl",         # W963-121: per-store profit/loss view
+    "per_store_creds",       # W963-142: per-store credential override visibility
 })
 
 
