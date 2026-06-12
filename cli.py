@@ -32904,59 +32904,101 @@ def _cmd_cycle_run(args) -> None:
         quota_report = _maybe_quota_autopause(
             window_hours=24.0,
         )
-        # W963-132 round-9 #9 fix: the elif branch
-        # previously fired the misleading "OFF but ..."
-        # message whenever applied_count was 0 -- even
-        # when SHOPAI_QUOTA_AUTOPAUSE=1 (enabled) and the
-        # actions were BLOCKED by fleet-arm collisions
-        # (every action had .error set, applied stayed
-        # False). Operator was told to enable an already-
-        # enabled setting; the real cause (fleet-arm
-        # collision) was silently lost.
-        if quota_report.applied_count > 0:
+        # W963-132 (round-9 #9) + W963-139 (round-10
+        # #2 + #4): honest mixed-outcome reporting.
+        #
+        # W963-132 split the elif into 3 cases when
+        # applied_count == 0. W963-139 fixes 2 follow-on
+        # bugs in that split:
+        #
+        #  #2: when applied_count > 0 BUT some actions
+        #      also collided, the success path never
+        #      surfaced the blocked set -- partial
+        #      collisions were silent.
+        #  #4: the 'enabled + no errors + would-apply > 0'
+        #      branch fires every steady-state cycle
+        #      where actions are IDEMPOTENT NO-OPS
+        #      (disarm() returns False because the
+        #      domain is already disarmed from a prior
+        #      cycle). Operator sees 'N action(s)
+        #      pending' every cycle for work that is
+        #      already done.
+        applied = quota_report.applied_count
+        would_apply = quota_report.would_apply_count
+        blocked_actions = [
+            a for a in quota_report.actions if a.error
+        ]
+        # All actions are idempotent no-ops when nothing
+        # applied AND nothing errored AND we DID try
+        # (would_apply > 0). The bridge ran, the disarm
+        # calls succeeded (returned False -> already
+        # disarmed), no new pauses needed.
+        all_noops = (
+            applied == 0
+            and not blocked_actions
+            and would_apply > 0
+        )
+
+        if applied > 0 and blocked_actions:
+            # W963-139 #2: partial collision -- some
+            # applied, some blocked. Surface BOTH so
+            # operator sees the full picture.
+            first_err = blocked_actions[0]
+            logger.info(
+                "per-store quota autopause: %d "
+                "domain(s) paused across %d store(s); "
+                "%d additional action(s) BLOCKED "
+                "(e.g. %s/%s: %s)",
+                applied,
+                quota_report.critical_store_count,
+                len(blocked_actions),
+                first_err.store_id,
+                first_err.domain,
+                first_err.error[:120],
+            )
+        elif applied > 0:
+            # Pure-success path
             logger.info(
                 "per-store quota autopause: %d "
                 "domain(s) paused across %d store(s)",
-                quota_report.applied_count,
+                applied,
                 quota_report.critical_store_count,
             )
-        elif quota_report.would_apply_count > 0:
-            blocked_actions = [
-                a for a in quota_report.actions
-                if a.error
-            ]
-            if quota_report.enabled and blocked_actions:
-                # Enabled but every action errored -- log
-                # the FIRST error verbatim so operator
-                # sees the real cause.
-                first_err = blocked_actions[0]
-                logger.info(
-                    "per-store quota autopause: %d "
-                    "action(s) BLOCKED (e.g. %s/%s: %s)",
-                    len(blocked_actions),
-                    first_err.store_id,
-                    first_err.domain,
-                    first_err.error[:120],
-                )
-            elif quota_report.enabled:
-                # Enabled, would-apply > 0, no errors --
-                # shouldn't happen in practice but log
-                # honestly.
-                logger.info(
-                    "per-store quota autopause enabled: "
-                    "%d action(s) pending",
-                    quota_report.would_apply_count,
-                )
-            else:
-                # Truly OFF (dry-run mode) -- the original
-                # message is correct here.
-                logger.info(
-                    "per-store quota autopause OFF but "
-                    "%d domain(s) would be paused "
-                    "(SHOPAI_QUOTA_AUTOPAUSE=1 to "
-                    "enable)",
-                    quota_report.would_apply_count,
-                )
+        elif blocked_actions and quota_report.enabled:
+            # Enabled + all attempted actions blocked
+            # (fleet-arm collision etc.) -- log first
+            # error verbatim
+            first_err = blocked_actions[0]
+            logger.info(
+                "per-store quota autopause: %d "
+                "action(s) BLOCKED (e.g. %s/%s: %s)",
+                len(blocked_actions),
+                first_err.store_id,
+                first_err.domain,
+                first_err.error[:120],
+            )
+        elif all_noops and quota_report.enabled:
+            # W963-139 #4: steady-state idempotent
+            # no-ops. Stores are already paused from
+            # a prior cycle; nothing to do. Log honestly
+            # at DEBUG (not INFO) so the message is
+            # available for troubleshooting but does
+            # not flood the operator's INFO stream.
+            logger.debug(
+                "per-store quota autopause: %d "
+                "action(s) already paused (idempotent "
+                "no-op)",
+                would_apply,
+            )
+        elif would_apply > 0 and not quota_report.enabled:
+            # Truly OFF (dry-run mode)
+            logger.info(
+                "per-store quota autopause OFF but "
+                "%d domain(s) would be paused "
+                "(SHOPAI_QUOTA_AUTOPAUSE=1 to "
+                "enable)",
+                would_apply,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "per-store quota autopause failed: %s", exc,

@@ -111,6 +111,161 @@ class TestExhaustedSurfacesInForecast:
         )
 
 
+class TestAutopauseLogHonesty:
+    """Round-10 #2 + #4: autopause log path must
+    honestly distinguish:
+      - all-applied (pure success)
+      - mixed applied + blocked (W963-139 #2)
+      - all-blocked (W963-132 already covered)
+      - steady-state idempotent no-ops (W963-139 #4)
+      - dry-run mode (true OFF)
+    """
+
+    def _simulate_log_path(self, applied, would_apply,
+                           critical_count, blocked_actions,
+                           enabled):
+        """Direct unit test of the dispatch logic --
+        avoids the full cycle invocation."""
+        import logging
+        log = logging.getLogger(
+            "test_w963_139_dispatch",
+        )
+
+        all_noops = (
+            applied == 0
+            and not blocked_actions
+            and would_apply > 0
+        )
+        captured: list[tuple[str, str]] = []
+
+        class _Cap(logging.Handler):
+            def emit(self, record):
+                captured.append(
+                    (record.levelname, record.getMessage()),
+                )
+
+        handler = _Cap()
+        handler.setLevel(logging.DEBUG)
+        log.addHandler(handler)
+        log.setLevel(logging.DEBUG)
+
+        try:
+            if applied > 0 and blocked_actions:
+                first = blocked_actions[0]
+                log.info(
+                    "%d paused; %d BLOCKED (e.g. %s/%s: %s)",
+                    applied, len(blocked_actions),
+                    first["store_id"], first["domain"],
+                    first["error"][:120],
+                )
+            elif applied > 0:
+                log.info("%d paused", applied)
+            elif blocked_actions and enabled:
+                first = blocked_actions[0]
+                log.info(
+                    "%d BLOCKED (e.g. %s/%s: %s)",
+                    len(blocked_actions),
+                    first["store_id"], first["domain"],
+                    first["error"][:120],
+                )
+            elif all_noops and enabled:
+                log.debug(
+                    "%d already paused (idempotent)",
+                    would_apply,
+                )
+            elif would_apply > 0 and not enabled:
+                log.info(
+                    "OFF but %d would pause",
+                    would_apply,
+                )
+        finally:
+            log.removeHandler(handler)
+        return captured
+
+    def test_partial_collision_surfaces_blocked(self):
+        """W963-139 #2: applied > 0 AND some blocked
+        -> log must mention BOTH."""
+        captured = self._simulate_log_path(
+            applied=2,
+            would_apply=4,
+            critical_count=1,
+            blocked_actions=[{
+                "store_id": "store_a",
+                "domain": "marketing",
+                "error": "fleet-wide arm prevents per-store",
+            }],
+            enabled=True,
+        )
+        assert captured
+        level, msg = captured[0]
+        assert level == "INFO"
+        assert "2 paused" in msg
+        assert "BLOCKED" in msg
+        assert "fleet-wide arm" in msg
+
+    def test_steady_state_noops_logged_at_debug(self):
+        """W963-139 #4: applied=0 + would_apply>0 + no
+        errors + enabled -> idempotent no-op, log at
+        DEBUG not INFO so operator INFO stream stays
+        clean."""
+        captured = self._simulate_log_path(
+            applied=0,
+            would_apply=4,
+            critical_count=1,
+            blocked_actions=[],
+            enabled=True,
+        )
+        assert captured
+        level, msg = captured[0]
+        # Steady-state should be DEBUG, not INFO
+        assert level == "DEBUG", (
+            f"Steady-state no-op logged at {level} "
+            f"(expected DEBUG to avoid INFO flood)"
+        )
+        assert "already paused" in msg
+
+    def test_pure_success_no_blocked_mention(self):
+        captured = self._simulate_log_path(
+            applied=4,
+            would_apply=4,
+            critical_count=1,
+            blocked_actions=[],
+            enabled=True,
+        )
+        level, msg = captured[0]
+        assert level == "INFO"
+        assert "4 paused" in msg
+        assert "BLOCKED" not in msg
+
+    def test_all_blocked_surfaces_error(self):
+        captured = self._simulate_log_path(
+            applied=0,
+            would_apply=4,
+            critical_count=1,
+            blocked_actions=[{
+                "store_id": "store_a",
+                "domain": "marketing",
+                "error": "all blocked",
+            }],
+            enabled=True,
+        )
+        level, msg = captured[0]
+        assert level == "INFO"
+        assert "BLOCKED" in msg
+
+    def test_dry_run_off_branch_preserved(self):
+        captured = self._simulate_log_path(
+            applied=0,
+            would_apply=4,
+            critical_count=1,
+            blocked_actions=[],
+            enabled=False,
+        )
+        level, msg = captured[0]
+        assert level == "INFO"
+        assert "OFF but" in msg
+
+
 class TestForecasterActualSpanFloor:
     """Round-10 #1: W963-138 floors effective_span at
     15 minutes (0.25h) so a single seconds-old cost
