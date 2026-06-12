@@ -138,6 +138,46 @@ EVENT_ENGINE_MAP: dict[str, list[dict[str, str]]] = {
         },
     ],
 
+    # ── Klarna (W963-155) ───────────────────────────
+    "klarna.order.captured": [
+        {
+            "engine": "revenue_attribution",
+            "data_key": "klarna_event",
+        },
+    ],
+    "klarna.order.refunded": [
+        {
+            "engine": "returns_management",
+            "data_key": "klarna_event",
+        },
+    ],
+    "klarna.order.cancelled": [
+        {
+            "engine": "returns_management",
+            "data_key": "klarna_event",
+        },
+        {
+            "engine": "fraud_detection",
+            "data_key": "klarna_event",
+        },
+    ],
+    "klarna.order.chargeback": [
+        {
+            "engine": "customer_support",
+            "data_key": "klarna_event",
+        },
+        {
+            "engine": "fraud_detection",
+            "data_key": "klarna_event",
+        },
+    ],
+    "klarna.subscription.cancelled": [
+        {
+            "engine": "churn_prediction",
+            "data_key": "klarna_event",
+        },
+    ],
+
     # ── Klaviyo (W963-151) ──────────────────────────
     "klaviyo.unsubscribe": [
         {

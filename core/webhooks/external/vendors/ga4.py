@@ -15,6 +15,10 @@ from ..handler import VendorHandler
 
 class GA4VendorHandler(VendorHandler):
     name = "ga4"
+    # W963-155: GA4 is placeholder/outbound-only. Pattern
+    # CE audit skips EVENT_ENGINE_MAP check for handlers
+    # that opt out via inbound=False.
+    inbound = False
 
     def extract_topic(
         self, payload: dict[str, Any],

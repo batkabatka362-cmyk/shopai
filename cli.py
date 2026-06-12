@@ -6619,6 +6619,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_cd_p.add_argument("--json", action="store_true")
 
+    # W963-155: Pattern CE -- external vendor handler parity.
+    pattern_ce_p = sub.add_parser(
+        "pattern-ce-audit",
+        help=(
+            "W963-155: verify every VendorHandler subclass "
+            "in core/webhooks/external/vendors/ is exported "
+            "in BOTH __init__ files AND has at least one "
+            "EVENT_ENGINE_MAP entry. Catches the silent "
+            "'forgot to wire new vendor' bug class."
+        ),
+    )
+    pattern_ce_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 926: thrash guardrail status CLI
     thrash_guardrail_p = sub.add_parser(
         "thrash-guardrail",
@@ -42209,6 +42224,57 @@ def _cmd_pattern_cd_audit(args) -> None:
         )
 
 
+def _cmd_pattern_ce_audit(args) -> None:
+    """W963-155: Pattern CE audit -- external vendor
+    handler registration parity."""
+    from engines._pattern_ce_audit import (
+        audit_vendor_handler_parity,
+    )
+    as_json = bool(getattr(args, "json", False))
+    report = audit_vendor_handler_parity()
+    if as_json:
+        print(json.dumps({
+            "vendors_checked": report.vendors_checked,
+            "violations": [
+                {
+                    "handler_class": v.handler_class,
+                    "module_path": v.module_path,
+                    "missing": list(v.missing),
+                }
+                for v in report.violations
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern CE FAILED -- "
+            f"{len(report.violations)} vendor handler "
+            "registration gap(s):"
+        )
+        for v in report.violations:
+            print(
+                f"  {v.handler_class} ({v.module_path})"
+            )
+            for m in v.missing:
+                print(f"    -> missing: {m}")
+        print(
+            "\nFix: add the class to vendors/__init__.py "
+            "+ external/__init__.py __all__, AND wire at "
+            "least one EVENT_ENGINE_MAP key with the "
+            "handler's `name` prefix."
+        )
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern CE OK -- "
+            f"{len(report.vendors_checked)} vendor "
+            "handler(s) all registered in 3 catalogs."
+        )
+
+
 def _cmd_pattern_cc_audit(args) -> None:
     """W963-92: persistence helpers consolidation guard."""
     from engines._pattern_cc_audit import (
@@ -52431,6 +52497,24 @@ def _run_one_audit(name: str) -> dict[str, Any]:
                     for v in r.violations
                 ],
             }
+        if name == "pattern_ce":
+            # W963-155: vendor handler registration parity.
+            from engines._pattern_ce_audit import (
+                audit_vendor_handler_parity,
+            )
+            r = audit_vendor_handler_parity()
+            return {
+                "ok": not r.has_violations,
+                "vendors_checked": r.vendors_checked,
+                "violations": [
+                    {
+                        "handler_class": v.handler_class,
+                        "module_path": v.module_path,
+                        "missing": list(v.missing),
+                    }
+                    for v in r.violations
+                ],
+            }
     except Exception as exc:  # noqa: BLE001
         logger.debug("audit %s raised: %s", name, exc)
         return {"ok": False, "error": str(exc)}
@@ -52465,6 +52549,8 @@ _AUDIT_ORDER = (
     "pattern_cb",
     # W963-92: Pattern CC -- persistence helpers drift
     "pattern_cc",
+    # W963-155: Pattern CE -- external vendor parity
+    "pattern_ce",
 )
 _AUDIT_LABELS = {
     "pattern_k": "Pattern K (dispatcher coverage)",
@@ -52542,6 +52628,7 @@ _AUDIT_LABELS = {
     "pattern_ca": "Pattern CA (Phase 4 substrate wiring)",
     "pattern_cb": "Pattern CB (verdict + trend vocab consolidation)",
     "pattern_cc": "Pattern CC (persistence helpers consolidation)",
+    "pattern_ce": "Pattern CE (external vendor handler parity)",
 }
 
 
@@ -62473,6 +62560,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-cd-audit":
         _cmd_pattern_cd_audit(args)
+        return
+
+    if args.command == "pattern-ce-audit":
+        _cmd_pattern_ce_audit(args)
         return
 
     if args.command == "pattern-cc-audit":
