@@ -2954,6 +2954,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pp_p.add_argument("--json", action="store_true")
 
+    # W963-148: autonomy-gate -- 5-store zero-bug
+    # threshold check for cross-store autonomous
+    # propagation unlock.
+    ag_p = sub.add_parser(
+        "autonomy-gate",
+        help=(
+            "Show cross-store autonomous transfer "
+            "unlock state. Requires N stores running "
+            "cleanly with zero incidents over the proof "
+            "window before recipes can auto-promote. "
+            "Operator's safety gate before flipping "
+            "auto-transfer on."
+        ),
+    )
+    ag_p.add_argument("--json", action="store_true")
+
     # W963-108: earn-readiness -- pre-launch composer.
     er_p = sub.add_parser(
         "earn-readiness",
@@ -12800,6 +12816,95 @@ def _cmd_earn_path(args) -> None:
         print(
             "  NEXT: empire is earning -- monitor "
             "via shopai morning-brief"
+        )
+
+
+def _cmd_autonomy_gate(args) -> None:
+    """W963-148: autonomy gate view."""
+    from engines.autonomy_gate import AutonomyGateEngine
+    as_json = bool(getattr(args, "json", False))
+    result = AutonomyGateEngine().run({})
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    data = result.get("data") or {}
+    if result.get("status") != "success" or not data:
+        err = result.get("error") or "unknown error"
+        print(f"autonomy-gate: ERROR  {err}")
+        sys.exit(1)
+
+    chip = (
+        "[OK ]" if data.get("unlocked") else "[BAD]"
+    )
+    print(
+        f"Autonomy gate  --  {chip} "
+        f"{'UNLOCKED' if data.get('unlocked') else 'LOCKED'}"
+    )
+    print()
+    print(
+        f"  Required stable stores: "
+        f"{data.get('required_stores')}"
+    )
+    print(
+        f"  Proof window:           "
+        f"{data.get('proof_window_days')} days"
+    )
+    print(
+        f"  Min cycles per store:   "
+        f"{data.get('min_cycles_per_store')}"
+    )
+    print(
+        f"  Progress:               "
+        f"{data.get('stable_count')}"
+        f"/{data.get('required_stores')}  "
+        f"({data.get('progress_pct')}%)"
+    )
+    print()
+
+    blockers = data.get("blockers") or []
+    if blockers:
+        print("  Blockers:")
+        for b in blockers:
+            print(f"    - {b}")
+        print()
+
+    stores = data.get("stores") or []
+    if stores:
+        print(
+            f"  {'store':<14} {'cycles':>7} "
+            f"{'errors':>7} {'autopause':>9} "
+            f"{'rejected':>9} {'stable':>7}"
+        )
+        print("  " + "-" * 60)
+        for s in stores:
+            mark = (
+                "[OK ]"
+                if s.get("is_stable")
+                else "[ . ]"
+            )
+            print(
+                f"  {s.get('store_id', '?'):<14} "
+                f"{s.get('cycle_count', 0):>7} "
+                f"{s.get('cycle_errors', 0):>7} "
+                f"{s.get('autopause_fires', 0):>9} "
+                f"{s.get('rejected_actions', 0):>9} "
+                f"{mark:>7}"
+            )
+
+    print()
+    if data.get("unlocked"):
+        print(
+            "  -> Cross-store autonomous transfer "
+            "is now eligible. The transfer engine "
+            "will consult this gate before any "
+            "auto-promotion."
+        )
+    else:
+        print(
+            "  -> Cross-store transfer remains "
+            "OPERATOR-DRIVEN. Use `shopai transfer "
+            "scan / apply` for manual recipes."
         )
 
 
@@ -61464,6 +61569,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "propose-products":
         _cmd_propose_products(args)
+        return
+
+    if args.command == "autonomy-gate":
+        _cmd_autonomy_gate(args)
         return
 
     if args.command == "earn-readiness":

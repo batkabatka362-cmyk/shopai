@@ -458,6 +458,7 @@ _ORCHESTRATOR_UTILITIES = frozenset({
     "per_store_pnl",         # W963-121: per-store profit/loss view
     "per_store_creds",       # W963-142: per-store credential override visibility
     "product_onboarding_proposal",  # W963-143: batch product import via plan-approval
+    "autonomy_gate",                # W963-148: 5-store zero-bug threshold guard
 })
 
 
