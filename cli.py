@@ -6487,6 +6487,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pattern_cc_p.add_argument("--json", action="store_true")
 
+    # W963-141: Pattern CD -- active_store wrap coverage.
+    pattern_cd_p = sub.add_parser(
+        "pattern-cd-audit",
+        help=(
+            "W963-141: verify production engine.run "
+            "callsites in cli.py / core/autonomous / "
+            "core/webhooks / core/approval are wrapped "
+            "in active_store(...). Codifies the W963-"
+            "127/128/131/133 fix pattern as an "
+            "institutional gate against future regressions."
+        ),
+    )
+    pattern_cd_p.add_argument("--json", action="store_true")
+
     # Wave 926: thrash guardrail status CLI
     thrash_guardrail_p = sub.add_parser(
         "thrash-guardrail",
@@ -27245,16 +27259,23 @@ def _try_wireup_all(
             results.append(entry)
             continue
 
+        # W963-141 Pattern CD wrap: scope data fetch +
+        # engine.run to store_id so try-wireup --all
+        # exercises real per-store creds.
+        from core.context import (
+            active_store as _w963_141_active_store,
+        )
         try:
             from data_pipeline.store.data_provider import (
                 DataProvider,
             )
             sm = _get_store_manager()
-            data = (
-                DataProvider(sm).get_data_for_engine(
-                    wb.name, store_id,
-                ) if store_id else {}
-            )
+            with _w963_141_active_store(store_id):
+                data = (
+                    DataProvider(sm).get_data_for_engine(
+                        wb.name, store_id,
+                    ) if store_id else {}
+                )
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "try-wireup --all data raised for %s: %s",
@@ -27266,7 +27287,8 @@ def _try_wireup_all(
         data[apply_flag] = True
 
         try:
-            engine_result = engine.run(data)
+            with _w963_141_active_store(store_id):
+                engine_result = engine.run(data)
             entry["status"] = "ok"
             entry["engine_status"] = (
                 engine_result.get("status", "?")
@@ -27563,8 +27585,14 @@ def _cmd_engine_try_wireup(args) -> None:
         _emit_error(f"engine '{engine_name}' not registered")
         return
 
+    # W963-141 Pattern CD: wrap engine.run in
+    # active_store(store_id) for per-store routing.
+    from core.context import (
+        active_store as _w963_141_active_store,
+    )
     try:
-        result = engine.run(data)
+        with _w963_141_active_store(store_id):
+            result = engine.run(data)
     except Exception as exc:  # noqa: BLE001
         logger.debug("try-wireup engine raised: %s", exc)
         if as_json:
@@ -32036,10 +32064,26 @@ def _cmd_cycle_verify(args) -> None:
                             "cluster": cp.cluster,
                             "engine": engine_name,
                         }
+                        # W963-141 Pattern CD: wrap data
+                        # fetch + engine.run in
+                        # active_store(store_id) so
+                        # advisory-mode verify exercises
+                        # the right per-store creds.
+                        from core.context import (
+                            active_store as
+                            _w963_141_active_store,
+                        )
                         try:
-                            data = provider.get_data_for_engine(
-                                engine_name, store_id,
-                            )
+                            with _w963_141_active_store(
+                                store_id,
+                            ):
+                                data = (
+                                    provider
+                                    .get_data_for_engine(
+                                        engine_name,
+                                        store_id,
+                                    )
+                                )
                             if not isinstance(data, dict):
                                 data = {}
                             # NOTE: apply_* NOT set -- advisory
@@ -32058,7 +32102,10 @@ def _cmd_cycle_verify(args) -> None:
                                 invoke_err += 1
                                 invoke_results.append(entry)
                                 continue
-                            result = engine.run(data)
+                            with _w963_141_active_store(
+                                store_id,
+                            ):
+                                result = engine.run(data)
                             if isinstance(result, dict):
                                 status = result.get("status", "?")
                                 entry["status"] = status
@@ -34121,6 +34168,14 @@ def _cmd_cluster_fire(args) -> None:
             "require_approval": True,
         })
 
+    # W963-141: wrap data fetch + engine run in
+    # active_store(store_id) so the cluster-fire CLI
+    # surface honours per-store routing the same way
+    # cycle / webhook / approval paths do.
+    from core.context import (
+        active_store as _w963_141_active_store,
+    )
+
     results: list[dict] = []
     any_error = False
     for member in invocations:
@@ -34134,11 +34189,12 @@ def _cmd_cluster_fire(args) -> None:
             "approval_required": require_approval,
         }
         try:
-            data = (
-                DataProvider(sm).get_data_for_engine(
-                    engine_name, store_id,
-                ) if store_id else {}
-            )
+            with _w963_141_active_store(store_id):
+                data = (
+                    DataProvider(sm).get_data_for_engine(
+                        engine_name, store_id,
+                    ) if store_id else {}
+                )
             if not isinstance(data, dict):
                 data = {}
             data[apply_flag] = True
@@ -34170,7 +34226,8 @@ def _cmd_cluster_fire(args) -> None:
             continue
 
         try:
-            result = engine.run(data)
+            with _w963_141_active_store(store_id):
+                result = engine.run(data)
             entry["status"] = (
                 result.get("status", "?")
                 if isinstance(result, dict) else "?"
@@ -41549,6 +41606,57 @@ def _cmd_pattern_ca_audit(args) -> None:
             f"Pattern CA OK -- "
             f"{report.clean_probes}/{report.probes_run} "
             "Phase 4 substrate wiring probe(s) honored."
+        )
+
+
+def _cmd_pattern_cd_audit(args) -> None:
+    """W963-141: Pattern CD audit -- active_store wrap
+    coverage in production engine.run callsites."""
+    from engines._pattern_cd_audit import audit_pattern_cd
+    as_json = bool(getattr(args, "json", False))
+    report = audit_pattern_cd()
+    if as_json:
+        print(json.dumps({
+            "strict_count": len(report.strict_callsites),
+            "exempt_count": len(report.exempt_callsites),
+            "unwrapped": [
+                {
+                    "file": u.file,
+                    "line": u.line,
+                    "function": u.function,
+                }
+                for u in report.unwrapped
+            ],
+            "has_violations": report.has_violations,
+        }, indent=2, default=str))
+        if report.has_violations:
+            sys.exit(1)
+        return
+    if report.has_violations:
+        print(
+            f"Pattern CD FAILED -- "
+            f"{len(report.unwrapped)} unwrapped "
+            "engine.run callsite(s):"
+        )
+        for u in report.unwrapped:
+            print(
+                f"  {u.file}:{u.line}  in {u.function}"
+            )
+        print(
+            "\nFix: wrap engine.run + DataProvider in "
+            "`with active_store(store_id):` -- mirrors "
+            "W963-127/128/131/133. If the wrap is in "
+            "the caller's function, add the (file, "
+            "function) pair to _CALLER_WRAPPED in "
+            "engines/_pattern_cd_audit.py."
+        )
+        sys.exit(1)
+    else:
+        print(
+            f"Pattern CD OK -- "
+            f"{len(report.strict_callsites)} strict "
+            f"callsite(s) all wrapped; "
+            f"{len(report.exempt_callsites)} exempt."
         )
 
 
@@ -54086,10 +54194,22 @@ def _cmd_run(args) -> None:
     sm = _get_store_manager()
     store_id = args.store or sm.active_store_id
 
+    # W963-141: wrap data fetch + engine run in
+    # active_store(store_id). Pre-fix this CLI path
+    # silently routed adapter calls to env-default
+    # credentials regardless of --store value.
+    # Pattern CD audit (this commit) caught it.
+    from core.context import (
+        active_store as _w963_141_active_store,
+    )
+
     # Get data for engine
     from data_pipeline.store.data_provider import DataProvider
     provider = DataProvider(sm)
-    data = provider.get_data_for_engine(args.task_type, store_id)
+    with _w963_141_active_store(store_id):
+        data = provider.get_data_for_engine(
+            args.task_type, store_id,
+        )
 
     # Merge user params
     user_params = json.loads(args.params)
@@ -54112,7 +54232,8 @@ def _cmd_run(args) -> None:
 
     print(f"Running {args.task_type} (data source: {data.get('source', 'unknown')})...\n")
 
-    result = engine.run(data)
+    with _w963_141_active_store(store_id):
+        result = engine.run(data)
     print(json.dumps(result, indent=2, default=str))
 
 
@@ -61765,6 +61886,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "pattern-cb-audit":
         _cmd_pattern_cb_audit(args)
+        return
+
+    if args.command == "pattern-cd-audit":
+        _cmd_pattern_cd_audit(args)
         return
 
     if args.command == "pattern-cc-audit":
