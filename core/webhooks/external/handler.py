@@ -62,6 +62,56 @@ EVENT_ENGINE_MAP: dict[str, list[dict[str, str]]] = {
     # for future Measurement Protocol callbacks if
     # Google ships them.
 
+    # ── Klaviyo (W963-151) ──────────────────────────
+    "klaviyo.unsubscribe": [
+        {
+            "engine": "customer_outreach",
+            "data_key": "klaviyo_event",
+        },
+        {
+            "engine": "customer_segmentation",
+            "data_key": "klaviyo_event",
+        },
+    ],
+    "klaviyo.bounce": [
+        {
+            "engine": "customer_outreach",
+            "data_key": "klaviyo_event",
+        },
+        {
+            "engine": "email_marketing",
+            "data_key": "klaviyo_event",
+        },
+    ],
+    "klaviyo.spam_report": [
+        {
+            "engine": "fraud_detection",
+            "data_key": "klaviyo_event",
+        },
+        {
+            "engine": "customer_outreach",
+            "data_key": "klaviyo_event",
+        },
+    ],
+    "klaviyo.open": [
+        {
+            "engine": "customer_outreach",
+            "data_key": "klaviyo_event",
+        },
+    ],
+    "klaviyo.click": [
+        {
+            "engine": "customer_outreach",
+            "data_key": "klaviyo_event",
+        },
+    ],
+    "klaviyo.metric.placed_order": [
+        {
+            "engine": "revenue_attribution",
+            "data_key": "klaviyo_event",
+        },
+    ],
+
     # ── Stripe (W963-150) ──────────────────────────
     "stripe.charge.dispute.created": [
         {
