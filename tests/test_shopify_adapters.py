@@ -1471,6 +1471,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_REORDER_PRODUCT_MEDIA).name == "shopify_product_media"
         assert router.route(Capability.SHOPIFY_APPEND_VARIANT_MEDIA).name == "shopify_product_media"
         assert router.route(Capability.SHOPIFY_DETACH_VARIANT_MEDIA).name == "shopify_product_media"
+        # W963-167: create-media for attaching images by URL
+        assert router.route(Capability.SHOPIFY_CREATE_PRODUCT_MEDIA).name == "shopify_product_media"
         assert router.route(Capability.SHOPIFY_ADD_PRICE_LIST_PRICES).name == "shopify_price_list_fixed_prices"
         assert router.route(Capability.SHOPIFY_DELETE_PRICE_LIST_PRICES).name == "shopify_price_list_fixed_prices"
         assert router.route(Capability.SHOPIFY_UPDATE_PRICE_LIST_PRICES).name == "shopify_price_list_fixed_prices"

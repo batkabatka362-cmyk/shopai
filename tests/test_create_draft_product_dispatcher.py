@@ -283,3 +283,154 @@ class TestPriceThreading:
         ok, result = _create_draft_product_dispatch({})
         assert ok is False
         assert result == {"error": "missing_title"}
+
+
+class TestImageAttachment:
+    """W963-167: media attachment via _metadata.image_urls /
+    _metadata.images."""
+
+    def _setup_fake_router(self, captured):
+        def fake(cap, params):
+            captured.append((cap, dict(params)))
+            if cap == "SHOPIFY_CREATE_PRODUCT":
+                return True, {
+                    "product": {
+                        "id": "gid://x/1",
+                        "variants": [{
+                            "id": "gid://x/v1",
+                            "price": "0.0",
+                            "sku": "",
+                        }],
+                    },
+                }
+            if cap == "SHOPIFY_UPDATE_VARIANTS":
+                return True, {}
+            if cap == "SHOPIFY_CREATE_PRODUCT_MEDIA":
+                return True, {
+                    "attached_count": len(
+                        params.get("media") or [],
+                    ),
+                    "media": params.get("media") or [],
+                }
+            return False, {"error": "unexpected"}
+
+        return fake
+
+    def test_image_urls_attached(self):
+        captured: list[tuple[str, dict]] = []
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=self._setup_fake_router(captured),
+        ):
+            ok, result = _create_draft_product_dispatch({
+                "title": "With Images",
+                "_metadata": {
+                    "suggested_price": 12.0,
+                    "image_urls": [
+                        "https://images.pexels.com/a.jpg",
+                        "https://images.pexels.com/b.jpg",
+                    ],
+                },
+            })
+
+        assert ok is True
+        assert result["images_attached"] == 2
+        caps = [c for c, _ in captured]
+        # Order: create -> update variants -> create media
+        assert caps == [
+            "SHOPIFY_CREATE_PRODUCT",
+            "SHOPIFY_UPDATE_VARIANTS",
+            "SHOPIFY_CREATE_PRODUCT_MEDIA",
+        ]
+        media_params = captured[2][1]
+        assert media_params["product_id"] == "gid://x/1"
+        assert media_params["media"] == [
+            {"url": "https://images.pexels.com/a.jpg"},
+            {"url": "https://images.pexels.com/b.jpg"},
+        ]
+
+    def test_images_dicts_with_alt(self):
+        captured: list[tuple[str, dict]] = []
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=self._setup_fake_router(captured),
+        ):
+            _create_draft_product_dispatch({
+                "title": "With Alts",
+                "_metadata": {
+                    "suggested_price": 12.0,
+                    "images": [
+                        {
+                            "url": "https://x.com/a.jpg",
+                            "alt": "front view",
+                        },
+                        {"url": "https://x.com/b.jpg"},
+                    ],
+                },
+            })
+
+        media_params = captured[2][1]
+        assert media_params["media"][0] == {
+            "url": "https://x.com/a.jpg",
+            "alt": "front view",
+        }
+        assert media_params["media"][1] == {
+            "url": "https://x.com/b.jpg",
+        }
+
+    def test_no_image_metadata_skips_attach(self):
+        captured: list[tuple[str, dict]] = []
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=self._setup_fake_router(captured),
+        ):
+            ok, result = _create_draft_product_dispatch({
+                "title": "No Images",
+                "_metadata": {"suggested_price": 12.0},
+            })
+
+        assert ok is True
+        # No CREATE_PRODUCT_MEDIA call
+        caps = [c for c, _ in captured]
+        assert "SHOPIFY_CREATE_PRODUCT_MEDIA" not in caps
+        assert "images_attached" not in result
+
+    def test_image_attach_failure_doesnt_crash_create(self):
+        """Image attach is best-effort. If it fails the product
+        + price still landed; result surfaces the error
+        details for observability."""
+        def fake(cap, params):
+            if cap == "SHOPIFY_CREATE_PRODUCT":
+                return True, {
+                    "product": {
+                        "id": "gid://x/1",
+                        "variants": [{
+                            "id": "gid://x/v1",
+                            "price": "0.0",
+                            "sku": "",
+                        }],
+                    },
+                }
+            if cap == "SHOPIFY_UPDATE_VARIANTS":
+                return True, {}
+            if cap == "SHOPIFY_CREATE_PRODUCT_MEDIA":
+                return False, {"error": "invalid_url"}
+            return False, {}
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=fake,
+        ):
+            ok, result = _create_draft_product_dispatch({
+                "title": "Bad URL",
+                "_metadata": {
+                    "suggested_price": 10.0,
+                    "image_urls": ["not a url"],
+                },
+            })
+
+        assert ok is True
+        assert result["images_attached"] == 0
+        assert (
+            result["images_attach_error"] == "invalid_url"
+        )

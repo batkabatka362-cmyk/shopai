@@ -794,7 +794,60 @@ def _create_draft_product_dispatch(
         result["price_set_error"] = price_result.get(
             "error", "unknown",
         )
+
+    # W963-167: attach product images when supplied. Image
+    # URLs come from _metadata.image_urls (list of strings) or
+    # _metadata.images (list of {url, alt?} dicts). Operators
+    # / engines that don't supply images skip this step
+    # silently (no degradation of the create flow).
+    images_attached = _attach_product_images(
+        product_id=product_id,
+        metadata=metadata,
+        result=result,
+    )
+    if images_attached is not None:
+        result["images_attached"] = images_attached
+
     return ok, result
+
+
+def _attach_product_images(
+    *,
+    product_id: str,
+    metadata: dict[str, Any],
+    result: dict[str, Any],
+) -> int | None:
+    """Helper for W963-167 image attachment. Returns the count
+    attached, or None when no images were supplied. Swallows
+    failures into the result dict so the parent dispatch path
+    stays focused on its create + price contract."""
+    raw_urls = metadata.get("image_urls")
+    raw_images = metadata.get("images")
+    media_inputs: list[dict[str, Any]] = []
+    if isinstance(raw_images, list) and raw_images:
+        for m in raw_images:
+            if isinstance(m, dict) and m.get("url"):
+                entry = {"url": str(m["url"]).strip()}
+                if m.get("alt"):
+                    entry["alt"] = str(m["alt"])
+                media_inputs.append(entry)
+    if isinstance(raw_urls, list) and raw_urls:
+        for url in raw_urls:
+            if isinstance(url, str) and url.strip():
+                media_inputs.append({"url": url.strip()})
+    if not media_inputs:
+        return None
+
+    ok, image_result = _router_call(
+        "SHOPIFY_CREATE_PRODUCT_MEDIA",
+        {"product_id": product_id, "media": media_inputs},
+    )
+    if not ok:
+        result["images_attach_error"] = image_result.get(
+            "error", "unknown",
+        )
+        return 0
+    return int(image_result.get("attached_count", 0) or 0)
 
 
 # ── product_sourcer → publish DRAFT product to Online Store ──────

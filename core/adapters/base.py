@@ -353,6 +353,7 @@ class Capability(str, Enum):
     SHOPIFY_UPDATE_FULFILLMENT_TRACKING = "shopify_update_fulfillment_tracking"
     SHOPIFY_CANCEL_FULFILLMENT = "shopify_cancel_fulfillment"
     SHOPIFY_REORDER_PRODUCT_MEDIA = "shopify_reorder_product_media"
+    SHOPIFY_CREATE_PRODUCT_MEDIA = "shopify_create_product_media"
     SHOPIFY_APPEND_VARIANT_MEDIA = "shopify_append_variant_media"
     SHOPIFY_DETACH_VARIANT_MEDIA = "shopify_detach_variant_media"
     SHOPIFY_ADD_PRICE_LIST_PRICES = "shopify_add_price_list_prices"
