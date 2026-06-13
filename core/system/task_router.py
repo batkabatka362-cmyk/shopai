@@ -441,10 +441,35 @@ class TaskRouter:
         if not self._state_path:
             return
         try:
-            payload = self.stats()
-            Path(self._state_path).parent.mkdir(parents=True, exist_ok=True)
-            with open(self._state_path, "w") as f:
-                json.dump(payload, f, indent=2, default=str)
+            # W962-74: snapshot stats + write via temp+rename
+            # under the instance lock. Pre-fix wrote in-place
+            # (`open(path, "w")`) which truncates the existing
+            # file FIRST then writes -- a crash mid-write left a
+            # zero-byte or partial JSON, which _load_state then
+            # silently swallowed in the bare except. Also, two
+            # concurrent calls to route() trigger two _save_state
+            # calls and race on the open+truncate; one writer's
+            # bytes could be interleaved with the other's.
+            with self._lock:
+                payload = self.stats()
+            target = Path(self._state_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            import tempfile as _tempfile
+            fd, tmp_path = _tempfile.mkstemp(
+                prefix=".task_router_",
+                suffix=".json.tmp",
+                dir=str(target.parent),
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, indent=2, default=str)
+                os.replace(tmp_path, target)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         except Exception as exc:  # noqa: BLE001
             logger.debug("TaskRouter save_state: %s", exc)
 

@@ -22,7 +22,12 @@ import os
 import re
 from typing import Any
 
-from engines._agi_context import capture_decision_context
+from engines._agi_context import (
+    capture_decision_context,
+    explain_thrash_block,
+    log_thrash_block,
+    should_block_thrashing_store,
+)
 from engines._recovery_codes import mint_recovery_code as _mint
 from engines._writeback_recorder import record_writeback
 
@@ -151,6 +156,43 @@ def mint_loyalty_code(
         capability="SHOPIFY_CREATE_DISCOUNT",
         params=mint_params,
     )
+
+    # Wave 917: thrash guardrail. System-level kill switch
+    # (env: SHOPAI_THRASH_GUARDRAIL=1). When enabled AND the
+    # active store's verdict is thrashing, refuse the mint
+    # regardless of per-engine AGI metrics. Decoupled from
+    # the AGI guardrail below so operators can flip thrash
+    # response without touching per-engine env vars.
+    try:
+        from core.context import get_active_store_id
+        active_store_id = get_active_store_id()
+    except Exception:  # noqa: BLE001
+        active_store_id = None
+    if should_block_thrashing_store(active_store_id):
+        # W937 bugfix: forward agi_metrics so the learning loop
+        # sees the same AGI context that the v2 guardrail and
+        # success paths use. Pre-fix metrics=None made thrash-
+        # blocked entries unjoinable with the rest of the
+        # action history.
+        agi_metrics_for_thrash = (
+            agi_context.get("metrics") or {}
+        )
+        record_writeback(
+            engine="loyalty",
+            action_type="mint_loyalty_code",
+            capability="SHOPIFY_CREATE_DISCOUNT",
+            params=mint_params,
+            success=False,
+            error=explain_thrash_block(active_store_id),
+            metrics=agi_metrics_for_thrash or None,
+        )
+        log_thrash_block(
+            engine="loyalty",
+            action_type="mint_loyalty_code",
+            capability="SHOPIFY_CREATE_DISCOUNT",
+            store_id=active_store_id,
+        )
+        return None
 
     # AGI Phase 2 v2: guardrail. When opted in (via env var) AND
     # the signal is unambiguously negative, REFUSE to mint and

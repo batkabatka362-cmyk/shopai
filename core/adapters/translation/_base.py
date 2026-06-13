@@ -72,6 +72,9 @@ from ..base import (
     BaseAdapter,
     Capability,
 )
+from .._per_store_credentials import (
+    resolve_per_store as _resolve_per_store,
+)
 from ..config import get_config
 from ..errors import (
     AdapterAuthError,
@@ -135,10 +138,10 @@ class TranslationBaseAdapter(BaseAdapter):
             return False
         if not self.config_alias:
             return False
-        return bool(get_config().get(self.config_alias))
+        return bool((_resolve_per_store(self.config_alias) or get_config().get(self.config_alias)))
 
     def _api_key(self) -> str:
-        key = get_config().get(self.config_alias)
+        key = (_resolve_per_store(self.config_alias) or get_config().get(self.config_alias))
         if not key:
             env = get_config().env_var_for(self.config_alias)
             raise AdapterNotConfigured(
@@ -319,65 +322,110 @@ class TranslationBaseAdapter(BaseAdapter):
         url: str,
         body: Any,
         headers: dict[str, str],
+        *,
+        max_retries: int = 3,
     ) -> Any:
+        """W962-65: inline retry preserving DeepL's 456 quota-
+        exhausted status code (which the shared helper doesn't
+        know about). Mirrors core/adapters/_http_retry.py."""
         if not _REQUESTS_AVAILABLE:
             raise AdapterUnavailable(
                 self.name, "'requests' library not installed",
             )
-        try:
-            # DeepL accepts both JSON and form-encoded — we let
-            # the subclass decide via Content-Type.
-            if headers.get("Content-Type") == "application/x-www-form-urlencoded":
-                response = _requests.post(
-                    url, data=body, headers=headers, timeout=self.timeout,
-                )
-            else:
-                response = _requests.post(
-                    url, json=body, headers=headers, timeout=self.timeout,
-                )
-        except _requests.Timeout as exc:  # type: ignore[union-attr]
-            raise AdapterTimeout(
-                self.name, f"timeout after {self.timeout}s: {exc}",
-            ) from exc
-        except _requests.ConnectionError as exc:  # type: ignore[union-attr]
-            raise AdapterUnavailable(
-                self.name, f"connection error: {exc}",
-            ) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise AdapterError(
-                self.name,
-                f"http post failed: {type(exc).__name__}: {exc}",
-            ) from exc
-
-        status = getattr(response, "status_code", 0)
-        if status >= 400:
-            snippet = (getattr(response, "text", "") or "")[:200]
-            if status in (401, 403):
-                raise AdapterAuthError(
-                    self.name,
-                    f"vendor rejected credentials ({status}): {snippet}",
-                )
-            if status == 429:
-                raise AdapterRateLimited(
-                    self.name, f"rate limit (429): {snippet}",
-                )
-            # DeepL returns 456 when the monthly character quota
-            # is exhausted — translate that into a dedicated
-            # typed error so the router can fall back to another
-            # translator (or suppress the call entirely).
-            if status == 456:
-                raise AdapterQuotaExhausted(
-                    self.name,
-                    f"monthly character quota exhausted: {snippet}",
-                )
-            if 500 <= status < 600:
+        import time as _t
+        form_encoded = (
+            headers.get("Content-Type")
+            == "application/x-www-form-urlencoded"
+        )
+        last_exc: Exception | None = None
+        for attempt in range(1, max(1, max_retries) + 1):
+            try:
+                if form_encoded:
+                    response = _requests.post(
+                        url, data=body, headers=headers,
+                        timeout=self.timeout,
+                    )
+                else:
+                    response = _requests.post(
+                        url, json=body, headers=headers,
+                        timeout=self.timeout,
+                    )
+            except _requests.Timeout as exc:  # type: ignore[union-attr]
+                last_exc = exc
+                if attempt < max_retries:
+                    _t.sleep(min(2 ** attempt, 8))
+                    continue
+                raise AdapterTimeout(
+                    self.name, f"timeout after {self.timeout}s: {exc}",
+                ) from exc
+            except _requests.ConnectionError as exc:  # type: ignore[union-attr]
+                last_exc = exc
+                if attempt < max_retries:
+                    _t.sleep(min(2 ** attempt, 8))
+                    continue
                 raise AdapterUnavailable(
+                    self.name, f"connection error: {exc}",
+                ) from exc
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                msg = str(exc).lower()
+                if any(s in msg for s in (
+                    "chunkedencoding", "ssl", "protocol",
+                    "remote disconnected",
+                )) and attempt < max_retries:
+                    _t.sleep(min(2 ** attempt, 8))
+                    continue
+                raise AdapterError(
                     self.name,
-                    f"vendor 5xx ({status}): {snippet}",
+                    f"http post failed: {type(exc).__name__}: {exc}",
+                ) from exc
+
+            status = getattr(response, "status_code", 0)
+            if status >= 400:
+                snippet = (getattr(response, "text", "") or "")[:200]
+                if status in (401, 403):
+                    raise AdapterAuthError(
+                        self.name,
+                        f"vendor rejected credentials ({status}): {snippet}",
+                    )
+                if status == 429:
+                    retry_after = response.headers.get(
+                        "Retry-After", "1",
+                    )
+                    try:
+                        wait = float(retry_after)
+                    except (TypeError, ValueError):
+                        wait = 1.0
+                    if attempt < max_retries:
+                        _t.sleep(min(wait, 30))
+                        continue
+                    raise AdapterRateLimited(
+                        self.name, f"rate limit (429): {snippet}",
+                    )
+                if status == 456:
+                    # DeepL: quota-exhausted -- not retryable
+                    raise AdapterQuotaExhausted(
+                        self.name,
+                        f"monthly character quota exhausted: {snippet}",
+                    )
+                if 500 <= status < 600:
+                    if attempt < max_retries:
+                        _t.sleep(min(2 ** attempt, 8))
+                        continue
+                    raise AdapterUnavailable(
+                        self.name,
+                        f"vendor 5xx ({status}): {snippet}",
+                    )
+                raise AdapterError(
+                    self.name,
+                    f"vendor returned {status}: {snippet}",
                 )
+            # 2xx success: fall out of the retry loop
+            break
+        else:
             raise AdapterError(
                 self.name,
-                f"vendor returned {status}: {snippet}",
+                f"exhausted retries: {last_exc}" if last_exc else "exhausted retries",
             )
 
         try:

@@ -444,7 +444,31 @@ class ShopifyOrderEditsAdapter(ShopifyBaseAdapter):
                 "shopify_order_edits",
                 f"changes[{idx}] add_line_item_discount needs 'line_item_id'",
             )
-        value_type = change.get("value_type") or change.get("valueType") or "PERCENTAGE"
+        # W962-66 Pattern G monetary fix: distinguish missing
+        # from explicit empty.
+        _MISSING = object()
+        vt_snake = change.get("value_type", _MISSING)
+        vt_camel = change.get("valueType", _MISSING)
+        if vt_snake is _MISSING and vt_camel is _MISSING:
+            value_type = "PERCENTAGE"
+        elif vt_snake is not _MISSING and vt_snake == "":
+            raise AdapterValidationError(
+                "shopify_order_edits",
+                f"changes[{idx}] 'value_type' was explicit "
+                "empty string. Provide PERCENTAGE or "
+                "FIXED_AMOUNT, or omit for default.",
+            )
+        elif vt_camel is not _MISSING and vt_camel == "":
+            raise AdapterValidationError(
+                "shopify_order_edits",
+                f"changes[{idx}] 'valueType' was explicit "
+                "empty string. Provide PERCENTAGE or "
+                "FIXED_AMOUNT, or omit for default.",
+            )
+        else:
+            value_type = (
+                vt_snake if vt_snake is not _MISSING else vt_camel
+            )
         if not isinstance(value_type, str):
             raise AdapterValidationError(
                 "shopify_order_edits",

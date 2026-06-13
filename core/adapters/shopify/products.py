@@ -19,6 +19,13 @@ Capabilities:
   * ``SHOPIFY_UPDATE_VARIANTS``  — bulk update variant price /
     compareAtPrice / sku via ``productVariantsBulkUpdate``. This is
     the primary surface the pricing engine drives.
+  * ``SHOPIFY_TAG_PRODUCT``      — additive tag write via ``tagsAdd``.
+    Unlike SHOPIFY_UPDATE_PRODUCT which REPLACES the tag list, this
+    APPENDS tags non-destructively (Shopify's tagsAdd mutation is a
+    merge). Used by catalog_quality_autonomy + future tag-class
+    appliers that just want to attach a flag without re-reading the
+    full tag list to avoid wiping.
+  * ``SHOPIFY_UNTAG_PRODUCT``    — symmetric removal via ``tagsRemove``.
 
 Friendly call shapes:
 
@@ -62,7 +69,12 @@ from ._base import ShopifyBaseAdapter
 # ── GraphQL templates ───────────────────────────────────────────────
 
 
-_PRODUCT_FIELDS = """
+# W963-160: split into _BASE (no images) + _PRODUCT_FIELDS
+# (= _BASE + images(first:1) for LIST path image-count).
+# _WITH_VARIANTS uses _BASE + variants + images(first:20)
+# so the GraphQL fragment-merge doesn't see two images
+# selections with conflicting args.
+_PRODUCT_FIELDS_BASE = """
 id
 title
 handle
@@ -79,11 +91,19 @@ priceRangeV2 {
   minVariantPrice { amount currencyCode }
   maxVariantPrice { amount currencyCode }
 }
+seo { title description }
+variantsCount { count }
+""".strip()
+
+
+_PRODUCT_FIELDS = f"""
+{_PRODUCT_FIELDS_BASE}
+images(first: 1) {{ edges {{ node {{ id }} }} }}
 """.strip()
 
 
 _PRODUCT_FIELDS_WITH_VARIANTS = f"""
-{_PRODUCT_FIELDS}
+{_PRODUCT_FIELDS_BASE}
 variants(first: 100) {{
   edges {{
     node {{
@@ -149,11 +169,27 @@ query product($id: ID!) {{
 """.strip()
 
 
+# W963-164: include variants(first: 1) so the create response
+# carries the default variant id. Downstream price-set follow-up
+# (dispatchers.py _create_draft_product_dispatch) needs it to
+# call productVariantsBulkUpdate without an extra GET round-trip.
+# This is the only place the LIST-path fragment conflicts -- the
+# selection is INLINE here, not in _PRODUCT_FIELDS.
 _CREATE_PRODUCT_MUTATION = f"""
 mutation productCreate($input: ProductInput!) {{
   productCreate(input: $input) {{
     product {{
-      {_PRODUCT_FIELDS}
+      {_PRODUCT_FIELDS_BASE}
+      images(first: 1) {{ edges {{ node {{ id }} }} }}
+      variants(first: 1) {{
+        edges {{
+          node {{
+            id
+            price
+            sku
+          }}
+        }}
+      }}
     }}
     userErrors {{
       field
@@ -248,6 +284,8 @@ class ShopifyProductsAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_UPDATE_PRODUCT,
         Capability.SHOPIFY_DELETE_PRODUCT,
         Capability.SHOPIFY_UPDATE_VARIANTS,
+        Capability.SHOPIFY_TAG_PRODUCT,
+        Capability.SHOPIFY_UNTAG_PRODUCT,
     }
     # read_products covers list/get; write_products covers
     # create/update/delete and the variant mutation surface.
@@ -270,6 +308,10 @@ class ShopifyProductsAdapter(ShopifyBaseAdapter):
             return self._delete(params)
         if capability == Capability.SHOPIFY_UPDATE_VARIANTS:
             return self._update_variants(params)
+        if capability == Capability.SHOPIFY_TAG_PRODUCT:
+            return self._tag(params, add=True)
+        if capability == Capability.SHOPIFY_UNTAG_PRODUCT:
+            return self._tag(params, add=False)
         raise AdapterValidationError(
             self.name, f"unsupported capability: {capability.value}",
         )
@@ -600,6 +642,29 @@ class ShopifyProductsAdapter(ShopifyBaseAdapter):
                 )
             out["barcode"] = barcode
 
+        # W963-166: inventory_policy controls oversell behavior.
+        # CONTINUE = allow customer to order even when stock=0
+        # (the right default for dropshipping stores where the
+        # supplier ships on demand). DENY = block when out of
+        # stock (the right default for own-inventory stores).
+        # Without this set, Shopify defaults to DENY -- which
+        # combined with the platform's default 0 stock on new
+        # products meant every autonomously-created product
+        # showed 'Sold Out' to customers regardless of price.
+        ip = raw.get("inventory_policy") or raw.get(
+            "inventoryPolicy",
+        )
+        if ip is not None:
+            if not isinstance(ip, str) or (
+                ip.upper() not in ("CONTINUE", "DENY")
+            ):
+                raise AdapterValidationError(
+                    self.name,
+                    f"variants[{index}] 'inventory_policy' "
+                    "must be 'CONTINUE' or 'DENY'",
+                )
+            out["inventoryPolicy"] = ip.upper()
+
         return out
 
     def _coerce_money(self, value: Any, label: str) -> str:
@@ -631,6 +696,40 @@ class ShopifyProductsAdapter(ShopifyBaseAdapter):
         price_range = node.get("priceRangeV2") or {}
         min_p = price_range.get("minVariantPrice") or {}
         max_p = price_range.get("maxVariantPrice") or {}
+        # W962-8/9 bugfix: emit image_count + variant_count +
+        # seo so catalog_quality / product_seo discoverers can
+        # operate on LIST results instead of needing per-
+        # product SHOPIFY_FETCH_PRODUCTS (catalog_quality
+        # was always tagging "needs-images" because the field
+        # was absent; product_seo was always proposing both
+        # meta fields and CLOBBERING merchant-set SEO).
+        image_edges = (
+            (node.get("images") or {}).get("edges") or []
+        )
+        variants_count_raw = node.get("variantsCount") or {}
+        seo_raw = node.get("seo") or {}
+        # W963-164: emit a flat ``variants`` list when the
+        # CREATE response carries variants(first: 1). The LIST
+        # path doesn't fetch variants so the field stays empty
+        # there. Downstream dispatchers (create_draft_product
+        # price-set follow-up) read this to find the default
+        # variant id without a second GET round-trip.
+        variants_out: list[dict[str, Any]] = []
+        variants_edges_raw = (
+            node.get("variants") or {}
+        ).get("edges") or []
+        for edge in variants_edges_raw:
+            if not isinstance(edge, dict):
+                continue
+            v_node = edge.get("node") or {}
+            if not isinstance(v_node, dict):
+                continue
+            variants_out.append({
+                "id": v_node.get("id", "") or "",
+                "price": v_node.get("price", "") or "",
+                "sku": v_node.get("sku", "") or "",
+            })
+
         return {
             "id": node.get("id", "") or "",
             "title": node.get("title", "") or "",
@@ -651,6 +750,17 @@ class ShopifyProductsAdapter(ShopifyBaseAdapter):
                 or max_p.get("currencyCode", "")
                 or ""
             ),
+            "image_count": len(image_edges),
+            "variant_count": int(
+                variants_count_raw.get("count", 0) or 0
+            ),
+            "variants": variants_out,
+            "seo": {
+                "title": seo_raw.get("title", "") or "",
+                "description": seo_raw.get(
+                    "description", "",
+                ) or "",
+            },
         }
 
     @classmethod
@@ -691,3 +801,85 @@ class ShopifyProductsAdapter(ShopifyBaseAdapter):
             "barcode": node.get("barcode", "") or "",
             "position": int(node.get("position") or 0),
         }
+
+    # ── Tag / Untag (W963-159) ─────────────────────────────────────
+
+    def _tag(self, params: dict[str, Any], add: bool) -> Any:
+        """Additive tagsAdd / tagsRemove against a product.
+
+        Shopify's ``tagsAdd`` mutation merges -- existing tags are
+        preserved (unlike productUpdate which replaces). Same shape
+        used by orders.py + customers.py tag paths.
+        """
+        product_id = (
+            params.get("id") or params.get("product_id")
+        )
+        if not isinstance(product_id, str) or not product_id.strip():
+            raise AdapterValidationError(
+                self.name,
+                "'id' (Shopify GID for the product) is required",
+            )
+        raw_tags = params.get("tags")
+        if isinstance(raw_tags, str):
+            raw_tags = [
+                t.strip() for t in raw_tags.split(",")
+                if t.strip()
+            ]
+        if (
+            not isinstance(raw_tags, list)
+            or not raw_tags
+            or not all(isinstance(t, str) for t in raw_tags)
+        ):
+            raise AdapterValidationError(
+                self.name,
+                "'tags' must be a non-empty list of strings or "
+                "comma-separated string",
+            )
+        mutation = (
+            _PRODUCT_TAGS_ADD_MUTATION if add
+            else _PRODUCT_TAGS_REMOVE_MUTATION
+        )
+        mutation_name = "tagsAdd" if add else "tagsRemove"
+        capability = (
+            Capability.SHOPIFY_TAG_PRODUCT if add
+            else Capability.SHOPIFY_UNTAG_PRODUCT
+        )
+        data = self._gql(mutation, {
+            "id": product_id.strip(),
+            "tags": raw_tags,
+        })
+        self._check_user_errors(data, mutation_name)
+        payload = data.get(mutation_name) or {}
+        node = payload.get("node") or {}
+        return self._success(
+            capability,
+            data={
+                "id": node.get("id", "") or "",
+                "tags": list(node.get("tags") or []),
+            },
+        )
+
+
+_PRODUCT_TAGS_ADD_MUTATION = """
+mutation tagsAdd($id: ID!, $tags: [String!]!) {
+  tagsAdd(id: $id, tags: $tags) {
+    node {
+      id
+      ... on Product { tags }
+    }
+    userErrors { field message }
+  }
+}
+"""
+
+_PRODUCT_TAGS_REMOVE_MUTATION = """
+mutation tagsRemove($id: ID!, $tags: [String!]!) {
+  tagsRemove(id: $id, tags: $tags) {
+    node {
+      id
+      ... on Product { tags }
+    }
+    userErrors { field message }
+  }
+}
+"""

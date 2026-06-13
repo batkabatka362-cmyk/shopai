@@ -138,6 +138,32 @@ class ApprovalQueue:
             str(self._db_path), check_same_thread=False,
         )
         self._conn.row_factory = sqlite3.Row
+        # W962-35: PRAGMA setup for multi-process safety.
+        #   - WAL journal mode lets concurrent processes
+        #     (CLI + daily-brief cron + API server) read while
+        #     a writer holds the DB.
+        #   - busy_timeout makes blocked operations wait up to
+        #     5 seconds for the lock instead of failing
+        #     immediately with `database is locked`.
+        # WAL is a one-time DB-level change persisted on disk;
+        # the PRAGMA is idempotent. In-memory tests
+        # (`:memory:`) silently skip WAL (SQLite returns the
+        # current mode without erroring).
+        try:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA busy_timeout=5000")
+            # synchronous=NORMAL matches WAL's durability
+            # contract (each transaction is durable across
+            # process crashes, but not necessarily across
+            # power loss). FULL would force fsync on every
+            # commit -- 5-10x slower on Windows for no extra
+            # safety we need.
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.DatabaseError as exc:
+            logger.debug(
+                "queue PRAGMA setup raised (continuing): %s",
+                exc,
+            )
         self._init_schema()
 
     def _init_schema(self) -> None:

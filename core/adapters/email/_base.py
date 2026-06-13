@@ -128,10 +128,15 @@ class EmailBaseAdapter(BaseAdapter):
             return False
         if not self.base_url or not self.config_alias:
             return False
-        return bool(get_config().get(self.config_alias))
+        # W963-117: per-store credential routing via
+        # active_store thread-local. Falls back to the
+        # fleet-wide env var when no per-store override.
+        from .._per_store_credentials import resolve_per_store
+        return bool((resolve_per_store(self.config_alias) or get_config().get(self.config_alias)))
 
     def _api_key(self) -> str:
-        key = get_config().get(self.config_alias)
+        from .._per_store_credentials import resolve_per_store
+        key = (resolve_per_store(self.config_alias) or get_config().get(self.config_alias))
         if not key:
             env = get_config().env_var_for(self.config_alias)
             raise AdapterNotConfigured(
@@ -247,54 +252,94 @@ class EmailBaseAdapter(BaseAdapter):
         url: str,
         body: dict[str, Any],
         headers: dict[str, str],
+        *,
+        max_retries: int = 3,
     ) -> Any:
+        """W962-64: parity retry on 429 + 5xx + transient
+        transport errors. Mirrors ads/_base.py retry logic."""
         if not _REQUESTS_AVAILABLE:
             raise AdapterUnavailable(
                 self.name, "'requests' library not installed",
             )
-        try:
-            response = _requests.post(
-                url, json=body, headers=headers, timeout=self.timeout,
-            )
-        except _requests.Timeout as exc:  # type: ignore[union-attr]
-            raise AdapterTimeout(
-                self.name, f"timeout after {self.timeout}s: {exc}",
-            ) from exc
-        except _requests.ConnectionError as exc:  # type: ignore[union-attr]
-            raise AdapterUnavailable(
-                self.name, f"connection error: {exc}",
-            ) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise AdapterError(
-                self.name,
-                f"http post failed: {type(exc).__name__}: {exc}",
-            ) from exc
-
-        if response.status_code >= 400:
-            snippet = (getattr(response, "text", "") or "")[:200]
-            if response.status_code in (401, 403):
-                raise AdapterAuthError(
-                    self.name,
-                    f"vendor rejected credentials "
-                    f"({response.status_code}): {snippet}",
+        import time as _t
+        last_exc: Exception | None = None
+        for attempt in range(1, max(1, max_retries) + 1):
+            try:
+                response = _requests.post(
+                    url, json=body, headers=headers, timeout=self.timeout,
                 )
-            if response.status_code == 429:
-                raise AdapterRateLimited(
-                    self.name, f"rate limit (429): {snippet}",
-                )
-            if 500 <= response.status_code < 600:
+            except _requests.Timeout as exc:  # type: ignore[union-attr]
+                last_exc = exc
+                if attempt < max_retries:
+                    _t.sleep(min(2 ** attempt, 8))
+                    continue
+                raise AdapterTimeout(
+                    self.name, f"timeout after {self.timeout}s: {exc}",
+                ) from exc
+            except _requests.ConnectionError as exc:  # type: ignore[union-attr]
+                last_exc = exc
+                if attempt < max_retries:
+                    _t.sleep(min(2 ** attempt, 8))
+                    continue
                 raise AdapterUnavailable(
+                    self.name, f"connection error: {exc}",
+                ) from exc
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                msg = str(exc).lower()
+                if any(s in msg for s in (
+                    "chunkedencoding", "ssl", "protocol",
+                    "remote disconnected",
+                )) and attempt < max_retries:
+                    _t.sleep(min(2 ** attempt, 8))
+                    continue
+                raise AdapterError(
                     self.name,
-                    f"vendor 5xx ({response.status_code}): {snippet}",
-                )
-            raise AdapterError(
-                self.name,
-                f"vendor returned {response.status_code}: {snippet}",
-            )
+                    f"http post failed: {type(exc).__name__}: {exc}",
+                ) from exc
 
-        try:
-            return response.json() if response.text else {}
-        except ValueError as exc:
-            raise AdapterError(
-                self.name, f"invalid JSON response: {exc}",
-            ) from exc
+            if response.status_code >= 400:
+                snippet = (getattr(response, "text", "") or "")[:200]
+                if response.status_code in (401, 403):
+                    raise AdapterAuthError(
+                        self.name,
+                        f"vendor rejected credentials "
+                        f"({response.status_code}): {snippet}",
+                    )
+                if response.status_code == 429:
+                    retry_after = response.headers.get(
+                        "Retry-After", "1",
+                    )
+                    try:
+                        wait = float(retry_after)
+                    except (TypeError, ValueError):
+                        wait = 1.0
+                    if attempt < max_retries:
+                        _t.sleep(min(wait, 30))
+                        continue
+                    raise AdapterRateLimited(
+                        self.name, f"rate limit (429): {snippet}",
+                    )
+                if 500 <= response.status_code < 600:
+                    if attempt < max_retries:
+                        _t.sleep(min(2 ** attempt, 8))
+                        continue
+                    raise AdapterUnavailable(
+                        self.name,
+                        f"vendor 5xx ({response.status_code}): {snippet}",
+                    )
+                raise AdapterError(
+                    self.name,
+                    f"vendor returned {response.status_code}: {snippet}",
+                )
+
+            try:
+                return response.json() if response.text else {}
+            except ValueError as exc:
+                raise AdapterError(
+                    self.name, f"invalid JSON response: {exc}",
+                ) from exc
+        raise AdapterError(
+            self.name,
+            f"exhausted retries: {last_exc}" if last_exc else "exhausted retries",
+        )

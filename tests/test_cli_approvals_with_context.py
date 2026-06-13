@@ -50,6 +50,9 @@ def _ns(**kw):
         no_outcomes=False,
         with_context=False,
         context_k=3,
+        # approvals show defaults to text view; tests that
+        # json.loads() the output need json=True.
+        json=True,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)

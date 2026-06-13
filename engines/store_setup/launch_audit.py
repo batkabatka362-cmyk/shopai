@@ -15,10 +15,11 @@ Output schema::
         "checks": [
             {"key": "legal_policies",
              "ok": True, "applied": 5, "expected": 5,
-             "missing": []},
+             "missing": [], "fix_hint": ""},
             {"key": "standard_pages",
              "ok": False, "applied": 3, "expected": 4,
-             "missing": ["FAQ"]},
+             "missing": ["FAQ"],
+             "fix_hint": "Run: shopai launch ..."},
             ...
         ],
         "ready_to_launch": False,
@@ -83,6 +84,169 @@ _MIN_SHIPPING_ZONES: int = 1
 # pickup-only outpost) can't satisfy a website checkout.
 _MIN_FULFILLABLE_LOCATIONS: int = 1
 
+# The minimum brand assets a launchable store needs. Mirrors
+# ``brand_uploader._BRAND_ASSETS`` minimum-viable set (logo +
+# favicon). The other two (hero, og_image) are nice-to-haves
+# that don't gate launchability.
+_REQUIRED_BRAND_ASSETS: frozenset[str] = frozenset({
+    "logo", "favicon",
+})
+
+
+# Per-check operator-actionable next steps. The fix_hint
+# tells the operator HOW to close each missing check, so the
+# audit's value goes beyond "what's missing" to "what to do
+# about it". Format is a short verb-led sentence; CLI prints
+# it verbatim on failure lines.
+_FIX_HINTS: dict[str, str] = {
+    "legal_policies": (
+        "Run: shopai launch --store-name <NAME> --niche <NICHE>"
+    ),
+    "standard_pages": (
+        "Run: shopai launch --store-name <NAME> --niche <NICHE>"
+    ),
+    "active_discounts": (
+        "Run: shopai launch --store-name <NAME> --niche <NICHE>"
+    ),
+    "curated_collections": (
+        "Run: shopai launch --store-name <NAME> --niche <NICHE>"
+    ),
+    "design_tokens": (
+        "Run: shopai launch (requires a MAIN theme installed "
+        "on the store)"
+    ),
+    "brand_assets": (
+        "Run: shopai launch --logo-url URL --favicon-url URL"
+    ),
+    "active_products": (
+        "Run: shopai launch --seed-products  (or "
+        "shopai store seed-products) for niche-aware "
+        "starter products; or add ACTIVE products via "
+        "Shopify admin"
+    ),
+    "shipping_zones": (
+        "Manual: configure at "
+        "admin.shopify.com/settings/shipping"
+    ),
+    "fulfillable_locations": (
+        "Manual: activate a location with online-order "
+        "fulfillment at admin.shopify.com/settings/locations"
+    ),
+    "shop_identity": (
+        "Manual: set the missing shop fields at "
+        "admin.shopify.com/settings/general (name, contact "
+        "email, currency must all be configured before "
+        "checkout works correctly)"
+    ),
+    "storefront_setup": (
+        "Manual: complete the Shopify setup checklist at "
+        "admin.shopify.com (store-level setup_required + "
+        "checkout_api_supported are Shopify's own canonical "
+        "signals for transaction readiness)"
+    ),
+}
+
+
+# Required shop-identity fields on the SHOPIFY_GET_SHOP
+# response. Without ``name`` or ``currency_code`` the
+# storefront shows blank brand + can't price; without an
+# email contact the customer-receipt flow has no sender.
+# Primary domain (``primary_host``) is also required --
+# without it the store has no public URL and isn't
+# accessible.
+_REQUIRED_SHOP_FIELDS: tuple[str, ...] = (
+    "name",
+    "email_or_contact_email",  # either-or; checked below
+    "currency_code",
+    "primary_host",
+)
+
+
+def _fix_hint(check_key: str) -> str:
+    """Look up the operator-actionable next step for ``key``.
+
+    Returns an empty string if no hint is registered -- the CLI
+    treats empty as "no hint to show", not as an error.
+    """
+    return _FIX_HINTS.get(check_key, "")
+
+
+# Which audit checks each "remediation bucket" closes. Lives
+# alongside ``_FIX_HINTS`` so adding a new check + its
+# bucket assignment is a single-file edit.
+_LAUNCH_CLOSEABLE: frozenset[str] = frozenset({
+    "legal_policies", "standard_pages",
+    "active_discounts", "curated_collections",
+    "design_tokens", "brand_assets",
+    "active_products",
+})
+_MANUAL_ADMIN_KEYS: frozenset[str] = frozenset({
+    "shipping_zones",
+    "fulfillable_locations",
+    "shop_identity",
+    "storefront_setup",
+})
+_MANUAL_ADMIN_URLS: dict[str, str] = {
+    "shipping_zones":
+        "admin.shopify.com/settings/shipping",
+    "fulfillable_locations":
+        "admin.shopify.com/settings/locations",
+    "shop_identity":
+        "admin.shopify.com/settings/general",
+    "storefront_setup":
+        "admin.shopify.com",
+}
+
+
+def next_action_hint(checks: list[dict[str, Any]]) -> str:
+    """Return the single highest-leverage next command for
+    closing the most failing audit checks.
+
+    Groups failing checks by remediation bucket
+    (launch-closeable vs Shopify-admin-driven) and picks
+    the bucket that closes the most gaps in one shot. The
+    seven launch-closeable checks all collapse into a single
+    ``shopai launch`` invocation; the three admin-driven
+    checks (shipping_zones, fulfillable_locations,
+    shop_identity) each get their own URL.
+
+    Returns "" when there are no failing checks (audit
+    passes), so callers can use truthiness to decide whether
+    to render the hint.
+    """
+    if not checks:
+        return ""
+    failing = [c for c in checks if not c.get("ok")]
+    if not failing:
+        return ""
+    failing_keys = {c.get("key", "") for c in failing}
+
+    launchable_gaps = failing_keys & _LAUNCH_CLOSEABLE
+    manual_gaps = failing_keys & _MANUAL_ADMIN_KEYS
+
+    if (
+        len(launchable_gaps) >= len(manual_gaps)
+        and launchable_gaps
+    ):
+        # active_products needs the --seed-products opt-in;
+        # include it only when that gap is in the bundle.
+        seed_flag = (
+            " --seed-products"
+            if "active_products" in launchable_gaps
+            else ""
+        )
+        return (
+            f"shopai launch --store-name <NAME> "
+            f"--niche <NICHE>{seed_flag}  "
+            f"(closes {len(launchable_gaps)} of "
+            f"{len(failing)} gaps)"
+        )
+    if manual_gaps:
+        target = sorted(manual_gaps)[0]
+        url = _MANUAL_ADMIN_URLS.get(target, "Shopify admin")
+        return f"Visit {url} to close {target}"
+    return ""
+
 
 def audit_store(
     *,
@@ -136,6 +300,7 @@ def audit_store(
         ),
     )
     checks.append(_check_design_tokens())
+    checks.append(_check_brand_assets())
     checks.append(
         _check_active_products(
             expected=expected_products,
@@ -151,6 +316,32 @@ def audit_store(
             expected=expected_fulfillable_locations,
         ),
     )
+    checks.append(_check_shop_identity())
+    checks.append(_check_storefront_setup())
+
+    # Decorate every check with its operator-actionable hint
+    # in one place so individual probes stay focused on the
+    # read+normalise responsibility. Unknown keys get "".
+    # Special case: when shop_identity reports
+    # ``shop_unreachable`` (router/auth failure), the
+    # generic "set fields at admin.shopify.com" hint is
+    # misleading -- the real fix is OAuth/connection. Swap
+    # the hint to point operators at the connection
+    # diagnostics command instead.
+    for check in checks:
+        key = check.get("key", "")
+        if (
+            key in ("shop_identity", "storefront_setup")
+            and check.get("missing") == ["shop_unreachable"]
+        ):
+            check["fix_hint"] = (
+                "Connection issue: SHOPIFY_GET_SHOP "
+                "returned nothing. Run `shopai store "
+                "report <store_id>` to verify OAuth + "
+                "re-install the app if needed."
+            )
+        else:
+            check["fix_hint"] = _fix_hint(key)
 
     total = len(checks)
     passed = sum(1 for c in checks if c["ok"])
@@ -166,11 +357,29 @@ def audit_store(
         else "all checks passed"
     )
 
+    # Group failing checks by remediation bucket so JSON
+    # consumers don't have to re-derive what's operator-
+    # driven (Shopify admin) vs orchestrator-closeable.
+    failing_keys = [
+        c.get("key", "") for c in checks
+        if not c.get("ok") and c.get("key")
+    ]
+    manual_admin_gaps = sorted(
+        set(failing_keys) & _MANUAL_ADMIN_KEYS
+    )
+    launch_closeable_gaps = sorted(
+        set(failing_keys) & _LAUNCH_CLOSEABLE
+    )
+
     result = {
         "checks": checks,
         "ready_to_launch": ready_to_launch,
         "completion_pct": completion_pct,
         "missing_summary": missing_summary,
+        "next_action": next_action_hint(checks),
+        "plan": _build_audit_plan(checks),
+        "manual_admin_gaps": manual_admin_gaps,
+        "launch_closeable_gaps": launch_closeable_gaps,
     }
 
     _record_audit(
@@ -403,6 +612,49 @@ def _check_design_tokens() -> dict[str, Any]:
     }
 
 
+def _check_brand_assets() -> dict[str, Any]:
+    """Verify the minimum brand-asset set was uploaded.
+
+    Mirrors the contract of
+    ``engines.store_setup.brand_uploader``: the uploader tags
+    each file with an alt of ``"{store_name} {asset}"`` (e.g.
+    ``"Acme Beauty logo"``). This probe pages
+    ``SHOPIFY_LIST_FILES`` and counts how many alts end in one
+    of the required asset labels (``logo``, ``favicon``).
+
+    A launchable store needs BOTH logo and favicon visible to
+    Shopify; ``hero`` / ``og_image`` are nice-to-haves and
+    aren't gated.
+    """
+    data = _router_read(
+        capability_attr="SHOPIFY_LIST_FILES",
+        params={"limit": 250},
+        empty_default={},
+    )
+    files = data.get("files") if isinstance(data, dict) else []
+    present: set[str] = set()
+    if isinstance(files, list):
+        for f in files:
+            if not isinstance(f, dict):
+                continue
+            alt = (f.get("alt") or "").lower().strip()
+            for asset in _REQUIRED_BRAND_ASSETS:
+                if alt.endswith(f" {asset}") or alt == asset:
+                    present.add(asset)
+                    break
+
+    expected = set(_REQUIRED_BRAND_ASSETS)
+    missing = sorted(expected - present)
+    applied = len(expected & present)
+    return {
+        "key": "brand_assets",
+        "ok": not missing,
+        "applied": applied,
+        "expected": len(expected),
+        "missing": missing,
+    }
+
+
 def _check_shipping_zones(*, expected: int) -> dict[str, Any]:
     """Count configured shipping zones via
     SHOPIFY_LIST_DELIVERY_PROFILES.
@@ -504,6 +756,136 @@ def _check_fulfillable_locations(
     }
 
 
+def _check_shop_identity() -> dict[str, Any]:
+    """Verify the store has the identity fields it needs to
+    take orders.
+
+    The autonomous merchant CAN'T earn revenue if Shopify
+    doesn't have a name (storefront branding), a contact
+    email (receipts can't send), a primary currency
+    (checkout can't price), or a primary host (storefront
+    isn't reachable). Fresh dev stores can be missing one or
+    more of these depending on the setup path the operator
+    took.
+
+    Pulls SHOPIFY_GET_SHOP and checks each required field.
+    ``email`` and ``contact_email`` are treated as
+    either-or: either suffices for transactional sends.
+    """
+    data = _router_read(
+        capability_attr="SHOPIFY_GET_SHOP",
+        params={},
+        empty_default={},
+    )
+    shop = data.get("shop") if isinstance(data, dict) else {}
+    if not isinstance(shop, dict):
+        shop = {}
+
+    # Distinguish "shop unreachable" (router/auth failure)
+    # from "shop fields missing". The empty dict means the
+    # router call returned nothing -- almost always an OAuth
+    # / connection issue, not a 4-field-empty store.
+    if not shop:
+        return {
+            "key": "shop_identity",
+            "ok": False,
+            "applied": 0,
+            "expected": len(_REQUIRED_SHOP_FIELDS),
+            "missing": ["shop_unreachable"],
+        }
+
+    missing: list[str] = []
+    if not str(shop.get("name") or "").strip():
+        missing.append("name")
+    # email OR contact_email is required
+    if not (
+        str(shop.get("email") or "").strip()
+        or str(shop.get("contact_email") or "").strip()
+    ):
+        missing.append("contact_email")
+    if not str(shop.get("currency_code") or "").strip():
+        missing.append("currency_code")
+    if not str(shop.get("primary_host") or "").strip():
+        missing.append("primary_host")
+
+    applied = len(_REQUIRED_SHOP_FIELDS) - len(missing)
+    return {
+        "key": "shop_identity",
+        "ok": not missing,
+        "applied": applied,
+        "expected": len(_REQUIRED_SHOP_FIELDS),
+        "missing": missing,
+    }
+
+
+def _check_storefront_setup() -> dict[str, Any]:
+    """Verify Shopify's own canonical "ready for transactions"
+    signals on the shop record.
+
+    Catches a real launch blocker the other 10 checks don't:
+    a store can have policies + pages + products + shipping
+    all configured and STILL be in Shopify's
+    ``setup_required`` state because, e.g., the merchant
+    hasn't completed the setup checklist or chosen a plan.
+    Such a store accepts no orders -- the storefront is
+    visible but checkout silently breaks.
+
+    Two boolean signals on SHOPIFY_GET_SHOP:
+      * ``setup_required`` should be False (Shopify-side
+        setup checklist complete)
+      * ``checkout_api_supported`` should be True (checkout
+        API enabled -- programmatic order paths work)
+
+    Both are CHEAP reads of the shop root record (same
+    GraphQL call shop_identity uses). Marked as a
+    manual_admin gap since neither can be auto-fixed --
+    setup_required closes via the Shopify admin checklist,
+    checkout_api_supported via plan upgrade if needed.
+    """
+    data = _router_read(
+        capability_attr="SHOPIFY_GET_SHOP",
+        params={},
+        empty_default={},
+    )
+    shop = data.get("shop") if isinstance(data, dict) else {}
+    if not isinstance(shop, dict):
+        shop = {}
+
+    # Distinguish "shop unreachable" (router/auth failure) so
+    # operators get the connection diagnostic instead of the
+    # generic "complete the setup checklist" hint -- same
+    # pattern as _check_shop_identity (f20618ab).
+    if not shop:
+        return {
+            "key": "storefront_setup",
+            "ok": False,
+            "applied": 0,
+            "expected": 2,
+            "missing": ["shop_unreachable"],
+        }
+
+    missing: list[str] = []
+    # setup_required defaults to True on a fresh adapter
+    # response (the field's absence is treated as "we don't
+    # know, assume incomplete" to avoid false-passing audits
+    # on older API versions).
+    setup_required = bool(shop.get("setup_required", True))
+    checkout_api = bool(shop.get("checkout_api_supported", False))
+    if setup_required:
+        missing.append("setup_required")
+    if not checkout_api:
+        missing.append("checkout_api_supported")
+
+    applied = 2 - len(missing)
+    return {
+        "key": "storefront_setup",
+        "ok": not missing,
+        "applied": applied,
+        "expected": 2,
+        "missing": missing,
+    }
+
+
 # ── Helpers ───────────────────────────────────────────────────
 
 
@@ -583,3 +965,44 @@ def _record_audit(
         logger.debug(
             "launch_audit record_writeback raised: %s", exc,
         )
+
+
+def _build_audit_plan(
+    checks: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Compute a structured plan for the audit's failing
+    checks via the capability planner.
+
+    The plan complements the simpler ``next_action`` string:
+    JSON consumers (daily-brief, LLM agents, autonomous loop)
+    get a structured sequence with per-step capability names,
+    CLI commands, and audit_coverage.
+
+    Returns None when:
+      - There are no failing checks (audit passes).
+      - The planner module isn't available (degrades to the
+        ``next_action`` string only).
+      - The planner raises -- failure is recorded silently;
+        the audit's primary output is the checks list, not
+        the plan.
+
+    Pattern: this function imports lazily so the audit
+    module doesn't carry the planner as a hard dependency.
+    """
+    failing_keys = [
+        c.get("key", "") for c in checks
+        if not c.get("ok") and c.get("key")
+    ]
+    if not failing_keys:
+        return None
+    try:
+        from core.capability_planner import (
+            plan_for_audit_gaps,
+        )
+        plan = plan_for_audit_gaps(failing_keys)
+        return plan.to_dict()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "launch_audit plan build raised: %s", exc,
+        )
+        return None

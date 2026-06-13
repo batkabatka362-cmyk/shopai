@@ -23,12 +23,14 @@ from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
 from .dalle3 import DallE3Adapter
+from .pexels_photos import PexelsPhotosAdapter
 
 logger = get_logger("adapters.image.bootstrap")
 
 
 _IMAGE_ADAPTER_CLASSES = (
     DallE3Adapter,
+    PexelsPhotosAdapter,
 )
 
 
@@ -41,7 +43,7 @@ def register_all(
     (and the controller's startup probe) can warn about missing
     credentials without crashing the process.
     """
-    reg = registry or get_registry()
+    reg = registry if registry is not None else get_registry()
     status: dict[str, bool] = {}
 
     for cls in _IMAGE_ADAPTER_CLASSES:

@@ -117,6 +117,47 @@ class ChurnPredictionEngine:
 
         elapsed = time.monotonic() - start
 
+        # Phase 7: optional retention-code mint per high-risk
+        # prediction. Opt-in via data.apply_retention_codes=True.
+        # See engines.churn_prediction.discount_minter for the
+        # filtering logic (risk level + retention action +
+        # cost tier). Empty list when not opted in OR when no
+        # predictions matched the mint criteria.
+        minted_codes: list[dict[str, Any]] = []
+        data = input_payload.get("data") or {}
+        if (
+            isinstance(data, dict)
+            and bool(data.get("apply_retention_codes"))
+        ):
+            customers_by_id = {
+                str(c.get("id") or c.get("customer_id") or ""): c
+                for c in customers
+                if isinstance(c, dict)
+            }
+            store_cfg = data.get("store") if isinstance(
+                data.get("store"), dict,
+            ) else None
+            try:
+                from .discount_minter import (
+                    mint_retention_code,
+                )
+                for prediction in predictions:
+                    cid = str(
+                        prediction.get("customer_id", ""),
+                    )
+                    customer = customers_by_id.get(cid) or {}
+                    code = mint_retention_code(
+                        prediction, customer, store_cfg,
+                    )
+                    if code is not None:
+                        minted_codes.append(code)
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "churn_prediction: mint loop raised: %s",
+                    exc,
+                )
+
         output: dict[str, Any] = {
             "status": "success",
             "data": {
@@ -127,6 +168,7 @@ class ChurnPredictionEngine:
                     "avg_churn_probability": avg_churn_probability,
                 },
                 "confidence": confidence,
+                "minted_codes": minted_codes,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,
@@ -217,6 +259,14 @@ class ChurnPredictionEngine:
             "risk_level": risk_level,
             "key_factors": key_factors,
             "retention_action": retention["action"],
+            # Cost-tier flows through so the Phase 7 minter
+            # can pick a percentage without re-running the
+            # retention recommender. Adding this field is
+            # backward-compatible: callers that don't care
+            # about retention writebacks just ignore it.
+            "estimated_cost_tier": retention.get(
+                "estimated_cost_tier", "",
+            ),
         }
 
     # ------------------------------------------------------------------

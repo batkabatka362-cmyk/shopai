@@ -69,7 +69,10 @@ class AdLauncher:
             "objective": campaign_config.get("objective", "OUTCOME_TRAFFIC"),
             "status": campaign_config.get("status", "PAUSED"),
             "special_ad_categories": campaign_config.get("special_ad_categories", []),
-            "daily_budget": int(float(campaign_config["budget_amount"]) * 100),
+            # W962-71: round, don't truncate. int(float * 100)
+            # drops cents (10.99 * 100 = 1098.9999... -> 1098,
+            # undercharging by 1 cent). round() snaps to nearest.
+            "daily_budget": int(round(float(campaign_config["budget_amount"]) * 100)),
             "access_token": access_token,
         }
         if "start_time" in campaign_config:

@@ -114,19 +114,93 @@ class ShopifyBaseAdapter(BaseAdapter):
         super().__init__()
         self._shop_url_override = shop_url
         self._token_override = access_token
-        self._client: Any = None  # ShopifyGraphQL, lazy
+        # Back-compat: tests sometimes inject ``self._client``
+        # directly to a mock object before any call. If set,
+        # _make_client returns it instead of consulting the
+        # cache.
+        self._client: Any = None
+        # W963-115: per-credential client cache so the same
+        # adapter instance can service multiple stores in
+        # sequence (or concurrently across threads, each in
+        # its own ``with active_store(sid):`` block). Cache
+        # key is the (shop_url, token) tuple. When credentials
+        # rotate, the old client lingers in the cache but the
+        # new resolve_credentials returns the fresh tuple
+        # so subsequent calls naturally pick up a new client.
+        self._client_cache: dict[tuple[str, str], Any] = {}
 
     # ── Configuration ──────────────────────────────────────────
 
     def _resolve_credentials(self) -> tuple[str, str]:
-        """Return ``(shop_url, access_token)`` from override fields
-        first, falling back to ``AdapterConfig`` env vars.
+        """Return ``(shop_url, access_token)`` resolved with
+        this priority chain:
 
-        Empty strings indicate "missing" — caller should treat
-        the adapter as not configured.
+        1. Constructor override (highest priority -- explicit
+           per-adapter scoping, e.g. bootstrap-time)
+        2. W963-115: active_store(sid) thread-local plus
+           StoreManager.get_credentials(sid). Enables multi-
+           store empires: the autonomous controller wraps
+           each cycle in ``with active_store(sid):`` and the
+           adapter automatically resolves THAT store's
+           credentials -- no per-cycle adapter re-registration
+           needed.
+        3. AdapterConfig env vars (single-store fallback)
+
+        Empty strings indicate "missing" -- caller should
+        treat the adapter as not configured.
         """
         if self._shop_url_override and self._token_override:
-            return self._shop_url_override, self._token_override
+            return (
+                self._shop_url_override,
+                self._token_override,
+            )
+        # W963-115: per-store routing via active_store.
+        # W963-124: hard-fail when active_store(sid) is
+        # set for an UNKNOWN sid. Pre-fix the code called
+        # StoreManager.get_credentials(sid) which silently
+        # falls back to env vars when sid is unknown --
+        # the adapter then routed Shopify mutations to
+        # the ENV-DEFAULT store while the autonomous
+        # controller believed they were scoped to sid.
+        # Money-class bug. Now we check has_store(sid)
+        # first; absent sid -> raise.
+        try:
+            from core.context import get_active_store_id
+            sid = get_active_store_id()
+        except Exception:  # noqa: BLE001
+            sid = None
+        if sid:
+            try:
+                from data_pipeline.store.store_manager import (
+                    StoreManager,
+                )
+                sm = StoreManager()
+                if not sm.has_store(sid):
+                    raise AdapterNotConfigured(
+                        self.name,
+                        f"active_store({sid!r}) is set "
+                        f"but no per-store credentials "
+                        f"registered. Add via "
+                        f"`shopai store add {sid} <url> "
+                        f"--api-key ...` or unset "
+                        f"active_store.",
+                    )
+                creds = sm.get_credentials(sid) or {}
+                shop = str(creds.get("shop_url") or "")
+                tok = str(creds.get("api_key") or "")
+                if shop and tok:
+                    return shop, tok
+            except AdapterNotConfigured:
+                # Re-raise so caller sees the routing
+                # failure rather than silently using env
+                # defaults.
+                raise
+            except Exception:  # noqa: BLE001
+                # Other StoreManager errors (DB unavail,
+                # etc.) fall through to env-var
+                # resolution. The unknown-sid path is the
+                # one we hard-fail on.
+                pass
         cfg = get_config()
         return (
             self._shop_url_override or cfg.get("shopify_url"),
@@ -134,20 +208,49 @@ class ShopifyBaseAdapter(BaseAdapter):
         )
 
     def is_configured(self) -> bool:
-        shop, token = self._resolve_credentials()
+        """W963-129 round-9 #7 fix: catch AdapterNotConfigured
+        from _resolve_credentials and return False.
+
+        W963-124 made _resolve_credentials raise when
+        active_store(sid) is set for an unknown sid. But
+        is_configured is called by Registry.find_for_capability
+        inside list comprehensions + sort-key lambdas without
+        their own try/except -- the exception would
+        propagate out of routing for EVERY Shopify adapter,
+        not just the targeted one. The router contract
+        (per the base docstring) is that is_configured
+        returns False for unconfigured adapters so the
+        smart router silently skips them. Restoring that
+        contract here; the hard-fail still fires at
+        _make_client / _gql time where actual routing
+        decisions have already been made.
+        """
+        try:
+            shop, token = self._resolve_credentials()
+        except AdapterNotConfigured:
+            return False
         return bool(shop and token)
 
     # ── GraphQL client ─────────────────────────────────────────
 
     def _make_client(self) -> Any:
-        """Lazily build the underlying ``ShopifyGraphQL`` client.
+        """Lazily build (and cache) the ``ShopifyGraphQL``
+        client matching the CURRENT credentials.
 
         Imported inside the method (not at module top) so the
         adapter package can be imported in environments where
-        ``data_pipeline`` is missing — useful for unit tests
+        ``data_pipeline`` is missing -- useful for unit tests
         that mock ``_gql`` directly without touching the real
         HTTP layer.
+
+        W963-115: client cache keyed by (shop_url, token).
+        Lets a single adapter instance service multiple
+        stores in sequence -- cycle A for store_a builds
+        client_a; cycle B for store_b builds client_b; both
+        live in the cache. Future cycle for either store
+        reuses the cached client (no HTTP rebuild cost).
         """
+        # Back-compat: test-injected single client wins.
         if self._client is not None:
             return self._client
 
@@ -158,6 +261,11 @@ class ShopifyBaseAdapter(BaseAdapter):
                 "missing SHOPAI_SHOPIFY_URL / SHOPAI_SHOPIFY_KEY",
             )
 
+        key = (shop, token)
+        cached = self._client_cache.get(key)
+        if cached is not None:
+            return cached
+
         try:
             from data_pipeline.ingestion.api.shopify_graphql import ShopifyGraphQL
         except Exception as exc:  # noqa: BLE001
@@ -165,8 +273,9 @@ class ShopifyBaseAdapter(BaseAdapter):
                 self.name, f"shopify_graphql import failed: {exc}",
             ) from exc
 
-        self._client = ShopifyGraphQL(shop, token)
-        return self._client
+        client = ShopifyGraphQL(shop, token)
+        self._client_cache[key] = client
+        return client
 
     def _gql(
         self,
@@ -191,11 +300,31 @@ class ShopifyBaseAdapter(BaseAdapter):
             # is rare in practice (token would be rejected at
             # OAuth time) but we still distinguish it.
             msg = str(exc)
-            if "401" in msg or "403" in msg:
+            # W962-37: word-boundary HTTP code matching so
+            # "order 4010 not found" doesn't false-positive on
+            # the 401 substring. Same logic as the 5xx branch.
+            import re as _re
+            if _re.search(r"\b(401|403)\b", msg):
                 raise AdapterAuthError(self.name, msg) from exc
-            if "429" in msg:
+            if _re.search(r"\b429\b", msg):
                 raise AdapterRateLimited(self.name, msg) from exc
-            if any(s in msg for s in ("5", "Network", "timeout", "Timeout")):
+            # W962-37 bugfix: the original check was
+            #   any(s in msg for s in ("5", "Network", ...))
+            # The bare "5" substring matched ANY error message
+            # containing the digit 5 (e.g. "order 5 not found"
+            # -> Unavailable). The intent was 5xx HTTP codes,
+            # so match those concretely via a regex for a
+            # 5xx triple at a word boundary.
+            msg_lower = msg.lower()
+            is_5xx = bool(
+                _re.search(r"\b5\d{2}\b", msg)
+                or "5xx" in msg_lower
+            )
+            if (
+                is_5xx
+                or "network" in msg_lower
+                or "timeout" in msg_lower
+            ):
                 raise AdapterUnavailable(self.name, msg) from exc
             raise AdapterError(self.name, msg) from exc
 

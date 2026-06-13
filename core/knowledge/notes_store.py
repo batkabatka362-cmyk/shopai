@@ -194,29 +194,35 @@ class NotesStore:
 
     def _load(self) -> dict[str, Any]:
         with self._lock:
-            if not self._path.exists():
-                return {"engines": {}, "goals": {}, "meta": {}}
-            try:
-                raw = self._path.read_text(encoding="utf-8")
-            except Exception as exc:  # noqa: BLE001
-                logger.debug(
-                    "notes file read failed: %s", exc,
-                )
-                return {"engines": {}, "goals": {}, "meta": {}}
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                logger.debug(
-                    "notes file corrupted (json parse): %s", exc,
-                )
-                return {"engines": {}, "goals": {}, "meta": {}}
-            # Defensive — ensure top-level shape
-            if not isinstance(data, dict):
-                return {"engines": {}, "goals": {}, "meta": {}}
-            data.setdefault("engines", {})
-            data.setdefault("goals", {})
-            data.setdefault("meta", {})
-            return data
+            return self._load_unlocked()
+
+    def _load_unlocked(self) -> dict[str, Any]:
+        """Load WITHOUT acquiring self._lock. Callers that
+        already hold the lock (e.g., to span load+mutate+write)
+        invoke this; everyone else uses _load."""
+        if not self._path.exists():
+            return {"engines": {}, "goals": {}, "meta": {}}
+        try:
+            raw = self._path.read_text(encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "notes file read failed: %s", exc,
+            )
+            return {"engines": {}, "goals": {}, "meta": {}}
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            logger.debug(
+                "notes file corrupted (json parse): %s", exc,
+            )
+            return {"engines": {}, "goals": {}, "meta": {}}
+        # Defensive — ensure top-level shape
+        if not isinstance(data, dict):
+            return {"engines": {}, "goals": {}, "meta": {}}
+        data.setdefault("engines", {})
+        data.setdefault("goals", {})
+        data.setdefault("meta", {})
+        return data
 
     def _set_one(
         self,
@@ -229,8 +235,14 @@ class NotesStore:
             return
         if not isinstance(notes, str):
             return
-        data = self._load()
+        # W962-74: load + mutate + atomic_write under a single
+        # lock acquisition. Pre-fix had _load acquire-release
+        # outside the lock, then re-enter for the write — two
+        # concurrent _set_one calls could both load the same
+        # snapshot and the second one's atomic_write would wipe
+        # the first one's added entry (classic lost update).
         with self._lock:
+            data = self._load_unlocked()
             section = data.setdefault(bucket, {})
             section[name.strip()] = {
                 "notes": notes,
@@ -250,13 +262,12 @@ class NotesStore:
             )
             os.replace(tmp, self._path)
         finally:
-            if tmp.exists():
-                try:
-                    tmp.unlink()
-                except OSError as exc:
-                    logger.debug(
-                        "tmp file cleanup failed: %s", exc,
-                    )
+            try:
+                tmp.unlink(missing_ok=True)  # W962-68 TOCTOU
+            except OSError as exc:
+                logger.debug(
+                "tmp file cleanup failed: %s", exc,
+                )
 
 
 # Module-level singleton used by importer + future readers.

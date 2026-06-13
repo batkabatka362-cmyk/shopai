@@ -92,6 +92,177 @@ class TestShopifyBaseAdapter:
         assert shop == "explicit.myshopify.com"
         assert token == "explicit_token"
 
+    # ── W963-115: per-store cred routing via active_store ──
+
+    def test_active_store_resolves_credentials_from_store_manager(
+        self, monkeypatch,
+    ):
+        """W963-115: when active_store(sid) is set + the
+        StoreManager has credentials for sid, the adapter
+        resolves THOSE credentials (not the env fallback).
+
+        This is the unblock for 20-store autonomous AGI: the
+        autonomous controller wraps each cycle in
+        with active_store(sid): and the adapter
+        automatically uses the right store's credentials
+        without needing per-cycle re-registration of every
+        Shopify adapter."""
+        from unittest.mock import MagicMock, patch
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        from core.context import active_store
+
+        # Env fallback (would win without active_store)
+        monkeypatch.setenv(
+            "SHOPAI_SHOPIFY_URL", "fallback.myshopify.com",
+        )
+        monkeypatch.setenv(
+            "SHOPAI_SHOPIFY_KEY", "fallback_token",
+        )
+        reset_config()
+
+        # Mock StoreManager to return per-store creds
+        fake_sm = MagicMock()
+        fake_sm.get_credentials.return_value = {
+            "shop_url": "store_a.myshopify.com",
+            "api_key": "store_a_token",
+        }
+        with patch(
+            "data_pipeline.store.store_manager.StoreManager",
+            return_value=fake_sm,
+        ):
+            a = ShopifyRiskAdapter()
+            with active_store("store_a"):
+                shop, token = a._resolve_credentials()
+
+        assert shop == "store_a.myshopify.com"
+        assert token == "store_a_token"
+        # StoreManager was queried with the active sid
+        fake_sm.get_credentials.assert_called_with("store_a")
+
+    def test_active_store_falls_back_to_env_when_store_missing(
+        self, monkeypatch,
+    ):
+        """When active_store is set but StoreManager has no
+        credentials for that sid (returns empty dict), the
+        adapter falls back to env -- doesn't crash + doesn't
+        block on missing per-store creds."""
+        from unittest.mock import MagicMock, patch
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        from core.context import active_store
+
+        monkeypatch.setenv(
+            "SHOPAI_SHOPIFY_URL", "env.myshopify.com",
+        )
+        monkeypatch.setenv(
+            "SHOPAI_SHOPIFY_KEY", "env_token",
+        )
+        reset_config()
+
+        fake_sm = MagicMock()
+        fake_sm.get_credentials.return_value = {}
+        with patch(
+            "data_pipeline.store.store_manager.StoreManager",
+            return_value=fake_sm,
+        ):
+            a = ShopifyRiskAdapter()
+            with active_store("unknown_store"):
+                shop, token = a._resolve_credentials()
+
+        assert shop == "env.myshopify.com"
+        assert token == "env_token"
+
+    def test_constructor_override_wins_over_active_store(
+        self, monkeypatch,
+    ):
+        """Constructor-passed creds REMAIN highest priority
+        (back-compat: existing test_constructor_overrides_env).
+        Per-store routing only kicks in when there's no
+        explicit override."""
+        from unittest.mock import MagicMock, patch
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        from core.context import active_store
+
+        fake_sm = MagicMock()
+        fake_sm.get_credentials.return_value = {
+            "shop_url": "store_a.myshopify.com",
+            "api_key": "store_a_token",
+        }
+        with patch(
+            "data_pipeline.store.store_manager.StoreManager",
+            return_value=fake_sm,
+        ):
+            a = ShopifyRiskAdapter(
+                shop_url="explicit.myshopify.com",
+                access_token="explicit_token",
+            )
+            with active_store("store_a"):
+                shop, token = a._resolve_credentials()
+
+        # Constructor override wins
+        assert shop == "explicit.myshopify.com"
+        assert token == "explicit_token"
+
+    def test_client_cache_keyed_by_credentials(
+        self, monkeypatch,
+    ):
+        """W963-115: same adapter instance servicing
+        multiple stores should produce DIFFERENT clients
+        per credential set + cache them so the second cycle
+        for store_a reuses store_a's client (no HTTP
+        rebuild)."""
+        from unittest.mock import MagicMock, patch
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        from core.context import active_store
+
+        # Two distinct stores
+        def get_creds(sid):
+            if sid == "store_a":
+                return {
+                    "shop_url": "a.myshopify.com",
+                    "api_key": "tok_a",
+                }
+            if sid == "store_b":
+                return {
+                    "shop_url": "b.myshopify.com",
+                    "api_key": "tok_b",
+                }
+            return {}
+
+        fake_sm = MagicMock()
+        fake_sm.get_credentials.side_effect = get_creds
+
+        with patch(
+            "data_pipeline.store.store_manager.StoreManager",
+            return_value=fake_sm,
+        ), patch(
+            "data_pipeline.ingestion.api.shopify_graphql.ShopifyGraphQL"
+        ) as mock_gql:
+            mock_gql.side_effect = (
+                lambda s, t: MagicMock(_shop=s, _token=t)
+            )
+
+            a = ShopifyRiskAdapter()
+
+            with active_store("store_a"):
+                client_a1 = a._make_client()
+                client_a2 = a._make_client()
+            with active_store("store_b"):
+                client_b1 = a._make_client()
+            with active_store("store_a"):
+                client_a3 = a._make_client()
+
+        # store_a's two calls return the SAME client
+        # (cache hit)
+        assert client_a1 is client_a2
+        # store_b builds a different client
+        assert client_b1 is not client_a1
+        # store_a's third call (after store_b) returns the
+        # ORIGINAL store_a client (cache survived)
+        assert client_a3 is client_a1
+        # ShopifyGraphQL constructor was called exactly
+        # twice -- once per unique credential tuple
+        assert mock_gql.call_count == 2
+
     def test_category_is_shopify_native(self):
         from core.adapters.shopify.risk import ShopifyRiskAdapter
         from core.adapters.shopify.inventory import ShopifyInventoryAdapter
@@ -148,6 +319,99 @@ class TestShopifyBaseAdapter:
         with pytest.raises(AdapterError) as exc:
             a._gql("query { x }")
         assert "GraphQL errors" in str(exc.value)
+
+    def test_error_classifier_does_not_match_bare_5(
+        self, monkeypatch,
+    ):
+        """W962-37 regression guard: the old `"5" in msg` check
+        misclassified ANY error message containing digit 5 as
+        AdapterUnavailable (e.g. 'order 50 not found' would
+        route to the unavailable branch). The fix matches
+        500/502/503/504/5xx explicitly + leading-space '5XX'."""
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        from core.adapters.errors import (
+            AdapterError, AdapterUnavailable,
+        )
+        a = ShopifyRiskAdapter(shop_url="x", access_token="y")
+
+        # Case 1: bare digit 5 in a non-HTTP error message
+        # should NOT route to Unavailable.
+        def make_bare5():
+            class _C:
+                def query(self, q, v):
+                    raise RuntimeError("order 5 not found")
+            return _C()
+        monkeypatch.setattr(a, "_make_client", make_bare5)
+        with pytest.raises(AdapterError) as exc:
+            a._gql("query { x }")
+        # Plain AdapterError, NOT AdapterUnavailable
+        assert not isinstance(exc.value, AdapterUnavailable)
+
+    def test_error_classifier_matches_5xx(self, monkeypatch):
+        """W962-37: explicit 5xx HTTP codes still route to
+        AdapterUnavailable."""
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        from core.adapters.errors import AdapterUnavailable
+        a = ShopifyRiskAdapter(shop_url="x", access_token="y")
+
+        for status_code in ("500", "502", "503", "504"):
+            def make_5xx(code=status_code):
+                class _C:
+                    def query(self, q, v):
+                        raise RuntimeError(
+                            f"HTTP Error {code}: Server failed",
+                        )
+                return _C()
+            monkeypatch.setattr(a, "_make_client", make_5xx)
+            with pytest.raises(AdapterUnavailable):
+                a._gql("query { x }")
+
+    def test_error_classifier_does_not_match_embedded_4xx(
+        self, monkeypatch,
+    ):
+        """W962-37: '401' as a substring of '4010' must not
+        trigger AuthError; '429' as substring of '4290' must not
+        trigger RateLimited. Word-boundary regex prevents this."""
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        from core.adapters.errors import (
+            AdapterAuthError, AdapterRateLimited,
+        )
+        a = ShopifyRiskAdapter(shop_url="x", access_token="y")
+
+        for substring in ("4010", "4030", "4290"):
+            def make_embedded(s=substring):
+                class _C:
+                    def query(self, q, v):
+                        raise RuntimeError(
+                            f"order {s} not found",
+                        )
+                return _C()
+            monkeypatch.setattr(a, "_make_client", make_embedded)
+            with pytest.raises(Exception) as exc:
+                a._gql("query { x }")
+            assert not isinstance(exc.value, AdapterAuthError)
+            assert not isinstance(exc.value, AdapterRateLimited)
+
+    def test_error_classifier_routes_auth_correctly(
+        self, monkeypatch,
+    ):
+        """W962-37: 401/403 still route to AdapterAuthError
+        (regression guard against the order-of-checks)."""
+        from core.adapters.shopify.risk import ShopifyRiskAdapter
+        from core.adapters.errors import AdapterAuthError
+        a = ShopifyRiskAdapter(shop_url="x", access_token="y")
+
+        for status_code in ("401", "403"):
+            def make_auth(code=status_code):
+                class _C:
+                    def query(self, q, v):
+                        raise RuntimeError(
+                            f"HTTP Error {code}: Unauthorized",
+                        )
+                return _C()
+            monkeypatch.setattr(a, "_make_client", make_auth)
+            with pytest.raises(AdapterAuthError):
+                a._gql("query { x }")
 
 
 # ── ShopifyRiskAdapter ───────────────────────────────────────
@@ -1037,6 +1301,9 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_UPDATE_PRODUCT).name == "shopify_products"
         assert router.route(Capability.SHOPIFY_DELETE_PRODUCT).name == "shopify_products"
         assert router.route(Capability.SHOPIFY_UPDATE_VARIANTS).name == "shopify_products"
+        # W963-159: tag/untag on products
+        assert router.route(Capability.SHOPIFY_TAG_PRODUCT).name == "shopify_products"
+        assert router.route(Capability.SHOPIFY_UNTAG_PRODUCT).name == "shopify_products"
         assert router.route(Capability.SHOPIFY_LIST_ORDERS).name == "shopify_orders"
         assert router.route(Capability.SHOPIFY_FETCH_ORDERS).name == "shopify_orders"
         assert router.route(Capability.SHOPIFY_GET_ORDER).name == "shopify_orders"
@@ -1204,6 +1471,8 @@ class TestShopifyBootstrap:
         assert router.route(Capability.SHOPIFY_REORDER_PRODUCT_MEDIA).name == "shopify_product_media"
         assert router.route(Capability.SHOPIFY_APPEND_VARIANT_MEDIA).name == "shopify_product_media"
         assert router.route(Capability.SHOPIFY_DETACH_VARIANT_MEDIA).name == "shopify_product_media"
+        # W963-167: create-media for attaching images by URL
+        assert router.route(Capability.SHOPIFY_CREATE_PRODUCT_MEDIA).name == "shopify_product_media"
         assert router.route(Capability.SHOPIFY_ADD_PRICE_LIST_PRICES).name == "shopify_price_list_fixed_prices"
         assert router.route(Capability.SHOPIFY_DELETE_PRICE_LIST_PRICES).name == "shopify_price_list_fixed_prices"
         assert router.route(Capability.SHOPIFY_UPDATE_PRICE_LIST_PRICES).name == "shopify_price_list_fixed_prices"
@@ -9327,6 +9596,74 @@ class TestShopifyProductsAdapter:
     def test_normalise_variant_handles_non_dict(self):
         from core.adapters.shopify.products import ShopifyProductsAdapter
         assert ShopifyProductsAdapter._normalise_variant(None) == {}
+
+    # ── W963-159: tag / untag ─────────────────────────────────
+
+    def test_tag_requires_id(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_TAG_PRODUCT, {
+            "tags": ["x"],
+        })
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_tag_requires_tags(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        result = a.execute(Capability.SHOPIFY_TAG_PRODUCT, {
+            "id": "gid://shopify/Product/1",
+        })
+        assert not result.ok
+        assert isinstance(result.error, AdapterValidationError)
+
+    def test_tag_happy_path(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        captured: dict = {}
+
+        def fake_gql(q, v):
+            captured.update(v)
+            return {"tagsAdd": {
+                "node": {"id": v["id"], "tags": v["tags"]},
+                "userErrors": [],
+            }}
+
+        with patch.object(a, "_gql", side_effect=fake_gql):
+            result = a.execute(Capability.SHOPIFY_TAG_PRODUCT, {
+                "id": "gid://shopify/Product/1",
+                "tags": ["shopai-quality-needs-images"],
+            })
+        assert result.ok
+        assert captured["tags"] == ["shopai-quality-needs-images"]
+        assert result.data["tags"] == ["shopai-quality-needs-images"]
+
+    def test_tag_accepts_comma_string(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"tagsAdd": {
+            "node": {"id": "gid://shopify/Product/1", "tags": ["a", "b"]},
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_TAG_PRODUCT, {
+                "id": "gid://shopify/Product/1",
+                "tags": "a, b",
+            })
+        assert result.ok
+
+    def test_untag_happy_path(self):
+        from core.adapters.shopify.products import ShopifyProductsAdapter
+        a = ShopifyProductsAdapter(shop_url="s", access_token="t")
+        with patch.object(a, "_gql", return_value={"tagsRemove": {
+            "node": {"id": "gid://shopify/Product/1", "tags": []},
+            "userErrors": [],
+        }}):
+            result = a.execute(Capability.SHOPIFY_UNTAG_PRODUCT, {
+                "id": "gid://shopify/Product/1",
+                "tags": ["legacy-tag"],
+            })
+        assert result.ok
+        assert result.data["tags"] == []
 
 
 # ── ShopifyOrdersAdapter ──────────────────────────────────
@@ -21497,6 +21834,34 @@ class TestShopifyOrderLifecycleAdapter:
             is True
         assert result.data["job_id"] == "gid://shopify/Job/77"
         assert result.data["job_done"] is False
+
+    def test_refund_method_preserves_explicit_false(self):
+        """W937 bugfix: pre-fix `or` short-circuit silently
+        dropped explicit ``original_payment_methods: False``
+        ("do NOT refund to original card") because False is
+        falsy. Caller's intent was lost in the GraphQL
+        variables. Sentinel-based lookup now preserves the
+        explicit False signal."""
+        from core.adapters.shopify.order_lifecycle import (
+            ShopifyOrderLifecycleAdapter,
+        )
+        a = ShopifyOrderLifecycleAdapter(
+            shop_url="s", access_token="t",
+        )
+        result = a._build_refund_method({
+            "original_payment_methods": False,
+            "store_credit": {
+                "amount": {"amount": "10.00",
+                           "currencyCode": "USD"},
+            },
+        })
+        # Pre-fix: this key would be absent entirely.
+        assert "originalPaymentMethodsRefund" in result
+        assert result["originalPaymentMethodsRefund"] is False
+        # storeCreditRefund still works correctly.
+        assert result["storeCreditRefund"]["amount"][
+            "amount"
+        ] == "10.00"
 
     def test_cancel_user_errors_fail_fast(self):
         from core.adapters.shopify.order_lifecycle import (

@@ -101,6 +101,17 @@ def write_env(env_path: Path, shop: str, client_id: str, client_secret: str) -> 
         if key not in seen:
             lines.append(f"{key}={value}")
     env_path.write_text("\n".join(lines) + "\n")
+    # W962-70: tighten perms on .env after writing the
+    # OAuth client_secret. Default umask leaves the file
+    # 0o644 (world-readable) on POSIX. chmod 0o600 mirrors
+    # the pattern at core/auth/shopify_auth.py:335. Best-
+    # effort on Windows where POSIX mode bits are largely
+    # ignored; the call is harmless there.
+    import os as _os
+    try:
+        _os.chmod(env_path, 0o600)
+    except OSError:
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -113,18 +124,52 @@ def main(argv: list[str] | None = None) -> int:
         default=".env",
         help="Path to .env to update (default: .env). Pass '' to skip.",
     )
+    p.add_argument(
+        "--show-token",
+        action="store_true",
+        help=(
+            "W962-67: show the full token (default truncates to "
+            "prefix). Use only on a trusted terminal."
+        ),
+    )
     args = p.parse_args(argv)
 
     shop = _normalize_shop(args.shop)
     data = fetch_token(shop, args.client_id, args.client_secret)
     token = data.get("access_token", "")
     if not token:
-        print(f"No access_token in response: {data}", file=sys.stderr)
+        # W962-67: print keys only, never the full response
+        # dict. CI logs / shell history / screen-sharing
+        # sessions become attack vectors if a token leaks.
+        print(
+            "No access_token in response. Keys: "
+            f"{sorted(data.keys())}",
+            file=sys.stderr,
+        )
         return 1
 
+    # W962-67: token display.
+    # Default: show prefix only. Operator can opt into full
+    # disclosure via --show-token (which still warns).
+    show_full = getattr(args, "show_token", False)
+    if show_full:
+        token_display = token
+        print(
+            "WARNING: full token shown via --show-token. "
+            "Clear your terminal history when done.",
+            file=sys.stderr,
+        )
+    else:
+        token_display = (
+            token[:15] + "..."
+            if len(token) > 15 else "<short>"
+        )
     print()
     print(f"  shop:        {shop}")
-    print(f"  token:       {token}")
+    print(
+        f"  token:       {token_display}"
+        + ("" if show_full else "  (truncated; --show-token to reveal)")
+    )
     print(f"  scope:       {data.get('scope', '')}")
     print(f"  expires_in:  {data.get('expires_in', 'unknown')} s")
     print()

@@ -433,3 +433,46 @@ class TestQuarantineFlags:
         assert code == 0
         data = json.loads(out)
         assert data["engines"][0]["flags"] == []
+
+
+class TestTopDrillDown:
+    """The text view ends with a 'Top: X' highlight + a drill-
+    down hint pointing the operator at `engine summary <leader>`.
+    Mirrors the drill-down hint pattern already standard across
+    the autonomous-loop observability stack."""
+
+    def test_drill_down_hint_renders(self, cli):
+        rows = [
+            _row(id_="a1", engine="winning", status="executed"),
+            _row(id_="b1", engine="losing", status="executed"),
+        ]
+        outcomes = {
+            "a1": [{"polarity": "positive", "metrics": {}}],
+            "b1": [{"polarity": "negative", "metrics": {}}],
+        }
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(
+                rows=rows, outcomes=outcomes,
+            ),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_ranking, _ns(),
+            )
+        assert "Top: winning" in out
+        assert "Drill down: `shopai engine summary winning`" in out
+
+    def test_drill_down_hint_absent_in_json(self, cli):
+        """JSON envelope is unchanged -- the hint is a text-
+        view nicety."""
+        rows = [
+            _row(id_="a1", engine="winning", status="executed"),
+        ]
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(rows=rows),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_ranking, _ns(json=True),
+            )
+        assert "Drill down" not in out

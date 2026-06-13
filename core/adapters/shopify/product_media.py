@@ -82,6 +82,34 @@ mutation productReorderMedia($id: ID!, $moves: [MoveInput!]!) {
 """.strip()
 
 
+# W963-167: productCreateMedia attaches images / videos / 3D
+# models to a product by URL. Pattern A: productId at top level,
+# media as a separate list of {originalSource, alt, mediaContentType}.
+# Returns mediaUserErrors (Pattern D -- same custom key as
+# productReorderMedia).
+_CREATE_PRODUCT_MEDIA_MUTATION = """
+mutation productCreateMedia(
+  $productId: ID!,
+  $media: [CreateMediaInput!]!
+) {
+  productCreateMedia(productId: $productId, media: $media) {
+    media {
+      id
+      alt
+      mediaContentType
+      status
+      preview { image { url } }
+    }
+    mediaUserErrors {
+      field
+      message
+      code
+    }
+  }
+}
+""".strip()
+
+
 _APPEND_VARIANT_MEDIA_MUTATION = f"""
 mutation productVariantAppendMedia(
   $productId: ID!,
@@ -138,6 +166,7 @@ class ShopifyProductMediaAdapter(ShopifyBaseAdapter):
         Capability.SHOPIFY_REORDER_PRODUCT_MEDIA,
         Capability.SHOPIFY_APPEND_VARIANT_MEDIA,
         Capability.SHOPIFY_DETACH_VARIANT_MEDIA,
+        Capability.SHOPIFY_CREATE_PRODUCT_MEDIA,
     }
     required_scopes = frozenset({"read_products", "write_products"})
 
@@ -152,6 +181,8 @@ class ShopifyProductMediaAdapter(ShopifyBaseAdapter):
             return self._append(params)
         if capability == Capability.SHOPIFY_DETACH_VARIANT_MEDIA:
             return self._detach(params)
+        if capability == Capability.SHOPIFY_CREATE_PRODUCT_MEDIA:
+            return self._create(params)
         raise AdapterValidationError(
             self.name, f"unsupported capability: {capability.value}",
         )
@@ -195,6 +226,121 @@ class ShopifyProductMediaAdapter(ShopifyBaseAdapter):
                     job.get("done", False) if isinstance(job, dict) else False
                 ),
                 "moves_count": len(moves),
+            },
+        )
+
+    # ── Create product media (W963-167) ────────────────────────────
+
+    def _create(self, params: dict[str, Any]) -> Any:
+        """Attach media (images / videos / 3D) to a product
+        by URL via productCreateMedia.
+
+        Friendly call shape::
+
+            {"product_id": "gid://shopify/Product/123",
+             "media": [
+               {"url": "https://...jpg", "alt": "front view"},
+               {"url": "https://...mp4", "alt": "demo",
+                "media_type": "VIDEO"},
+             ]}
+
+        media_type defaults to IMAGE. Valid values: IMAGE, VIDEO,
+        EXTERNAL_VIDEO, MODEL_3D. Returns the list of created
+        media nodes with their async statuses (Shopify processes
+        the URL upload in the background -- status starts UPLOADED
+        and transitions to READY).
+        """
+        product_id = self._extract_product_id(params)
+        raw_media = params.get("media")
+        if not isinstance(raw_media, list) or not raw_media:
+            raise AdapterValidationError(
+                self.name,
+                "'media' must be a non-empty list of "
+                "{url, alt?, media_type?} dicts",
+            )
+        media_inputs: list[dict[str, Any]] = []
+        for idx, m in enumerate(raw_media):
+            if not isinstance(m, dict):
+                raise AdapterValidationError(
+                    self.name,
+                    f"media[{idx}] must be a dict",
+                )
+            url = m.get("url") or m.get("originalSource")
+            if not isinstance(url, str) or not url.strip():
+                raise AdapterValidationError(
+                    self.name,
+                    f"media[{idx}] missing 'url'",
+                )
+            media_type = (
+                m.get("media_type")
+                or m.get("mediaContentType")
+                or "IMAGE"
+            )
+            if not isinstance(media_type, str) or (
+                media_type.upper() not in (
+                    "IMAGE", "VIDEO",
+                    "EXTERNAL_VIDEO", "MODEL_3D",
+                )
+            ):
+                raise AdapterValidationError(
+                    self.name,
+                    f"media[{idx}] media_type must be one of "
+                    "IMAGE / VIDEO / EXTERNAL_VIDEO / MODEL_3D",
+                )
+            entry: dict[str, Any] = {
+                "originalSource": url.strip(),
+                "mediaContentType": media_type.upper(),
+            }
+            alt = m.get("alt")
+            if isinstance(alt, str) and alt.strip():
+                # Shopify caps alt at 512 chars.
+                entry["alt"] = alt.strip()[:512]
+            media_inputs.append(entry)
+
+        data = self._gql(_CREATE_PRODUCT_MEDIA_MUTATION, {
+            "productId": product_id, "media": media_inputs,
+        })
+        # Pattern D: productCreateMedia uses mediaUserErrors.
+        payload = data.get("productCreateMedia") or {}
+        errors = payload.get("mediaUserErrors") or []
+        if errors:
+            messages = []
+            for e in errors:
+                if isinstance(e, dict):
+                    field = ".".join(e.get("field", []) or [])
+                    msg = e.get("message", "")
+                    messages.append(
+                        f"{field}: {msg}" if field else msg,
+                    )
+            raise AdapterValidationError(
+                self.name,
+                f"productCreateMedia mediaUserErrors: "
+                f"{'; '.join(messages)[:300]}",
+            )
+
+        media_nodes = payload.get("media") or []
+        attached: list[dict[str, Any]] = []
+        for node in media_nodes:
+            if not isinstance(node, dict):
+                continue
+            preview = (
+                (node.get("preview") or {}).get("image") or {}
+            )
+            attached.append({
+                "id": node.get("id", "") or "",
+                "alt": node.get("alt", "") or "",
+                "media_type": node.get(
+                    "mediaContentType", "",
+                ) or "",
+                "status": node.get("status", "") or "",
+                "preview_url": preview.get("url", "") or "",
+            })
+        return self._success(
+            Capability.SHOPIFY_CREATE_PRODUCT_MEDIA,
+            data={
+                "product_id": product_id,
+                "attached_count": len(attached),
+                "media": attached,
             },
         )
 

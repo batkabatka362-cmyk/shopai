@@ -523,6 +523,33 @@ class TestRouter:
         # second.calls is empty — router did not fall back
         assert second.calls == []
 
+    def test_execute_does_not_fall_back_on_auth_error(self):
+        """W962-38: AdapterAuthError short-circuits fallback.
+        Pre-fix the router would try every Shopify adapter on a
+        revoked/expired token, producing N log lines + N round
+        trips for no recovery (all adapters share the same
+        access token)."""
+        from core.adapters.errors import AdapterAuthError
+        reg = get_registry()
+        first = _FakeAdapter(
+            name="first",
+            priority=99,
+            raise_error=AdapterAuthError("first", "HTTP 401"),
+        )
+        second = _FakeAdapter(name="second", priority=50)
+        reg.register(first)
+        reg.register(second)
+        router = SmartRouter(registry=reg)
+        result = router.execute(
+            Capability.CHAT_COMPLETE,
+            {"prompt": "x"},
+            RouteContext(fallback_depth=2),
+        )
+        assert not result.ok
+        assert isinstance(result.error, AdapterAuthError)
+        # second wasn't called -- router short-circuited.
+        assert second.calls == []
+
     def test_execute_returns_no_adapter_when_empty(self):
         router = SmartRouter(registry=get_registry())
         result = router.execute(Capability.CHAT_COMPLETE)

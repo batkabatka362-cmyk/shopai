@@ -348,6 +348,53 @@ class TestJsonEnvelope:
         assert data["suggestions"] == []
 
 
+# ─── Drill-down hint ─────────────────────────────────────────
+
+
+class TestDrillDownHint:
+    """When there's at least one suggestion, text view ends
+    with a `transfer apply --dry-run` hint pre-filled with
+    the top suggestion's engine + action_type so operators
+    can paste-and-run."""
+
+    def test_hint_renders_when_suggestion_present(self, cli):
+        q = _fake_queue(
+            source_executed=[
+                _action(
+                    id_="src1", engine="loyalty",
+                    action_type="mint_loyalty_code",
+                ),
+            ],
+            target_actions_by_status={},
+        )
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=q,
+        ):
+            out, _ = _capture(
+                cli._cmd_transfer_suggest, _ns(),
+            )
+        # Hint includes both stores + the top suggestion's
+        # engine/action_type, and `--dry-run` for safety.
+        assert "shopai transfer apply" in out
+        assert "--from a" in out
+        assert "--to b" in out
+        assert "--engine loyalty" in out
+        assert "--action-type mint_loyalty_code" in out
+        assert "--dry-run" in out
+
+    def test_hint_absent_when_no_suggestions(self, cli):
+        q = _fake_queue(source_executed=[])
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=q,
+        ):
+            out, _ = _capture(
+                cli._cmd_transfer_suggest, _ns(),
+            )
+        assert "shopai transfer apply" not in out
+
+
 # ─── Pre-#239 queue without store_id kwarg ───────────────────
 
 

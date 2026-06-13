@@ -139,6 +139,23 @@ class BehavioralDataEngine:
             top_products=top_products,
         )
 
+        # Phase 7: optional engagement-tag apply. Opt-in via
+        # data.apply_engagement_tags=True. Tags top products
+        # with engagement:hot OR engagement:high_view_low_ctr
+        # via SHOPIFY_UPDATE_PRODUCT.
+        tagged_engagement: list[dict[str, Any]] = []
+        if bool(data.get("apply_engagement_tags")):
+            try:
+                from .tag_applier import apply_engagement_tags
+                tagged_engagement = apply_engagement_tags(
+                    top_products, product_views,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "behavioral_data: apply loop raised: %s", exc,
+                )
+
         # ---- Stage 9: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -149,6 +166,7 @@ class BehavioralDataEngine:
                 "engagement_scores": engagement_scores,
                 "heatmaps": heatmaps,
                 "top_products": top_products,
+                "tagged_engagement": tagged_engagement,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,

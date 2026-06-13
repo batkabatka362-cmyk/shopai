@@ -1,0 +1,559 @@
+"""Tests for ``core.autonomous.cycle_next_action.recommend``.
+
+Rule-based recommender. Priority order:
+  1. errored phase
+  2. thrashing
+  3. cycle alerts
+  4. release candidates
+  5. demote candidates + bridge off
+  6. ADVANCE refused all
+  7. ADVANCE succeeded
+  8. all clear
+"""
+from __future__ import annotations
+
+from unittest.mock import patch
+
+import pytest
+
+from core.autonomous import cycle_next_action as cna
+
+
+def _summary(**kw):
+    defaults = {
+        "executed": True,
+        "advance": {},
+        "defend": {},
+        "correlate": {},
+    }
+    defaults.update(kw)
+    return defaults
+
+
+@pytest.fixture(autouse=True)
+def _quiet_subsystems():
+    """Default fixtures: no thrashing, no alerts, no
+    streaks. Tests that care override one or more."""
+    with patch(
+        "core.capability_planner.auto_demote_history."
+        "find_thrashing",
+        return_value=[],
+    ), patch(
+        "core.autonomous.cycle_alerts."
+        "compute_cycle_alerts",
+        return_value=[],
+    ), patch(
+        "core.autonomous.cycle_alert_history."
+        "consecutive_days_per_kind",
+        return_value={},
+    ):
+        yield
+
+
+class TestRule1ErroredPhase:
+
+    def test_advance_error_returns_investigate(self):
+        s = _summary(
+            advance={"error": "import_failed: x"},
+        )
+        rec = cna.recommend(s)
+        assert rec.priority == "investigate_error"
+        assert "ADVANCE" in rec.detail
+
+    def test_defend_error_returns_investigate(self):
+        s = _summary(
+            defend={"error": "raised: ValueError"},
+        )
+        rec = cna.recommend(s)
+        assert rec.priority == "investigate_error"
+        assert "DEFEND" in rec.detail
+
+    def test_correlate_error_returns_investigate(self):
+        s = _summary(
+            correlate={"error": "import_failed: y"},
+        )
+        rec = cna.recommend(s)
+        assert rec.priority == "investigate_error"
+        assert "CORRELATE" in rec.detail
+
+
+class TestRule2Thrashing:
+
+    def test_thrashing_overrides_other_signals(self):
+        with patch(
+            "core.capability_planner.auto_demote_history."
+            "find_thrashing",
+            return_value=[{"capability": "shaky"}],
+        ):
+            s = _summary(
+                advance={
+                    "executed_ok": 5,
+                    "refused_reliability": 0,
+                    "stores_processed": 5,
+                },
+            )
+            rec = cna.recommend(s)
+        assert rec.priority == "clear_thrashing"
+        assert "shaky" in rec.detail
+        assert "clear-override shaky" in rec.cmd
+
+
+class TestRule2bEngineHealth:
+    """Engine-health degradation triggers a recommendation
+    when total (regressions + chronic) >= 3."""
+
+    def test_below_threshold_no_recommendation(self):
+        from core.approval.engine_health_history import (
+            HealthRegression,
+        )
+        with patch(
+            "core.capability_planner.auto_demote_history."
+            "find_thrashing",
+            return_value=[],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_regressions",
+            return_value=[
+                HealthRegression(
+                    engine="loyalty",
+                    latest_score=4,
+                    latest_verdict="warning",
+                    baseline_score=8.0,
+                    drop=4.0,
+                    samples_in_baseline=5,
+                ),
+            ],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_chronic_warnings",
+            return_value=[],
+        ):
+            s = _summary()
+            rec = cna.recommend(s)
+        # 1 < 3 -- not surfaced
+        assert rec.priority != "address_engine_health"
+
+    def test_above_threshold_surfaces(self):
+        from core.approval.engine_health_history import (
+            HealthRegression, ChronicWarning,
+        )
+        with patch(
+            "core.capability_planner.auto_demote_history."
+            "find_thrashing",
+            return_value=[],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_regressions",
+            return_value=[
+                HealthRegression(
+                    engine="loyalty",
+                    latest_score=4,
+                    latest_verdict="warning",
+                    baseline_score=8.0,
+                    drop=4.0,
+                    samples_in_baseline=5,
+                ),
+                HealthRegression(
+                    engine="bundle",
+                    latest_score=3,
+                    latest_verdict="unhealthy",
+                    baseline_score=9.0,
+                    drop=6.0,
+                    samples_in_baseline=5,
+                ),
+            ],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_chronic_warnings",
+            return_value=[
+                ChronicWarning(
+                    engine="discount_strategy",
+                    latest_score=5,
+                    latest_verdict="warning",
+                    samples=4,
+                    avg_score=5.5,
+                ),
+            ],
+        ):
+            s = _summary()
+            rec = cna.recommend(s)
+        assert rec.priority == "address_engine_health"
+        assert "2 regression(s)" in rec.detail
+        assert "1 chronic" in rec.detail
+        assert "loyalty" in rec.detail
+        assert (
+            rec.cmd == "shopai approvals health-regressions"
+        )
+
+    def test_only_chronic_picks_chronic_cmd(self):
+        from core.approval.engine_health_history import (
+            ChronicWarning,
+        )
+        with patch(
+            "core.capability_planner.auto_demote_history."
+            "find_thrashing",
+            return_value=[],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_regressions",
+            return_value=[],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_chronic_warnings",
+            return_value=[
+                ChronicWarning(
+                    engine=f"engine_{i}",
+                    latest_score=5,
+                    latest_verdict="warning",
+                    samples=3,
+                    avg_score=5.0,
+                )
+                for i in range(3)
+            ],
+        ):
+            s = _summary()
+            rec = cna.recommend(s)
+        assert rec.priority == "address_engine_health"
+        assert (
+            rec.cmd == "shopai approvals chronic-warnings"
+        )
+
+
+class TestRule3CycleAlerts:
+
+    def test_low_advance_rate_alert_surfaces(self):
+        from core.autonomous.cycle_alerts import CycleAlert
+        with patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[
+                CycleAlert(
+                    kind="low_advance_rate",
+                    detail="20%",
+                ),
+            ],
+        ):
+            rec = cna.recommend(_summary())
+        assert rec.priority == "address_cycle_alerts"
+        assert "low_advance_rate" in rec.detail
+
+    def test_persistent_low_advance_promotes_priority(
+        self,
+    ):
+        """3-day streak gets the stronger recommendation."""
+        from core.autonomous.cycle_alerts import CycleAlert
+        with patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[
+                CycleAlert(
+                    kind="low_advance_rate",
+                    detail="20%",
+                ),
+            ],
+        ), patch(
+            "core.autonomous.cycle_alert_history."
+            "consecutive_days_per_kind",
+            return_value={"low_advance_rate": 3},
+        ):
+            rec = cna.recommend(_summary())
+        assert (
+            rec.priority == "persistent_low_advance_rate"
+        )
+        assert "3 distinct days" in rec.detail
+        assert "SHOPAI_AUTO_EXECUTE_THRESHOLD" in rec.detail
+
+    def test_persistent_substrate_shrinking(self):
+        from core.autonomous.cycle_alerts import CycleAlert
+        with patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[
+                CycleAlert(
+                    kind="substrate_shrinking",
+                    detail="ratio 8x",
+                ),
+            ],
+        ), patch(
+            "core.autonomous.cycle_alert_history."
+            "consecutive_days_per_kind",
+            return_value={"substrate_shrinking": 5},
+        ):
+            rec = cna.recommend(_summary())
+        assert (
+            rec.priority
+            == "persistent_substrate_shrinking"
+        )
+        assert "5 distinct days" in rec.detail
+        assert "thrashing" in rec.cmd
+
+    def test_short_streak_uses_regular_priority(self):
+        from core.autonomous.cycle_alerts import CycleAlert
+        with patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[
+                CycleAlert(
+                    kind="low_advance_rate", detail="-",
+                ),
+            ],
+        ), patch(
+            "core.autonomous.cycle_alert_history."
+            "consecutive_days_per_kind",
+            return_value={"low_advance_rate": 2},
+        ):
+            rec = cna.recommend(_summary())
+        # 2-day streak below the persistent threshold
+        assert rec.priority == "address_cycle_alerts"
+
+    def test_silent_and_stale_alerts_skipped(self):
+        """cycle_silent + stale_cycle don't apply mid-cycle
+        (we JUST ran). Should fall through to next rule."""
+        from core.autonomous.cycle_alerts import CycleAlert
+        with patch(
+            "core.autonomous.cycle_alerts."
+            "compute_cycle_alerts",
+            return_value=[
+                CycleAlert(
+                    kind="cycle_silent", detail="-",
+                ),
+                CycleAlert(
+                    kind="stale_cycle", detail="-",
+                ),
+            ],
+        ):
+            rec = cna.recommend(_summary())
+        # No cycle alerts surfaced; falls through to
+        # all_clear
+        assert rec.priority != "address_cycle_alerts"
+
+
+class TestRule4ReleaseCandidates:
+
+    def test_recovered_unreleased_suggests_release(self):
+        s = _summary(
+            defend={
+                "recovered_candidates": 2,
+                "released": 0,
+            },
+        )
+        rec = cna.recommend(s)
+        assert rec.priority == "apply_releases"
+        assert "auto-demote-release-candidates --yes" in rec.cmd
+
+    def test_recovered_AND_released_no_recommendation(self):
+        """Released already this run -> nothing more to do
+        in this lane."""
+        s = _summary(
+            defend={
+                "recovered_candidates": 2,
+                "released": 2,
+            },
+        )
+        rec = cna.recommend(s)
+        assert rec.priority != "apply_releases"
+
+
+class TestRule5EnableBridge:
+
+    def test_actionable_demotes_but_gate_off(self):
+        s = _summary(
+            defend={
+                "actionable": 3,
+                "gate_enabled": False,
+            },
+        )
+        rec = cna.recommend(s)
+        assert rec.priority == "enable_bridge"
+        assert "SHOPAI_AUTO_DEMOTE_DEGRADED=1" in rec.detail
+
+    def test_actionable_with_gate_on_no_recommendation(self):
+        s = _summary(
+            defend={
+                "actionable": 3,
+                "gate_enabled": True,
+                "demoted": 3,  # they would have been demoted
+            },
+        )
+        rec = cna.recommend(s)
+        assert rec.priority != "enable_bridge"
+
+
+class TestRule6ReliabilityTooTight:
+
+    def test_all_refused_suggests_relax(self):
+        s = _summary(
+            advance={
+                "stores_processed": 3,
+                "executed_ok": 0,
+                "refused_reliability": 3,
+                "errored": 0,
+            },
+        )
+        rec = cna.recommend(s)
+        assert rec.priority == "relax_reliability"
+        assert "fleet-plan" in rec.cmd
+
+    def test_partial_refusal_doesnt_trigger(self):
+        s = _summary(
+            advance={
+                "stores_processed": 3,
+                "executed_ok": 1,
+                "refused_reliability": 2,
+                "errored": 0,
+            },
+        )
+        rec = cna.recommend(s)
+        # 1 advanced -> falls to measure rule, not relax
+        assert rec.priority != "relax_reliability"
+
+
+class TestRule7MeasureOutcomes:
+
+    def test_advanced_stores_suggests_correlate(self):
+        s = _summary(
+            advance={
+                "stores_processed": 2,
+                "executed_ok": 2,
+                "refused_reliability": 0,
+                "errored": 0,
+            },
+        )
+        rec = cna.recommend(s)
+        assert rec.priority == "measure_outcomes"
+        assert "--auto-correlate" in rec.cmd
+
+
+class TestRule7bTransfer:
+    """Transfer candidates surfaced -- specific
+    recommendations."""
+
+    def test_candidates_without_apply_suggests_review(self):
+        s = _summary(
+            advance={
+                "stores_processed": 1,
+                "executed_ok": 0,
+                "refused_reliability": 0,
+                "errored": 0,
+            },
+            transfer={
+                "checked": True,
+                "total_candidates": 3,
+                "total_applied": 0,
+            },
+        )
+        rec = cna.recommend(s)
+        assert rec.priority == "review_transfers"
+        assert "3 cross-store candidate(s)" in rec.detail
+
+    def test_review_hint_uses_concrete_target_when_available(
+        self,
+    ):
+        """When per_store rows exist, the hint substitutes the
+        first target with candidates instead of <store>
+        placeholder."""
+        s = _summary(
+            advance={
+                "stores_processed": 2,
+                "executed_ok": 0,
+                "refused_reliability": 0,
+                "errored": 0,
+            },
+            transfer={
+                "checked": True,
+                "total_candidates": 3,
+                "total_applied": 0,
+                "per_store": [
+                    {
+                        "target_store_id": "no-candidates",
+                        "candidates_found": 0,
+                    },
+                    {
+                        "target_store_id": "best-target",
+                        "candidates_found": 3,
+                    },
+                ],
+            },
+        )
+        rec = cna.recommend(s)
+        assert (
+            "shopai transfer sources --to best-target"
+            in rec.cmd
+        )
+        assert "<store>" not in rec.cmd
+
+    def test_review_hint_falls_back_to_placeholder(self):
+        """Empty per_store list -> hint keeps the <store>
+        placeholder so the operator knows to fill it in."""
+        s = _summary(
+            advance={
+                "stores_processed": 1,
+                "executed_ok": 0,
+                "refused_reliability": 0,
+                "errored": 0,
+            },
+            transfer={
+                "checked": True,
+                "total_candidates": 3,
+                "total_applied": 0,
+                "per_store": [],
+            },
+        )
+        rec = cna.recommend(s)
+        assert "<store>" in rec.cmd
+
+    def test_applied_transfers_suggests_approvals(self):
+        s = _summary(
+            advance={
+                "stores_processed": 1,
+                "executed_ok": 0,
+                "refused_reliability": 0,
+                "errored": 0,
+            },
+            transfer={
+                "checked": True,
+                "total_candidates": 2,
+                "total_applied": 2,
+            },
+        )
+        rec = cna.recommend(s)
+        assert rec.priority == "approve_transfers"
+        assert "2 cross-store suggestion(s)" in rec.detail
+        assert "approvals show" in rec.cmd
+
+
+class TestRule8AllClear:
+
+    def test_quiet_summary_returns_all_clear(self):
+        s = _summary(
+            advance={
+                "stores_processed": 0,
+                "executed_ok": 0,
+                "refused_reliability": 0,
+                "errored": 0,
+            },
+            defend={"actionable": 0},
+            correlate={"correlated": 0},
+        )
+        rec = cna.recommend(s)
+        assert rec.priority == "all_clear"
+
+
+class TestResilience:
+
+    def test_non_dict_summary_returns_investigate(self):
+        rec = cna.recommend(None)
+        assert rec.priority == "investigate"
+
+    def test_thrashing_lookup_failure_continues(self):
+        with patch(
+            "core.capability_planner.auto_demote_history."
+            "find_thrashing",
+            side_effect=RuntimeError("disk"),
+        ):
+            s = _summary(
+                advance={"executed_ok": 1},
+            )
+            rec = cna.recommend(s)
+        # Falls through to measure_outcomes
+        assert rec.priority == "measure_outcomes"

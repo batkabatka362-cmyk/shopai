@@ -687,3 +687,731 @@ def _apply_bundle_product_dispatch(
     if not isinstance(adapter_params, dict) or not adapter_params:
         return False, {"error": "missing_adapter_params"}
     return _router_call("SHOPIFY_CREATE_PRODUCT", adapter_params)
+
+
+# ── product_sourcer → SHOPIFY_CREATE_PRODUCT (draft seed) ────────
+
+
+@register_dispatcher("create_draft_product")
+def _create_draft_product_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """W963-3: replay product_sourcer's DRAFT product creation.
+
+    The product_sourcer engine enqueues each candidate with the
+    full friendly call shape (title + description + status=DRAFT
+    + vendor + product_type + tags). The internal _metadata key
+    carries source-tracking info (niche + suggested_price band)
+    but is NOT a Shopify-recognised field — strip it before the
+    GraphQL hop.
+
+    The DRAFT status is enforced at enqueue time; the dispatcher
+    trusts it. Operators who explicitly want to publish an active
+    product should change `status` to ACTIVE in the queue entry's
+    params before approving (or use a future ``--publish`` flag).
+
+    W963-164: after productCreate, follow up with
+    productVariantsBulkUpdate to set the variant price from
+    _metadata.suggested_price. Pre-fix every newly-created
+    product had a default $0 variant -- the product appeared
+    in the catalog but customers literally could not buy it.
+    """
+    title = str(params.get("title", "")).strip()
+    if not title:
+        return False, {"error": "missing_title"}
+    adapter_params = {
+        k: v for k, v in params.items()
+        if not k.startswith("_")
+    }
+    ok, result = _router_call(
+        "SHOPIFY_CREATE_PRODUCT", adapter_params,
+    )
+    if not ok:
+        return ok, result
+
+    # W963-164: thread suggested_price -> variant price.
+    metadata = params.get("_metadata") or {}
+    suggested_price = metadata.get("suggested_price") if (
+        isinstance(metadata, dict)
+    ) else None
+    if suggested_price is None:
+        return ok, result
+    try:
+        price = float(suggested_price)
+    except (TypeError, ValueError):
+        return ok, result
+    if price <= 0:
+        return ok, result
+
+    product = result.get("product") or {}
+    product_id = str(product.get("id") or "").strip()
+    variants = product.get("variants") or []
+    variant_id = ""
+    if variants and isinstance(variants, list):
+        first = variants[0]
+        if isinstance(first, dict):
+            variant_id = str(first.get("id") or "").strip()
+    if not product_id or not variant_id:
+        # Create succeeded but we can't locate the default
+        # variant -- surface success on the create + log the
+        # gap as a result field instead of erroring out.
+        result["price_set"] = False
+        result["price_set_skip_reason"] = (
+            "default_variant_id_not_in_response"
+        )
+        return ok, result
+
+    price_str = f"{price:.2f}"
+
+    # W963-166: dropshipping stores need inventoryPolicy=CONTINUE
+    # so customers can order even when stock=0 (supplier ships
+    # on demand). _metadata.inventory_policy controls; defaults
+    # to CONTINUE -- matches the most common autonomous-merchant
+    # use case (dropshipping). Operators with own-inventory
+    # stores set _metadata.inventory_policy='DENY' on the
+    # proposal.
+    inventory_policy = metadata.get("inventory_policy", "CONTINUE")
+    if not isinstance(inventory_policy, str) or (
+        inventory_policy.upper() not in ("CONTINUE", "DENY")
+    ):
+        inventory_policy = "CONTINUE"
+
+    price_ok, price_result = _router_call(
+        "SHOPIFY_UPDATE_VARIANTS",
+        {
+            "product_id": product_id,
+            "variants": [{
+                "id": variant_id,
+                "price": price_str,
+                "inventory_policy": inventory_policy.upper(),
+            }],
+        },
+    )
+    result["price_set"] = bool(price_ok)
+    result["price_set_value"] = price_str
+    result["inventory_policy"] = inventory_policy.upper()
+    if not price_ok:
+        result["price_set_error"] = price_result.get(
+            "error", "unknown",
+        )
+
+    # W963-167: attach product images when supplied. Image
+    # URLs come from _metadata.image_urls (list of strings) or
+    # _metadata.images (list of {url, alt?} dicts). Operators
+    # / engines that don't supply images skip this step
+    # silently (no degradation of the create flow).
+    images_attached = _attach_product_images(
+        product_id=product_id,
+        metadata=metadata,
+        result=result,
+    )
+    if images_attached is not None:
+        result["images_attached"] = images_attached
+
+    # W963-170: publish_on_approve makes the dispatcher a
+    # single-step launcher. After create + price + images, flip
+    # DRAFT -> ACTIVE + publish on Online Store. Defaults to
+    # False (operator still has to enqueue a publish_product
+    # action explicitly). product_sourcer's
+    # _ENABLE_AUTO_PUBLISH env-controlled flag sets this on the
+    # enqueue so high-trust empires get true single-approval
+    # launches. Failure swallowed into result for observability;
+    # the create + price + images already landed and the next
+    # cycle can pick up the publish path.
+    publish_on_approve = metadata.get("publish_on_approve")
+    if (
+        publish_on_approve is True
+        or str(publish_on_approve).lower() in ("1", "true", "yes")
+    ):
+        publish_ok, publish_result = (
+            _publish_product_dispatch(
+                {"product_id": product_id},
+            )
+        )
+        result["published"] = bool(publish_ok)
+        result["publish_result"] = publish_result
+        if not publish_ok:
+            result["publish_error"] = publish_result.get(
+                "error", "unknown",
+            )
+
+    return ok, result
+
+
+def _discover_stock_images(
+    *,
+    query: str,
+    limit: int,
+    orientation: str,
+    result: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """W963-169: search IMAGE_STOCK_SEARCH for hero images.
+
+    Returns a list of {url, alt} dicts ready to feed into the
+    SHOPIFY_CREATE_PRODUCT_MEDIA call. Picks ``url_large2x``
+    (~2MP) which fits comfortably under Shopify's 25MP ceiling
+    so we don't even need W963-168's resize hack -- the adapter's
+    own size variant is correct by construction.
+
+    On any failure returns an empty list + tags result.images_
+    discover_error for observability.
+    """
+    params = {"query": query, "limit": max(1, min(limit, 10))}
+    if orientation in ("landscape", "portrait", "square"):
+        params["orientation"] = orientation
+    ok, search_result = _router_call(
+        "IMAGE_STOCK_SEARCH", params,
+    )
+    if not ok:
+        result["images_discover_error"] = (
+            search_result.get("error", "unknown")
+        )
+        return []
+    photos = search_result.get("photos") or []
+    out: list[dict[str, Any]] = []
+    for p in photos[:limit]:
+        if not isinstance(p, dict):
+            continue
+        # Prefer large2x (~2MP); fall back to large then medium.
+        url = (
+            p.get("url_large2x")
+            or p.get("url_large")
+            or p.get("url_medium")
+            or ""
+        )
+        if not url:
+            continue
+        out.append({
+            "url": url,
+            "alt": p.get("alt") or query,
+        })
+    result["images_discovered_from"] = "stock_search"
+    return out
+
+
+def _normalise_image_url(url: str) -> str:
+    """W963-168: resize Pexels URLs to a safe dimension before
+    handing them to Shopify.
+
+    Shopify's productCreateMedia rejects images exceeding 25MP
+    (the field returns MediaWarning code=INVALID_IMAGE_RESOLUTION
+    + the upload lands in status=FAILED). Pexels by default
+    serves images at the photographer's native resolution which
+    is often 30-60MP. Adding ``?auto=compress&cs=tinysrgb&w=1500``
+    capped at 1500px wide produces a ~2MP image -- well under
+    Shopify's limit + still high-quality for product cards.
+
+    Other CDN URLs are returned unchanged.
+    """
+    u = url.strip()
+    if "images.pexels.com" in u and "?" not in u:
+        return u + "?auto=compress&cs=tinysrgb&w=1500"
+    return u
+
+
+def _attach_product_images(
+    *,
+    product_id: str,
+    metadata: dict[str, Any],
+    result: dict[str, Any],
+) -> int | None:
+    """Helper for W963-167 image attachment. Returns the count
+    attached, or None when no images were supplied. Swallows
+    failures into the result dict so the parent dispatch path
+    stays focused on its create + price contract."""
+    raw_urls = metadata.get("image_urls")
+    raw_images = metadata.get("images")
+    media_inputs: list[dict[str, Any]] = []
+    if isinstance(raw_images, list) and raw_images:
+        for m in raw_images:
+            if isinstance(m, dict) and m.get("url"):
+                entry = {
+                    "url": _normalise_image_url(
+                        str(m["url"]),
+                    ),
+                }
+                if m.get("alt"):
+                    entry["alt"] = str(m["alt"])
+                media_inputs.append(entry)
+    if isinstance(raw_urls, list) and raw_urls:
+        for url in raw_urls:
+            if isinstance(url, str) and url.strip():
+                media_inputs.append({
+                    "url": _normalise_image_url(url),
+                })
+
+    # W963-169: when no explicit URLs were supplied AND the
+    # proposal carries an _metadata.image_query, fan out to
+    # IMAGE_STOCK_SEARCH to find a hero image automatically.
+    # Engines that don't set image_query get the previous
+    # silent-skip behaviour. limit defaults to 1 (just pick
+    # the top result).
+    image_query = metadata.get("image_query")
+    if (
+        not media_inputs
+        and isinstance(image_query, str)
+        and image_query.strip()
+    ):
+        # W963-176: defensively coerce image_count. Raw
+        # int(metadata.get(...) or 1) would crash the dispatcher
+        # if image_count is a non-numeric string (e.g. operator
+        # hand-edited a queue entry). Falls back to 1 on any
+        # coercion error so the autonomous chain stays alive.
+        try:
+            image_limit = int(
+                metadata.get("image_count", 1) or 1,
+            )
+        except (TypeError, ValueError):
+            image_limit = 1
+        discovered = _discover_stock_images(
+            query=image_query.strip(),
+            limit=image_limit,
+            orientation=str(
+                metadata.get("image_orientation", "")
+                or "",
+            ),
+            result=result,
+        )
+        for entry in discovered:
+            media_inputs.append(entry)
+
+    if not media_inputs:
+        return None
+
+    ok, image_result = _router_call(
+        "SHOPIFY_CREATE_PRODUCT_MEDIA",
+        {"product_id": product_id, "media": media_inputs},
+    )
+    if not ok:
+        result["images_attach_error"] = image_result.get(
+            "error", "unknown",
+        )
+        return 0
+    return int(image_result.get("attached_count", 0) or 0)
+
+
+# ── product_sourcer → publish DRAFT product to Online Store ──────
+
+
+_ONLINE_STORE_PUB_CACHE: dict[str, str] = {}
+# W963-178: serialise cache reads + writes so concurrent
+# callers (parallel cycle fan-out across stores, pytest -n auto,
+# webhook server with multiple inbound requests for the same
+# shop) don't duplicate LIST_PUBLICATIONS calls. Race wasn't
+# corrupting state (both writers would land the same GID) but
+# wasted a router call per cycle x worker.
+import threading as _pub_cache_threading
+_ONLINE_STORE_PUB_CACHE_LOCK = _pub_cache_threading.Lock()
+
+
+def _resolve_online_store_publication() -> str:
+    """W963-165 + W963-174 + W963-178: cache the Online Store
+    publication GID with thread safety.
+
+    Shopify's publication IDs are per-shop + per-active_store
+    context. We resolve once per process per (sid != '') +
+    reuse. The sid='' path always re-resolves (W963-174:
+    prevents leaking a sibling shop's publication GID when
+    active_store isn't set).
+
+    Cache access is guarded by a module-level lock
+    (W963-178) so two threads asking for the same sid don't
+    both fire LIST_PUBLICATIONS.
+
+    Returns '' on any failure (caller falls back to
+    operator-supplied publication_ids).
+    """
+    # Cache key includes active_store so multi-store callers
+    # don't reuse a sibling store's publication id.
+    try:
+        from core.context import get_active_store_id
+        sid = str(get_active_store_id() or "")
+    except Exception:  # noqa: BLE001
+        sid = ""
+    # W963-174 + W963-178: only consult / write the cache when
+    # we have a real sid. Lock guards the read + miss + write
+    # window so two concurrent callers for the same sid don't
+    # both fire LIST_PUBLICATIONS.
+    if sid:
+        with _ONLINE_STORE_PUB_CACHE_LOCK:
+            cached = _ONLINE_STORE_PUB_CACHE.get(sid)
+        if cached:
+            return cached
+
+    ok, result = _router_call(
+        "SHOPIFY_LIST_PUBLICATIONS", {},
+    )
+    if not ok:
+        return ""
+    for pub in result.get("publications") or []:
+        if not isinstance(pub, dict):
+            continue
+        name = str(pub.get("name") or "").strip().lower()
+        if name == "online store":
+            pub_id = str(pub.get("id") or "")
+            if pub_id:
+                if sid:
+                    with _ONLINE_STORE_PUB_CACHE_LOCK:
+                        _ONLINE_STORE_PUB_CACHE[sid] = pub_id
+                return pub_id
+    return ""
+
+
+@register_dispatcher("publish_product")
+def _publish_product_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """W963-165: flip DRAFT -> ACTIVE + publish on Online Store.
+
+    Two-step:
+      1. SHOPIFY_UPDATE_PRODUCT to set status=ACTIVE so the
+         product is visible to the storefront.
+      2. SHOPIFY_PUBLISH_RESOURCE on the Online Store publication
+         so the product appears on the customer-facing storefront.
+
+    Params:
+      id (or product_id): Shopify GID of the product to publish.
+      publication_ids (optional): list of GIDs; if omitted,
+        defaults to the resolved Online Store publication GID.
+
+    Both router calls go inside the executor's active_store
+    wrap so per-store credentials route correctly.
+    """
+    product_id = str(
+        params.get("id") or params.get("product_id") or "",
+    ).strip()
+    if not product_id:
+        return False, {"error": "missing_product_id"}
+
+    # Step 1: status -> ACTIVE
+    ok_status, status_result = _router_call(
+        "SHOPIFY_UPDATE_PRODUCT",
+        {"id": product_id, "status": "ACTIVE"},
+    )
+    if not ok_status:
+        return False, {
+            "error": "status_update_failed",
+            "detail": status_result.get("error", "unknown"),
+        }
+
+    # Step 2: publish on the requested channels
+    publication_ids = params.get("publication_ids")
+    if not publication_ids:
+        resolved = _resolve_online_store_publication()
+        if not resolved:
+            # W963-175: partial-state observability. The
+            # status flip on Shopify ALREADY HAPPENED at
+            # step 1; the failure here is only the publish
+            # step. Surface status_updated=True + the
+            # product_id so the operator knows the product
+            # is now ACTIVE (visible via direct URL / API)
+            # but NOT on the Online Store sales channel.
+            # Pre-fix the error envelope made it look like
+            # the dispatcher was a no-op when in fact it
+            # had mutated state.
+            return False, {
+                "error": (
+                    "no_online_store_publication_found"
+                ),
+                "detail": (
+                    "SHOPIFY_LIST_PUBLICATIONS returned no "
+                    "publication named 'Online Store'."
+                ),
+                "product_id": product_id,
+                "status_updated": True,
+            }
+        publication_ids = [resolved]
+
+    ok_pub, pub_result = _router_call(
+        "SHOPIFY_PUBLISH_RESOURCE",
+        {
+            "id": product_id,
+            "publication_ids": publication_ids,
+        },
+    )
+    return ok_pub, {
+        "product_id": product_id,
+        "status_updated": True,
+        "publication_ids": publication_ids,
+        "publish_result": pub_result,
+    }
+
+
+# ── content_publisher → SHOPIFY_CREATE_ARTICLE (draft blog) ──────
+
+
+@register_dispatcher("create_draft_article")
+def _create_draft_article_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """W963-6: replay content_publisher's DRAFT article create.
+
+    Each candidate carries title + body_html + tags + blog_id +
+    is_published=False (DRAFT enforcement). _metadata field is
+    stripped (source-tracking only). The dispatcher trusts the
+    enqueue-time is_published=False flag; operators who want to
+    publish an article should set is_published=True in the queue
+    entry params before approving.
+    """
+    title = str(params.get("title", "")).strip()
+    blog_id = str(params.get("blog_id", "")).strip()
+    if not title:
+        return False, {"error": "missing_title"}
+    if not blog_id:
+        return False, {"error": "missing_blog_id"}
+    adapter_params = {
+        k: v for k, v in params.items()
+        if not k.startswith("_")
+    }
+    return _router_call("SHOPIFY_CREATE_ARTICLE", adapter_params)
+
+
+# ── brand_identity_composer -> SHOPIFY theme + assets ──
+
+
+@register_dispatcher("apply_brand_identity")
+def _apply_brand_identity_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """W963-149: replay brand identity composition.
+
+    Approved params shape (from W963-149 enqueue):
+      {
+        "palette": {primary, secondary, accent,
+                    text, background},
+        "typography": {heading, body},
+        "logo_concept": {brand_name, url},
+        "hero_candidates": [{url, source, ...}],
+        "tagline": "...",
+        ...
+      }
+
+    Theme push step ordering:
+      1. palette + typography -> SHOPIFY_UPDATE_ONLINE_STORE_SETTINGS
+         (or theme.json update)
+      2. logo_concept.url -> SHOPIFY_FILE_CREATE +
+         theme.config logo
+      3. hero_candidates -> SHOPIFY_FILE_CREATE batch
+
+    For now, return per-step status so the operator can
+    see what was applied. Theme PUT is non-trivial
+    Shopify-side; the dispatcher returns success when
+    AT LEAST the palette + logo applied, even if hero
+    uploads partial.
+    """
+    applied: list[str] = []
+    failed: list[dict[str, Any]] = []
+
+    # 1. Logo upload (highest-value individual step)
+    logo = params.get("logo_concept") or {}
+    if isinstance(logo, dict) and logo.get("url"):
+        try:
+            ok, result = _router_call(
+                "SHOPIFY_FILE_CREATE",
+                {
+                    "source_url": logo["url"],
+                    "alt": (
+                        f"Logo for "
+                        f"{logo.get('brand_name', '')}"
+                    ),
+                },
+            )
+            if ok:
+                applied.append("logo_uploaded")
+            else:
+                failed.append({
+                    "step": "logo_upload",
+                    "error": (
+                        result.get("error")
+                        if isinstance(result, dict)
+                        else str(result)
+                    )[:200],
+                })
+        except Exception as exc:  # noqa: BLE001
+            failed.append({
+                "step": "logo_upload",
+                "error": f"raised: {exc}"[:200],
+            })
+
+    # 2. Hero candidates upload (parallel-safe; degrades
+    # gracefully)
+    hero_count = 0
+    for h in (params.get("hero_candidates") or []):
+        if not isinstance(h, dict):
+            continue
+        url = h.get("url")
+        if not url:
+            continue
+        try:
+            ok, _ = _router_call(
+                "SHOPIFY_FILE_CREATE",
+                {
+                    "source_url": url,
+                    "alt": "Brand hero banner",
+                },
+            )
+            if ok:
+                hero_count += 1
+        except Exception as exc:  # noqa: BLE001
+            failed.append({
+                "step": "hero_upload",
+                "url": url,
+                "error": f"raised: {exc}"[:200],
+            })
+    if hero_count > 0:
+        applied.append(
+            f"hero_uploaded:{hero_count}",
+        )
+
+    # 3. Theme settings -- best-effort. Shopify's theme
+    # settings update is highly theme-specific; we log
+    # the intent here for operator follow-up. Adapter
+    # support will land in a follow-up commit.
+    palette = params.get("palette") or {}
+    typo = params.get("typography") or {}
+    if palette or typo:
+        applied.append("theme_intent_recorded")
+        # Future: actual SHOPIFY_UPDATE_THEME_SETTINGS
+        # call. For now the operator sees the intent in
+        # the result + can manually apply via theme
+        # editor. The downstream theme adapter (Phase 2
+        # follow-up) will close this gap.
+
+    success = bool(applied) and not failed
+    return success, {
+        "applied": applied,
+        "applied_count": len(applied),
+        "failed": failed,
+        "failed_count": len(failed),
+    }
+
+
+# ── product_onboarding_proposal -> SHOPIFY_CREATE_PRODUCT batch ──
+
+
+@register_dispatcher("propose_product_batch")
+def _propose_product_batch_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """W963-143: replay the product onboarding proposal
+    batch by importing each approved candidate.
+
+    Params shape:
+      {
+        "niche": "beauty",
+        "candidates": [
+          {
+            "title": "Vitamin C serum",
+            "supplier": "cj",
+            "supplier_id": "cj_abc",
+            "cost_usd": 8.0,
+            "suggested_retail_usd": 22.4,
+            "risk_flags": [],
+          },
+          ...
+        ],
+      }
+
+    For each candidate with is_actionable (has title +
+    supplier + positive cost), call SHOPIFY_CREATE_PRODUCT
+    with the standard payload shape. Skip unsourced
+    candidates (risk_flag='unsourced') -- they need
+    supplier resolution outside the batch.
+
+    Returns (overall_success, result) where overall_success
+    is True iff ALL actionable candidates imported
+    successfully. Result carries per-candidate status so
+    operator can see which (if any) failed.
+    """
+    candidates = params.get("candidates") or []
+    if (
+        not isinstance(candidates, list)
+        or not candidates
+    ):
+        return False, {
+            "error": "no_candidates_in_batch",
+        }
+
+    imported: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    for raw in candidates:
+        if not isinstance(raw, dict):
+            continue
+        title = str(raw.get("title", "")).strip()
+        supplier = str(raw.get("supplier", "")).strip()
+        try:
+            cost = float(raw.get("cost_usd", 0) or 0)
+        except (TypeError, ValueError):
+            cost = 0.0
+        try:
+            retail = float(
+                raw.get("suggested_retail_usd", 0) or 0,
+            )
+        except (TypeError, ValueError):
+            retail = 0.0
+
+        if not title or not supplier or cost <= 0:
+            skipped.append({
+                "title": title or "(no_title)",
+                "reason": "missing_title_supplier_or_cost",
+            })
+            continue
+
+        # Standard SHOPIFY_CREATE_PRODUCT payload
+        payload = {
+            "title": title,
+            "vendor": supplier,
+            "status": "draft",      # operator can
+                                    # publish after review
+            "variants": [{
+                "price": str(retail) if retail > 0 else "",
+                "cost": str(cost),
+                "inventory_management": "shopify",
+            }],
+            "tags": [
+                f"niche:{params.get('niche', '')}",
+                f"supplier:{supplier}",
+                "imported:proposal_batch",
+            ],
+        }
+        try:
+            ok, result = _router_call(
+                "SHOPIFY_CREATE_PRODUCT", payload,
+            )
+            if ok:
+                imported.append({
+                    "title": title,
+                    "product_id": (
+                        result.get("id")
+                        if isinstance(result, dict)
+                        else ""
+                    ),
+                })
+            else:
+                failed.append({
+                    "title": title,
+                    "error": (
+                        result.get("error")
+                        if isinstance(result, dict)
+                        else str(result)
+                    )[:240],
+                })
+        except Exception as exc:  # noqa: BLE001
+            failed.append({
+                "title": title,
+                "error": f"dispatch_raised: {exc}"[:240],
+            })
+
+    overall_ok = (
+        bool(imported) and not failed
+    )
+    return overall_ok, {
+        "imported": imported,
+        "imported_count": len(imported),
+        "skipped": skipped,
+        "skipped_count": len(skipped),
+        "failed": failed,
+        "failed_count": len(failed),
+    }

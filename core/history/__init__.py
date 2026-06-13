@@ -32,11 +32,17 @@ class ResultHistory:
             return cls._instance
 
     def _init(self) -> None:
-        self._lock = threading.Lock()
+        # W962-48: RLock so record() can hold the lock across
+        # the nested _load + _save calls without deadlock.
+        self._lock = threading.RLock()
         os.makedirs(_HISTORY_DIR, exist_ok=True)
 
     def record(self, engine_name: str, result: dict[str, Any]) -> dict[str, Any]:
-        """Record an engine result. Returns comparison with previous."""
+        """Record an engine result. Returns comparison with previous.
+
+        W962-48: span self._lock across the full
+        load+append+save so concurrent record() calls for the
+        same engine don't lose entries."""
         entry = {
             "engine": engine_name,
             "timestamp": time.time(),
@@ -48,14 +54,17 @@ class ResultHistory:
             "quality_tier": result.get("_intelligence", {}).get("result_quality", {}).get("tier", "unknown"),
         }
 
-        history = self._load(engine_name)
-        previous = history[-1] if history else None
-        history.append(entry)
+        # Upgrade self._lock to RLock in _init so the nested
+        # _load + _save calls can re-acquire without deadlock.
+        with self._lock:
+            history = self._load_unlocked(engine_name)
+            previous = history[-1] if history else None
+            history.append(entry)
 
-        # Keep last 500 entries
-        if len(history) > 500:
-            history = history[-500:]
-        self._save(engine_name, history)
+            # Keep last 500 entries
+            if len(history) > 500:
+                history = history[-500:]
+            self._save_unlocked(engine_name, history)
 
         comparison = self._compare(entry, previous) if previous else {"first_run": True}
         return {"entry": entry, "comparison": comparison, "total_runs": len(history)}
@@ -146,21 +155,34 @@ class ResultHistory:
         return 0.0
 
     def _load(self, engine_name: str) -> list[dict]:
-        path = os.path.join(_HISTORY_DIR, f"{engine_name}.json")
         with self._lock:
-            if os.path.exists(path):
-                try:
-                    with open(path) as f:
-                        return json.load(f)
-                except (json.JSONDecodeError, OSError) as exc:
-                    logger.debug("history load failed: %s", exc)
+            return self._load_unlocked(engine_name)
+
+    def _load_unlocked(self, engine_name: str) -> list[dict]:
+        """Caller MUST hold self._lock."""
+        path = os.path.join(_HISTORY_DIR, f"{engine_name}.json")
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.debug("history load failed: %s", exc)
         return []
 
     def _save(self, engine_name: str, history: list[dict]) -> None:
-        path = os.path.join(_HISTORY_DIR, f"{engine_name}.json")
         with self._lock:
-            try:
-                with open(path, "w") as f:
-                    json.dump(history, f)
-            except OSError as exc:
-                logger.debug("history save failed: %s", exc)
+            self._save_unlocked(engine_name, history)
+
+    def _save_unlocked(
+        self, engine_name: str, history: list[dict],
+    ) -> None:
+        """W962-48: atomic write via temp + os.replace.
+        Caller MUST hold self._lock."""
+        path = os.path.join(_HISTORY_DIR, f"{engine_name}.json")
+        try:
+            tmp = path + ".tmp." + str(os.getpid())
+            with open(tmp, "w") as f:
+                json.dump(history, f)
+            os.replace(tmp, path)
+        except OSError as exc:
+            logger.debug("history save failed: %s", exc)

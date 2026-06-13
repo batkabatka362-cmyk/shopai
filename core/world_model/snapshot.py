@@ -167,6 +167,116 @@ class WorldModel:
             "feature_count": len(result.get("results") or {}),
         }
 
+    def _section_niche_priority(
+        self,
+        *,
+        niche: str | None,
+        sm: Any = None,
+        store_id: str = "",
+    ) -> dict:
+        """Wave 87 + 90: surface the cluster priority Wave 73's
+        orchestrator would use for this store. When niche is
+        unset / "general", the section reports the bare base
+        priority so the operator sees that no bias is active.
+
+        Wave 90: ALSO runs the Wave 83 detector when niche is
+        unset. If detection comes back high-confidence, surface
+        the suggested niche + the cluster_focus the orchestrator
+        WOULD use if the operator tagged the store. Doesn't
+        change orchestrator behaviour -- this is observational
+        substrate so the operator sees the latent bias.
+
+        Best-effort: import failure or unknown niche returns
+        ``{"checked": False, "error": ...}``.
+        """
+        n = (niche or "").strip().lower()
+        try:
+            from engines._niche_priority import (
+                niche_cluster_focus, supported_niches,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model niche_priority import raised: %s", exc,
+            )
+            return {"checked": False, "error": str(exc)}
+
+        if not n or n == "general":
+            # Wave 90: detection fallback. Best-effort -- the
+            # detector itself catches store-not-found + DB
+            # raises and returns None, so we never propagate
+            # failure to the snapshot. Only HIGH confidence
+            # gets surfaced as a suggestion; medium / low
+            # would be misleading on a "we figured it out"
+            # display.
+            detection_block: dict | None = None
+            if sm is not None and store_id:
+                try:
+                    from engines._niche_detector import (
+                        suggest_niche_for_store,
+                    )
+                    det = suggest_niche_for_store(
+                        store_id, store_manager=sm,
+                    )
+                    if det is not None:
+                        detection_block = {
+                            "suggested": det.suggested,
+                            "confidence": det.confidence,
+                            "products_analyzed": (
+                                det.products_analyzed
+                            ),
+                            "top_score_ratio": (
+                                det.top_score_ratio
+                            ),
+                            "actionable": det.is_actionable,
+                            "cluster_focus_if_applied": (
+                                niche_cluster_focus(
+                                    det.suggested,
+                                )
+                                if det.is_actionable
+                                else []
+                            ),
+                        }
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "world_model niche detection raised: "
+                        "%s", exc,
+                    )
+            return {
+                "checked": True,
+                "niche": n or None,
+                "active": False,
+                "cluster_focus": [],
+                "supported_niches": supported_niches(),
+                "detection": detection_block,
+                "reason": (
+                    "no niche set; orchestrator uses base "
+                    "lifecycle priority unchanged"
+                ),
+            }
+        focus = niche_cluster_focus(n)
+        if not focus:
+            return {
+                "checked": True,
+                "niche": n,
+                "active": False,
+                "cluster_focus": [],
+                "supported_niches": supported_niches(),
+                "detection": None,
+                "reason": f"unknown niche '{n}'",
+            }
+        return {
+            "checked": True,
+            "niche": n,
+            "active": True,
+            "cluster_focus": focus,
+            "supported_niches": supported_niches(),
+            "detection": None,
+            "reason": (
+                f"orchestrator merges these clusters FIRST "
+                f"with the lifecycle base focus (Wave 73)"
+            ),
+        }
+
     def _section_design(self) -> dict:
         """Cheap probe: runs the store_design engine with empty
         input. Engine is Pattern Q compliant so this never throws
@@ -763,6 +873,749 @@ class WorldModel:
             "bridge": bridge,
         }
 
+    def _section_substrate(self) -> dict:
+        """Capability-layer self-defense state.
+
+        Surfaces operator + bridge-driven capability overrides
+        alongside the auto-demote bridge config + recovery
+        candidate count. The complement of
+        ``_section_quarantine`` (which is engine-level): this
+        is capability-level.
+
+        Fleet-wide by design -- capability overrides currently
+        apply across all stores. When per-store overrides land
+        (parallel to per-store alert_paused), this section will
+        gain a ``for_this_store`` sub-block mirroring the
+        quarantine pattern.
+
+        Fail-open: any subsystem missing -> the corresponding
+        field becomes ``None`` and the section stays
+        ``checked: True`` so the snapshot remains usable.
+        """
+        out: dict = {
+            "checked": True,
+            "scope": "fleet",
+            "overrides": {
+                "total": 0,
+                "promoted": [],
+                "demoted": [],
+                "auto_demoted": [],
+            },
+            "bridge": None,
+            "demote_candidates": 0,
+            "release_candidates": 0,
+            "recent_degradations": [],
+        }
+
+        try:
+            from core.capability_planner import (
+                capability_overrides as _cap_overrides,
+            )
+            loaded = _cap_overrides.load_overrides()
+            promoted_rows: list[dict] = []
+            demoted_rows: list[dict] = []
+            auto_rows: list[dict] = []
+            for entry in loaded.entries:
+                row = {
+                    "name": entry.name,
+                    "reason": entry.reason or "",
+                    "recorded_at": entry.recorded_at,
+                }
+                if entry.kind == "promote":
+                    promoted_rows.append(row)
+                else:
+                    demoted_rows.append(row)
+                    if entry.reason.startswith(
+                        "auto_demote_degraded",
+                    ):
+                        auto_rows.append(row)
+            out["overrides"] = {
+                "total": len(loaded.entries),
+                "promoted": promoted_rows,
+                "demoted": demoted_rows,
+                "auto_demoted": auto_rows,
+            }
+        except ImportError as exc:
+            logger.debug(
+                "world_model substrate overrides import "
+                "failed: %s", exc,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model substrate overrides readout "
+                "raised: %s", exc,
+            )
+
+        try:
+            from core.capability_planner import auto_demote
+            out["bridge"] = auto_demote.config_summary()
+            # Read-only previews -- safe to call regardless
+            # of env gate. Counts only; full rows live in
+            # the dedicated CLI surfaces.
+            try:
+                out["demote_candidates"] = len(
+                    [
+                        c for c in
+                        auto_demote.find_demote_candidates()
+                        if c.get("blocked_by") is None
+                    ],
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "world_model substrate demote "
+                    "candidates raised: %s", exc,
+                )
+            try:
+                out["release_candidates"] = len(
+                    auto_demote.find_release_candidates(),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "world_model substrate release "
+                    "candidates raised: %s", exc,
+                )
+        except ImportError as exc:
+            logger.debug(
+                "world_model substrate bridge import "
+                "failed: %s", exc,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model substrate bridge readout "
+                "raised: %s", exc,
+            )
+
+        # Recent capability degradations -- the input to the
+        # bridge. Capped at 5 so the snapshot stays
+        # inspectable. Even when the bridge env-gate is OFF,
+        # operators see "these capabilities are regressing"
+        # in the same surface. Each row carries a
+        # ``bridge_status`` so operators can distinguish
+        # already-demoted / would-demote / watching tiers.
+        try:
+            from core.capability_planner import (
+                capability_degradations,
+                auto_demote as _ad,
+            )
+            degs = capability_degradations(
+                recent_window_seconds=86400 * 7,
+                baseline_window_seconds=86400 * 30,
+            )
+            try:
+                degs = _ad.annotate_degradations(degs)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "world_model substrate annotate "
+                    "raised: %s", exc,
+                )
+            out["recent_degradations"] = degs[:5]
+        except ImportError as exc:
+            logger.debug(
+                "world_model substrate degradations "
+                "import failed: %s", exc,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model substrate degradations "
+                "readout raised: %s", exc,
+            )
+
+        return out
+
+    def _section_cycle(
+        self, store_id: str | None = None,
+    ) -> dict:
+        """Per-store autonomous-cycle activity. Reads from
+        ``core.autonomous.cycle_history.per_store_stats`` to
+        surface this store's outcome distribution across
+        recent cycles.
+
+        Empire-AGI use: an operator inspecting store A's
+        world-model wants to know "has the cycle been
+        advancing this store, or just refusing it?". The
+        fleet-wide cycle_activity (in daily-brief) doesn't
+        answer that per-store; this section does.
+
+        Returns:
+          {
+            checked: bool,
+            scope: "per_store" | "fleet",
+            store_id: str | None,
+            stats: {executed, refused, errored, no_plan, total},
+            last_outcome: str | None,
+            last_recorded_at: float | None,
+            window_days: int,
+            revenue_trend_7d: dict | None,
+            recent_transfers: list,
+            alerts: list,
+            pause: dict,
+            pause_frequency_7d: dict | None,
+            engine_regressions: list,
+            engine_chronic_warnings: list,
+            engine_outcome_alerts: list,
+          }
+        Fleet scope (no store_id) returns an aggregate roll-
+        up instead of per-store stats. ``pause`` /
+        ``pause_frequency_7d`` / ``engine_regressions`` are
+        fleet-scoped regardless -- engine health is global,
+        not per-store, and the pause switch halts every
+        store at once.
+        """
+        out: dict = {
+            "checked": True,
+            "scope": (
+                "per_store" if store_id is not None
+                else "fleet"
+            ),
+            "store_id": store_id,
+            "stats": {
+                "executed": 0, "refused": 0,
+                "errored": 0, "no_plan": 0, "total": 0,
+            },
+            "last_outcome": None,
+            "last_recorded_at": None,
+            "window_days": 7,
+        }
+        try:
+            from core.autonomous import (
+                cycle_history as _ch,
+            )
+        except ImportError as exc:
+            logger.debug(
+                "world_model cycle import failed: %s", exc,
+            )
+            return out
+
+        try:
+            by_store = _ch.per_store_stats(
+                since_seconds=86400 * 7,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model cycle stats raised: %s", exc,
+            )
+            return out
+
+        if store_id is not None:
+            stats = by_store.get(store_id)
+            if stats:
+                out["stats"] = stats
+        else:
+            # Fleet aggregate
+            agg = {
+                "executed": 0, "refused": 0,
+                "errored": 0, "no_plan": 0, "total": 0,
+            }
+            for s in by_store.values():
+                for k in agg:
+                    agg[k] += s.get(k, 0)
+            out["stats"] = agg
+
+        # Last per-store outcome (looking at the most recent
+        # cycle event that mentioned this store)
+        if store_id is not None:
+            try:
+                events = _ch.recent_history(
+                    since_seconds=86400 * 7,
+                )
+                for ev in events:
+                    rows = (
+                        ev.advance.get("per_store") or []
+                    )
+                    for row in rows:
+                        if (
+                            isinstance(row, dict)
+                            and row.get("store_id")
+                            == store_id
+                        ):
+                            out["last_outcome"] = (
+                                row.get("outcome")
+                            )
+                            out["last_recorded_at"] = (
+                                ev.recorded_at
+                            )
+                            break
+                    if out["last_outcome"] is not None:
+                        break
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "world_model cycle last_outcome "
+                    "raised: %s", exc,
+                )
+
+        # Per-store revenue trend (7d) -- only when
+        # store_id is provided.
+        out["revenue_trend_7d"] = None
+        if store_id is not None:
+            try:
+                from core.autonomous import (
+                    cycle_revenue_history as _crh,
+                )
+                out["revenue_trend_7d"] = (
+                    _crh.per_store_trend(
+                        store_id=store_id,
+                        since_seconds=86400 * 7,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "world_model revenue_trend raised: %s",
+                    exc,
+                )
+
+        # Cross-store transfers received by this store in
+        # the last 7 days. Surfaces "store_a learned from
+        # peers" at the per-store snapshot. Always included
+        # (empty when nothing happened).
+        out["recent_transfers"] = []
+        if store_id is not None:
+            try:
+                from core.autonomous import (
+                    transfer_history as _th,
+                )
+                txs = _th.recent_history(
+                    since_seconds=86400 * 7,
+                    target_store_id=store_id,
+                )
+                out["recent_transfers"] = [
+                    {
+                        "source_store_id": (
+                            t.source_store_id
+                        ),
+                        "engine": t.engine,
+                        "action_type": t.action_type,
+                        "capability": t.capability,
+                        "recorded_at": t.recorded_at,
+                        "action_id": t.action_id,
+                    }
+                    for t in txs[:5]
+                ]
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "world_model recent_transfers "
+                    "raised: %s", exc,
+                )
+
+        # Per-store cycle alerts -- the substrate's signal
+        # that THIS store is consistently refused/errored.
+        # When store_id is None (fleet snapshot), surface
+        # ALL per-store alerts as a list.
+        out["alerts"] = []
+        try:
+            from core.autonomous import (
+                cycle_alerts as _ca,
+            )
+            psa_list = _ca.compute_per_store_alerts(
+                window_seconds=86400 * 7,
+            )
+            if store_id is not None:
+                out["alerts"] = [
+                    {
+                        "kind": psa.kind,
+                        "detail": psa.detail,
+                        "metrics": psa.metrics,
+                    }
+                    for psa in psa_list
+                    if psa.store_id == store_id
+                ]
+            else:
+                out["alerts"] = [
+                    {
+                        "store_id": psa.store_id,
+                        "kind": psa.kind,
+                        "detail": psa.detail,
+                        "metrics": psa.metrics,
+                    }
+                    for psa in psa_list
+                ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model cycle alerts raised: %s",
+                exc,
+            )
+
+        # Fleet-wide engine health regressions. Engine
+        # health is per-engine (not per-engine-per-store),
+        # so this is fleet-scoped just like pause. Keeps
+        # the world-model viewer from having to call the
+        # dedicated regressions CLI separately.
+        out["engine_regressions"] = []
+        try:
+            from core.approval.engine_health_history import (
+                find_regressions,
+            )
+            regs = find_regressions(
+                min_drop=3.0,
+                baseline_window_seconds=86400.0 * 7.0,
+                latest_window_seconds=86400.0 * 1.0,
+                min_baseline_samples=3,
+            )
+            out["engine_regressions"] = [
+                {
+                    "engine": r.engine,
+                    "latest_score": r.latest_score,
+                    "latest_verdict": r.latest_verdict,
+                    "baseline_score": r.baseline_score,
+                    "drop": r.drop,
+                }
+                for r in regs
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model engine_regressions "
+                "raised: %s", exc,
+            )
+
+        # Engine outcome alerts (outcome_trends.compute_engine_alerts)
+        # -- degraded engines flagged by the recent-vs-
+        # baseline outcome score detector. Distinct from
+        # health regressions (which compare engine_health
+        # scores). The approval queue's outcomes drive
+        # this; world-model already holds a queue reference
+        # for approvals so the walk is incremental.
+        out["engine_outcome_alerts"] = []
+        try:
+            from core.approval.outcome_trends import (
+                compute_engine_alerts,
+            )
+            queue = self._approval_queue()
+            alerts_list = compute_engine_alerts(
+                queue,
+                recent_hours=24.0,
+                baseline_hours=168.0,
+                threshold=0.2,
+                min_recent=3,
+            )
+            out["engine_outcome_alerts"] = [
+                {
+                    "engine": a.engine,
+                    "recent_score": a.recent_score,
+                    "baseline_score": a.baseline_score,
+                    "drop": a.drop,
+                    "recent_executed": a.recent_executed,
+                    "baseline_executed": a.baseline_executed,
+                    "detail": a.detail,
+                    "kind": a.kind,
+                }
+                for a in alerts_list
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model engine_outcome_alerts "
+                "raised: %s", exc,
+            )
+
+        # Chronic-warning engines (stuck-state signal,
+        # complement of regressions). Same fleet scope.
+        out["engine_chronic_warnings"] = []
+        try:
+            from core.approval.engine_health_history import (
+                find_chronic_warnings,
+            )
+            chronics = find_chronic_warnings(
+                sample_window_seconds=86400.0 * 7.0,
+                min_samples=3,
+                healthy_score_floor=7,
+            )
+            out["engine_chronic_warnings"] = [
+                {
+                    "engine": w.engine,
+                    "latest_score": w.latest_score,
+                    "latest_verdict": w.latest_verdict,
+                    "samples": w.samples,
+                    "avg_score": w.avg_score,
+                }
+                for w in chronics
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model engine_chronic_warnings "
+                "raised: %s", exc,
+            )
+
+        # Fleet-wide cycle pause state + 7d frequency
+        # rollup. Pause is fleet-scoped (one switch halts
+        # every store) so it's surfaced regardless of
+        # whether this snapshot is per-store or fleet.
+        out["pause"] = {
+            "active": False,
+            "paused_until_at": None,
+            "reason": "",
+            "paused_at": None,
+        }
+        out["pause_frequency_7d"] = None
+        try:
+            from core.autonomous import (
+                cycle_pause as _cp,
+            )
+            out["pause"] = _cp.get_pause_state()
+            try:
+                out["pause_frequency_7d"] = (
+                    _cp.pause_frequency(
+                        since_seconds=86400 * 7,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "world_model pause_frequency "
+                    "raised: %s", exc,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model cycle_pause raised: %s",
+                exc,
+            )
+
+        return out
+
+    def _section_launch_readiness(
+        self,
+        *,
+        store_id: str,
+        include: bool = False,
+    ) -> dict[str, Any]:
+        """Per-store launch-readiness via the 10-check audit.
+
+        Opt-in (``include=True``) because the audit makes
+        ~10 GraphQL hops -- callers hitting world-model.show()
+        repeatedly shouldn't pay that cost on every probe.
+
+        Returns ``{"checked": False, ...}`` when opted out
+        so the section shape is stable.
+        """
+        if not include:
+            return {
+                "checked": False,
+                "ready_to_launch": None,
+                "completion_pct": None,
+                "missing_summary": "",
+                "next_action": "",
+            }
+        try:
+            from engines.store_setup.launch_audit import (
+                audit_store,
+            )
+            audit = audit_store(store_id=store_id)
+            return {
+                "checked": True,
+                "ready_to_launch": bool(
+                    audit.get("ready_to_launch")
+                ),
+                "completion_pct": int(
+                    audit.get("completion_pct", 0)
+                ),
+                "missing_summary": (
+                    audit.get("missing_summary") or ""
+                ),
+                "next_action": (
+                    audit.get("next_action") or ""
+                ),
+                "checks": audit.get("checks") or [],
+                "plan": audit.get("plan") or None,
+                "manual_admin_gaps": (
+                    audit.get("manual_admin_gaps") or []
+                ),
+                "launch_closeable_gaps": (
+                    audit.get("launch_closeable_gaps") or []
+                ),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model launch_readiness raised: %s",
+                exc,
+            )
+            return {
+                "checked": False,
+                "error": str(exc),
+            }
+
+    def _section_attribution(
+        self, *, store_id: str,
+    ) -> dict[str, Any]:
+        """Per-store revenue attribution (latest snapshot + delta).
+
+        Reads cached snapshots -- no Shopify call. ``checked``
+        false when no per-store snapshots have been recorded
+        yet (run a cycle to populate).
+        """
+        try:
+            from engines._attribution_snapshot import last_snapshot
+            from engines._attribution_delta import latest_delta
+        except Exception as exc:  # noqa: BLE001
+            return {"checked": False, "error": str(exc)}
+
+        try:
+            snap = last_snapshot(store_id=store_id)
+        except Exception as exc:  # noqa: BLE001
+            return {"checked": False, "error": str(exc)}
+
+        if snap is None:
+            return {
+                "checked": True,
+                "has_snapshot": False,
+                "attributed_revenue": 0.0,
+                "attributed_orders": 0,
+                "attribution_rate": 0.0,
+                "top_cluster": None,
+                "top_engine": None,
+                "delta": None,
+            }
+
+        top_cluster = (
+            snap.per_cluster[0]["cluster"] if snap.per_cluster
+            else None
+        )
+        top_engine = (
+            snap.per_engine[0]["engine"] if snap.per_engine
+            else None
+        )
+
+        delta_dict = None
+        try:
+            d = latest_delta(store_id=store_id)
+            if d is not None:
+                delta_dict = {
+                    "overall_revenue_delta": d.overall_revenue_delta,
+                    "overall_revenue_delta_pct": (
+                        d.overall_revenue_delta_pct
+                    ),
+                    "alert_count": len(d.alerts),
+                    "top_alert": (
+                        d.alerts[0].reason if d.alerts else None
+                    ),
+                }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "world_model attribution delta raised: %s", exc,
+            )
+
+        return {
+            "checked": True,
+            "has_snapshot": True,
+            "snapshot_id": snap.snapshot_id,
+            "captured_at": snap.captured_at,
+            "window_hours": snap.window_hours,
+            "attributed_revenue": snap.attributed_revenue,
+            "attributed_orders": snap.total_orders_in_window,
+            "attribution_rate": snap.attribution_rate,
+            "top_cluster": top_cluster,
+            "top_engine": top_engine,
+            "delta": delta_dict,
+        }
+
+    def _section_agi_phase4(self) -> dict:
+        """W963-64: Phase 4 substrate state for AI strategies.
+
+        Surfaces a compact summary of the ritual substrate
+        (verdict + run-rate + trend + critical-anomaly count)
+        so AICaptainStrategy + AIOrchestratorStrategy can
+        condition decisions on the AGI's CURRENT earning
+        signal without re-running compute_summary at every
+        agent call.
+
+        Fleet-scoped: the W963-48 summary aggregates over
+        the entire fleet; a per-store variant could come
+        later once attribution is per-store. For now
+        callers get the same fleet-level signal regardless
+        of store_id.
+
+        Fail-open: any missing substrate component leaves
+        the field None; section stays checked=True so
+        consumers can distinguish "not wired" from "no
+        signal yet".
+        """
+        out: dict = {
+            "checked": True,
+            "scope": "fleet",
+            "verdict": None,
+            "gross_profit": None,
+            "attribution_pct": None,
+            "monthly_run_rate": None,
+            "trend_verdict": None,
+            "history_snapshots": 0,
+            "history_trend": None,
+            "anomalies_critical": 0,
+            "anomalies_total": 0,
+            "anomalies_top": None,
+            # W963-76: trajectory + escalation signals
+            "diff_direction": None,
+            "diff_gross_profit_delta": 0.0,
+            "diff_verdict_change": None,
+            "streak_top": None,
+            "streak_severity": "info",
+            "streak_count": 0,
+        }
+        try:
+            from engines.agi_earnings_summary.summarizer \
+                import compute_summary
+            s = compute_summary(days=7)
+            out["verdict"] = s.verdict
+            out["gross_profit"] = s.fleet_gross_profit
+            out["attribution_pct"] = (
+                s.fleet_attribution_pct
+            )
+            out["monthly_run_rate"] = s.monthly_run_rate
+            out["trend_verdict"] = s.trend_verdict
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from engines.agi_earnings_history import (
+                store as _hist,
+            )
+            out["history_snapshots"] = _hist.snapshot_count()
+            t = _hist.compute_trend(days=14)
+            out["history_trend"] = t.get("verdict")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from engines.agi_anomaly_detector.detector \
+                import detect
+            r = detect(window=14)
+            out["anomalies_total"] = len(r.anomalies)
+            out["anomalies_critical"] = sum(
+                1 for a in r.anomalies
+                if a.severity == "critical"
+            )
+            if r.anomalies:
+                top = r.anomalies[0]
+                out["anomalies_top"] = {
+                    "type": top.type,
+                    "severity": top.severity,
+                    "description": top.description,
+                }
+        except Exception:  # noqa: BLE001
+            pass
+        # W963-76: brief-diff trajectory
+        try:
+            from engines.agi_brief_diff.differ import (
+                compute_diff,
+            )
+            d = compute_diff()
+            if d.sufficient:
+                out["diff_direction"] = d.direction
+                out["diff_gross_profit_delta"] = (
+                    d.gross_profit_delta
+                )
+                out["diff_verdict_change"] = (
+                    d.verdict_change
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        # W963-76: recommend-streak top
+        try:
+            from engines.agi_recommend_streak.detector \
+                import detect_streaks
+            sr = detect_streaks(threshold_days=3)
+            if sr.attention_needed and sr.top_streak:
+                top_s = getattr(sr, sr.top_streak, None)
+                if top_s is not None:
+                    out["streak_top"] = top_s.name
+                    out["streak_severity"] = top_s.severity
+                    out["streak_count"] = top_s.count
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+
     # ── Public API ──────────────────────────────────────────
 
     def snapshot(
@@ -770,6 +1623,7 @@ class WorldModel:
         store_id: str,
         *,
         skip_live: bool = False,
+        include_launch_readiness: bool = False,
     ) -> dict[str, Any]:
         """Build the per-store world-model snapshot.
 
@@ -779,6 +1633,12 @@ class WorldModel:
                 probes (the two sections that call Shopify).
                 Sync / design / approvals / decisions are local
                 reads so they always run.
+            include_launch_readiness: When True, runs the
+                launch-audit (~10 GraphQL hops) and includes
+                the result. OFF by default because callers
+                hitting world-model.show() repeatedly (LLM
+                orchestrators, dashboards) shouldn't pay the
+                audit cost every probe.
 
         Returns:
             Snapshot dict with the section structure documented
@@ -811,6 +1671,11 @@ class WorldModel:
                 }
 
         design = self._section_design()
+        niche_priority = self._section_niche_priority(
+            niche=store.get("niche"),
+            sm=sm,
+            store_id=store_id,
+        )
         # Per-store scope for approvals + decisions when the
         # store_id maps to actual tagged rows. Sections fall back
         # to global if the queue layer or actions don't carry
@@ -823,6 +1688,14 @@ class WorldModel:
         )
         quarantine = self._section_quarantine(store_id=store_id)
         fleet_health = self._section_fleet_health()
+        substrate = self._section_substrate()
+        cycle = self._section_cycle(store_id=store_id)
+        attribution = self._section_attribution(store_id=store_id)
+        launch_readiness = self._section_launch_readiness(
+            store_id=store_id,
+            include=include_launch_readiness,
+        )
+        agi_phase4 = self._section_agi_phase4()
 
         return {
             "store_id": store_id,
@@ -833,21 +1706,36 @@ class WorldModel:
             "connection": connection,
             "config": config,
             "design": design,
+            "niche_priority": niche_priority,
             "approvals": approvals,
             "decisions": decisions,
             "transfers": transfers,
             "recent_outcomes": recent_outcomes,
             "quarantine": quarantine,
             "fleet_health": fleet_health,
+            "substrate": substrate,
+            "cycle": cycle,
+            "attribution": attribution,
+            "launch_readiness": launch_readiness,
+            "agi_phase4": agi_phase4,
         }
 
 
-def snapshot(store_id: str, *, skip_live: bool = False) -> dict[str, Any]:
+def snapshot(
+    store_id: str,
+    *,
+    skip_live: bool = False,
+    include_launch_readiness: bool = False,
+) -> dict[str, Any]:
     """Module-level convenience: equivalent to
-    ``WorldModel().snapshot(store_id, skip_live=skip_live)``.
+    ``WorldModel().snapshot(store_id, ...)``.
 
     The class form exists so tests + callers can inject fake
     store managers / approval queues; this is the right entry
     point for everyone else.
     """
-    return WorldModel().snapshot(store_id, skip_live=skip_live)
+    return WorldModel().snapshot(
+        store_id,
+        skip_live=skip_live,
+        include_launch_readiness=include_launch_readiness,
+    )

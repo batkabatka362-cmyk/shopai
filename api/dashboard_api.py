@@ -17,6 +17,7 @@ Endpoints:
 """
 from __future__ import annotations
 import json
+import os
 import time
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -24,6 +25,64 @@ from typing import Any
 from utils.logger import get_logger
 from api.validation import validate_shop_url, validate_string, validate_webhook_topic
 logger = get_logger("api.dashboard")
+
+
+def _sanitize_error(exc: Exception, max_len: int = 200) -> str:
+    """W962-61: scrub known secret patterns before emitting an
+    exception to clients. Mirrors api/server.py helper."""
+    import re
+    raw = str(exc) or type(exc).__name__
+    raw = re.sub(r"shp[ap]t_[A-Za-z0-9]+", "shpXt_REDACTED", raw)
+    raw = re.sub(r"shpss_[A-Za-z0-9]+", "shpss_REDACTED", raw)
+    raw = re.sub(
+        r"Bearer\s+[A-Za-z0-9._-]+", "Bearer REDACTED", raw,
+    )
+    raw = re.sub(
+        r"\b[A-Za-z0-9]{32,}\b", "REDACTED_KEY", raw,
+    )
+    raw = re.sub(
+        r"C:\\Users\\[^\\]+", r"C:\\Users\\<user>", raw,
+    )
+    return raw[:max_len]
+
+
+def _api_auth_ok(handler) -> bool:
+    """W962-50: validate operator auth on destructive POST.
+
+    Token check policy (in order):
+      1. SHOPAI_API_NO_AUTH=1 -> always allow (dev mode).
+      2. No SHOPAI_API_TOKEN configured -> always allow but
+         emit a one-time warning (legacy back-compat for
+         local dev that ran the server before this gate
+         existed).
+      3. Authorization: Bearer <token> header matches
+         SHOPAI_API_TOKEN -> allow.
+      4. X-Api-Token header matches -> allow.
+      5. Otherwise -> reject.
+    """
+    if os.environ.get("SHOPAI_API_NO_AUTH") == "1":
+        return True
+    expected = os.environ.get("SHOPAI_API_TOKEN", "")
+    if not expected:
+        # No token configured -- legacy back-compat. Log a
+        # warning so operators know to set the env-var.
+        logger.warning(
+            "SHOPAI_API_TOKEN not set; allowing unauthenticated "
+            "POST. Set SHOPAI_API_NO_AUTH=1 to silence this "
+            "warning, or set SHOPAI_API_TOKEN to require a "
+            "bearer token."
+        )
+        return True
+    # Check Authorization: Bearer <token>
+    auth_hdr = handler.headers.get("Authorization", "")
+    if auth_hdr.startswith("Bearer "):
+        if auth_hdr[len("Bearer "):].strip() == expected:
+            return True
+    # Check X-Api-Token header
+    api_tok = handler.headers.get("X-Api-Token", "")
+    if api_tok and api_tok.strip() == expected:
+        return True
+    return False
 
 
 class DashboardAPIHandler(BaseHTTPRequestHandler):
@@ -87,24 +146,71 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0]
-        if path == "/api/webhook":
+        # W962-50: auth gate. Destructive POST routes (store
+        # registration, webhook) must require a token unless
+        # the operator explicitly opted into no-auth dev mode
+        # via SHOPAI_API_NO_AUTH=1. The webhook endpoint
+        # validates separately via HMAC; allow it to proceed
+        # so production Shopify can still post.
+        if path != "/api/webhook":
+            if not _api_auth_ok(self):
+                self._json_response(
+                    {"error": "unauthorized"}, 401,
+                )
+                return
+        # W962-40: read the body ONCE, bounded, before dispatch.
+        # Pre-fix the body was only read inside the
+        # /api/webhook branch; POST /api/stores referenced
+        # `body` -> NameError on every store-registration POST.
+        # Also enforce a 1 MB cap so a malicious client can't
+        # DoS the receiver via Content-Length: 999999999.
+        MAX_BODY_BYTES = 1_048_576
+        try:
             length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length) if length else b"{}"
+        except (TypeError, ValueError):
+            self._json_response(
+                {"error": "invalid Content-Length"}, 400,
+            )
+            return
+        if length > MAX_BODY_BYTES:
+            self._json_response(
+                {"error": "payload too large"}, 413,
+            )
+            return
+        body = self.rfile.read(length) if length else b"{}"
+
+        if path == "/api/webhook":
             topic = self.headers.get("X-Shopify-Topic", "unknown")
             hmac_header = self.headers.get("X-Shopify-Hmac-Sha256", "")
             try:
                 payload = json.loads(body)
                 from core.system.webhook_handler import get_webhook_handler
                 wh = get_webhook_handler()
-                result = wh.process(topic, payload, hmac_header)
+                # W962-39: pass the RAW request body through to
+                # the handler so HMAC verification matches what
+                # Shopify signed. Re-serializing the parsed
+                # payload (the pre-fix behaviour) produced
+                # different bytes -> every real webhook rejected.
+                result = wh.process(
+                    topic, payload, hmac_header,
+                    raw_body=body,
+                )
                 self._json_response(result)
             except Exception as exc:
                 logger.warning("webhook processing failed: %s", exc)
-                self._json_response({"error": str(exc)[:100]}, 500)
+                self._json_response({"error": _sanitize_error(exc, max_len=100)}, 500)
         elif path == "/api/stores":
             # POST /api/stores — register new store
             try:
-                payload = json.loads(body) if body else {}
+                # W962-75: defend against non-dict JSON bodies
+                # (list / scalar / None) before calling .get.
+                parsed = json.loads(body) if body else {}
+                if not isinstance(parsed, dict):
+                    self._json_response(
+                        {"error": "request body must be a JSON object"}, 400,
+                    )
+                    return
+                payload = parsed
                 shop_url, err = validate_shop_url(payload.get("url", ""))
                 if err:
                     self._json_response({"error": err}, 400)
@@ -129,7 +235,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 self._json_response({"error": f"Invalid JSON body: {exc}"}, 400)
             except Exception as exc:
                 logger.warning("store registration failed: %s", exc)
-                self._json_response({"error": str(exc)[:100]}, 500)
+                self._json_response({"error": _sanitize_error(exc, max_len=100)}, 500)
         else:
             self._json_response({"error": "not_found"}, 404)
 
@@ -153,7 +259,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             reg = get_store_registry()
             return {"stores": reg.list_stores(), "stats": reg.get_stats()}
         except Exception as exc:
-            return {"error": str(exc)[:100]}
+            return {"error": _sanitize_error(exc, max_len=100)}
 
     @staticmethod
     def _get_status() -> dict:
@@ -324,7 +430,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             report["timestamp"] = time.time()
             return report
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)[:200]}
+            return {"error": _sanitize_error(exc, max_len=200)}
 
     @staticmethod
     def _get_satellite_stats() -> dict:
@@ -344,7 +450,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "timestamp": time.time(),
             }
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)[:200]}
+            return {"error": _sanitize_error(exc, max_len=200)}
 
     @staticmethod
     def _get_policy_audit(limit: int = 20) -> dict:
@@ -366,7 +472,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "timestamp": time.time(),
             }
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)[:200]}
+            return {"error": _sanitize_error(exc, max_len=200)}
 
     @staticmethod
     def _get_belief_snapshot(limit: int = 50) -> dict:
@@ -399,7 +505,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             store = get_default_belief_store()
             snap = store.snapshot()
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)[:200]}
+            return {"error": _sanitize_error(exc, max_len=200)}
 
         now = time.time()
         rows: list[dict[str, Any]] = []
@@ -480,7 +586,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             synth = get_default_synthesizer()
             rows = synth.snapshot()
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)[:200]}
+            return {"error": _sanitize_error(exc, max_len=200)}
 
         # Wave 6 #8: enrich each pattern with activation stats from
         # the default policy store so operators can tell a useful
@@ -615,7 +721,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "timestamp": time.time(),
             }
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)[:200]}
+            return {"error": _sanitize_error(exc, max_len=200)}
 
     @staticmethod
     def _get_dashboard() -> dict:
@@ -623,7 +729,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             from core.system.dashboard import get_dashboard
             return get_dashboard().generate()
         except Exception as exc:
-            return {"error": str(exc)[:100]}
+            return {"error": _sanitize_error(exc, max_len=100)}
 
     @staticmethod
     def _run_cycle() -> dict:
@@ -631,7 +737,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
             from core.system.auto_scheduler import get_scheduler
             return get_scheduler().run_once()
         except Exception as exc:
-            return {"error": str(exc)[:100]}
+            return {"error": _sanitize_error(exc, max_len=100)}
 
     @staticmethod
     def _get_alerts() -> dict:
@@ -671,7 +777,7 @@ class DashboardAPIHandler(BaseHTTPRequestHandler):
                 "meta": mi.get_meta_stats(),
             }
         except Exception as exc:
-            return {"error": str(exc)[:100]}
+            return {"error": _sanitize_error(exc, max_len=100)}
 
     def log_message(self, format, *args):
         pass  # Suppress default logging

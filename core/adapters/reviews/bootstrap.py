@@ -43,7 +43,7 @@ def register_all(
     (and the controller's startup probe) can warn about missing
     credentials without crashing the process.
     """
-    reg = registry or get_registry()
+    reg = registry if registry is not None else get_registry()
     status: dict[str, bool] = {}
 
     for cls in _REVIEWS_ADAPTER_CLASSES:

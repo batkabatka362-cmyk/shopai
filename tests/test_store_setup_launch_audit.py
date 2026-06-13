@@ -107,6 +107,30 @@ _ALL_GOOD = {
             "filename": "assets/shopai-design-tokens.json",
         }],
     }),
+    "shopify_list_files": _ok({
+        "files": [
+            {"file_id": "gid://shopify/MediaImage/1",
+             "alt": "Acme logo"},
+            {"file_id": "gid://shopify/MediaImage/2",
+             "alt": "Acme favicon"},
+        ],
+    }),
+    "shopify_get_shop": _ok({
+        "shop": {
+            "name": "Acme Camping",
+            "email": "ops@acme.example",
+            "contact_email": "ops@acme.example",
+            "currency_code": "USD",
+            "primary_host": "acme.myshopify.com",
+            # Storefront-setup check (11th audit, added with
+            # this PR): setup_required=False + checkout_api_
+            # supported=True together mean Shopify considers
+            # the store ready for transactions.
+            "setup_required": False,
+            "checkout_api_supported": True,
+        },
+        "found": True,
+    }),
 }
 
 
@@ -145,8 +169,8 @@ class TestAllPass:
             "engines.store_setup.launch_audit.record_writeback",
         ):
             result = audit_store()
-        # 7 of 8 pass -> round(100 * 7/8) = 88
-        assert result["completion_pct"] == 88
+        # 10 of 11 pass -> round(100 * 10/11) = 91
+        assert result["completion_pct"] == 91
         assert result["ready_to_launch"] is False
 
 
@@ -470,6 +494,109 @@ class TestActiveProductsCheck:
         )
         assert products["applied"] == 2
         assert products["ok"] is True
+
+
+class TestBrandAssetsCheck:
+    """The brand_assets probe reads SHOPIFY_LIST_FILES + counts
+    files whose alts match the brand_uploader's convention."""
+
+    def test_both_logo_and_favicon_pass(self):
+        # _ALL_GOOD fixture already has both
+        router = type("R", (), {})()
+        router.execute = _router_with(_ALL_GOOD)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        brand = next(
+            c for c in result["checks"]
+            if c["key"] == "brand_assets"
+        )
+        assert brand["ok"] is True
+        assert brand["applied"] == 2
+        assert brand["missing"] == []
+
+    def test_only_logo_fails(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_files"] = _ok({
+            "files": [
+                {"file_id": "gid://shopify/MediaImage/1",
+                 "alt": "Acme logo"},
+                # No favicon
+            ],
+        })
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        brand = next(
+            c for c in result["checks"]
+            if c["key"] == "brand_assets"
+        )
+        assert brand["ok"] is False
+        assert brand["applied"] == 1
+        assert "favicon" in brand["missing"]
+
+    def test_no_brand_files_at_all(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_files"] = _ok({
+            "files": [
+                # Unrelated file -- doesn't match brand alt
+                # convention
+                {"file_id": "gid://shopify/MediaImage/9",
+                 "alt": "Product hero shot"},
+            ],
+        })
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        brand = next(
+            c for c in result["checks"]
+            if c["key"] == "brand_assets"
+        )
+        assert brand["ok"] is False
+        assert brand["applied"] == 0
+
+    def test_extra_brand_assets_dont_count_against(self):
+        """A store with logo + favicon + hero + og_image
+        passes. Extras beyond the required two don't hurt."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_files"] = _ok({
+            "files": [
+                {"alt": "Acme logo"},
+                {"alt": "Acme favicon"},
+                {"alt": "Acme hero"},
+                {"alt": "Acme og_image"},
+            ],
+        })
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        brand = next(
+            c for c in result["checks"]
+            if c["key"] == "brand_assets"
+        )
+        assert brand["ok"] is True
 
 
 class TestShippingZonesCheck:
@@ -850,3 +977,478 @@ class TestStoreIdPropagation:
             audit_store(store_id="store-a")
         params = record_mock.call_args.kwargs["params"]
         assert params["store_id"] == "store-a"
+
+
+class TestAuditPlan:
+    """The audit result carries a structured ``plan`` field
+    derived from the capability planner. This complements
+    the simpler ``next_action`` string for JSON consumers
+    (daily-brief, LLM agents) that need step-by-step
+    sequences."""
+
+    def test_passing_audit_plan_is_none(self):
+        router = type("R", (), {})()
+        router.execute = _router_with(_ALL_GOOD)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        assert result["ready_to_launch"] is True
+        # No failing checks -> no plan
+        assert result["plan"] is None
+
+    def test_failing_audit_plan_carries_steps(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_list_pages"] = _ok({"pages": []})
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        assert "plan" in result
+        # Plan exists, has steps
+        plan = result["plan"]
+        assert plan is not None
+        assert isinstance(plan.get("steps"), list)
+        assert plan.get("goal", "").startswith(
+            "close audit gaps:"
+        )
+        # CLI sequence should include something runnable
+        assert isinstance(plan.get("cli_sequence"), list)
+        # The recommended action should reference shopai launch
+        # (since launch_store closes the missing pages gap)
+        names = {
+            s.get("capability_name") for s in plan["steps"]
+        }
+        assert "launch_store" in names
+
+
+class TestNextActionHint:
+    """The audit engine exposes the smart Next-action
+    recommendation as part of the result dict so callers
+    (CLI, daily-brief, JSON consumers) don't have to
+    re-derive it."""
+
+    def _result_with_failing(self, failing_keys):
+        from engines.store_setup.launch_audit import (
+            next_action_hint,
+        )
+        all_keys = [
+            "legal_policies", "standard_pages",
+            "active_discounts", "curated_collections",
+            "design_tokens", "brand_assets",
+            "active_products",
+            "shipping_zones", "fulfillable_locations",
+            "shop_identity",
+        ]
+        checks = [
+            {"key": k, "ok": k not in failing_keys,
+             "applied": 0 if k in failing_keys else 1,
+             "expected": 1,
+             "missing": (["need 1"] if k in failing_keys
+                         else [])}
+            for k in all_keys
+        ]
+        return next_action_hint(checks)
+
+    def test_all_pass_returns_empty(self):
+        hint = self._result_with_failing(set())
+        assert hint == ""
+
+    def test_launch_bucket_recommends_launch(self):
+        hint = self._result_with_failing({
+            "legal_policies", "standard_pages",
+        })
+        assert hint.startswith("shopai launch")
+        assert "closes 2 of 2" in hint
+
+    def test_active_products_appends_seed_flag(self):
+        hint = self._result_with_failing({
+            "active_products",
+        })
+        assert "shopai launch" in hint
+        assert "--seed-products" in hint
+
+    def test_manual_only_returns_admin_url(self):
+        hint = self._result_with_failing({
+            "shipping_zones",
+        })
+        assert "admin.shopify.com/settings/shipping" in hint
+
+    def test_shop_identity_manual_admin_url(self):
+        hint = self._result_with_failing({
+            "shop_identity",
+        })
+        assert "admin.shopify.com/settings/general" in hint
+
+    def test_audit_result_carries_next_action(self):
+        """End-to-end: audit_store()['next_action'] is
+        populated."""
+        responses = dict(_ALL_GOOD)
+        # Drop a page so the audit fails
+        responses["shopify_list_pages"] = _ok({"pages": []})
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        assert "next_action" in result
+        assert "shopai launch" in result["next_action"]
+
+    def test_audit_pass_next_action_empty(self):
+        router = type("R", (), {})()
+        router.execute = _router_with(_ALL_GOOD)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            result = audit_store()
+        assert result["next_action"] == ""
+
+
+class TestFixHint:
+    """Every check carries an operator-actionable ``fix_hint``
+    string. The hint is purely advisory -- it doesn't gate
+    pass/fail, it just tells the operator HOW to close the gap.
+
+    The contract: every known check key has a non-empty hint
+    so the CLI never has to think about "what do I do about
+    this missing piece".
+    """
+
+    def _all_checks(self):
+        router = type("R", (), {})()
+        router.execute = _router_with(_ALL_GOOD)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            return audit_store()["checks"]
+
+    def test_every_check_has_fix_hint_key(self):
+        checks = self._all_checks()
+        for c in checks:
+            assert "fix_hint" in c, (
+                f"{c['key']} has no fix_hint field"
+            )
+
+    def test_every_known_check_has_nonempty_hint(self):
+        checks = self._all_checks()
+        for c in checks:
+            assert c["fix_hint"], (
+                f"{c['key']} has empty fix_hint -- every "
+                "known launchability gap needs an actionable "
+                "next step"
+            )
+
+    def test_setup_hints_reference_launch_command(self):
+        """Checks closeable by the launch flow point to
+        ``shopai launch``."""
+        checks = {c["key"]: c for c in self._all_checks()}
+        for key in (
+            "legal_policies", "standard_pages",
+            "active_discounts", "curated_collections",
+            "design_tokens",
+        ):
+            hint = checks[key]["fix_hint"]
+            assert "shopai launch" in hint.lower(), (
+                f"{key} hint should reference shopai launch: "
+                f"{hint}"
+            )
+
+    def test_manual_hints_reference_admin(self):
+        """Shopify-admin-only checks point operators at
+        admin.shopify.com."""
+        checks = {c["key"]: c for c in self._all_checks()}
+        for key in (
+            "shipping_zones",
+            "fulfillable_locations",
+            "shop_identity",
+        ):
+            hint = checks[key]["fix_hint"]
+            assert "admin.shopify.com" in hint, (
+                f"{key} hint should reference admin URL: "
+                f"{hint}"
+            )
+
+    def test_active_products_hint_explains_seeder(self):
+        checks = {c["key"]: c for c in self._all_checks()}
+        hint = checks["active_products"]["fix_hint"]
+        assert "product" in hint.lower()
+
+
+class TestShopIdentityCheck:
+    """Cover the 10th check: shop has the identity fields
+    required to take orders."""
+
+    def _run(self, responses):
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            return audit_store()
+
+    def _shop_check(self, result):
+        return next(
+            c for c in result["checks"]
+            if c["key"] == "shop_identity"
+        )
+
+    def test_all_fields_present_passes(self):
+        result = self._run(_ALL_GOOD)
+        check = self._shop_check(result)
+        assert check["ok"] is True
+        assert check["applied"] == 4
+        assert check["expected"] == 4
+        assert check["missing"] == []
+
+    def test_missing_name_flagged(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "",
+                "email": "ops@x.example",
+                "contact_email": "ops@x.example",
+                "currency_code": "USD",
+                "primary_host": "x.myshopify.com",
+            },
+        })
+        check = self._shop_check(self._run(responses))
+        assert check["ok"] is False
+        assert "name" in check["missing"]
+        assert check["applied"] == 3
+
+    def test_missing_contact_flagged(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "",
+                "contact_email": "",
+                "currency_code": "USD",
+                "primary_host": "x.myshopify.com",
+            },
+        })
+        check = self._shop_check(self._run(responses))
+        assert check["ok"] is False
+        assert "contact_email" in check["missing"]
+
+    def test_either_email_or_contact_email_passes(self):
+        """One of the two suffices -- transactional sends
+        only need a single from-address."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "",
+                "contact_email": "ops@x.example",
+                "currency_code": "USD",
+                "primary_host": "x.myshopify.com",
+            },
+        })
+        check = self._shop_check(self._run(responses))
+        assert check["ok"] is True
+        assert check["missing"] == []
+
+    def test_missing_currency_flagged(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "ops@x.example",
+                "contact_email": "",
+                "currency_code": "",
+                "primary_host": "x.myshopify.com",
+            },
+        })
+        check = self._shop_check(self._run(responses))
+        assert check["ok"] is False
+        assert "currency_code" in check["missing"]
+
+    def test_missing_primary_host_flagged(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "ops@x.example",
+                "contact_email": "",
+                "currency_code": "USD",
+                "primary_host": "",
+            },
+        })
+        check = self._shop_check(self._run(responses))
+        assert check["ok"] is False
+        assert "primary_host" in check["missing"]
+
+    def test_router_failure_returns_shop_unreachable(self):
+        """If SHOPIFY_GET_SHOP fails, the missing list is a
+        single 'shop_unreachable' marker rather than every
+        field -- helps operators distinguish auth/network
+        issues from 'store has empty fields'."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _fail()
+        check = self._shop_check(self._run(responses))
+        assert check["ok"] is False
+        assert check["applied"] == 0
+        assert check["missing"] == ["shop_unreachable"]
+
+
+class TestStorefrontSetupCheck:
+    """Cover the 11th check: Shopify's own canonical
+    transaction-readiness signals (setup_required +
+    checkout_api_supported) on the shop record."""
+
+    def _run(self, responses):
+        router = type("R", (), {})()
+        router.execute = _router_with(responses)
+        with patch(
+            "core.adapters.get_router",
+            return_value=router,
+        ), patch(
+            "engines.store_setup.launch_audit.record_writeback",
+        ):
+            return audit_store()
+
+    def _setup_check(self, result):
+        return next(
+            c for c in result["checks"]
+            if c["key"] == "storefront_setup"
+        )
+
+    def test_both_signals_good_passes(self):
+        result = self._run(_ALL_GOOD)
+        check = self._setup_check(result)
+        assert check["ok"] is True
+        assert check["applied"] == 2
+        assert check["expected"] == 2
+        assert check["missing"] == []
+
+    def test_setup_required_true_fails(self):
+        """Shopify still considers the setup checklist
+        incomplete -- storefront can't take orders."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "ops@x.example",
+                "contact_email": "ops@x.example",
+                "currency_code": "USD",
+                "primary_host": "x.myshopify.com",
+                "setup_required": True,
+                "checkout_api_supported": True,
+            },
+        })
+        check = self._setup_check(self._run(responses))
+        assert check["ok"] is False
+        assert "setup_required" in check["missing"]
+        assert check["applied"] == 1
+
+    def test_checkout_api_unsupported_fails(self):
+        """The checkout API gate caps programmatic order
+        paths -- relevant for plan tiers that don't support
+        it."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "ops@x.example",
+                "contact_email": "ops@x.example",
+                "currency_code": "USD",
+                "primary_host": "x.myshopify.com",
+                "setup_required": False,
+                "checkout_api_supported": False,
+            },
+        })
+        check = self._setup_check(self._run(responses))
+        assert check["ok"] is False
+        assert "checkout_api_supported" in check["missing"]
+        assert check["applied"] == 1
+
+    def test_both_signals_bad_fails_with_two_missing(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "ops@x.example",
+                "contact_email": "ops@x.example",
+                "currency_code": "USD",
+                "primary_host": "x.myshopify.com",
+                "setup_required": True,
+                "checkout_api_supported": False,
+            },
+        })
+        check = self._setup_check(self._run(responses))
+        assert check["ok"] is False
+        assert check["applied"] == 0
+        assert set(check["missing"]) == {
+            "setup_required",
+            "checkout_api_supported",
+        }
+
+    def test_default_assumes_incomplete(self):
+        """Absence of the two fields on an older API
+        response defaults to 'we don't know, assume
+        incomplete' -- avoids false-passing audits on
+        legacy adapter versions."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "ops@x.example",
+                "contact_email": "ops@x.example",
+                "currency_code": "USD",
+                "primary_host": "x.myshopify.com",
+                # No setup_required / checkout_api_supported
+            },
+        })
+        check = self._setup_check(self._run(responses))
+        assert check["ok"] is False
+        assert check["applied"] == 0
+
+    def test_router_failure_returns_shop_unreachable(self):
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _fail()
+        check = self._setup_check(self._run(responses))
+        assert check["ok"] is False
+        assert check["missing"] == ["shop_unreachable"]
+        # The fix_hint swap kicks in for shop_unreachable on
+        # storefront_setup just like for shop_identity.
+        assert "OAuth" in check["fix_hint"] or "Connection" in check["fix_hint"]
+
+    def test_classified_as_manual_admin_gap(self):
+        """storefront_setup belongs to the manual_admin
+        bucket -- the orchestrator can't auto-close it."""
+        responses = dict(_ALL_GOOD)
+        responses["shopify_get_shop"] = _ok({
+            "shop": {
+                "name": "Acme",
+                "email": "ops@x.example",
+                "contact_email": "ops@x.example",
+                "currency_code": "USD",
+                "primary_host": "x.myshopify.com",
+                "setup_required": True,
+                "checkout_api_supported": True,
+            },
+        })
+        result = self._run(responses)
+        assert "storefront_setup" in result["manual_admin_gaps"]
+        assert "storefront_setup" not in result["launch_closeable_gaps"]

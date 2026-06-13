@@ -100,10 +100,15 @@ class StoreCloner:
         wall-clock time from ~3x latency to ~1x latency.
         """
         h = {"X-Shopify-Access-Token": token, "Content-Type": "application/json"}
+        # W963-157: dropped price_rules.json -- deprecated
+        # read_price_rules scope causes a 403 in production.
+        # Discount cloning now goes through the GraphQL
+        # _discount_compat layer on the create path; the read
+        # side is skipped (clone discounts by name in caller
+        # rather than fetching the SOURCE store's list).
         endpoints = [
             ("pages", "pages.json", "pages"),
             ("collections", "smart_collections.json", "smart_collections"),
-            ("discounts", "price_rules.json", "price_rules"),
         ]
         config: dict[str, list] = {k: [] for k, _, _ in endpoints}
 
@@ -156,31 +161,25 @@ class StoreCloner:
         starts_at = time.strftime("%Y-%m-%dT00:00:00Z")
 
         def _create_rule(rule: dict) -> bool:
-            # Each discount needs two sequential POSTs (rule → code), but
-            # different discounts are independent of each other.
-            new_rule = {
-                "price_rule": {
-                    "title": rule.get("title", ""),
-                    "target_type": rule.get("target_type", "line_item"),
-                    "target_selection": rule.get("target_selection", "all"),
-                    "allocation_method": rule.get("allocation_method", "across"),
-                    "value_type": rule.get("value_type", "percentage"),
-                    "value": rule.get("value", "-10"),
-                    "customer_selection": "all",
-                    "starts_at": starts_at,
-                }
-            }
-            result = self._api_post(target_url, "price_rules.json", h, new_rule)
-            if not result.get("price_rule"):
-                return False
-            rid = result["price_rule"]["id"]
-            self._api_post(
-                target_url,
-                "price_rules/{}/discount_codes.json".format(rid),
-                h,
-                {"discount_code": {"code": rule.get("title", "CLONE")}},
+            # W963-157: was 2 sequential REST POSTs to
+            # price_rules.json + price_rules/<id>/discount_codes.json
+            # which requires the deprecated write_price_rules scope.
+            # GraphQL discountCodeBasicCreate is one round-trip and
+            # uses the modern write_discounts scope which is in the
+            # adapter manifest.
+            from ._discount_compat import create_code_discount
+            value_str = str(rule.get("value", "-10"))
+            try:
+                value_pct = float(value_str)
+            except (TypeError, ValueError):
+                value_pct = -10.0
+            code = rule.get("title", "CLONE") or "CLONE"
+            result = create_code_discount(
+                code=code,
+                value_pct=value_pct,
+                starts_at=starts_at,
             )
-            return True
+            return bool(result.get("ok"))
 
         if not discounts:
             return 0

@@ -37,7 +37,7 @@ def register_all(
     can log / report how many video sources the process has
     active credentials for.
     """
-    reg = registry or get_registry()
+    reg = registry if registry is not None else get_registry()
     status: dict[str, bool] = {}
 
     for cls in _VIDEO_GEN_ADAPTER_CLASSES:

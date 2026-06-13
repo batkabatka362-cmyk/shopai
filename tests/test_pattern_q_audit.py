@@ -169,6 +169,124 @@ class TestViolationClasses:
         assert "fine" in report.clean_engines
 
 
+# ─── W962-33: strict probe (malformed input) ─────────────────
+
+
+class TestStrictMode:
+    """Strict probes replay each engine with malformed input
+    shapes; engines missing a top-level try/except surface as
+    raised_on_malformed."""
+
+    def _audit_strict(self, name, engine):
+        from engines._output_schema_audit import (
+            audit_engine_output_schema,
+        )
+        from unittest.mock import patch
+        with patch(
+            "engines.registry.list_engines",
+            return_value=[name],
+        ), patch(
+            "engines.registry.get_engine",
+            return_value=engine,
+        ):
+            return audit_engine_output_schema(strict=True)
+
+    def test_raises_on_malformed_caught(self):
+        """An engine that passes the empty probe but raises on
+        malformed input is flagged."""
+        clean_envelope = {
+            "status": "success", "data": {}, "meta": {},
+            "error": None,
+        }
+
+        class _Fragile:
+            def run(self, inp):
+                # Passes empty probe (returns canonical envelope)
+                # but raises when data is a string.
+                if not isinstance(inp.get("data"), dict):
+                    raise TypeError(
+                        "data must be a dict",
+                    )
+                return clean_envelope
+
+        report = self._audit_strict("fragile", _Fragile())
+        assert len(report.violations) == 1
+        v = report.violations[0]
+        assert v.reason == "raised_on_malformed"
+        assert "TypeError" in v.detail
+
+    def test_robust_engine_passes_strict(self):
+        """An engine with a top-level try/except (W962-13/14
+        pattern) passes strict probes."""
+        clean_envelope = {
+            "status": "success", "data": {}, "meta": {},
+            "error": None,
+        }
+        error_envelope = {
+            "status": "error", "data": {}, "meta": {},
+            "error": "bad input",
+        }
+
+        class _Robust:
+            def run(self, inp):
+                try:
+                    if not isinstance(inp.get("data"), dict):
+                        return error_envelope
+                    return clean_envelope
+                except Exception as exc:  # noqa: BLE001
+                    return {
+                        **error_envelope,
+                        "error": str(exc),
+                    }
+
+        report = self._audit_strict("robust", _Robust())
+        assert report.violations == []
+        assert "robust" in report.clean_engines
+
+    def test_strict_only_runs_when_requested(self):
+        """Default audit (strict=False) skips the malformed
+        probes -- a fragile engine still classifies as clean."""
+        clean_envelope = {
+            "status": "success", "data": {}, "meta": {},
+            "error": None,
+        }
+
+        class _Fragile:
+            def run(self, inp):
+                if not isinstance(inp.get("data"), dict):
+                    raise TypeError("data must be a dict")
+                return clean_envelope
+
+        from engines._output_schema_audit import (
+            audit_engine_output_schema,
+        )
+        from unittest.mock import patch
+        with patch(
+            "engines.registry.list_engines",
+            return_value=["fragile"],
+        ), patch(
+            "engines.registry.get_engine",
+            return_value=_Fragile(),
+        ):
+            # strict=False (default) -- fragile passes
+            report = audit_engine_output_schema()
+        assert report.violations == []
+        assert "fragile" in report.clean_engines
+
+    def test_strict_live_baseline_clean(self):
+        """W962-33 regression guard: every production engine
+        already passes the strict probe (no top-level except
+        gaps after W962-13/14)."""
+        from engines._output_schema_audit import (
+            audit_engine_output_schema,
+        )
+        report = audit_engine_output_schema(strict=True)
+        assert report.has_violations is False, (
+            f"strict violations: "
+            f"{[(v.engine, v.reason) for v in report.violations]}"
+        )
+
+
 # ─── CLI ──────────────────────────────────────────────────────
 
 

@@ -159,6 +159,21 @@ class ProfitabilityCalculatorEngine:
         # ---- Stage 7: Memory Writer (non-fatal) ----
         _write_result = write_profitability_result(profitability=profitability)
 
+        # Phase 7: optional ROI-tier tag apply. Opt-in via
+        # data.apply_roi_tags=True. Tags products at high/low
+        # ROI via SHOPIFY_UPDATE_PRODUCT.
+        tagged_roi: list[dict[str, Any]] = []
+        if bool(data.get("apply_roi_tags")):
+            try:
+                from .tag_applier import apply_roi_tags
+                tagged_roi = apply_roi_tags(profitability, products)
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "profitability_calculator: apply loop raised: %s",
+                    exc,
+                )
+
         # ---- Stage 8: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -166,6 +181,7 @@ class ProfitabilityCalculatorEngine:
             "status": "success",
             "data": {
                 "profitability": profitability,
+                "tagged_roi": tagged_roi,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,

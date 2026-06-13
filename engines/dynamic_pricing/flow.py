@@ -53,6 +53,22 @@ class DynamicPricingEngine:
         Returns:
             DynamicPricingOutput dict.
         """
+        # W962-54: top-level Pattern Q guard. Without this,
+        # malformed payloads like {data: {products: [1,2,3]}}
+        # (ints instead of dicts) escape the envelope when
+        # downstream `p.get(...)` raises AttributeError on
+        # non-dict elements. Mirrors fraud_detection /
+        # content_generation reference pattern.
+        try:
+            return self._run_inner(input_payload)
+        except Exception as exc:  # noqa: BLE001
+            return self._fail(
+                f"unhandled exception: {exc!s:.200}", 0.0,
+            )
+
+    def _run_inner(
+        self, input_payload: dict[str, Any],
+    ) -> dict[str, Any]:
         start = time.monotonic()
 
         # ---- Stage 0: Input validation (no mutation) ----

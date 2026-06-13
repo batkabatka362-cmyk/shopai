@@ -36,6 +36,11 @@ from typing import Any
 
 from utils.logger import get_logger
 
+from engines._agi_context import (
+    explain_thrash_block,
+    log_thrash_block,
+    should_block_thrashing_store,
+)
 from engines._writeback_recorder import record_writeback
 
 logger = get_logger("engines.affiliate.payer")
@@ -90,6 +95,43 @@ def pay_commissions(
                 "gift_card_id": "",
                 "code": "",
                 "error": "router_unavailable",
+            }
+            for c in commissions
+        ]
+
+    # Wave 922: thrash guardrail (system-level kill switch).
+    # Commission payouts mint REAL gift cards -- real money
+    # out the door. Refuse during thrash; partner gets paid
+    # later when the loop stabilizes.
+    try:
+        from core.context import get_active_store_id
+        active_store_id = get_active_store_id()
+    except Exception:  # noqa: BLE001
+        active_store_id = None
+    if should_block_thrashing_store(active_store_id):
+        reason = explain_thrash_block(active_store_id)
+        record_writeback(
+            engine="affiliate",
+            action_type="pay_commission",
+            capability="SHOPIFY_CREATE_GIFT_CARD",
+            params={"commission_count": len(commissions)},
+            success=False,
+            error=reason,
+        )
+        log_thrash_block(
+            engine="affiliate",
+            action_type="pay_commission",
+            capability="SHOPIFY_CREATE_GIFT_CARD",
+            store_id=active_store_id,
+        )
+        return [
+            {
+                "partner_id": str(c.get("partner_id", "")),
+                "paid": False,
+                "amount": _safe_float(c.get("commission_amount")),
+                "gift_card_id": "",
+                "code": "",
+                "error": reason,
             }
             for c in commissions
         ]
@@ -362,11 +404,25 @@ def _build_gift_card_params(
     currency: str,
 ) -> dict[str, Any]:
     """Build the SHOPIFY_CREATE_GIFT_CARD friendly call shape."""
-    amount = float(commission.get("commission_amount", 0.0))
+    # W962-71: use Decimal for the gift-card face value to
+    # avoid IEEE-754 binary drift on commission_amount =
+    # revenue * rate. Float ops upstream may have introduced
+    # tiny artifacts (e.g. 0.1+0.2 = 0.300000000000000004);
+    # quantizing in Decimal with ROUND_HALF_UP produces the
+    # cent value a human accountant expects.
+    from decimal import Decimal, ROUND_HALF_UP
+    raw_amount = commission.get("commission_amount", 0.0)
+    try:
+        amount_dec = Decimal(str(raw_amount)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP,
+        )
+    except (ValueError, ArithmeticError):
+        amount_dec = Decimal("0.00")
+    amount = float(amount_dec)
     period_sales = commission.get("period_sales", 0.0)
 
     params: dict[str, Any] = {
-        "initial_value": round(amount, 2),
+        "initial_value": amount,
         "currency": currency,
         "note": (
             f"{_NOTE_PREFIX}: ${period_sales} in sales × "

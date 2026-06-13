@@ -710,8 +710,18 @@ class ShopifyMarketingEventsAdapter(ShopifyBaseAdapter):
                     )
                 out[shopify] = n
 
-        spend = params.get("spend") or params.get("ad_spend") or params.get("adSpend")
-        if spend is not None:
+        # W962-11: sentinel-cascade so explicit `spend=0`
+        # (zero-spend organic event) survives instead of being
+        # dropped by `or` short-circuit. Pre-fix, the validator
+        # rejected zero-spend events with "no measurable
+        # engagement" even when sales were set.
+        _MISSING = object()
+        spend = params.get("spend", _MISSING)
+        if spend is _MISSING:
+            spend = params.get("ad_spend", _MISSING)
+        if spend is _MISSING:
+            spend = params.get("adSpend", _MISSING)
+        if spend is not _MISSING:
             out["adSpend"] = _money_input(spend, where="spend")
         sales = params.get("sales")
         if sales is not None:

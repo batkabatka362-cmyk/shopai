@@ -6,6 +6,7 @@ No flask/fastapi dependency — pure stdlib http.server.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any
@@ -19,6 +20,74 @@ from api.validation import (
 )
 
 logger = get_logger("api.server")
+
+
+def _sanitize_error(exc: Exception, max_len: int = 200) -> str:
+    """W962-61: scrub known secret patterns + truncate before
+    emitting an exception to clients.
+
+    Pre-fix `str(exc)` flowed into HTTP 500 responses verbatim,
+    potentially leaking:
+      - Shopify shpat_/shpss_ tokens via chained exceptions
+      - HTTPError response bodies that echoed client_id /
+        client_secret
+      - File system paths (incl. Windows username)
+      - Bearer tokens from Authorization headers
+
+    Rule of thumb: log the full string server-side, return a
+    sanitized + truncated version to the client.
+    """
+    import re
+    raw = str(exc) or type(exc).__name__
+    # Scrub Shopify access tokens
+    raw = re.sub(r"shp[ap]t_[A-Za-z0-9]+", "shpXt_REDACTED", raw)
+    raw = re.sub(r"shpss_[A-Za-z0-9]+", "shpss_REDACTED", raw)
+    # Scrub Bearer tokens
+    raw = re.sub(
+        r"Bearer\s+[A-Za-z0-9._-]+", "Bearer REDACTED", raw,
+    )
+    # Scrub generic api-key-like blobs (32+ char alnum)
+    raw = re.sub(
+        r"\b[A-Za-z0-9]{32,}\b", "REDACTED_KEY", raw,
+    )
+    # Scrub Windows home directory paths (PII: operator
+    # username)
+    raw = re.sub(
+        r"C:\\Users\\[^\\]+", r"C:\\Users\\<user>", raw,
+    )
+    return raw[:max_len]
+
+
+def _api_auth_ok(handler) -> bool:
+    """W962-50: operator token check for destructive POST.
+
+    Policy:
+      - SHOPAI_API_NO_AUTH=1 -> always allow.
+      - SHOPAI_API_TOKEN unset -> allow + warn (legacy
+        back-compat for local dev that ran the server before
+        the gate existed).
+      - Otherwise require Authorization: Bearer <token> OR
+        X-Api-Token header matching SHOPAI_API_TOKEN.
+    """
+    if os.environ.get("SHOPAI_API_NO_AUTH") == "1":
+        return True
+    expected = os.environ.get("SHOPAI_API_TOKEN", "")
+    if not expected:
+        logger.warning(
+            "SHOPAI_API_TOKEN not set; allowing unauthenticated "
+            "POST. Set SHOPAI_API_NO_AUTH=1 to silence this "
+            "warning, or set SHOPAI_API_TOKEN to require a "
+            "bearer token."
+        )
+        return True
+    auth_hdr = handler.headers.get("Authorization", "")
+    if auth_hdr.startswith("Bearer "):
+        if auth_hdr[len("Bearer "):].strip() == expected:
+            return True
+    api_tok = handler.headers.get("X-Api-Token", "")
+    if api_tok and api_tok.strip() == expected:
+        return True
+    return False
 
 # Approval action ids are minted by ``core.approval.queue.enqueue``
 # as ``appr_<ms-epoch>_<8-hex>``. The allowed character set is
@@ -142,6 +211,15 @@ class ShopAIHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+
+        # W962-50: auth gate. Webhook endpoints verify HMAC
+        # separately; non-webhook POST routes require the
+        # operator token unless explicitly disabled via
+        # SHOPAI_API_NO_AUTH=1.
+        if not path.startswith("/api/webhook"):
+            if not _api_auth_ok(self):
+                self._json_response(401, {"error": "unauthorized"})
+                return
 
         body = self._read_body()
         if body is None:
@@ -298,7 +376,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(200, payload)
         except Exception as exc:
             logger.warning("engine info failed: %s", exc)
-            self._json_response(500, {"error": str(exc)})
+            self._json_response(500, {"error": _sanitize_error(exc)})
 
     def _get_goal(self) -> None:
         """GET /api/goal — brain-stack goal state.
@@ -540,7 +618,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(200, exp.get_knowledge_summary())
         except Exception as exc:
             logger.warning("experience summary failed: %s", exc)
-            self._json_response(500, {"error": str(exc)})
+            self._json_response(500, {"error": _sanitize_error(exc)})
 
     def _list_webhooks(self) -> None:
         from core.webhooks import ShopifyWebhookHandler
@@ -605,7 +683,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             })
         except Exception as exc:
             logger.warning("list pending actions failed: %s", exc)
-            self._json_response(500, {"error": str(exc)})
+            self._json_response(500, {"error": _sanitize_error(exc)})
 
     def _pending_actions_stats(self) -> None:
         """GET /api/pending-actions/stats — counts per status."""
@@ -614,7 +692,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(200, get_approval_queue().stats())
         except Exception as exc:
             logger.warning("approval queue stats failed: %s", exc)
-            self._json_response(500, {"error": str(exc)})
+            self._json_response(500, {"error": _sanitize_error(exc)})
 
     def _list_recommendations(self) -> None:
         """GET /api/recommendations — orchestration-brain v1 surface.
@@ -662,7 +740,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(200, result.to_dict())
         except Exception as exc:
             logger.warning("recommendations failed: %s", exc)
-            self._json_response(500, {"error": str(exc)})
+            self._json_response(500, {"error": _sanitize_error(exc)})
 
     def _get_pending_action(self, action_id: str, _params: dict) -> None:
         """GET /api/pending-actions/<id> — fetch a single action.
@@ -878,7 +956,7 @@ class ShopAIHandler(BaseHTTPRequestHandler):
             self._json_response(200, result)
         except Exception as exc:
             logger.warning("store sync failed for %s: %s", store_id, exc)
-            self._json_response(500, {"error": str(exc)})
+            self._json_response(500, {"error": _sanitize_error(exc)})
 
     def _approve_pending_action(self, action_id: str, body: dict) -> None:
         """POST /api/pending-actions/<id>/approve — sign off on a pending action.
@@ -1234,8 +1312,26 @@ class ShopAIHandler(BaseHTTPRequestHandler):
     # --- Helpers ---
 
     def _read_body(self) -> dict | None:
+        # W962-40: cap body at 1 MB. Pre-fix self.rfile.read
+        # would allocate up to Content-Length bytes (untrusted
+        # client input) so an attacker could DoS the API server
+        # with Content-Length: 9999999999. Catch invalid
+        # Content-Length headers too -- pre-fix int() would
+        # raise ValueError on "abc" and propagate up.
+        MAX_BODY_BYTES = 1_048_576
         try:
             length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            self._json_response(
+                400, {"error": "invalid Content-Length"},
+            )
+            return None
+        if length > MAX_BODY_BYTES:
+            self._json_response(
+                413, {"error": "payload too large"},
+            )
+            return None
+        try:
             raw = self.rfile.read(length)
             # Stash the raw bytes so handlers that need them
             # (Shopify webhook HMAC verification) can read them

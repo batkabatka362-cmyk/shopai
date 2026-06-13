@@ -516,3 +516,60 @@ class TestQuarantineBanner:
         assert code == 0
         data = json.loads(out)
         assert data["quarantine_flags"] == []
+
+
+class TestDrillDownHint:
+    """Text view ends with a drill-down hint to
+    `engine pulse <engine> --history` so operators reading
+    the per-store activity table can immediately answer
+    'has this engine always behaved like this?'."""
+
+    def test_hint_renders_when_activity_present(self, cli):
+        rows = [
+            _row(id_="a1", store_id="store-a", status="executed"),
+        ]
+        with patch.object(
+            __import__("cli"), "_get_store_manager",
+            return_value=_fake_sm(["store-a"]),
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(rows=rows),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_fleet,
+                _ns(engine_name="loyalty"),
+            )
+        assert "Drill down: `shopai engine pulse loyalty --history`" in out
+
+    def test_hint_absent_in_json(self, cli):
+        rows = [
+            _row(id_="a1", store_id="store-a", status="executed"),
+        ]
+        with patch.object(
+            __import__("cli"), "_get_store_manager",
+            return_value=_fake_sm(["store-a"]),
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(rows=rows),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_fleet,
+                _ns(engine_name="loyalty", json=True),
+            )
+        assert "Drill down" not in out
+
+    def test_hint_absent_when_no_activity(self, cli):
+        """Quiet fleets stay quiet -- no hint when zero stores
+        recorded activity for the engine."""
+        with patch.object(
+            __import__("cli"), "_get_store_manager",
+            return_value=_fake_sm(["store-a"]),
+        ), patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_fleet,
+                _ns(engine_name="loyalty"),
+            )
+        assert "Drill down" not in out

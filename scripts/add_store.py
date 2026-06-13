@@ -38,7 +38,12 @@ def main():
     print("=" * 50)
     print()
     print("  URL:   {}".format(args.url))
-    print("  Token: {}...".format(args.token[:15]))
+    # W962-73: show only the prefix tag, not the random body.
+    # `args.token[:15]` for a `shpat_` token reveals 9 chars of
+    # secret which materially aids brute-force narrowing on a
+    # leaked stdout / CI log.
+    token_prefix = args.token.split("_", 1)[0] if "_" in args.token else "token"
+    print("  Token: {}_***".format(token_prefix))
     print("  Name:  {}".format(args.name or "(auto-detect)"))
     print("  Niche: {}".format(args.niche or "(general)"))
     print()

@@ -691,9 +691,9 @@ Engines that need real data return ``status="error"`` cleanly;
 they still emit the four-key envelope (engines/loyalty/flow.py
 is the canonical reference).
 
-## The seven institutional audits
+## The eight institutional audits
 
-The repo gates every PR on seven AST + runtime audits (each is a
+The repo gates every PR on eight AST + runtime audits (each is a
 standalone CLI command + a CI step + a section in
 ``shopai doctor`` + an entry in the consolidated ``shopai audit``):
 
@@ -706,6 +706,7 @@ standalone CLI command + a CI step + a section in
 | Pattern J | writes to learning singletons are test-guarded | AST |
 | Pattern Z | every writer module calls ``record_writeback`` | AST |
 | Pattern Q | every engine's ``run()`` returns the canonical envelope | runtime |
+| Wireup resolve | every Phase-7 wired engine has a resolvable ``apply_*`` flag (621f9f26) | runtime |
 
 When adding a new pattern, the convention is:
 
@@ -832,22 +833,50 @@ The pattern stabilised across the five wireups:
   (mint helpers, token derivation) lives in
   `engines/_recovery_codes.py`.
 
-Phase 7 (more engine writebacks) — **in progress**:
+Phase 7 (more engine writebacks) — **active, 26 wired
+engines**:
 Same pattern as Phase 6 applied to additional recommender
-engines. So far:
+engines. Verified each turn by
+``engines._writeback_audit.audit_writeback_coverage`` --
+the runtime check that scans engines/ for ``*_applier.py``,
+``*_minter.py``, ``*_payer.py`` writer files + ``data.get
+("apply_*")`` opt-in flags in flow.py.
 
-- PR #49 — `product_lifecycle` archives declining products
-  via `SHOPIFY_UPDATE_PRODUCT` (status=ARCHIVED). First
+Currently wired (26 / 135 = 19%):
+  affiliate, browse_recovery, bundle, cart_recovery,
+  catalog, churn_prediction, content_generation,
+  customer_segmentation, discount_strategy, dynamic_pricing,
+  email_marketing, fraud_detection, inventory,
+  landing_page, legal_document, loyalty, pricing,
+  product_lifecycle, product_optimization,
+  product_research, returns_management,
+  search_optimization, shipping_optimization, store_design,
+  tag_management, wholesale_b2b
+
+Notable wireups beyond Phase 6's original 5:
+- ``product_lifecycle`` archives declining products via
+  ``SHOPIFY_UPDATE_PRODUCT`` (status=ARCHIVED). First
   destructive writeback; needed stricter safety gates
-  (stage + velocity + confidence). Engine output now also
-  carries `confidence: float` so the writer can gate on it
-  without re-running the classifier.
+  (stage + velocity + confidence floor).
+- ``store_design`` integrates ``design_applier`` as opt-in
+  Phase 7 via ``data.apply_design + data.theme_id`` so
+  cycle/fleet-plan integration is possible (5b029d82).
+- ``churn_prediction`` mints retention codes for high-risk
+  customers when retention_action == win_back_offer. AGI
+  guardrail integrated; cost-tier -> percentage mapping
+  (10/15/20%). Added to GUARDRAIL_ENGINES roster
+  (c58ec58d + a6c3be2b).
+- ``product_research`` tags research-validated SKUs with
+  ``research:winner`` + ``research:<verdict>`` via
+  ``SHOPIFY_UPDATE_PRODUCT``. Pure tag-write -- no
+  guardrail integration since financial impact is zero
+  (afc31024).
 
-Future Phase 7 candidates: `inventory` (INVENTORY_ADJUST),
-`wholesale_b2b` (CREATE_DISCOUNT B2B-scoped),
-`product_optimization` (multi-modal UPDATE_PRODUCT),
-`search_optimization` (UPDATE_PRODUCT seo fields — needs the
-products adapter extended first).
+The next-candidate question: pick advisory engines with
+clear single-mutation outputs. Don't wire engines whose
+recommendations need operator review (e.g. personal_outreach
+in churn_prediction's retention_action set was skipped --
+not a discount, not auto-mintable).
 
 Phase 8 (autonomous-loop integration) — **complete**:
 Closes the gap that Phase 6 / 7 exposed. Engine writebacks
@@ -1370,3 +1399,1548 @@ behaviour preserved.
 6. The enum at `core/adapters/base.py:102-115`.
 7. Whatever specific Shopify doc page covers the GraphQL operation
    I'm about to wrap.
+
+## Ant-colony architecture (Wave 1-5, 2026-05-25)
+
+Tier 1-2b substrate built on top of the existing engine +
+adapter layers. The user's framing: "queen rules but doesn't
+micromanage workers." Single-step delegation only.
+
+```text
+Owner (CLI)
+   ↓
+Tier 1  Orchestrator     engines/_orchestrator.py
+   ↓
+Tier 2a Store Supervisor engines/_store_supervisor.py
+   ↓
+Tier 2b Cluster Captain  engines/_cluster_captain.py
+   ↓
+Tier 3  Engines (135)    engines/<name>/flow.py
+   ↓
+Tier 4  Adapters (130+)  core/adapters/shopify/<name>.py
+```
+
+Substrate modules:
+
+- `engines/_clusters.py` -- 10 concern clusters, 100 engines
+- `engines/_writeback_risk.py` -- additive/modification/destructive
+- `engines/_captain_signals.py` -- HeuristicSignalCollector
+- `engines/_cluster_memory.py` -- per-cluster outcome rollup
+- `engines/_outcome_window.py` -- time-windowed outcomes
+- `engines/_cluster_bus.py` -- horizontal event bus
+- `engines/_ai_strategies.py` -- AI plug-ins (opt-in via env-var)
+- `engines/_cluster_audit.py` -- 9th institutional gate
+
+CLI surfaces (operator end-to-end):
+
+```text
+shopai cycle verify              -- preflight check
+shopai cycle run [--yes]         -- empire entry point
+shopai cycle schedule            -- cron / systemd config
+shopai orchestrator plan         -- Tier 1 view
+shopai store supervise <id>      -- Tier 2a view
+shopai cluster list/show/plan    -- Tier 2b ops
+shopai cluster fire <name> --yes -- live captain dispatch
+shopai cluster bus               -- horizontal event inspector
+shopai cluster bus --emit X:Y    -- manual event injection
+shopai cluster-outcomes          -- time-windowed rollup
+```
+
+### Risk taxonomy (enforced at multiple layers)
+
+51 writers classified by `engines/_writeback_risk.py`:
+
+- **additive** (45): tags, mint codes, create entities. Auto-fire.
+- **modification** (6): pricing, dynamic_pricing, product_lifecycle,
+  product_optimization, content_generation, store_setup policy.
+  Invoked with `require_approval=True`; engine internally enqueues
+  to ApprovalQueue.
+- **destructive** (0): operator-only escalation. Never auto-fired.
+
+CI invariants:
+
+- additive >= 5x modification (architectural floor)
+- destructive <= 3 (hard ceiling)
+- every wired engine has a known risk class
+- every domain engine is mapped to a cluster
+
+### Strategy plug-ins (substrate-first proof)
+
+All decision logic is pluggable via Protocol-based strategies:
+
+- `OrchestratorStrategy`: Deterministic, AI
+- `CaptainStrategy`: Deterministic, SignalDriven, MemoryAware, AI
+- `SignalCollectorStrategy`: Heuristic (real Phase 8 data later)
+- `ClusterMemoryStrategy`: QueueOutcomeRollup (DataArch later)
+
+AI strategies (opt-in via `SHOPAI_AI_STRATEGY=1`):
+
+- Default deterministic baseline runs FIRST
+- LLM asked to REVIEW / REFINE (not author)
+- Validated against wired_members + risk taxonomy
+- Falls back to deterministic if LLM unavailable / invalid
+
+### Safety env-var gates (live-mode blast radius)
+
+- `SHOPAI_CYCLE_RUN_CONFIRM=1` for `cycle run --yes`
+- `SHOPAI_CLUSTER_FIRE_CONFIRM=1` for `cluster fire --yes`
+- `SHOPAI_TRY_WIREUP_ALL_CONFIRM=1` for `engine try-wireup --all --yes`
+- `SHOPAI_CLUSTER_BUS_CLEAR_CONFIRM=1` for `cluster bus --clear`
+
+### Horizontal collaboration
+
+`engines/_cluster_bus.py` provides:
+
+- `emit_event(emitter, topic, payload, store_id)` -- captain
+  auto-emits on non-zero signals
+- `subscribe_events(...)` -- filter by topic / emitter / store / window
+- `cross_cluster_signals(store_id, window_hours)` -- convert
+  recent events into next-cycle signals dict
+
+Topic -> consumer-cluster signal:
+
+```text
+high_roas_product   -> merchandising:high_roas_product_count
+churn_risk_detected -> retention:at_risk_count
+thin_margin_flagged -> pricing:thin_margin_count
+stockout_warning    -> fulfillment:stockout_imminent_count
+negative_review     -> quality:negative_review_count
+undercut_detected   -> pricing:undercut_count
+```
+
+Bus is observational + advisory. Captain CAN consume events
+via mapped signals, but doesn't HAVE to. Vertical authority
+unchanged.
+
+## Attribution AGI substrate (Waves 7-28, 2026-05-25 to 2026-05-26)
+
+Closes the autonomous loop's feedback cycle: Shopify orders
+-> per-cluster + per-engine revenue -> decision-time signal
+-> persistence -> regression detection -> bus feedback ->
+auto-quarantine -> release detection. 22 commits on top of
+the ant-colony foundation (a5559a0c -> c1cc42ae).
+
+### Substrate modules
+
+- ``engines/_revenue_attribution.py`` -- Wave 7+9. Joins
+  Shopify orders to clusters/engines via the tag catalog.
+  ``SharedCreditStrategy`` splits each order's revenue equally
+  across matched clusters/engines. ``AttributionReport``
+  carries per_cluster + per_engine. ``EngineAttribution``
+  + ``ClusterAttribution`` dataclasses with ``confidence``
+  buckets (none / low / medium / high based on
+  attributed_orders).
+
+- ``engines/_revenue_aware_orchestrator.py`` -- Wave 8.
+  ``RevenueAwareOrchestratorStrategy`` wraps any base strategy
+  and re-ranks cluster_focus by attributed revenue desc.
+  Threshold-gated ($10 default) to filter noise. Env-gated
+  via ``SHOPAI_REVENUE_AWARE_ORCHESTRATOR=1``.
+
+- ``engines/_revenue_aware_captain.py`` -- Wave 10. Same
+  pattern but for member selection within a cluster.
+  Optional drop-zero pruning when other members are earning
+  (with cold-start safety net). Env-gated via
+  ``SHOPAI_REVENUE_AWARE_CAPTAIN=1``.
+
+- ``engines/_attribution_snapshot.py`` -- Wave 11+14. JSON
+  persistence at ``data/attribution_snapshots.json`` (bounded
+  to 200 entries). Per-cycle + per-store. Pattern J guard for
+  tests. ``record_snapshot``, ``recent_snapshots``,
+  ``last_snapshot``, ``attribution_trend``,
+  ``stores_with_snapshots``, ``fleet_attribution_rollup``.
+
+- ``engines/_attribution_delta.py`` -- Wave 12+13. Diffs two
+  snapshots. ``ClusterDelta`` + ``EngineDelta`` with direction
+  property (up/down/new/dropped/flat). ``RegressionAlert``
+  fires when revenue drops >= 25% AND both sides had >= 3
+  attributed_orders. ``propagate_alerts_to_bus`` emits one
+  ``revenue_regression`` event per alert -- next cycle's
+  captain consumes via the bus's standard
+  ``cross_cluster_signals`` pipeline.
+
+- ``engines/_revenue_quarantine.py`` -- Wave 21+27. When an
+  engine appears in regression alerts across N consecutive
+  cycles, auto-add to ``quarantine.alert_paused`` (env-gated
+  ``SHOPAI_AUTO_QUARANTINE_FROM_REVENUE=1``). Symmetric
+  ``find_revenue_release_candidates()`` lists paused engines
+  that have been quiet long enough to safely release.
+
+### CLI surfaces added
+
+- ``shopai cycle attribution [--by cluster|engine]
+  [--window-hours N] [--store X]`` -- current snapshot view.
+- ``shopai cycle attribution-history [--store X] [--limit N]``
+  -- trend across recent cycles.
+- ``shopai cycle attribution-delta [--store X]
+  [--regression-pct N] [--min-orders N]`` -- cycle-over-
+  cycle diff with regression alerts.
+- ``shopai cycle revenue-fleet`` -- cross-store empire
+  rollup, sorted by attributed revenue desc.
+- ``shopai cluster list --with-attribution`` -- adds ATTR$
+  + revenue_verdict columns to the cluster overview.
+- ``shopai cluster show <name>`` -- now includes
+  ``Revenue (7d)`` section with top-5 earning engines.
+- ``shopai engine pulse <name>`` -- shows per-engine
+  attribution + cluster.
+- ``shopai approvals quarantine --revenue-streaks`` --
+  per-engine consecutive-cycle regression streaks.
+- ``shopai approvals quarantine --apply-revenue-bridge`` --
+  manually fire the auto-quarantine bridge.
+- ``shopai approvals quarantine --revenue-release-candidates``
+  -- engines safe to unpause.
+- ``shopai cycle status`` -- new ``Cycle-over-cycle delta``
+  block surfaces regressions inline.
+- ``shopai daily-brief`` -- new ``Revenue attribution (AGI,
+  7d)`` block surfaces the AGI-loop earnings rollup.
+- ``shopai world-model show <store>`` -- new
+  ``Revenue attribution:`` section per store.
+- ``shopai world-model fleet`` -- new ``ATTR$`` column.
+- ``shopai ai-strategy status`` -- surfaces revenue-aware
+  orchestrator + captain env state.
+
+### Wiring into ``cycle run --yes``
+
+Every live cycle now:
+
+  1. Fetches recent orders + builds attribution report.
+  2. Records a fleet-wide snapshot + one per active store.
+  3. Computes the latest delta (fleet + per-store).
+  4. Propagates regression alerts onto the cluster bus (fleet
+     + per-store).
+  5. Invokes ``maybe_auto_quarantine_from_revenue`` (fleet +
+     per-store).
+
+All steps best-effort -- failure logs at debug but does not
+break the cycle. Pattern J guards mean unit tests don't
+pollute snapshots / state.
+
+### AI strategy integration
+
+- ``AICaptainStrategy`` prompt context now includes per-engine
+  attribution scoped to wired_members (Wave 17).
+- ``AIOrchestratorStrategy`` prompt context includes per-store
+  top_clusters with attribution (Wave 24).
+
+Both fall back to deterministic behaviour when attribution
+data is unavailable -- LLM still works, just less informed.
+
+### New ClusterHealth signal (Wave 18)
+
+``ClusterHealth.revenue_verdict`` returns one of:
+  - ``earning`` -- attributed_revenue >= $10
+  - ``flat`` -- attributed but below threshold
+  - ``declining`` -- recent delta carries an alert against this
+    cluster (set via ``_force_declining`` flag from
+    ``enrich_with_attribution``)
+  - ``unknown`` -- no attribution_orders yet
+
+``MemoryAwareCaptainStrategy`` escalates verdict by one tier
+when ``revenue_verdict == "declining"`` (parallel to the
+``recent_regression_count`` bus signal path; never
+double-stacks).
+
+### Patterns introduced
+
+- **Pattern Z' (revenue substrate)**: every layer that
+  consumes attribution data falls back to deterministic
+  behaviour when snapshots/deltas are unavailable. Cold-start
+  empires don't crash; they just operate without the
+  revenue-driven heuristics until data accumulates.
+
+- **Pattern J extends to attribution snapshots**:
+  ``engines/_attribution_snapshot.record_snapshot`` and
+  ``engines/_revenue_quarantine.maybe_auto_quarantine_from_revenue``
+  short-circuit under pytest. Tests exercising the write
+  paths install ``_is_test_environment`` patches to lift the
+  guard.
+
+### Cycle-history determinism fix (Wave 19)
+
+``engines/_cycle_history.record_cycle_run`` adds a
+process-monotonic ``_next_seq()`` to ``run_id`` after the ns
+timestamp. On Windows ``time.time_ns()`` granularity is ~15ms
+so back-to-back records share timestamps; the sequence breaks
+the tie deterministically. Test ``test_last_run`` was flaky
+before this fix.
+
+### Tests
+
+355 tests across the attribution + ant-colony + AI + world-
+model + daily-brief suites. All deterministic on Windows
+(verified by running the full suite twice back-to-back).
+
+## Operational readiness substrate (Waves 47-57, 2026-05-26+)
+
+After the attribution stack (Wave 7-36) and end-to-end
+validation (Wave 37-46), Wave 47-57 ships the layer ShopAI
+needs to actually go LIVE with real-money operation. 11 more
+substrate pieces:
+
+### Wave 47 -- per-store spend cap + auto-pause bridge
+- ``engines/_spend_cap.py``: SpendRollup aggregates
+  ``metrics.cost`` / ``metrics.ad_spend`` /
+  ``metrics.discount_value`` from approval-queue outcomes.
+  Per-store + fleet. Daily + weekly caps via env
+  (``SHOPAI_SPEND_CAP_DAILY_USD`` /
+  ``SHOPAI_SPEND_CAP_WEEKLY_USD``).
+- Auto-pause bridge (``SHOPAI_AUTO_PAUSE_ON_OVERSPEND=1``)
+  adds 13 spend-class engines to
+  ``quarantine.alert_paused`` when a cap is breached. Pattern
+  J guard preserved.
+- ``cycle run --yes`` fires the bridge post-cycle (alongside
+  the revenue-quarantine bridge from Wave 21+22).
+- CLI: ``shopai approvals quarantine --spend-status``.
+
+### Wave 48 -- ``shopai empire`` unified dashboard
+- One-screen aggregator: last cycle, revenue (7d + delta),
+  spend vs cap, approvals, cluster health, engine alerts.
+- Marker badges + drill-down hints. Operator goes from
+  ``daily-brief`` + ``cycle status`` + ``cycle revenue-fleet``
+  + ``cycle attribution-delta`` + ``approvals quarantine
+  --spend-status`` + ``engine pulse --fleet`` (6 commands)
+  to ``shopai empire`` (1 command).
+
+### Wave 49 -- AI approval pre-vet (LLM consultant)
+- ``engines/_approval_prevet.py``: deterministic heuristic
+  (always) + LLM consultation (opt-in via
+  ``SHOPAI_AI_PREVET=1``). Same consultant pattern as Wave
+  17+34+35 (deterministic baseline -> LLM may REFINE ->
+  fallback on invalid response).
+- Heuristic rules: destructive=hold; additive + >=80% pos
+  history (n>=3) -> approve; <=30% pos history -> reject.
+- CLI: ``shopai approvals prevet [--engine X]``. Pairs with
+  the existing ``approve-all --min-confidence``.
+
+### Wave 50 -- per-engine ROAS report
+- ``engines/_roas_report.py``: substrate join. Spend from
+  Wave 47 + per-engine attribution from Wave 9 ->
+  ``attributed_revenue / total_spend`` per engine. Verdict
+  bands: strong (>=2x), break_even (>=1x), negative,
+  no_data (spend exists but attribution lags).
+- CLI: ``shopai roas [--window-hours N] [--store X]``.
+- Honest scope note: full ad-spend write-optimizer needs
+  Meta/Google Ads adapter capability-wireup. Wave 50 ships
+  the READ side; Wave 51 fixes adapter registration.
+
+### Wave 51 -- ads adapter bootstrap (Meta Ads now routable)
+- ``core/adapters/ads/bootstrap.py``: was missing. Meta Ads
+  adapter had capability dispatch + HTTP plumbing, but no
+  bootstrap.py meant SmartRouter never registered it.
+- Generalized ``_maybe_bootstrap_secondary_adapters()`` in
+  cli.py main() calls ads / email / search / shipping / llm
+  bootstraps once at startup.
+- Defensive bug fix: ``registry or get_registry()`` falls
+  back to singleton when an empty registry is passed
+  (empty registry is falsy). Wave 51 fixed it in ads/
+  bootstrap.py; Wave 56 propagated to all 17 other
+  bootstrap files + router.py.
+
+### Wave 52 -- ``shopai webhook receive`` CLI surface
+- ``core/feedback/webhook_bridge.WebhookFeedbackBridge``
+  already existed. Wave 52 added the CLI receiver:
+  ``shopai webhook receive [--topic X --payload-json JSON]
+  [--from-stdin]``. Bridge consumes the event, tags it to
+  the engine that triggered it, feeds LearningLoop.
+
+### Wave 53 -- ``shopai notify check`` external fan-out
+- ``engines/_notify.py``: scans 4 alert classes (stale_cycle,
+  revenue_regression, spend_breach, engine_paused) + POSTs
+  to ``SHOPAI_NOTIFY_WEBHOOK_URL``. Per-kind cooldown
+  (default 1h). Dry-run mode for testing.
+
+### Wave 54 -- cycle schedule emits notify-check companion
+- ``shopai cycle schedule`` now prints a 15-min cron line
+  for ``notify check`` alongside the hourly cycle. Operator
+  scheduling cycle gets push alerts automatically.
+
+### Wave 55 -- ``shopai go-live`` pre-flight gate
+- ``engines/_go_live_check.py``: 8 checks
+  (shopify_credentials, wired_engines,
+  institutional_audits, cycle_history, spend_cap,
+  revenue_quarantine, notify_webhook, ai_strategy).
+- Returns ``ready_to_go_live`` verdict when no fails. Warns
+  are advisory.
+- Operator's single command for "am I ready to flip cron
+  on?".
+
+### Wave 56 -- registry-truthy bug fix (defensive cleanup)
+- 18 files: 17 bootstraps + router.py. ``registry or
+  get_registry()`` -> ``registry if registry is not None
+  else get_registry()``. Behaviour-equivalent in production
+  (callers pass None); test isolation now works correctly.
+
+### Wave 57 -- webhook HMAC verification (security gate)
+- ``core/feedback/webhook_security.py``: HMAC-SHA256 base64
+  verify with constant-time compare. Spoofed events get
+  rejected at the CLI layer.
+- ``shopai webhook receive --hmac-header X --require-hmac``
+  + ``SHOPAI_WEBHOOK_SECRET`` env. Production posture.
+
+### Going-live operator flow
+
+After Wave 47-57 the operator's path from "credentials
+configured" to "earning" is:
+
+```bash
+shopai go-live                          # see the punch list
+export SHOPAI_NOTIFY_WEBHOOK_URL=...    # close warns
+export SHOPAI_WEBHOOK_SECRET=...
+export SHOPAI_SPEND_CAP_DAILY_USD=50
+export SHOPAI_AUTO_PAUSE_ON_OVERSPEND=1
+shopai cycle schedule                    # install cron + notify-check
+                                          # AGI merchant runs
+```
+
+## Empire-scale throughput substrate (Waves 60-69, 2026-05-27)
+
+At 20 stores × 12 engines/cycle × 24 cycles/day = 5,760
+approvable actions/day. Operator drowns without
+prioritization. Wave 60-69 ships the throughput layer that
+makes empire scale tractable.
+
+### Wave 60 -- approval priority score
+- ``engines/_approval_priority.py``: PriorityScore with 5
+  weighted components: risk_class (30%), spend stake (25%),
+  inverse ROAS (20%), regression flag (15%), inverse
+  confidence (10%). Recommendation bands urgent (>=0.7) /
+  normal (0.4-0.7) / auto-ok (<0.4).
+
+### Wave 61 -- approvals pending --sort priority
+- ``shopai approvals pending --sort priority`` reorders the
+  list by score desc + renders marker badge + top-2
+  components inline.
+
+### Wave 62 -- approvals digest
+- ``shopai approvals digest [--top N]``: top-N priority
+  pending + AI pre-vet (Wave 49) inline. Replaces 5+
+  morning commands.
+
+### Wave 63 -- SLA tracking
+- ``engines/_approval_sla.py``: SLA bands (on_time / aging
+  / breached) configurable via SHOPAI_APPROVAL_SLA_*_HOURS.
+- ``shopai approvals sla`` operator view.
+
+### Wave 64 -- per-engine velocity
+- ``engines/_approval_velocity.py``: per-engine proposed /
+  approved / rejected / latency / rejection rate. Identifies
+  bottlenecks (one engine flooding queue) + distrust signals
+  (>= 30% rejection rate gets [BAD] marker).
+- ``shopai approvals velocity [--window-hours N]``.
+
+### Wave 65 -- batch-review with AI consensus
+- ``shopai approvals batch-review [--auto-approve-ok]
+  [--yes]``: top N + AI pre-vet, identifies actions where
+  priority=auto-ok AND AI rec=approve as auto-approve
+  candidates. --yes commits in bulk with
+  decided_by=batch_review. Cron-friendly.
+
+### Wave 66 -- consolidation + tests
+- 47 new tests across the 3 substrate modules. 139 tests
+  green across operational + empire-scale + attribution.
+
+### Wave 67 -- empire summarizer
+- ``engines/_empire_summarizer.py``: one-paragraph empire
+  summary. Deterministic baseline ALWAYS runs; LLM may
+  REFINE when SHOPAI_AI_STRATEGY=1. Same consultant pattern
+  as Wave 17/24/34/35/49.
+- ``shopai empire --summarize [--json]``.
+
+### Wave 68 -- notify includes summary
+- ``SHOPAI_NOTIFY_INCLUDE_SUMMARY=1`` attaches the empire
+  summary paragraph to the notify webhook payload. Slack
+  message becomes one-shot: alerts + 1-paragraph context.
+
+### Wave 69 -- per-store summary
+- ``summarize_empire(store_id=...)`` scopes per-store
+  attribution / spend / alerts / cycle history.
+- ``shopai empire --summarize --store X``.
+
+### Operator's empire-scale workflow
+
+```bash
+# Morning (5-min standup)
+shopai empire --summarize             # one paragraph, 5s scan
+# If "Issues needing attention" surfaces:
+shopai empire                          # full dashboard
+shopai approvals digest                # top-10 + AI pre-vet
+shopai approvals batch-review --auto-approve-ok --yes
+                                      # bulk approve consensus
+shopai approvals sla                   # aging/breached?
+shopai approvals velocity              # bottleneck engine?
+
+# Drill per-store
+shopai empire --summarize --store store-7
+shopai world-model show store-7
+```
+
+5 commands replace what was 15+. Linear operator effort
+even as stores grow linearly.
+
+### Tests
+
+200+ tests across operational + empire-scale + attribution +
+ant-colony stacks. All deterministic on Windows.
+
+## Niche-aware substrate (Waves 71-77, 2026-05-27)
+
+Wave 47-70 shipped operational readiness + empire-scale
+throughput. Wave 71-77 makes the substrate AWARE: cross-store
+opportunities surface automatically + each store's orchestration
+adapts to its niche.
+
+### Wave 71 -- ``shopai transfer scan``
+
+- ``engines/_transfer_scanner.py``: walks every store pair,
+  finds (engine, action_type, capability) tuples that
+  succeeded on source AND haven't been tried on target.
+- Score: ``positive_outcomes * log10(revenue + 10)``. Min
+  positive threshold = 2 (configurable). Top-k limit.
+- ``shopai transfer scan [--top N] [--min-positive N]``.
+- Replaces 380 manual ``transfer suggest`` calls for 20-store
+  empire (n*(n-1) pairs at 20 stores).
+- Two-pass algorithm: aggregate per-tuple WITHOUT min filter
+  first, then filter on tuple totals. (Initial single-pass
+  bug filtered per-action; 3 actions of 1 outcome each had
+  tuple total = 3 but each failed min=2.)
+
+### Wave 72 -- transfer candidates in empire dashboard
+
+- ``shopai empire`` shows transfer candidate count inline +
+  drill hint. JSON envelope gains "transfers" key.
+- Empire summarizer's deterministic text appends
+  "N cross-store transfer candidate(s) (top: ENGINE) --
+  run shopai transfer scan to drill" when count > 0.
+
+### Wave 73 -- niche-aware orchestrator
+
+- ``engines/_niche_priority.py``: 5 niches (beauty / fashion
+  / home / tech / food) each map to ordered cluster
+  preference. ``merge_with_base(base_focus, niche)`` puts
+  niche clusters FIRST then base, dedupe-preserving.
+- ``DeterministicOrchestratorStrategy`` reads
+  ``world_model.store.niche`` + applies ``_merge_niche()``
+  to every lifecycle priority (launching / growing / mature
+  / at_risk). Signals carry ``"niche": niche`` for
+  downstream consumers.
+- Per-niche cluster preferences:
+  - beauty: merchandising -> content -> retention
+  - fashion: merchandising -> content -> acquisition
+  - home: quality -> merchandising -> retention
+  - tech: quality -> pricing -> merchandising
+  - food: fulfillment -> retention -> pricing
+  - general / empty: no preference (use base unchanged)
+
+### Wave 74 -- ``shopai niche`` discovery CLI
+
+- ``shopai niche`` -- list 5 supported niches + top-3 clusters
+- ``shopai niche --show beauty`` -- full priority for one
+- ``shopai niche --by-store`` -- which stores tagged with what
+
+### Wave 75 -- AI prompts include niche
+
+- ``AICaptainStrategy``: reads niche from ``signals["niche"]``
+  (orchestrator threads it). System prompt nudge: "Niche
+  affects engine preference -- beauty stores favour loyalty
+  over generic outreach; tech stores favour
+  review_management".
+- ``AIOrchestratorStrategy``: reads via
+  ``_store_niche(store_id)``. System prompt nudge: "Niche
+  affects pacing -- beauty/fashion stores ramp faster than
+  tech/home".
+
+### Wave 76 -- go-live warns on untagged niches
+
+- ``engines/_go_live_check._check_store_niches()`` flags
+  stores with empty or "general" niche. Warn (not fail) --
+  niche is optional but recommended.
+- Brings ``run_go_live_check()`` to 9 checks (was 8).
+- Operator sees ``[WRN] store_niches  2 store(s) untagged:
+  test, ts0efe-ih`` with fix hint inline.
+
+### Wave 77 -- ``shopai niche --set STORE NICHE`` in-place update
+
+- ``StoreManager.update_store_niche(store_id, niche)`` --
+  raw SQL UPDATE; preserves credentials + history. Previously
+  the operator had to remove + re-add, losing OAuth state.
+- CLI validates niche against the supported set + "general";
+  rejects with friendly error listing allowed values.
+- Confirms with new top-3 cluster priority preview.
+
+### Operator's niche-aware workflow
+
+```bash
+# Discovery + tagging
+shopai niche                       # see 5 niches
+shopai niche --show beauty         # drill one niche
+shopai niche --by-store            # current tags
+shopai niche --set store-7 beauty  # retag a store
+shopai go-live                     # warns if any untagged
+
+# Empire view (niche-aware downstream)
+shopai empire --summarize --store store-7
+shopai cycle run                   # orchestrator + captain
+                                    # AI prompts include niche
+shopai transfer scan               # cross-store winners
+```
+
+### Why this compounds with prior waves
+
+Wave 7-36 captured per-cluster + per-engine revenue. Wave 73
+makes the orchestrator USE niche-bias on top of revenue-bias
+(Wave 8): a beauty store's cluster_focus is ``[merchandising,
+content, retention, acquisition, pricing, quality]`` -- niche
+first, then base. Wave 8's revenue-aware wrapper can still
+re-rank within this list if attribution data exists. Same
+deterministic ant-colony substrate; smarter input.
+
+### Tests
+
+- ``test_niche_priority.py`` -- 14 tests covering
+  niche_cluster_focus + merge_with_base semantics
+- ``test_transfer_scanner.py`` -- 10 tests on scoring +
+  scan algorithm
+- ``test_go_live_check.py`` -- 2 new tests for niche check
+
+77 substrate waves total. 463 commits ahead of main.
+
+## Onboarding wizard (Waves 92-96, 2026-05-27)
+
+ShopAI's North Star: "single command from credentials
+configured to launchable + earning." Substrate had been in
+place for months (Wave 47-91: launch_orchestrator, niche
+detector, go-live, cycle schedule) but no SINGLE command
+chained them. Operator adding a new store still ran 6+
+commands manually. Wave 92-96 closes the gap.
+
+### Module
+
+``engines/store_setup/onboarding_wizard.py`` -- thin
+orchestrator that delegates each stage to existing
+substrate. Each stage carries
+``{name, status, detail, data}`` so the CLI text + JSON
+surfaces stay machine-readable.
+
+### 9-stage chain
+
+```text
+1. register        -- StoreManager.add_store
+2. verify_creds    -- sm.test_connection probe (Wave 93)
+3. sync            -- SyncService.sync_store first pull
+4. niche_detect    -- Wave 83 keyword classifier; auto-applies
+                       HIGH confidence only
+5. launch          -- launch_orchestrator.launch_store
+                       (policies + pages + discount + collections)
+6. verify_launch   -- launch_audit.audit_store (Wave 94)
+                       read-only 11-gate audit
+7. relaunch_retry  -- auto-rerun launch + re-audit when
+                       launch_closeable_gaps > 0 (Wave 95)
+8. go_live         -- _go_live_check.run_go_live_check
+9. schedule        -- platform-aware cron / schtasks (Wave 96)
+```
+
+### Failure semantics
+
+- ``register fail`` -> chain aborts, verdict=failed
+- ``verify_creds fail`` -> network-dependent stages SKIP
+  (sync / niche_detect / launch / verify_launch /
+  relaunch_retry); go_live + schedule still run; verdict=failed
+- everything else is best-effort -- stages mark warn, chain
+  continues to surface a complete punch list
+
+### Verdicts
+
+- ``ready``                -- every stage success
+- ``ready_with_warnings``  -- some warns; operator review
+- ``failed``               -- chain aborted on register
+- ``dry_run``              -- preview only (no writes)
+
+### Retry semantics (Wave 95)
+
+When verify_launch warned AND launch_closeable_gaps > 0,
+``relaunch_retry`` runs ``launch_store`` once + re-audits.
+On full closure, the upstream verify_launch stage is
+**upgraded** from warn -> success since post-retry state
+is clean. Bounded retry; no infinite loop. Manual_admin
+gaps are operator-only so retry skips when only those
+remain.
+
+### Platform schedule (Wave 96)
+
+``_platform_schedule_template()`` returns the right
+template per ``sys.platform``:
+
+  - ``win32``         -> windows-task (schtasks ONHOURLY)
+  - posix (linux/
+    darwin/bsd)       -> cron hourly line
+
+Schedule stage data carries both ``platform`` +
+``schedule_line``. ``cron_line`` retained as Wave 92
+backward-compat alias.
+
+### CLI
+
+```bash
+shopai onboard test_store test.myshopify.com --api-key X
+shopai onboard test_store test.myshopify.com --client-id A --client-secret B
+shopai onboard test_store test.myshopify.com --api-key X --niche beauty
+shopai onboard test_store test.myshopify.com --api-key X --dry-run
+shopai onboard test_store test.myshopify.com --api-key X --json
+```
+
+### Tests
+
+``tests/test_onboarding_wizard.py`` -- 29 tests covering
+validation / dry-run / per-stage success+failure paths +
+retry closure semantics + platform detection. Most tests
+mock downstream chain; a few exercise the real path which
+makes the suite ~2min.
+
+### Why this compounds
+
+The wizard is meta-substrate -- it doesn't add new
+capabilities, it CHAINS existing ones into a single user-
+facing flow. Every wave of substrate that came before
+(W7-91) becomes more valuable because the operator now has
+ONE entry point that exercises it all. The North Star
+mission ships.
+
+96 substrate waves total.
+
+## Customer support automation (Waves 101-105, 2026-05-27)
+
+Wave 47-100 covered launch + ops + niche + onboarding. Wave
+101-105 ships customer support autonomy: refund issuance +
+activity log + auto-pause bridge + ticket-tag applier +
+empire surface.
+
+### Wave 101: refund_applier
+``engines/returns_management/refund_applier.py``
+Autonomous ``SHOPIFY_CREATE_REFUND`` behind 5 safety gates:
+
+  1. status=approved (engine-approved)
+  2. refund_amount > 0
+  3. refund_amount <= SHOPAI_REFUND_MAX_AMOUNT_USD (default $500)
+  4. fraud_risk < SHOPAI_REFUND_MAX_FRAUD_RISK (default 0.5)
+  5. parent_transaction found (looks up via SHOPIFY_GET_ORDER)
+
+8 typed skip reasons + record_writeback on success/failure.
+Opt-in via ``data.apply_refunds=True``.
+
+### Wave 102: refund-status
+
+``engines/returns_management/refund_log.py`` -- JSON-backed
+append log at ``data/refund_log.json`` (bounded 1000 entries).
+Pattern J guard.
+
+``engines/returns_management/refund_status.py`` -- aggregator
+(by_status / by_store / sample_skips).
+
+CLI: ``shopai refund-status [--window-hours N] [--store ID]``.
+
+### Wave 103: refund auto-pause bridge
+
+``engines/returns_management/refund_state.py`` -- JSON state
+file with paused/reason/auto_resume_after.
+
+``engines/returns_management/refund_health.py`` -- analyzer +
+bridge. analyze_refund_health returns healthy/degraded/critical
+verdict based on adapter_failed ratio.
+
+Env: ``SHOPAI_AUTO_PAUSE_REFUNDS_ON_FAILURE=1`` enables the
+bridge. ``SHOPAI_REFUND_PAUSE_FAILURE_RATIO`` (default 0.30)
+sets the critical threshold.
+
+CLI: ``shopai refund-health [--apply-bridge]``,
+``shopai refund-pause``, ``shopai refund-resume``.
+
+### Wave 104: customer_support engine wireup
+
+``engines/customer_support/ticket_tag_applier.py`` -- pushes
+classification-derived tags via SHOPIFY_TAG_CUSTOMER. Tag
+taxonomy:
+
+  - Priority high/urgent -> shopai-support-priority-{class}
+  - Sentiment negative -> shopai-support-sentiment-negative
+  - Category billing/product -> shopai-support-{class}
+
+Multi-ticket merge per customer; deterministic-sorted tag
+sets. Opt-in via ``data.apply_ticket_tags=True``.
+
+customer_support engine: advisory -> WIRED.
+
+### Wave 105: shopai support-status
+
+``engines/customer_support/support_status.py`` -- empire-wide
+aggregator combining refund + ticket-tag activity into a
+single verdict (healthy / quiet / degraded / paused).
+
+CLI: ``shopai support-status [--window-hours N] [--store ID]``.
+
+### Phase 11.A: Production wiring (Waves 106-109)
+
+W106 cycle hook for refund_health bridge.
+W107 daily-brief support block (one-liner when active or
+paused).
+W108 notify webhook adds refund_paused + refund_health_critical
+alert kinds.
+W109 this docs entry.
+
+109 substrate waves total. Customer support autonomy is now
+production-wired.
+
+## Marketing automation (Waves 110-116, 2026-05-28)
+
+Phase 11.B mirrors the customer-support pattern for ad-budget
+autonomy. Substrate: ad_spend_log (110) + budget_state +
+budget_health (111) + budget_applier (112) + marketing_status
+(113) + cycle hook + notify (114-115) + docs (116).
+
+### Wave 110: ``engines/roas_guardrails/ad_spend_log.py``
+JSON log at ``data/ad_spend_log.json`` bounded 1000 entries.
+Records every autonomous budget mutation: campaign_id /
+store_id / action / prior_budget / new_budget / reason /
+applied / status / error. Pattern J guard.
+
+### Wave 111: budget_state + budget_health
+
+``budget_state.py`` mirrors refund_state.py: JSON pause flag
+at ``data/budget_state.json``. APIs: pause/resume/is_paused/
+get_state with auto_resume_after deadline support.
+
+``budget_health.py`` analyzer + bridge. Env knobs:
+
+  SHOPAI_AUTO_PAUSE_BUDGET_ON_FAILURE=1
+  SHOPAI_BUDGET_WARN_FAILURE_RATIO=0.15
+  SHOPAI_BUDGET_PAUSE_FAILURE_RATIO=0.30
+  SHOPAI_BUDGET_HEALTH_MIN_SAMPLE=5
+  SHOPAI_BUDGET_AUTO_RESUME_HOURS=1.0
+
+### Wave 112: ``budget_applier.py``
+
+Autonomous ``ADS_UPDATE_BUDGET`` (action=cut) +
+``ADS_PAUSE_CAMPAIGN`` (action=pause) behind:
+
+  - budget pause flag (Wave 111)
+  - SHOPAI_BUDGET_MAX_DELTA_USD (default $200 max delta per
+    mutation)
+  - actionable check (only cut / pause)
+
+Opt-in via ``data.apply_budget_changes=True``. Dual recording:
+record_writeback (Pattern Z) + record_ad_spend_event
+(Wave 110 log).
+
+### Wave 113: ``shopai marketing-status``
+
+``marketing_status.py`` aggregates 110 + 111 into one verdict
+(healthy / quiet / degraded / paused). Same shape as
+support-status.
+
+CLI: ``shopai marketing-status [--window-hours N] [--store ID]``.
+
+### Wave 114: cycle hook
+
+``cycle run --yes`` now also fires
+``maybe_auto_pause_budget(window_hours=24)`` post-cycle. Same
+env-gating + best-effort pattern as the refund bridge.
+
+### Wave 115: notify integration
+
+``_notify.collect_alerts`` adds:
+
+  - ``budget_paused`` (critical) when budget_state.paused
+  - ``budget_health_critical`` (critical) when verdict=critical
+    and not paused
+
+### CLI surfaces (Wave 113 family)
+
+  shopai marketing-status     # aggregator
+  shopai marketing-health     # verdict + --apply-bridge
+  shopai marketing-pause      # manual flag set
+  shopai marketing-resume     # clear flag
+
+### Pattern reusability
+
+Phase 11.A (refund) + Phase 11.B (budget) now share an
+identical substrate template:
+
+  *_log.py        -- bounded JSON activity log
+  *_state.py      -- JSON pause flag + auto_resume
+  *_health.py     -- analyzer (failure_ratio verdict) + bridge
+  *_applier.py    -- gated writer + dual recording
+  *_status.py     -- empire-wide aggregator + verdict + next_action
+
+Phase 11.C (Waves 117-120) will extract this into reusable
+``core/autonomy/*`` substrate so future autonomous loops
+(returns, fulfillment, customer outreach) don't re-implement
+the boilerplate.
+
+116 substrate waves total. Two autonomy domains
+(customer-support + marketing) production-wired in parallel.
+
+## Phase 11.C: Reusable autonomy substrate (Waves 117-120)
+
+Phase 11.A (refund) + Phase 11.B (budget) share an identical
+5-piece template. Phase 11.C extracts the boilerplate into
+``core/automation/*``:
+
+  - ``action_log.py`` (W117): generic JSON log
+  - ``pause_state.py`` (W118): generic pause flag + auto_resume
+  - ``health_analyzer.py`` (W119): generic analyzer + bridge
+    parameterized on env_prefix + DI'd recent_events_fn /
+    is_paused_fn / pause_fn
+
+W120: 19 tests prove the substrate behaves identically to
+the inlined refund/budget versions.
+
+Refund + budget modules NOT YET refactored. The generic
+pieces are the TEMPLATE for future domains (fulfillment /
+customer outreach / inventory restocking).
+
+## Phase 11.D: Defensive audits (Waves 121-122)
+
+Two new institutional audits join the roster (bringing it
+to 10):
+
+### Pattern N (W121) -- niche-merge preservation
+
+Wave 89 found AIOrchestratorStrategy dropped the niche merge
+silently. ``engines/_pattern_n_audit.py`` probes every
+OrchestratorStrategy with a beauty-niche store + asserts
+``cluster_focus[0:3]`` retains a beauty top cluster.
+
+CLI: ``shopai pattern-n-audit``.
+
+### Pattern O (W122) -- opt-in gate verification
+
+AST-scan asserting every wired engine's writer modules have
+a ``data.get("apply_X")`` reference in flow.py OR the writer
+itself. Caught a real Wave 112 gap (budget_applier ungated)
+which the W122 commit fixed.
+
+Exemption list for legitimate non-gated writers
+(launch_orchestrator family).
+
+CLI: ``shopai pattern-o-audit``.
+
+### Updated audit roster (10)
+
+K / OAuth / Y / I / J / Z / Q / Wireup-resolve / N / O
+
+### Phase 11 totals
+
+Substrate: 20 waves (W106-125)
+Tests: 134 new
+Commits: 472+ ahead of main
+Audits: 8 -> 10
+Autonomy domains: customer-support + marketing parallel
+
+125 substrate waves total. Phase 11 complete.
+
+## Phase 12: 4-domain autonomy parallel (Waves 126-155, 2026-05-28)
+
+Phase 11 extracted the autonomy template into
+``core/automation/*``. Phase 12 proves the template scales to 4
+parallel autonomy domains.
+
+### Phase 12.A: Fulfillment autonomy (W126-131)
+
+3rd autonomy domain. First to consume the W117-119 reusable
+substrate.
+
+``engines/fulfillment_autonomy/``:
+
+  - fulfillment_log.py (W126) -- wraps action_log
+  - fulfillment_state.py (W127) -- wraps pause_state
+  - fulfillment_health.py (W128) -- env_prefix=FULFILLMENT
+  - fulfillment_applier.py (W129) -- SHOPIFY_CREATE_FULFILLMENT
+    behind 5 safety gates
+  - fulfillment_status.py (W130) -- empire aggregator
+
+CLI: ``shopai fulfillment-{status,health,pause,resume}``.
+Cycle hook + notify integration (W130).
+
+### Phase 12.B: Inventory autonomy (W132-137)
+
+4th autonomy domain. Same template shape; 6 safety gates
+(adds exceeds_max_quantity + delta_too_small).
+
+``engines/inventory_autonomy/``: log + state + health +
+applier (SHOPIFY_SET_INVENTORY_QUANTITIES) + status.
+
+CLI: ``shopai inventory-{status,health,pause,resume}``.
+
+### Phase 12.D: Unified surface + Pattern P (W148-150)
+
+#### Wave 148: Pattern P -- substrate adoption audit
+
+``engines/_pattern_p_audit.py`` AST-scans every autonomy
+domain + asserts every ``_log.py / _state.py / _health.py``
+wrapper imports from ``core.automation.*``.
+
+Phase 11.A (returns_management) + Phase 11.B (roas_guardrails)
+are GRANDFATHERED -- they predate the template. New domains
+from W126+ must adopt.
+
+CLI: ``shopai pattern-p-audit``.
+
+Audit roster now 11: K / OAuth / Y / I / J / Z / Q /
+Wireup-resolve / N / O / P.
+
+#### Wave 149: ``shopai autonomy-status``
+
+``core/automation/autonomy_status.py`` rolls up the 4
+production autonomy domains into one verdict:
+
+  - customer_support (refund + ticket-tag)
+  - marketing (budget)
+  - fulfillment (route)
+  - inventory (reorder)
+
+Overall verdict = WORST domain
+(paused > degraded > quiet > healthy).
+overall_next_action prefixes the worst-domain's drill hint.
+
+CLI: ``shopai autonomy-status [--window-hours N] [--json]``.
+
+#### Wave 150: empire dashboard autonomy row
+
+``shopai empire`` now renders a one-line autonomy verdict +
+PAUSED-domain callout when any domain is degraded/paused or
+has activity. Quiet substrate stays quiet.
+
+### Template leverage
+
+Phase 11.A's refund stack: ~600 LOC inlined.
+Phase 12.A's fulfillment stack: ~420 LOC (using template).
+Phase 12.B's inventory stack: ~420 LOC.
+
+1/3 reduction per domain. Future domains (customer outreach,
+content_moderation, supplier_management, etc.) inherit ~30
+LOC per wrapper file instead of ~150.
+
+### Phase 12 test totals
+
+  Fulfillment: 10 tests
+  Inventory: 8 tests
+  Pattern P + autonomy_status: 6 tests
+  Total: 24 new tests
+
+### Phase 12 totals
+
+Substrate: 24 waves shipped (W126-149); W150-155 final
+consolidation pending.
+Commits ahead of main: 476+
+Audits: 10 -> 11 (added Pattern P)
+Production-wired autonomy domains: 4 parallel
+Lines saved vs inlined: ~360 LOC across the two new domains
+
+149 substrate waves total. 4-domain autonomy parallel,
+template-validated.
+
+## Phase 13: Cross-domain autonomy integration (Waves 150-153, 2026-05-28)
+
+After Phase 12 shipped 4 production autonomy domains, Phase 13
+focuses on **observability + alert hygiene** across them.
+
+(Phase 13's original advisory→wired roll-out batch -- W138-147
+in earlier planning -- was deferred: many remaining advisory
+engines don't have clean Shopify-write targets, so forced
+conversions would ship low-quality tag-appliers. Better to
+ship valuable integration work than forced wire-ups.)
+
+### Wave 150 (already covered by Wave 12.D's empire row)
+
+empire dashboard autonomy one-liner. See Phase 12 section.
+
+### Wave 151: ``shopai autonomy-status --store STORE``
+
+The unified rollup now scopes to a single store. Threading
+the store_id through to each domain's status aggregator:
+
+  - get_support_status(store_id=...)
+  - get_marketing_status(store_id=...)
+  - get_fulfillment_status(store_id=...)
+  - get_inventory_status(store_id=...)
+
+CLI text view header switches from "fleet" to "store=<id>".
+JSON envelope gains store_id field.
+
+### Wave 152: daily-brief autonomy block
+
+Mirrors the Wave 107 support block. Renders a one-line
+autonomy rollup + the per-domain verdict slice (4 verdicts
+in slash-separated form):
+
+  Autonomy:     [BAD] paused  applied=0  domains=4 (paused/quiet/quiet/quiet)
+    *** PAUSED: customer_support ***
+
+Surfaces only when degraded/paused OR has activity. Quiet
+substrate stays silent.
+
+### Wave 153: notify autonomy coalesce
+
+Opt-in via ``SHOPAI_NOTIFY_AUTONOMY_COALESCE=1``. When set,
+``_notify.collect_alerts`` replaces multiple per-domain
+{refund,budget,fulfillment,inventory}_{paused,health_critical}
+alerts with a single ``autonomy_degraded`` rollup carrying:
+
+  - alert_count
+  - domains list (sorted unique)
+  - alert_kinds list
+
+Reduces alert fatigue when multiple domains degrade
+together. Operators wanting per-domain detail leave the
+env-var off; ones wanting empire-wide rollup set it.
+
+### Phase 13 in brief
+
+3 waves shipped (W151-153) + docs (W155). Phase 13.A focuses
+on cross-domain integration that improves operator
+experience without adding new domains. Future Phase 14
+candidates:
+
+  - 5th autonomy domain (customer outreach? review_response?)
+  - Live real-store end-to-end verification
+  - Pattern Q' (verify all autonomy domains produce identical
+    status report shape)
+  - Advisory→wired roll-out, but case-by-case after verifying
+    each engine produces per-entity classifications
+
+153 substrate waves total. Phase 13.A complete; 4 autonomy
+domains now have per-store filter + unified daily-brief
+visibility + opt-in alert coalescing.
+
+## Phase 14: 5th autonomy domain + Pattern Q' (Waves 154-160, 2026-05-28)
+
+### Phase 14.A: Discount cleanup autonomy (W154-159)
+
+5th autonomy domain. Closes real operator pain: discount codes
+(Wave 6+ minters + one-off promos + recovery codes) accumulate
+into 1000+ inactive codes over months.
+
+``engines/discount_cleanup_autonomy/``:
+
+  - cleanup_log.py (W154)
+  - cleanup_state.py (W155)
+  - cleanup_health.py (W156) env_prefix=DISCOUNT_CLEANUP
+  - cleanup_applier.py (W157) SHOPIFY_DEACTIVATE_CODE_DISCOUNT
+    behind 6 safety gates
+  - cleanup_status.py (W158) empire aggregator
+
+6 safety gates:
+
+  1. action='deactivate'
+  2. discount_id + code present
+  3. is_paused() False (W155 flag)
+  4. age_days >= SHOPAI_DISCOUNT_CLEANUP_MIN_AGE_DAYS (30)
+  5. deactivated_so_far < SHOPAI_DISCOUNT_CLEANUP_MAX_PER_RUN (50)
+  6. router + capability resolution
+
+Per-run cap prevents accidentally nuking 1000s of codes.
+
+CLI (W158):
+  shopai discount-cleanup-status / -health / -pause / -resume
+
+Production wiring (W159):
+  - cycle run --yes fires maybe_auto_pause_cleanup()
+  - notify check adds 2 new alert kinds
+  - autonomy-status rolls up 5 domains (was 4)
+
+### Phase 14.B: Pattern Q' (Wave 160)
+
+``engines/_pattern_qprime_audit.py`` -- runtime audit that
+each autonomy domain's per-domain ``_<domain>_summary()``
+function in ``core/automation/autonomy_status.py`` returns a
+canonical ``DomainSummary`` with all 7 fields:
+
+  name / verdict / paused / applied_count /
+  health_failure_ratio / next_action / reasons
+
+The per-domain CLI surfaces still use domain-specific report
+shapes (SupportStatusReport has refund_applied_count;
+MarketingStatusReport has applied_count). Pattern Q' verifies
+the BOUNDARY contract -- the autonomy-status rollup gets
+uniform DomainSummary instances regardless.
+
+CLI: ``shopai pattern-qprime-audit``.
+Live: 5/5 autonomy domains clean.
+
+### Institutional audit roster (12)
+
+K / OAuth / Y / I / J / Z / Q / Wireup-resolve /
+N (niche-merge) / O (opt-in gate) / P (autonomy substrate
+adoption) / Q' (autonomy DomainSummary shape).
+
+### Phase 14 test totals
+
+  Discount cleanup: 7 tests
+  Pattern Q': 5 tests
+  Plus 2 updates to test_autonomy_status (5-domain fixtures)
+  Total: 14 new tests
+
+160 substrate waves total. 5 production autonomy domains.
+12 institutional audits.
+
+## Phase 15-17: 200-wave milestone (Waves 174-194)
+
+### Phase 15: 6th autonomy domain order_followup (W174-180)
+
+`engines/order_followup_autonomy/` follows the 5-piece
+template. SHOPIFY_TAG_ORDER with CURATED 5-tag taxonomy
+(shopai-followup-{pending-review, thank-you-sent,
+needs-attention, delivery-confirmed, survey-sent}) prevents
+typos polluting Shopify admin.
+
+CLI: `shopai order-followup-{status,health,pause,resume}`.
+
+### Phase 16.A: Pattern S (W181-184)
+
+14th audit. Verifies every autonomy CLI command
+({domain}-status / -health / -pause / -resume) accepts
+--json via argparse introspection. Live: 26/26 commands clean.
+
+### Phase 16.B: Pattern T + autonomy-env (W185-188)
+
+15th audit + discovery surface.
+`engines/_pattern_t_audit.py` catalogs 37 env knobs across
+6 domains. `shopai autonomy-env [--set-only] [--domain X]`
+lists every knob.
+
+### Phase 17: Unified audit roster (W189-194)
+
+Extended pre-existing `_AUDIT_ORDER` + `_AUDIT_LABELS` +
+`_run_one_audit` to include the 7 Phase 11+ audits. `shopai
+audit` now runs all 16 gates in one command. Live: 15/16
+pass; 1 pre-existing cluster_topology fail unrelated to
+Phase 11-17 work.
+
+### Phase 11-17 substrate totals
+
+  Autonomy domains: 6 production-wired parallel
+  Institutional audits: 16 (was 9; +7 in Phase 11+)
+  Tests: 197 new across Phase 11-17
+  Template LOC saved: ~720 across 4 new domains
+  Commits ahead of main: 485+
+
+194 substrate waves total. North Star
+(credentials configured -> earning) shipped end-to-end.
+
+## Phase 18: 7th domain + Pattern U/V (Waves 195-210, 2026-05-28)
+
+### Phase 18.A: Product SEO autonomy (W195-202)
+
+7th autonomy domain. `engines/product_seo_autonomy/` uses
+the 5-piece template. SHOPIFY_UPDATE_PRODUCT with `seo.title`
+/ `seo.description` subfields behind 6 safety gates:
+
+  1. action='update_seo'
+  2. product_id + field + new_value present
+  3. is_paused() False
+  4. field in {meta_description, meta_title} (whitelist)
+  5. len(new_value) <= SHOPAI_PRODUCT_SEO_MAX_LENGTH (320)
+  6. router + capability resolution
+
+CLI: `shopai product-seo-{status,health,pause,resume}`.
+
+Bug fix during development: `field: str` attribute collided
+with `dataclasses.field` import; renamed to `seo_field`.
+
+### Phase 18.B: Pattern U + V audits (W203-210)
+
+Two new institutional audits round out wireup coverage:
+
+#### Pattern U (W203) -- cycle hook coverage
+
+AST-parses cli.py, extracts `_cmd_cycle_run` body, verifies
+every domain's `maybe_auto_pause_X` bridge symbol is
+referenced. Catches "forgot to wire Nth domain into cycle"
+class bug -- invisible at unit-test level (each domain's
+tests mock the bridge).
+
+CLI: `shopai pattern-u-audit`. Live: 7/7 clean.
+
+#### Pattern V (W207) -- notify alert registration
+
+AST-parses _notify.py, extracts `collect_alerts`, verifies
+every domain's 2 alert kinds ({domain}_paused +
+{domain}_health_critical) are referenced.
+
+CLI: `shopai pattern-v-audit`. Live: 7/7 domains, 14 kinds clean.
+
+### Audit roster: 18 institutional audits
+
+K / OAuth / Y / I / J / Z / Q / Wireup-resolve /
+cluster_topology / N / O / P / Q' / R / S / T / U / V
+
+`shopai audit` runs all 18. Live: 17/18 pass (1 pre-existing
+cluster_topology fail).
+
+### Phase 18 totals
+
+  Autonomy domains: 7 production-wired parallel
+  Audits: 16 -> 18 (+ U, V)
+  Tests: 16 new across Phase 18
+  Pattern T env knobs: 37 -> 43 (product_seo adds 6)
+  Commits ahead of main: 488+
+
+210 substrate waves total. 7 parallel autonomy domains
+production-wired. 18 institutional audits unified.
+
+## Phase 20-22: interface-contract audits + runtime smoke (W223-292)
+
+40+ wave consolidation that hardens the autonomy-domain template
+against silent breakage. After Phase 12-18 shipped 7 domains via
+the 5-piece template, Phase 20-22 locks down the canonical
+exports + adds a 360° operator surface + a runtime smoke.
+
+### Audit family (18 → 28 gates)
+
+| Audit | Wave | Verifies |
+|---|---|---|
+| Pattern W | W223 | env-prefix literal appears in each domain's health module |
+| Pattern X | W226 | `_<X>_summary` defined + invoked in autonomy_status.py |
+| Pattern Y' | W229 | all 5 template files exist per domain |
+| Pattern AC | W232 | `{prefix}-status/-health/-pause/-resume` registered in cli.py |
+| Pattern AD | W256 | `maybe_auto_pause_X` is a top-level FunctionDef in health |
+| Pattern AE | W261 | `is_paused` exported by state (FunctionDef/Assign/AnnAssign) |
+| Pattern AF | W269 | log exports `record_X` + `recent_X` + `log_size` |
+| Pattern AG | W273 | `analyze_X_health` exported by health module |
+| Pattern AH | W277 | `apply_X` is a top-level FunctionDef in applier |
+| Pattern AI | W286 | `get_X_status` is a top-level FunctionDef in status |
+
+AD/AH/AI are **strict** (only FunctionDef counts) because their
+callers do `from X import Y` -- assign-aliases don't survive that
+import shape reliably. AE/AF/AG are **lenient** (FunctionDef OR
+Assign OR AnnAssign) because the W117-119 template re-exports
+via Assign are intended.
+
+### Operator surfaces
+
+  - `shopai autonomy-doctor [--json]` -- W235 static 360 check
+    (verdict + env-knob coverage + wiring via U/V/W/Y')
+  - `shopai autonomy-smoke [--json]` -- W289 runtime exerciser
+    (imports + calls each domain's 5 entry points with empty
+    synthetic input)
+  - `shopai go-live` -- W245 `autonomy_substrate` check; FAIL
+    blocks go-live, WARN advisory
+  - `shopai daily-brief` / `shopai empire` -- W248 one-line
+    wiring block, silent in clean case
+  - `shopai cycle run --yes` -- W251 post-cycle wiring snapshot
+    inline + in JSON envelope
+
+### Adding domain 8: checklist
+
+When the next autonomy domain ships, the 5-piece template +
+audit catalog updates are:
+
+  1. Create `engines/<domain>_autonomy/`:
+     - `<prefix>_log.py` (wrap `core.automation.action_log`)
+     - `<prefix>_state.py` (wrap `core.automation.pause_state`)
+     - `<prefix>_health.py` (define `analyze_<prefix>_health` +
+       `maybe_auto_pause_<prefix>`)
+     - `<prefix>_applier.py` (define `apply_<prefix>`, gate on
+       `is_paused()`, call `record_writeback`)
+     - `<prefix>_status.py` (define `get_<prefix>_status`
+       returning a DomainSummary-compatible report)
+  2. Add `_<domain>_summary` function to
+     `core/automation/autonomy_status.py` + invoke it in
+     `get_autonomy_status()`'s domain list
+  3. Register `<prefix>-status/-health/-pause/-resume` subparsers
+     in cli.py + dispatch handlers
+  4. Wire `maybe_auto_pause_<prefix>` into `_cmd_cycle_run`
+     (Pattern U gate)
+  5. Add 2 alert kinds (`<prefix>_paused` +
+     `<prefix>_health_critical`) to `engines/_notify.py`
+     `collect_alerts` (Pattern V gate)
+  6. Update audit catalogs in 10 files:
+     - `_pattern_w_audit.py` -- add domain + prefix
+     - `_pattern_x_audit.py` -- add summary fn name
+     - `_pattern_yprime_audit.py` -- add 5 module paths
+     - `_pattern_ac_audit.py` -- add CLI prefix
+     - `_pattern_ad_audit.py` -- add bridge fn name
+     - `_pattern_ae_audit.py` -- add state module path
+     - `_pattern_af_audit.py` -- add log + record_X + recent_X
+     - `_pattern_ag_audit.py` -- add analyze fn name
+     - `_pattern_ah_audit.py` -- add apply fn name
+     - `_pattern_ai_audit.py` -- add status fn name
+  7. Update `core/automation/autonomy_smoke.py`'s `_DOMAINS`,
+     `_APPLY_NAMES`, `_APPLY_EMPTY_PAYLOAD`, `_LOG_MODULE_NAMES`,
+     `_STATUS_MODULE_NAMES`, `_ANALYZE_NAMES`
+  8. Update `core/automation/autonomy_doctor.py`'s
+     `_DOMAIN_NAME_ALIASES` if the autonomy_status name differs
+     from the substrate catalog key
+  9. Tests: each audit's test suite has a `test_all_7_domains`
+     -- bump to 8
+
+Running `shopai audit` should show all 28 gates pass after the
+wireup. `shopai autonomy-smoke` should show 8/8 ok. If anything
+breaks, the audit that caught it points at the exact missing
+hookup.
+
+### Phase 20-22 deliverables
+
+  Audit gates: 18 -> 28
+  Tests added: 200+ across new audits + doctor + smoke +
+                integration
+  Operator surfaces: 2 new (autonomy-doctor + autonomy-smoke)
+                     + 4 enriched (go-live, daily-brief, empire,
+                     cycle run)
+  Commits ahead of main: 506+
+
+## W963 Per-store + earning loop (W963-115..172, 2026-06-12..14)
+
+After Phase 35 the substrate could orchestrate but could not
+actually EARN. The W963 ramp closes that gap end-to-end:
+
+  Cred routing -> Cost tracking -> Quota/autopause -> P&L ->
+  Forecast -> Per-store dashboards -> External webhooks ->
+  Autonomous earning loop -> Adversarial review.
+
+### W963-115..142: Per-store substrate (28 commits)
+
+`active_store` thread-local + `with active_store(sid):` Pattern
+CD wrap at 3 entry points:
+  - core/autonomous/controller.py:_phase_analyze (W963-127)
+  - core/webhooks/__init__.py:_trigger_engine (W963-128)
+  - core/approval/executor.py:dispatcher call site (W963-133)
+
+Shopify base adapter `_resolve_credentials` reads from the
+thread-local + StoreManager + falls back to env (W963-115/117).
+
+Per-store substrate stack:
+  engines/per_store_costs/      -- JSONL append-only log
+  engines/per_store_quota/      -- budget cap + critical_stores()
+  engines/per_store_quota/autopause.py -- spend-class disarm
+                                          bridge (env-gated)
+  engines/per_store_pnl/        -- P&L snapshots + sort
+  engines/per_store_quota/forecast.py -- linear+EMA forecast
+
+Operator surfaces:
+  shopai cost / quota / pnl / forecast / store fleet
+
+Pattern CD audit (74th gate): AST scan asserting every
+engine.run callsite in strict files (cli.py, core/autonomous,
+core/webhooks, core/approval) is inside a `with active_store(...)`
+block OR explicitly exempt.
+
+### W963-143..155: External vendor webhook ramp (13 commits)
+
+`core/webhooks/external/` unified ingestion layer:
+
+  VendorHandler (per-vendor base) -> ExternalWebhookHandler
+  -> EVENT_ENGINE_MAP -> active_store(sid) wrap -> engine.run
+
+7 inbound vendor handlers + 1 outbound:
+  Gorgias (W963-145)    -- helpdesk tickets
+  AfterShip (W963-144)  -- shipment tracking
+  Stripe (W963-150)     -- chargebacks + payouts
+  Klaviyo (W963-151)    -- email engagement
+  Loox (W963-152)       -- photo review feedback
+  PayPal (W963-154)     -- alt-gateway payments
+  Klarna (W963-155)     -- BNPL events
+  GA4 (W963-146)        -- outbound analytics push
+
+30+ webhook topics per-store routed. Pattern CE audit (75th
+gate): every VendorHandler subclass in vendors/* must be:
+  - exported in vendors/__init__.py __all__
+  - exported in external/__init__.py __all__
+  - mapped to >= 1 EVENT_ENGINE_MAP key with prefix `<name>.`
+
+Outbound-only handlers opt out via `inbound = False` class
+attribute.
+
+### W963-156..172: Autonomous earning loop (17 commits)
+
+Closes the gap from "substrate orchestrates" to "products land
+on storefront with real prices + images, customer can buy".
+Surfaced by W963-156 live stress test against beauty store
+fkcq1i-0s.myshopify.com:
+
+  W963-156: cold-start gates degrade gracefully instead of
+            erroring (discount_strategy depth_calculator,
+            landing_page hydrator, content_generation hydrator,
+            writeback recorder store_id)
+  W963-157: 5 deprecated REST `price_rules.json` callsites
+            migrated to GraphQL via execution/_discount_compat.py
+  W963-158: autonomy-fire fire() groups payload by store_id +
+            wraps each group in active_store(sid). Pattern CD
+            extended to core/automation/autonomy_fire.py
+  W963-159: SHOPIFY_TAG_PRODUCT + SHOPIFY_UNTAG_PRODUCT
+            capability + ShopifyProductsAdapter._tag() helper.
+            Closes Phase 28 catalog_quality_autonomy latent
+            gap. Pattern F compliant
+  W963-160: SHOPIFY_GET_PRODUCT images fragment conflict
+            (split _PRODUCT_FIELDS_BASE + _PRODUCT_FIELDS +
+             _PRODUCT_FIELDS_WITH_VARIANTS)
+  W963-161: 5 engines emit success-skip envelope on cold-start
+            input -> cycle 9 errors -> 0 errors
+  W963-162: 7 SKIP'd REST-shape tests rewritten around router
+            boundary
+  W963-163: FREESHIP50 routes through
+            SHOPIFY_CREATE_DISCOUNT_FREE_SHIPPING (was
+            masquerading as basic line-item discount; production
+            customers weren't getting shipping waived)
+  W963-164: variant price set after create via
+            SHOPIFY_UPDATE_VARIANTS follow-up; products.py
+            CREATE mutation gains variants(first:1)
+  W963-165: publish_product dispatcher (UPDATE_PRODUCT
+            status=ACTIVE + LIST_PUBLICATIONS + PUBLISH_RESOURCE
+            with per-active-store Online Store cache)
+  W963-166: inventoryPolicy=CONTINUE for dropshipping
+  W963-167+168: SHOPIFY_CREATE_PRODUCT_MEDIA capability +
+                _attach_product_images dispatcher hook + Pexels
+                URL resize hack (Shopify 25MP ceiling)
+  W963-169: IMAGE_STOCK_SEARCH capability + PexelsPhotosAdapter
+            + autonomous image discovery in dispatcher.
+            product_sourcer auto-emits _metadata.image_query
+  W963-170: _metadata.publish_on_approve flag fires
+            _publish_product_dispatch inline after image attach.
+            SINGLE approval -> 7-router-call chain -> fully
+            merchantable product
+  W963-171: scripts/session_batch_dispatch.py one-shot batch
+            dispatcher
+  W963-172: Round 12 adversarial fixes (revenue_projector
+            cold-start key schema parity, _build_image_query
+            regex word-boundary, 6-word cap order)
+
+### Adversarial review pattern
+
+3 rounds run during W963 (Round 8/9/10/11/12):
+
+  Round 8/9/10 (W963-115..142): 24 confirmed bugs (sentinel
+    ambiguity / sid collision / sort flips / forecast cold-start
+    / fleet alias / drill hints)
+  Round 11 (W963-143..152): 3 confirmed bugs fixed in W963-153
+    - autonomy_gate probe with SIDE EFFECTS
+    - GA4 user_id == client_id collapse
+    - Gorgias body_html unescaped
+  Round 12 (W963-156..170): 3 confirmed bugs fixed in W963-172
+    - revenue_projector cold-start key schema mismatch
+    - _build_image_query regex word boundary
+    - _build_image_query 6-word cap order
+
+Workflow pattern (10 finders + 3 lens-diverse refuters per
+finding; survives 2+/3 = confirmed):
+  - Lens 1: CORRECTNESS -- walk the code path
+  - Lens 2: REACHABILITY -- realistic given caller patterns?
+  - Lens 3: SEVERITY/IMPACT -- operator-visible harm?
+
+Default refuted=true unless the verifier can demonstrate.
+
+### Operational state at end of W963 ramp
+
+Live verified against fkcq1i-0s.myshopify.com:
+  103 products active + priced ($9.99-$27.99) + imaged +
+    published + inventoryPolicy=CONTINUE
+  cycle: 26/26 ok, 0 err
+  institutional audits: 75/75 pass
+  test suite: 1900+ pass
+  PR #503 (94+ commits ahead of main)
+
+Remaining for revenue activation (operator only):
+  - merge to main
+  - set Meta Ads / Google Ads API keys
+  - install cron via `shopai cycle schedule`
+  - optional vendor webhook secrets (Klaviyo, AfterShip,
+    Gorgias, Stripe, PayPal, Klarna, Loox)

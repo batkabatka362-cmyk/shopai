@@ -30,10 +30,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import traceback
 from dataclasses import asdict, dataclass
+
+logger = logging.getLogger(__name__)
 
 # Allow running as ``python scripts/empire_smoke.py`` from the
 # repo root without an editable install.
@@ -456,9 +459,27 @@ def main() -> int:
                     status="FAIL",
                     detail="unexpected outer raise",
                     error=(
-                        f"{type(exc).__name__}: {exc}\n"
-                        f"{traceback.format_exc()}"
+                        # W962-67: don't embed the full
+                        # traceback in the user-facing
+                        # envelope (it carries the operator's
+                        # Windows home path + module layout).
+                        # Log full trace at DEBUG; envelope
+                        # carries just type + first line of
+                        # str(exc).
+                        f"{type(exc).__name__}: {str(exc)[:120]}"
                     ),
+                )
+                # W962-73: don't leak full traceback to debug
+                # log -- it carries the same Windows home path
+                # + module layout the envelope was scrubbing.
+                # If a future operator needs full trace they can
+                # re-run under `python -X dev` or set
+                # logging.getLogger().setLevel(logging.DEBUG)
+                # AND the path-aware formatter; the default
+                # behaviour matches the envelope's redaction.
+                logger.debug(
+                    "empire_smoke %s raised: %s: %s",
+                    label, type(exc).__name__, str(exc)[:120],
                 )
         results.append(result)
 

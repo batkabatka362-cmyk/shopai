@@ -99,6 +99,22 @@ class DropshippingEngine:
             margin_analysis=margin_analysis, supplier_performance=supplier_performance,
         )
 
+        # Phase 7: optional thin-margin tag apply. Opt-in via
+        # data.apply_thin_margin_tags=True. Tags products at
+        # margin_pct < 25 via SHOPIFY_UPDATE_PRODUCT.
+        tagged_thin_margin: list[dict[str, Any]] = []
+        if bool(data.get("apply_thin_margin_tags")):
+            try:
+                from .tag_applier import apply_thin_margin_tags
+                tagged_thin_margin = apply_thin_margin_tags(
+                    margin_analysis, products,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "dropshipping: apply loop raised: %s", exc,
+                )
+
         elapsed = time.monotonic() - start
         return {
             "status": "success",
@@ -107,6 +123,7 @@ class DropshippingEngine:
                 "tracking_updates": tracking_updates,
                 "margin_analysis": margin_analysis,
                 "supplier_performance": supplier_performance,
+                "tagged_thin_margin": tagged_thin_margin,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,

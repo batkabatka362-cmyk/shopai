@@ -63,6 +63,9 @@ from ..base import (
     BaseAdapter,
     Capability,
 )
+from .._per_store_credentials import (
+    resolve_per_store as _resolve_per_store,
+)
 from ..config import get_config
 from ..errors import (
     AdapterAuthError,
@@ -125,10 +128,10 @@ class ScraperBaseAdapter(BaseAdapter):
             return False
         if not self.base_url or not self.config_alias:
             return False
-        return bool(get_config().get(self.config_alias))
+        return bool((_resolve_per_store(self.config_alias) or get_config().get(self.config_alias)))
 
     def _api_key(self) -> str:
-        key = get_config().get(self.config_alias)
+        key = (_resolve_per_store(self.config_alias) or get_config().get(self.config_alias))
         if not key:
             env = get_config().env_var_for(self.config_alias)
             raise AdapterNotConfigured(
@@ -237,54 +240,13 @@ class ScraperBaseAdapter(BaseAdapter):
         body: dict[str, Any],
         headers: dict[str, str],
     ) -> Any:
-        if not _REQUESTS_AVAILABLE:
-            raise AdapterUnavailable(
-                self.name, "'requests' library not installed",
-            )
-        try:
-            response = _requests.post(
-                url, json=body, headers=headers, timeout=self.timeout,
-            )
-        except _requests.Timeout as exc:  # type: ignore[union-attr]
-            raise AdapterTimeout(
-                self.name, f"timeout after {self.timeout}s: {exc}",
-            ) from exc
-        except _requests.ConnectionError as exc:  # type: ignore[union-attr]
-            raise AdapterUnavailable(
-                self.name, f"connection error: {exc}",
-            ) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise AdapterError(
-                self.name,
-                f"http post failed: {type(exc).__name__}: {exc}",
-            ) from exc
-
-        status = getattr(response, "status_code", 0)
-        if status >= 400:
-            snippet = (getattr(response, "text", "") or "")[:200]
-            if status in (401, 403):
-                raise AdapterAuthError(
-                    self.name,
-                    f"vendor rejected credentials ({status}): {snippet}",
-                )
-            if status == 429:
-                raise AdapterRateLimited(
-                    self.name, f"rate limit (429): {snippet}",
-                )
-            if 500 <= status < 600:
-                raise AdapterUnavailable(
-                    self.name,
-                    f"vendor 5xx ({status}): {snippet}",
-                )
-            raise AdapterError(
-                self.name,
-                f"vendor returned {status}: {snippet}",
-            )
-
-        try:
-            text = getattr(response, "text", "") or ""
-            return response.json() if text else {}
-        except ValueError as exc:
-            raise AdapterError(
-                self.name, f"invalid JSON response: {exc}",
-            ) from exc
+        """W962-65: shared retry helper."""
+        from core.adapters._http_retry import http_retry
+        return http_retry(
+            lambda: _requests.post(
+                url, json=body, headers=headers,
+                timeout=self.timeout,
+            ),
+            adapter_name=self.name,
+            timeout=self.timeout,
+        )

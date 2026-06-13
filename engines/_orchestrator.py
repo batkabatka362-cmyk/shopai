@@ -1,0 +1,496 @@
+"""Tier 1 Empire Orchestrator -- fleet-level decisioner.
+
+Single-step delegation: Orchestrator knows ONLY Store
+Supervisors (Tier 2a), doesn't reach into Cluster Captains.
+
+For each store in the fleet, decides:
+  • cycle priority (what does this store NEED most?)
+  • cluster-override pin (only these clusters fire)
+  • signal hints (drawn from world-model)
+
+Then calls make_supervisor_plan per store + aggregates.
+
+## Tier 1 priority rules (deterministic v1)
+
+Per-store priority computed from world-model snapshot:
+
+  LAUNCHING  -> products < 5 OR orders == 0
+                priority: setup, content, acquisition
+                opt-in clusters get explicit activation
+
+  GROWING    -> orders > 0 AND repeat_rate < 30%
+                priority: acquisition, merchandising, quality
+
+  MATURE     -> orders > 50 AND repeat_rate >= 30%
+                priority: retention, pricing, merchandising
+
+  AT_RISK    -> orders > 0 AND no_orders_in_7d
+                priority: retention, discovery (find reasons)
+
+  STAGNANT   -> revenue_trend < -10%
+                priority: pricing, discovery, acquisition
+
+Each priority maps to a small set of clusters that this
+cycle should activate. The remaining clusters are SKIPPED
+to focus the captain attention + reduce blast radius.
+
+## Future plug-ins (substrate-first)
+
+- AIOrchestratorStrategy: LLM reads world-model + memory,
+  emits per-store priorities
+- HistoricalRollupStrategy: looks at last N cycles' outcomes,
+  rotates priorities based on which haven't improved
+- OperatorOverrideStrategy: respects explicit operator
+  "this store: do X" pins
+
+All plug in via the OrchestratorStrategy protocol below.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Protocol
+
+from engines._store_supervisor import (
+    SupervisorPlan,
+    make_supervisor_plan,
+)
+
+
+@dataclass
+class StorePriority:
+    """One store's priority + cluster-override for a cycle."""
+    store_id: str
+    priority: str  # "launching" / "growing" / "mature" / "at_risk" / "stagnant" / "default"
+    cluster_focus: list[str]
+    rationale: str
+    signals: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class FleetPlan:
+    """Aggregate plan across the fleet."""
+    cycle_label: str
+    priorities: list[StorePriority] = field(default_factory=list)
+    supervisor_plans: list[SupervisorPlan] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def total_stores(self) -> int:
+        return len(self.priorities)
+
+    @property
+    def total_to_fire(self) -> int:
+        return sum(sp.total_to_fire for sp in self.supervisor_plans)
+
+    @property
+    def total_modifications(self) -> int:
+        return sum(
+            sp.total_modifications for sp in self.supervisor_plans
+        )
+
+
+class OrchestratorStrategy(Protocol):
+    """Pluggable: how to decide each store's priority."""
+
+    def decide_priority(
+        self, store_id: str, world_model: dict[str, Any],
+    ) -> StorePriority:
+        ...
+
+
+# ── Default priority rules (deterministic v1) ──────────────────
+
+_PRIORITY_CLUSTERS = {
+    # Wave 37 + Wave 46: launching expanded. Old version was
+    # [setup, acquisition, content] but setup + content are
+    # both opt-in. Wave 37 added merchandising/pricing/quality
+    # to broaden auto-fire. Wave 46 dropped setup + content
+    # from the list entirely -- supervisor honours
+    # cluster_override authoritatively (Wave 37 incorrectly
+    # left them as 'honourable mentions' which caused content
+    # cluster engines to fire when operator hadn't explicitly
+    # asked). setup + content only fire via
+    # `cluster fire setup --yes` / `cluster fire content
+    # --yes` -- explicit operator intent.
+    "launching": [
+        "acquisition", "merchandising", "pricing", "quality",
+    ],
+    "growing": ["acquisition", "merchandising", "quality"],
+    "mature": ["retention", "pricing", "merchandising"],
+    "at_risk": ["retention", "discovery"],
+    "stagnant": ["pricing", "discovery", "acquisition"],
+    "default": [
+        # All-cluster default (same as supervisor default
+        # activation -- all except opt-in)
+        "retention", "pricing", "acquisition", "quality",
+        "merchandising", "fulfillment", "governance",
+        "discovery",
+    ],
+}
+
+
+class DeterministicOrchestratorStrategy:
+    """Default v1: deterministic rules over store stats.
+
+    Reads world-model 'stats' section + signals to bucket
+    each store into a priority class, then maps to cluster
+    focus list.
+    """
+
+    def decide_priority(
+        self,
+        store_id: str,
+        world_model: dict[str, Any],
+    ) -> StorePriority:
+        stats = (world_model or {}).get("stats", {}) or {}
+        store_info = (world_model or {}).get("store", {}) or {}
+        niche = store_info.get("niche") if isinstance(
+            store_info, dict,
+        ) else None
+        products = int(stats.get("products", 0) or 0)
+        orders = int(stats.get("orders", 0) or 0)
+        revenue = float(stats.get("total_revenue", 0.0) or 0.0)
+
+        # Wave 73: niche-aware merge helper. When a store has
+        # a niche set, the cluster_focus list gets niche
+        # preferences prepended (preserving lifecycle base).
+        def _merge_niche(base_clusters: list[str]) -> list[str]:
+            try:
+                from engines._niche_priority import merge_with_base
+                return merge_with_base(base_clusters, niche)
+            except Exception:  # noqa: BLE001
+                return list(base_clusters)
+
+        # LAUNCHING: store doesn't have products yet or
+        # zero orders
+        if products < 5 or orders == 0:
+            return StorePriority(
+                store_id=store_id,
+                priority="launching",
+                cluster_focus=_merge_niche(
+                    _PRIORITY_CLUSTERS["launching"],
+                ),
+                rationale=(
+                    f"products={products} orders={orders} "
+                    f"-- still in launch phase"
+                    + (f" (niche={niche})" if niche else "")
+                ),
+                signals={
+                    "is_new_store": True,
+                    "product_count": products,
+                    "niche": niche,
+                },
+            )
+
+        # AT_RISK: store has orders but none recently
+        # (we'd want last_order_at from sync section, but
+        # world-model doesn't always carry that -- skip for
+        # now). Heuristic: low revenue per order ratio.
+        avg_order = revenue / orders if orders > 0 else 0.0
+        if orders > 5 and avg_order < 10.0:
+            return StorePriority(
+                store_id=store_id,
+                priority="at_risk",
+                cluster_focus=_merge_niche(
+                    _PRIORITY_CLUSTERS["at_risk"],
+                ),
+                rationale=(
+                    f"avg_order=${avg_order:.2f} -- "
+                    f"suspiciously low; possible churn"
+                    + (f" (niche={niche})" if niche else "")
+                ),
+                signals={
+                    "avg_order_value": avg_order,
+                    "niche": niche,
+                },
+            )
+
+        # MATURE: meaningful order count
+        if orders > 50:
+            return StorePriority(
+                store_id=store_id,
+                priority="mature",
+                cluster_focus=_merge_niche(
+                    _PRIORITY_CLUSTERS["mature"],
+                ),
+                rationale=(
+                    f"orders={orders} revenue=${revenue:.2f} "
+                    f"-- established store"
+                    + (f" (niche={niche})" if niche else "")
+                ),
+                signals={
+                    "is_mature": True,
+                    "avg_order_value": avg_order,
+                    "niche": niche,
+                },
+            )
+
+        # GROWING: between launch + mature
+        return StorePriority(
+            store_id=store_id,
+            priority="growing",
+            cluster_focus=_merge_niche(
+                _PRIORITY_CLUSTERS["growing"],
+            ),
+            rationale=(
+                f"orders={orders} -- growth phase"
+                + (f" (niche={niche})" if niche else "")
+            ),
+            signals={
+                "growth_phase": True,
+                "niche": niche,
+            },
+        )
+
+
+def make_fleet_plan(
+    *,
+    world_models: dict[str, dict[str, Any]] | None = None,
+    strategy: OrchestratorStrategy | None = None,
+    cycle_label: str = "default",
+) -> FleetPlan:
+    """Build a FleetPlan: one StorePriority + SupervisorPlan
+    per store.
+
+    Args:
+        world_models: Per-store world-model snapshots keyed
+            by store_id. If None, an empty fleet is returned
+            (operator must supply via CLI or call
+            WorldModel().snapshot per store).
+        strategy: Decision strategy. Defaults to
+            DeterministicOrchestratorStrategy.
+        cycle_label: Identifier for this cycle (timestamp,
+            run-id, etc). Used in logs + memory.
+
+    Returns:
+        Populated :class:`FleetPlan`.
+    """
+    world_models = world_models or {}
+
+    # Strategy selection (substrate is layered):
+    #   1. AI when SHOPAI_AI_STRATEGY=1 + LLM available
+    #   2. Deterministic otherwise
+    #   3. Wrap with RevenueAware when
+    #      SHOPAI_REVENUE_AWARE_ORCHESTRATOR=1
+    # All implement the same OrchestratorStrategy protocol;
+    # substrate doesn't care which is in use. Operator opt-in
+    # via env-var.
+    if strategy is None:
+        import os as _os
+        if _os.environ.get("SHOPAI_AI_STRATEGY"):
+            try:
+                from engines._ai_strategies import (
+                    AIOrchestratorStrategy,
+                )
+                strategy = AIOrchestratorStrategy()
+            except Exception:  # noqa: BLE001
+                strategy = DeterministicOrchestratorStrategy()
+        else:
+            strategy = DeterministicOrchestratorStrategy()
+        # Optional revenue-aware wrapper -- re-ranks
+        # cluster_focus by attributed revenue. Doesn't change
+        # priority bucket; just reorders which clusters fire
+        # first within a bucket.
+        if _os.environ.get("SHOPAI_REVENUE_AWARE_ORCHESTRATOR"):
+            try:
+                from engines._revenue_aware_orchestrator import (
+                    RevenueAwareOrchestratorStrategy,
+                )
+                strategy = RevenueAwareOrchestratorStrategy(
+                    base=strategy,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    plan = FleetPlan(cycle_label=cycle_label)
+
+    if not world_models:
+        plan.notes.append(
+            "empty fleet -- no world-models supplied"
+        )
+        return plan
+
+    # Pull queue stats ONCE for the fleet (shared across all
+    # stores). The signal collector reuses these per store.
+    queue_stats: dict[str, dict[str, int]] = {}
+    try:
+        from core.approval.queue import get_approval_queue
+        queue_stats = (
+            get_approval_queue().stats_by_engine() or {}
+        )
+    except Exception:  # noqa: BLE001
+        queue_stats = {}
+
+    # Signal collector for per-cluster signal auto-derivation
+    from engines._captain_signals import HeuristicSignalCollector
+    collector = HeuristicSignalCollector()
+
+    # Horizontal collaboration: cross-cluster events from the
+    # bus get folded into the next cycle's signals. Last 24h.
+    try:
+        from engines._cluster_bus import cross_cluster_signals
+        bus_signals_fleet = cross_cluster_signals(
+            window_hours=24.0,
+        )
+    except Exception:  # noqa: BLE001
+        bus_signals_fleet = {}
+
+    for store_id, wm in sorted(world_models.items()):
+        priority = strategy.decide_priority(store_id, wm or {})
+        plan.priorities.append(priority)
+
+        # Auto-derive per-cluster signals from world-model +
+        # queue stats. This is the autonomous-mode keystone --
+        # captain reads its environment without operator JSON.
+        collected = collector.collect(
+            store_id, wm or {}, queue_stats,
+        )
+
+        # Per-store bus signals (cross-cluster horizontal
+        # collaboration scoped to this store)
+        try:
+            from engines._cluster_bus import (
+                cross_cluster_signals as _xc_signals,
+            )
+            bus_signals_store = _xc_signals(
+                store_id=store_id, window_hours=24.0,
+            )
+        except Exception:  # noqa: BLE001
+            bus_signals_store = {}
+
+        # Layer hints: bus -> heuristic -> priority -> caller
+        # (later layers win on conflicts via dict.update)
+        priority_hints = _signals_for_priority(
+            priority.priority, wm or {},
+        )
+        signals_by_cluster: dict[str, dict[str, Any]] = {}
+        all_keys = (
+            set(bus_signals_fleet) | set(bus_signals_store)
+            | set(collected) | set(priority_hints)
+        )
+        for k in all_keys:
+            merged = dict(bus_signals_fleet.get(k, {}))
+            merged.update(bus_signals_store.get(k, {}))
+            merged.update(collected.get(k, {}))
+            merged.update(priority_hints.get(k, {}))
+            signals_by_cluster[k] = merged
+
+        # Wave 91: thread the resolved cluster_focus + niche
+        # label into EVERY cluster's signals slice so the AI
+        # captain can see whether THIS cluster sits in the
+        # niche-favored bucket. Captain reads
+        # signals["cluster_focus"] + signals["niche"].
+        priority_niche = (priority.signals or {}).get("niche")
+        for k in list(signals_by_cluster.keys()):
+            signals_by_cluster[k].setdefault(
+                "cluster_focus", list(priority.cluster_focus),
+            )
+            # Don't overwrite a niche the bus may have set.
+            if priority_niche is not None:
+                signals_by_cluster[k].setdefault(
+                    "niche", priority_niche,
+                )
+        # Some clusters may not yet have a signals slice (none
+        # of the bus / hint / collected paths populated them).
+        # Add a minimal slice carrying just the niche bias so
+        # the captain sees the same context for every cluster.
+        for c_name in priority.cluster_focus:
+            if c_name not in signals_by_cluster:
+                slice_ = {
+                    "cluster_focus": list(priority.cluster_focus),
+                }
+                if priority_niche is not None:
+                    slice_["niche"] = priority_niche
+                signals_by_cluster[c_name] = slice_
+
+        # Wave 42: pass world_model.stats through so captains
+        # can skip engines whose primary input is empty.
+        store_stats_for_captain = (
+            wm.get("stats", {}) if isinstance(wm, dict) else {}
+        )
+        supervisor_plan = make_supervisor_plan(
+            store_id=store_id,
+            signals_by_cluster=signals_by_cluster,
+            cluster_override=priority.cluster_focus,
+            store_stats=store_stats_for_captain,
+        )
+        plan.supervisor_plans.append(supervisor_plan)
+
+    return plan
+
+
+def _signals_for_priority(
+    priority: str,
+    world_model: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Translate priority class into per-cluster signals.
+
+    The signals here are FRAMING signals from the Orchestrator,
+    not domain-aggregated data (those come from the signal-
+    collector layer, next module). These hint the captain
+    which rule branch to activate.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    stats = world_model.get("stats", {}) or {}
+
+    if priority == "launching":
+        # Wave 37: hints for the expanded cluster set so
+        # captain rule-tables fire useful default branches.
+        out["setup"] = {"first_launch": True}
+        out["acquisition"] = {"new_signups_count": 1}
+        # Empty dicts trigger the always-on default rule on
+        # signal-driven captains -- adequate for fresh stores
+        # that don't yet have specific signal data.
+        out["merchandising"] = {}
+        out["pricing"] = {}
+        out["quality"] = {}
+        return out
+
+    if priority == "at_risk":
+        # Hint retention captain that at-risk customers exist
+        out["retention"] = {"at_risk_count": 1}
+        out["discovery"] = {"investigate": True}
+        return out
+
+    if priority == "mature":
+        # Hint retention + pricing to surface their default
+        # always-on rules
+        out["retention"] = {}  # default rule fires
+        out["pricing"] = {}
+        out["merchandising"] = {}
+        return out
+
+    if priority == "growing":
+        out["acquisition"] = {"new_signups_count": 1}
+        out["merchandising"] = {}
+        out["quality"] = {}
+        return out
+
+    if priority == "stagnant":
+        out["pricing"] = {"thin_margin_count": 1}
+        out["discovery"] = {"investigate": True}
+        out["acquisition"] = {"new_signups_count": 1}
+        return out
+
+    return out
+
+
+def fleet_summary(plan: FleetPlan) -> dict[str, Any]:
+    """Compact rollup of a FleetPlan -- one row per store."""
+    rows: list[dict[str, Any]] = []
+    for prio, sp in zip(plan.priorities, plan.supervisor_plans):
+        rows.append({
+            "store_id": prio.store_id,
+            "priority": prio.priority,
+            "rationale": prio.rationale,
+            "active_clusters": len(sp.active_clusters),
+            "fire": sp.total_to_fire,
+            "queued": sp.total_modifications,
+        })
+    return {
+        "cycle_label": plan.cycle_label,
+        "total_stores": plan.total_stores,
+        "total_to_fire": plan.total_to_fire,
+        "total_modifications": plan.total_modifications,
+        "stores": rows,
+    }

@@ -130,6 +130,23 @@ class CompetitorMonitorEngine:
             recommended_responses=recommended_responses,
         )
 
+        # Phase 7: optional undercut-tag apply. Opt-in via
+        # data.apply_undercut_tags=True. Tags OUR products being
+        # undercut by >=5% by any competitor.
+        tagged_undercut: list[dict[str, Any]] = []
+        if bool(data.get("apply_undercut_tags")):
+            try:
+                from .tag_applier import apply_undercut_tags
+                tagged_undercut = apply_undercut_tags(
+                    price_changes, our_products,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "competitor_monitor: apply loop raised: %s",
+                    exc,
+                )
+
         # ---- Stage 7: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -140,6 +157,7 @@ class CompetitorMonitorEngine:
                 "new_products": new_products,
                 "alerts": alerts,
                 "recommended_responses": recommended_responses,
+                "tagged_undercut": tagged_undercut,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,

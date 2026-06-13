@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib
 import os
+import threading
 import time
 from typing import Any
 from utils.logger import get_logger
@@ -49,8 +50,19 @@ class APIAuth:
 
 
 _instance = None
+_instance_lock = threading.Lock()
+
+
 def get_api_auth():
+    """W962-58: double-checked locking. Pre-fix two concurrent
+    HTTP handlers could each race past the None check and
+    create their own APIAuth. One ended up holding tokens the
+    other didn't see, so token validation became
+    nondeterministic across requests. Critical because this
+    gates authorization."""
     global _instance
     if _instance is None:
-        _instance = APIAuth()
+        with _instance_lock:
+            if _instance is None:
+                _instance = APIAuth()
     return _instance

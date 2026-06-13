@@ -143,6 +143,44 @@ def run(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
         if action in summary:
             summary[action] += 1
 
+    # Wave 122 fix: opt-in writer for Wave 112 budget_applier.
+    # Pattern O caught this -- the applier existed but the
+    # engine flow had no data.get("apply_budget_changes") gate.
+    # Default OFF preserves existing callers' behaviour.
+    budget_apply_results: list[dict[str, Any]] = []
+    if data.get("apply_budget_changes") is True:
+        try:
+            from .budget_applier import apply_budget_changes
+            # Convert engine decisions (action: kill/reduce/...)
+            # into the applier's recommendation shape
+            # (action: cut/pause). kill -> pause, reduce -> cut.
+            recommendations: list[dict[str, Any]] = []
+            for d in decisions:
+                action_raw = str(d.get("action", "")).lower()
+                if action_raw == "kill":
+                    mapped_action = "pause"
+                elif action_raw == "reduce":
+                    mapped_action = "cut"
+                else:
+                    continue  # hold / scale / scale_aggressive
+                recommendations.append({
+                    "campaign_id": d.get("campaign_id", ""),
+                    "store_id": d.get("store_id", "") or "",
+                    "action": mapped_action,
+                    "prior_budget": d.get(
+                        "current_daily_usd", 0.0,
+                    ),
+                    "proposed_budget": d.get(
+                        "new_daily_usd", 0.0,
+                    ),
+                    "reason": d.get("reason", ""),
+                })
+            budget_apply_results = apply_budget_changes(
+                recommendations,
+            )
+        except Exception:  # noqa: BLE001
+            budget_apply_results = []
+
     elapsed = round(time.monotonic() - start, 3)
     return {
         "status": "success",
@@ -158,6 +196,7 @@ def run(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
                 "max_daily_budget_usd": max_daily,
                 "cpa_ceiling_usd": cpa_ceiling,
             },
+            "budget_apply_results": budget_apply_results,
         },
         "meta": {
             "engine": ENGINE_NAME,

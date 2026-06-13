@@ -29,6 +29,11 @@ from typing import Any
 
 from utils.logger import get_logger
 
+from engines._agi_context import (
+    explain_thrash_block,
+    log_thrash_block,
+    should_block_thrashing_store,
+)
 from engines._writeback_recorder import record_writeback
 
 logger = get_logger("engines.tag_management.applier")
@@ -71,6 +76,41 @@ def apply_tags(
                 "tags_added": 0,
                 "merged_tags": [],
                 "error": "router_unavailable",
+            }
+            for a in assignments
+        ]
+
+    # Wave 921: thrash guardrail (system-level kill switch).
+    # Tag writes are low blast-radius BUT still touch product
+    # mutations -- pile-on during thrash is undesirable.
+    try:
+        from core.context import get_active_store_id
+        active_store_id = get_active_store_id()
+    except Exception:  # noqa: BLE001
+        active_store_id = None
+    if should_block_thrashing_store(active_store_id):
+        reason = explain_thrash_block(active_store_id)
+        record_writeback(
+            engine="tag_management",
+            action_type="apply_tags",
+            capability="SHOPIFY_UPDATE_PRODUCT",
+            params={"assignment_count": len(assignments)},
+            success=False,
+            error=reason,
+        )
+        log_thrash_block(
+            engine="tag_management",
+            action_type="apply_tags",
+            capability="SHOPIFY_UPDATE_PRODUCT",
+            store_id=active_store_id,
+        )
+        return [
+            {
+                "product_id": str(a.get("product_id", "")),
+                "applied": False,
+                "tags_added": 0,
+                "merged_tags": [],
+                "error": reason,
             }
             for a in assignments
         ]

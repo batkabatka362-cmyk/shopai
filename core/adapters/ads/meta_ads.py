@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..base import AdapterResult, Capability
+from .._per_store_credentials import resolve_per_store
 from ..config import get_config
 from ..errors import AdapterValidationError
 from ._base import AdsBaseAdapter
@@ -38,9 +39,30 @@ class MetaAdsAdapter(AdsBaseAdapter):
     # ── Configuration ──────────────────────────────────────────
 
     def is_configured(self) -> bool:
-        if not super().is_configured():
+        # W963-116: honour per-store overrides via
+        # active_store thread-local. Single-store empires
+        # see the same env-var fallback as before; multi-
+        # store empires resolve the active store's
+        # creds.
+        if not resolve_per_store(self.config_alias):
             return False
-        return bool(get_config().get("meta_ads_account_id"))
+        return bool(resolve_per_store("meta_ads_account_id"))
+
+    def _api_key(self) -> str:
+        # W963-116: override parent _api_key to consult
+        # the per-store helper. Pre-fix the parent used
+        # get_config().get(self.config_alias) which would
+        # always resolve the fleet-default token even when
+        # active_store(sid) was set.
+        token = resolve_per_store(self.config_alias)
+        if not token:
+            raise AdapterValidationError(
+                self.name,
+                f"missing {self.config_alias.upper()} "
+                "(set fleet-wide or per-store via "
+                "SHOPAI_STORE_<SID>_<ALIAS>)",
+            )
+        return token
 
     def _auth_headers(self) -> dict[str, str]:
         return {
@@ -49,7 +71,13 @@ class MetaAdsAdapter(AdsBaseAdapter):
         }
 
     def _account_id(self) -> str:
-        aid = get_config().get("meta_ads_account_id")
+        # W963-116: per-store ad-account resolution.
+        # Different stores typically have DIFFERENT Meta
+        # ad accounts (one per Business Manager); the
+        # operator sets SHOPAI_STORE_<SID>_META_ADS_ACCOUNT_ID
+        # per store + the cycle picks the right one
+        # automatically.
+        aid = resolve_per_store("meta_ads_account_id")
         if not aid:
             raise AdapterValidationError(
                 self.name, "META_ADS_ACCOUNT_ID not set",

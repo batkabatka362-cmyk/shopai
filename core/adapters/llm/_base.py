@@ -333,48 +333,87 @@ class LLMBaseAdapter(BaseAdapter):
         *,
         headers: dict[str, str] | None = None,
         timeout: float | None = None,
+        max_retries: int = 3,
     ) -> dict[str, Any]:
         """Shared HTTP POST helper.
 
-        Translates network failures, timeouts, and non-2xx
-        responses into typed ``AdapterError`` subclasses so
-        ``_call_vendor`` overrides can stay one-liner thin.
+        W962-64: parity retry on 429 + 5xx + transient
+        transport errors. Pre-fix the llm base parsed
+        Retry-After + raised immediately without actually
+        retrying.
         """
         if not _REQUESTS_AVAILABLE:
             raise AdapterUnavailable(
                 self.name, "'requests' library not installed",
             )
 
-        try:
-            response = _requests.post(
-                url,
-                json=payload,
-                headers=headers or {},
-                timeout=timeout if timeout is not None else self.timeout,
-            )
-        except _requests.Timeout as exc:  # type: ignore[union-attr]
-            raise AdapterTimeout(
-                self.name, f"timeout after {self.timeout}s: {exc}",
-            ) from exc
-        except _requests.ConnectionError as exc:  # type: ignore[union-attr]
-            raise AdapterUnavailable(
-                self.name, f"connection error: {exc}",
-            ) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise AdapterError(
-                self.name, f"http post failed: {type(exc).__name__}: {exc}",
-            ) from exc
-
-        if response.status_code >= 400:
-            retry_after_header = response.headers.get("Retry-After", "")
+        import time as _t
+        last_exc: Exception | None = None
+        for attempt in range(1, max(1, max_retries) + 1):
             try:
-                retry_after = float(retry_after_header) if retry_after_header else None
-            except ValueError:
-                retry_after = None
-            raise self._handle_http_error(
-                response.status_code,
-                getattr(response, "text", "") or "",
-                retry_after=retry_after,
+                response = _requests.post(
+                    url,
+                    json=payload,
+                    headers=headers or {},
+                    timeout=timeout if timeout is not None else self.timeout,
+                )
+            except _requests.Timeout as exc:  # type: ignore[union-attr]
+                last_exc = exc
+                if attempt < max_retries:
+                    _t.sleep(min(2 ** attempt, 8))
+                    continue
+                raise AdapterTimeout(
+                    self.name, f"timeout after {self.timeout}s: {exc}",
+                ) from exc
+            except _requests.ConnectionError as exc:  # type: ignore[union-attr]
+                last_exc = exc
+                if attempt < max_retries:
+                    _t.sleep(min(2 ** attempt, 8))
+                    continue
+                raise AdapterUnavailable(
+                    self.name, f"connection error: {exc}",
+                ) from exc
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                msg = str(exc).lower()
+                if any(s in msg for s in (
+                    "chunkedencoding", "ssl", "protocol",
+                    "remote disconnected",
+                )) and attempt < max_retries:
+                    _t.sleep(min(2 ** attempt, 8))
+                    continue
+                raise AdapterError(
+                    self.name, f"http post failed: {type(exc).__name__}: {exc}",
+                ) from exc
+
+            if response.status_code >= 400:
+                retry_after_header = response.headers.get("Retry-After", "")
+                try:
+                    retry_after = float(retry_after_header) if retry_after_header else None
+                except ValueError:
+                    retry_after = None
+                # Retry transient errors
+                if (
+                    response.status_code == 429
+                    or 500 <= response.status_code < 600
+                ) and attempt < max_retries:
+                    wait = (
+                        retry_after if retry_after is not None
+                        else min(2 ** attempt, 8)
+                    )
+                    _t.sleep(min(wait, 30))
+                    continue
+                raise self._handle_http_error(
+                    response.status_code,
+                    getattr(response, "text", "") or "",
+                    retry_after=retry_after,
+                )
+            # success path falls through to caller body below
+            break
+        else:
+            raise AdapterError(
+                self.name,
+                f"exhausted retries: {last_exc}" if last_exc else "exhausted retries",
             )
 
         try:

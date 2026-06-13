@@ -232,6 +232,171 @@ def _detect_regressions() -> dict[str, Any]:
     return {"regressions": rows, "count": len(rows)}
 
 
+def _planner_consultation_phase(
+    sid: str,
+) -> dict[str, Any]:
+    """Read-only Phase 2c: capability planner consultation
+    for the autonomous cycle.
+
+    Runs ``audit_store(store_id=sid)``, extracts failing
+    audit checks, routes them through
+    ``plan_for_audit_gaps()``. Returns a compact dict for
+    inclusion in ``cycle_result["phases"]["planner"]``.
+
+    Lifted to a module-level helper so tests can exercise
+    it without spinning up the full controller -- mirrors
+    the pattern used by ``_compute_fleet_health``,
+    ``_detect_regressions``, etc.
+
+    Failure-safe: any raise is converted to a dict with an
+    ``error`` key so the inline call site doesn't have to
+    branch.
+    """
+    try:
+        from engines.store_setup.launch_audit import (
+            audit_store,
+        )
+        from core.capability_planner import (
+            plan_for_audit_gaps,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"import_failed: {exc}"}
+
+    try:
+        audit = audit_store(store_id=sid)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"audit_failed: {exc}"}
+
+    failing = [
+        c.get("key", "")
+        for c in (audit.get("checks") or [])
+        if not c.get("ok")
+    ]
+    try:
+        plan = plan_for_audit_gaps(failing)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"planner_failed: {exc}"}
+
+    # Auto-execute eligibility: for each plan step, check
+    # whether its capability has high enough historical
+    # reliability to qualify for autonomous execution.
+    # Surfaces as observability only -- actual execution
+    # gated behind explicit env-var opt-in (future PR).
+    auto_exec = _compute_auto_execute_eligibility(plan)
+
+    return {
+        "ready_to_launch": bool(
+            audit.get("ready_to_launch"),
+        ),
+        "completion_pct": int(
+            audit.get("completion_pct", 0),
+        ),
+        "next_action": (
+            audit.get("next_action") or ""
+        ),
+        "plan_steps": [
+            s.capability_name for s in plan.steps
+        ],
+        "cli_sequence": plan.cli_sequence,
+        "auto_execute": auto_exec,
+    }
+
+
+def _compute_auto_execute_eligibility(
+    plan: Any,
+) -> dict[str, Any]:
+    """Compute per-step auto-execute eligibility based on
+    historical reliability.
+
+    A step qualifies when its capability has:
+      - executed_count >= SHOPAI_AUTO_EXECUTE_MIN_SAMPLE
+        (default 5; sparse data is unreliable)
+      - success_rate >= SHOPAI_AUTO_EXECUTE_THRESHOLD
+        (default 0.9; conservative)
+
+    Returns:
+        {
+          "eligible_count": int,
+          "total_steps": int,
+          "min_sample": int,
+          "threshold": float,
+          "steps": [
+            {capability, eligible, success_rate,
+             executed_count}, ...
+          ],
+        }
+
+    Observability only -- no actual execution. Future PR
+    behind ``SHOPAI_AUTO_EXECUTE_PLAN=1`` can use this
+    eligibility map to actually invoke qualifying steps.
+
+    Best-effort: any plan_history lookup error -> all
+    steps reported as ineligible without raising.
+    """
+    # Layered lookup: persistent overrides file > env var
+    # > default. Lets operators (and the future auto-relax
+    # bridge) nudge thresholds without restarting the
+    # process. Fail-open if the overrides module is
+    # missing (older deployments).
+    try:
+        from core.autonomous import cycle_overrides as _co
+        threshold = _co.resolve_threshold()
+        min_sample = _co.resolve_min_sample()
+    except Exception:  # noqa: BLE001
+        import os as _os
+        try:
+            threshold = float(
+                _os.environ.get(
+                    "SHOPAI_AUTO_EXECUTE_THRESHOLD", "0.9",
+                ),
+            )
+        except (ValueError, TypeError):
+            threshold = 0.9
+        try:
+            min_sample = int(
+                _os.environ.get(
+                    "SHOPAI_AUTO_EXECUTE_MIN_SAMPLE", "5",
+                ),
+            )
+        except (ValueError, TypeError):
+            min_sample = 5
+
+    steps_info: list[dict[str, Any]] = []
+    eligible_count = 0
+    total = len(plan.steps) if plan and plan.steps else 0
+
+    for step in (plan.steps if plan else []):
+        # PlanStep already carries history_sample_size +
+        # history_success_rate (set by planner._finalise).
+        sample = int(
+            getattr(step, "history_sample_size", 0) or 0,
+        )
+        rate = float(
+            getattr(step, "history_success_rate", 0.0)
+            or 0.0,
+        )
+        eligible = (
+            sample >= min_sample
+            and rate >= threshold
+        )
+        if eligible:
+            eligible_count += 1
+        steps_info.append({
+            "capability": step.capability_name,
+            "eligible": eligible,
+            "success_rate": rate,
+            "executed_count": sample,
+        })
+
+    return {
+        "eligible_count": eligible_count,
+        "total_steps": total,
+        "min_sample": min_sample,
+        "threshold": threshold,
+        "steps": steps_info,
+    }
+
+
 def _bootstrap_brain_stack() -> bool:
     """Attach goal-feedback handlers to the approval-queue hooks.
 
@@ -1072,6 +1237,21 @@ class AutonomousController:
                     "AutonomousController: layer dispatch raised: %s", exc,
                 )
                 cycle_result["phases"]["layers"] = {"error": str(exc)[:80]}
+
+        # Phase 2c: PLANNER CONSULTATION — capability planner
+        # reads the audit's failing checks + emits a structured
+        # plan for this store. Read-only / observability layer
+        # added by the substrate lane (see project-capability-
+        # planner). Surfaces the recommended next action in
+        # cycle_result without affecting downstream phases --
+        # operators can compare what the planner recommends vs
+        # what the controller's DECIDE phase actually proposes.
+        try:
+            cycle_result["phases"]["planner"] = (
+                _planner_consultation_phase(sid)
+            )
+        except Exception as exc:  # noqa: BLE001
+            _record("planner_consultation", exc)
 
         # Phase 3: DECIDE — Convert brain decisions + analysis to actions
         brain_decisions = cycle_result.get("_brain_decisions", [])

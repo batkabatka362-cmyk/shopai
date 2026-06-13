@@ -86,7 +86,7 @@ class TestEngineGoalMap:
         assert goal_for_engine("inventory") == "survive_crisis"
 
     def test_opportunity_engines_mapped_correctly(self):
-        assert goal_for_engine("ads_spy") == "capture_opportunity"
+        assert goal_for_engine("competitor_ad_intelligence") == "capture_opportunity"
         assert goal_for_engine("trend_detection") == "capture_opportunity"
         assert goal_for_engine("campaign_strategy") == "capture_opportunity"
 

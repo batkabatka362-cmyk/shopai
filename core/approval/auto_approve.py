@@ -76,7 +76,9 @@ MIN_CONFIDENCE = float(
 )
 
 _DEFAULT_CONFIG_PATH = Path("data") / "auto_approve_config.json"
-_LOCK = threading.Lock()
+# W962: RLock so mutators can wrap their full read-modify-write
+# under the same lock save_config holds.
+_LOCK = threading.RLock()
 
 
 # ── Allowlist persistence ──────────────────────────────────────
@@ -148,9 +150,14 @@ def enable_engine(engine: str) -> AutoApproveConfig:
     engine = engine.strip()
     if not engine:
         raise ValueError("engine name must be non-empty")
-    cfg = load_config()
-    new = AutoApproveConfig(allowlist=cfg.allowlist | {engine})
-    save_config(new)
+    # W962: span load+modify+save so concurrent enable+disable
+    # don't clobber each other's set diff.
+    with _LOCK:
+        cfg = load_config()
+        new = AutoApproveConfig(
+            allowlist=cfg.allowlist | {engine},
+        )
+        save_config(new)
     return new
 
 
@@ -158,9 +165,12 @@ def disable_engine(engine: str) -> AutoApproveConfig:
     engine = engine.strip()
     if not engine:
         raise ValueError("engine name must be non-empty")
-    cfg = load_config()
-    new = AutoApproveConfig(allowlist=cfg.allowlist - {engine})
-    save_config(new)
+    with _LOCK:
+        cfg = load_config()
+        new = AutoApproveConfig(
+            allowlist=cfg.allowlist - {engine},
+        )
+        save_config(new)
     return new
 
 

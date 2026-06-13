@@ -8,6 +8,7 @@ Channels:
 """
 from __future__ import annotations
 import json
+import os
 import threading as _threading
 import time
 from pathlib import Path
@@ -16,6 +17,12 @@ from utils.logger import get_logger
 logger = get_logger("notifications")
 
 _ALERTS_FILE = Path(__file__).resolve().parents[2] / "data" / "alerts.json"
+
+# W962-47: spanning lock for concurrent _write_file calls.
+# The notification fan-out from a single send() can land
+# multiple alerts; multiple sends from background threads
+# would race on the load-modify-write of alerts.json.
+_FILE_LOCK = _threading.RLock()
 
 
 class NotificationSystem:
@@ -93,24 +100,35 @@ class NotificationSystem:
 
     @staticmethod
     def _write_file(notification: dict):
+        """W962-47: spanning lock around load+append+write,
+        plus atomic write via temp + os.replace."""
         try:
             _ALERTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            existing = []
-            if _ALERTS_FILE.exists():
-                try:
-                    existing = json.loads(_ALERTS_FILE.read_text())
-                except Exception:
-                    existing = []
-            existing.append({
-                "severity": notification["severity"],
-                "category": notification["category"],
-                "message": notification["message"],
-                "timestamp": notification["timestamp"],
-            })
-            # Keep last 100
-            if len(existing) > 100:
-                existing = existing[-100:]
-            _ALERTS_FILE.write_text(json.dumps(existing, indent=2))
+            with _FILE_LOCK:
+                existing = []
+                if _ALERTS_FILE.exists():
+                    try:
+                        existing = json.loads(_ALERTS_FILE.read_text())
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "alert read failed (treating as empty): %s",
+                            exc,
+                        )
+                        existing = []
+                existing.append({
+                    "severity": notification["severity"],
+                    "category": notification["category"],
+                    "message": notification["message"],
+                    "timestamp": notification["timestamp"],
+                })
+                # Keep last 100
+                if len(existing) > 100:
+                    existing = existing[-100:]
+                tmp = _ALERTS_FILE.with_suffix(
+                    _ALERTS_FILE.suffix + ".tmp." + str(os.getpid())
+                )
+                tmp.write_text(json.dumps(existing, indent=2))
+                os.replace(tmp, _ALERTS_FILE)
         except Exception as exc:
             logger.debug("alert persistence failed: %s", exc)
 

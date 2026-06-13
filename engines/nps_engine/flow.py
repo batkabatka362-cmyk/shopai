@@ -91,6 +91,21 @@ class NpsEngine:
             trends=trends, action_items=action_items,
         )
 
+        # Phase 7: optional NPS-tier tag apply. Opt-in via
+        # data.apply_nps_tags=True. Tags each respondent with
+        # their NPS tier (promoter/passive/detractor) via
+        # SHOPIFY_TAG_CUSTOMER.
+        tagged_nps: list[dict[str, Any]] = []
+        if bool(data.get("apply_nps_tags")):
+            try:
+                from .tag_applier import apply_nps_tags
+                tagged_nps = apply_nps_tags(validated_responses)
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "nps_engine: apply loop raised: %s", exc,
+                )
+
         elapsed = time.monotonic() - start
         return {
             "status": "success",
@@ -102,6 +117,7 @@ class NpsEngine:
                 "segment_breakdown": segment_breakdown,
                 "trends": trends,
                 "action_items": action_items,
+                "tagged_nps": tagged_nps,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,

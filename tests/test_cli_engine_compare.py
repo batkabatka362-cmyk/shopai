@@ -376,6 +376,35 @@ class TestTextMode:
         assert "METRIC" in out
         assert "WINNER" in out
 
+    def test_drill_down_hint_points_to_winner_fleet(self, cli):
+        """When engine_a has more metric wins, the drill-down
+        hint points at engine fleet <engine_a>."""
+        rows = {
+            # loyalty has more executions + positive outcomes
+            "loyalty": [
+                _row(id_="x1", status="executed"),
+                _row(id_="x2", status="executed"),
+            ],
+            "cart_recovery": [],
+        }
+        outcomes = {
+            "x1": [{"polarity": "positive", "metrics": {}}],
+            "x2": [{"polarity": "positive", "metrics": {}}],
+        }
+        with patch(
+            "core.approval.queue.get_approval_queue",
+            return_value=_fake_queue(
+                rows_by_engine=rows, outcomes=outcomes,
+            ),
+        ):
+            out, _ = _capture(
+                cli._cmd_engine_compare, _ns(),
+            )
+        assert (
+            "Drill down: `shopai engine fleet loyalty`"
+            in out
+        )
+
 
 # ─── Quarantine flags ────────────────────────────────────────
 

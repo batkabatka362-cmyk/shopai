@@ -389,7 +389,37 @@ class ShopifyDraftOrderCalculateAdapter(ShopifyBaseAdapter):
                 "shopify_draft_order_calculate",
                 f"'{label}.value' is required",
             )
-        value_type = raw.get("value_type") or raw.get("valueType") or "FIXED_AMOUNT"
+        # W962-66 Pattern G monetary fix: distinguish missing
+        # from explicit empty + align default with the sibling
+        # apply adapter (PERCENTAGE not FIXED_AMOUNT). Pre-fix
+        # the apply path defaulted PERCENTAGE while the
+        # calculate path defaulted FIXED_AMOUNT -- the same
+        # caller's input would price-quote and then apply
+        # differently, breaking trust in the preview-and-apply
+        # workflow.
+        _MISSING = object()
+        vt_snake = raw.get("value_type", _MISSING)
+        vt_camel = raw.get("valueType", _MISSING)
+        if vt_snake is _MISSING and vt_camel is _MISSING:
+            value_type = "PERCENTAGE"
+        elif vt_snake is not _MISSING and vt_snake == "":
+            raise AdapterValidationError(
+                "shopify_draft_order_calculate",
+                f"'{label}.value_type' was explicit empty "
+                "string. Provide PERCENTAGE or FIXED_AMOUNT, "
+                "or omit the key for the default.",
+            )
+        elif vt_camel is not _MISSING and vt_camel == "":
+            raise AdapterValidationError(
+                "shopify_draft_order_calculate",
+                f"'{label}.valueType' was explicit empty "
+                "string. Provide PERCENTAGE or FIXED_AMOUNT, "
+                "or omit the key for the default.",
+            )
+        else:
+            value_type = (
+                vt_snake if vt_snake is not _MISSING else vt_camel
+            )
         if not isinstance(value_type, str):
             raise AdapterValidationError(
                 "shopify_draft_order_calculate",

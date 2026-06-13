@@ -104,12 +104,23 @@ def _decompress_if_needed(data: bytes) -> bytes:
 
 def _count_records(json_bytes: bytes) -> int:
     """Parse JSON envelope and count total records across all sources."""
+    # W962-75: json.loads can return list / scalar / None for
+    # malformed-but-parseable payloads. Defensive isinstance
+    # guards prevent AttributeError on .get / iteration.
     try:
         envelope = json.loads(json_bytes.decode("utf-8"))
+        if not isinstance(envelope, dict):
+            return 0
         sources = envelope.get("sources", {})
+        if not isinstance(sources, dict):
+            return 0
         total = 0
         for source_data in sources.values():
+            if not isinstance(source_data, dict):
+                continue
             records = source_data.get("records", [])
+            if not isinstance(records, list):
+                continue
             total += len(records)
         return total
     except (json.JSONDecodeError, UnicodeDecodeError):

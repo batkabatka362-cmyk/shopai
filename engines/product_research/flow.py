@@ -63,6 +63,23 @@ def run(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
     # Stage 5: Final ranking
     winners = _rank_winners(scored_products, ai_analysis)
 
+    # Phase 7: optional winner-tag apply. Opt-in via
+    # data.apply_winner_tags=True. See winner_applier for
+    # filter logic (verdict in {strong_buy, buy}). Empty
+    # list when not opted in OR when no winners matched.
+    tagged_winners: list[dict[str, Any]] = []
+    if bool(data.get("apply_winner_tags")):
+        try:
+            from .winner_applier import apply_winner_tags
+            tagged_winners = apply_winner_tags(
+                winners[:20], products,
+            )
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).debug(
+                "product_research: apply loop raised: %s", exc,
+            )
+
     elapsed = round(time.monotonic() - start, 3)
     return {
         "status": "success",
@@ -73,6 +90,7 @@ def run(input_data: dict[str, Any] | None = None) -> dict[str, Any]:
             "total_evaluated": len(products),
             "winning_count": len([w for w in winners if w.get("verdict") in ("strong_buy", "buy")]),
             "ai_enhanced": ai_analysis.get("source") != "heuristic" if ai_analysis else False,
+            "tagged_winners": tagged_winners,
         },
         "meta": {"engine": ENGINE_NAME, "timestamp": time.time(), "elapsed_seconds": elapsed},
         "error": None,

@@ -89,7 +89,30 @@ class LoyaltyEngine:
         current_points = data.get("current_points", {})
 
         if not customers:
-            return self._fail("Customer list is required", 0.0)
+            # W963-161: cold-start success-skip. Empty customer
+            # list is legitimate state for fresh stores; right
+            # semantic is success + empty plan rather than an
+            # error envelope.
+            return {
+                "status": "success",
+                "data": {
+                    "tier_assignments": [],
+                    "rewards": [],
+                    "minted_codes": [],
+                    "skipped": True,
+                    "skip_reason": (
+                        "no_customers_yet (cold-start)"
+                    ),
+                },
+                "meta": {
+                    "engine": self.ENGINE_NAME,
+                    "timestamp": time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(),
+                    ),
+                    "elapsed_seconds": 0.0,
+                },
+                "error": None,
+            }
 
         # ---- Stage 1: Read past loyalty data (non-blocking) ----
         _past = read_past_loyalty(limit=5)

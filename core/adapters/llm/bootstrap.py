@@ -20,12 +20,14 @@ from __future__ import annotations
 from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
+from .anthropic import AnthropicAdapter
 from .deepseek import DeepSeekAdapter
 from .gemini import GeminiAdapter
 from .groq import GroqAdapter
 from .huggingface import HuggingFaceAdapter
 from .mistral import MistralAdapter
 from .ollama import OllamaAdapter
+from .openai import OpenAIAdapter
 from .openrouter import OpenRouterAdapter
 
 logger = get_logger("adapters.llm.bootstrap")
@@ -34,6 +36,8 @@ logger = get_logger("adapters.llm.bootstrap")
 _LLM_ADAPTER_CLASSES = (
     GroqAdapter,
     GeminiAdapter,
+    OpenAIAdapter,
+    AnthropicAdapter,
     DeepSeekAdapter,
     MistralAdapter,
     OllamaAdapter,
@@ -51,7 +55,7 @@ def register_all(
     caller can log how many adapters are actually wired up
     (instead of merely registered).
     """
-    reg = registry or get_registry()
+    reg = registry if registry is not None else get_registry()
     status: dict[str, bool] = {}
 
     for cls in _LLM_ADAPTER_CLASSES:
@@ -82,7 +86,7 @@ def register_all(
 def configured_count(registry: AdapterRegistry | None = None) -> int:
     """Return how many LLM adapters currently have credentials
     set in the environment."""
-    reg = registry or get_registry()
+    reg = registry if registry is not None else get_registry()
     return sum(
         1 for a in reg.find_by_category("llm") if a.is_configured()
     )

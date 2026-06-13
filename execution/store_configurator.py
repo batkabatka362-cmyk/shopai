@@ -29,6 +29,12 @@ from typing import Any, Optional
 from utils.logger import get_logger
 from utils.shopify_client import ShopifyClient
 
+# W963-157: GraphQL compat for the deprecated
+# read_price_rules / write_price_rules REST scopes.
+from ._discount_compat import (
+    list_existing_discount_titles as _existing_discount_titles,
+)
+
 logger = get_logger("store.configurator")
 
 
@@ -583,9 +589,9 @@ class StoreConfigurator:
           generous   → BEAUTY20
           moderate   → SAVE10
         """
-        existing_resp = client.get("price_rules.json")
-        existing = existing_resp.get("price_rules", []) if "error" not in existing_resp else []
-        existing_titles = set(r["title"] for r in existing)
+        # W963-157: was REST price_rules.json -> 403 in
+        # live test (deprecated read_price_rules scope).
+        existing_titles = _existing_discount_titles(client)
         created: list[str] = []
 
         def _add(code: str, value: float, **kwargs: Any) -> None:
@@ -642,58 +648,96 @@ class StoreConfigurator:
         target_type: str = "line_item",
         description: str = "",
     ) -> None:
-        """Create a price rule + attach a discount code.
+        """Create a discount code via GraphQL (W963-7.1).
 
-        Args:
-            code: the discount code users enter at checkout
-            value: negative percentage (e.g. -15.0 = 15% off)
-            once_per_customer: restrict to one use per customer
-            min_qty: minimum line-item quantity (volume discount)
-            min_subtotal: minimum cart subtotal (free-shipping threshold)
-            target_type: "line_item" for product discounts or
-                         "shipping_line" for shipping discounts
-            description: human-readable summary shown in the dry-run plan
+        Previously this method POSTed to the legacy REST
+        ``price_rules.json`` + ``discount_codes.json`` endpoints
+        which require the deprecated ``write_price_rules`` scope.
+        Now it routes through the SHOPIFY_CREATE_DISCOUNT
+        capability (GraphQL ``discountCodeBasicCreate``) which
+        only needs ``write_discounts`` -- already in ShopAI's
+        manifest.
+
+        Args identical to the previous signature so callers stay
+        unchanged. ``target_type="shipping_line"`` is mapped to
+        a 100%-off discount with the shipping target via the
+        adapter's friendly call shape.
         """
-        rule_body: dict[str, Any] = {
-            "price_rule": {
-                "title": code,
-                "target_type": target_type,
-                "target_selection": "all",
-                "allocation_method": "across",
-                "value_type": "percentage",
-                "value": str(value),
-                "customer_selection": "all",
-                "starts_at": time.strftime("%Y-%m-%dT00:00:00Z"),
-                "once_per_customer": once_per_customer,
-            }
-        }
-        if min_qty:
-            rule_body["price_rule"]["prerequisite_quantity_range"] = {
-                "greater_than_or_equal_to": min_qty,
-            }
-        if min_subtotal > 0:
-            rule_body["price_rule"]["prerequisite_subtotal_range"] = {
-                "greater_than_or_equal_to": str(min_subtotal),
-            }
+        # Convert "-15.0" → 15.0 (positive percentage for the
+        # adapter's friendly shape).
+        percentage = abs(float(value))
 
-        desc = description or f"Create price rule {code} ({value}%)"
-        result = self._write(
-            client, "POST", "price_rules.json", rule_body, description=desc,
+        # W963-163: shipping_line target routes through
+        # SHOPIFY_CREATE_DISCOUNT_FREE_SHIPPING (Shopify has a
+        # dedicated mutation for free shipping codes -- the basic
+        # discount mutation only handles line-item percentage/
+        # amount). Pre-fix every shipping_line caller silently
+        # got a regular percentage discount on the order subtotal
+        # instead of free shipping.
+        is_free_shipping = (
+            target_type == "shipping_line"
         )
-        rule_id = result.get("price_rule", {}).get("id") if result else None
-        if rule_id:
-            self._write(
-                client, "POST",
-                f"price_rules/{rule_id}/discount_codes.json",
-                {"discount_code": {"code": code}},
-                description=f"Attach discount code {code}",
+
+        # Build friendly params.
+        params: dict[str, Any] = {
+            "title": code,
+            "code": code,
+            "applies_once_per_customer": bool(once_per_customer),
+            "starts_at": time.strftime("%Y-%m-%dT00:00:00Z"),
+        }
+        if is_free_shipping:
+            # Free shipping mutation: NO percentage/amount field,
+            # uses minimumRequirement.minimum_subtotal.
+            if min_subtotal > 0:
+                params["minimum_subtotal"] = float(min_subtotal)
+        else:
+            params["percentage"] = percentage
+            if min_subtotal > 0:
+                params["min_subtotal"] = float(min_subtotal)
+            if min_qty:
+                params["min_quantity"] = int(min_qty)
+
+        desc = (
+            description
+            or f"Create discount {code} ({percentage:g}%)"
+        )
+
+        if self._dry_run:
+            # Mirror the legacy dry-run path: append to plan.
+            mutation_label = (
+                "discountCodeFreeShippingCreate"
+                if is_free_shipping
+                else "discountCodeBasicCreate"
             )
-        elif result.get("dry_run"):
-            self._write(
-                client, "POST",
-                "price_rules/<id>/discount_codes.json",
-                {"discount_code": {"code": code}},
-                description=f"Attach discount code {code}",
+            self._plan.append({
+                "method": "POST",
+                "path": f"graphql.json[{mutation_label}]",
+                "description": desc,
+                "body_preview": self._summarize_body(params),
+            })
+            return
+
+        # Live mode: route through the router.
+        try:
+            from core.adapters.router import get_router
+            from core.adapters.base import Capability
+            router = get_router()
+            cap = (
+                Capability.SHOPIFY_CREATE_DISCOUNT_FREE_SHIPPING
+                if is_free_shipping
+                else Capability.SHOPIFY_CREATE_DISCOUNT
+            )
+            result = router.execute(cap, params)
+            ok = bool(getattr(result, "ok", False))
+            if not ok:
+                err = getattr(result, "error", "unknown") or ""
+                logger.warning(
+                    "discount %s create failed: %s", code, err,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "discount %s router execute raised: %s",
+                code, exc,
             )
 
     # ── Feature: Shipping zones ────────────────────────────────
@@ -1032,9 +1076,9 @@ class StoreConfigurator:
         """Create a referral program: a FRIEND10 code + metafield config."""
         # The discount itself (created idempotently — it's fine if it
         # already exists because _create_discount checks existing)
-        existing_resp = client.get("price_rules.json")
-        existing = existing_resp.get("price_rules", []) if "error" not in existing_resp else []
-        existing_titles = {r["title"] for r in existing}
+        # W963-157: was REST price_rules.json -> 403 in
+        # live test (deprecated read_price_rules scope).
+        existing_titles = _existing_discount_titles(client)
         code = "FRIEND10"
         code_created = False
         if code not in existing_titles:

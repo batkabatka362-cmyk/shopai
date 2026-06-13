@@ -331,6 +331,110 @@ class TestDesignSection:
         assert "engine down" in snap["design"]["error"]
 
 
+class TestNichePrioritySection:
+    """Wave 87: niche_priority section surfaces the merged
+    cluster_focus the orchestrator would use."""
+
+    def test_active_when_known_niche(self):
+        sm = _fake_sm(niche="beauty")
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        np = snap["niche_priority"]
+        assert np["checked"] is True
+        assert np["active"] is True
+        assert np["niche"] == "beauty"
+        # Beauty's first cluster is merchandising
+        assert np["cluster_focus"][0] == "merchandising"
+        # supported_niches list always shipped
+        assert "beauty" in np["supported_niches"]
+        assert "tech" in np["supported_niches"]
+
+    def test_inactive_when_general(self):
+        sm = _fake_sm(niche="general")
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        np = snap["niche_priority"]
+        assert np["checked"] is True
+        assert np["active"] is False
+        assert np["cluster_focus"] == []
+        assert "no niche set" in np["reason"]
+
+    def test_inactive_when_empty(self):
+        sm = _fake_sm(niche="")
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        np = snap["niche_priority"]
+        assert np["active"] is False
+        assert np["cluster_focus"] == []
+
+    def test_unknown_niche_inactive(self):
+        sm = _fake_sm(niche="xyzunknown")
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        np = snap["niche_priority"]
+        assert np["active"] is False
+        # reason mentions unknown
+        assert "unknown" in np["reason"].lower()
+
+    def test_wave90_detection_block_when_unset_with_catalog(self):
+        """Wave 90: when niche is empty AND the catalog matches
+        a niche, the section carries a detection block with the
+        suggestion + what cluster_focus WOULD be."""
+        sm = _fake_sm(niche="")
+        # Inject a beauty-matching catalog via get_products
+        sm.get_products = lambda sid, limit=50: [
+            {"title": "Lipstick", "tags": ["makeup"]},
+            {"title": "Foundation", "tags": ["cosmetics"]},
+            {"title": "Serum", "tags": ["skincare"]},
+            {"title": "Moisturizer", "tags": ["beauty"]},
+        ]
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        np = snap["niche_priority"]
+        assert np["active"] is False  # not tagged -> inactive
+        det = np["detection"]
+        assert det is not None
+        assert det["suggested"] == "beauty"
+        assert det["confidence"] in ("high", "medium")
+        assert det["actionable"] is True
+        # cluster_focus_if_applied populated for actionable
+        assert (
+            det["cluster_focus_if_applied"][0] == "merchandising"
+        )
+
+    def test_wave90_no_detection_block_when_no_keywords(self):
+        """Catalog with no niche keywords -> no detection block
+        surfaced (low / no_data not actionable)."""
+        sm = _fake_sm(niche="")
+        sm.get_products = lambda sid, limit=50: [
+            {"title": "Generic Item"},
+            {"title": "Whatever Thing"},
+        ]
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        det = snap["niche_priority"]["detection"]
+        # Block IS present (we called detector) but not actionable
+        assert det is not None
+        assert det["actionable"] is False
+        assert det["cluster_focus_if_applied"] == []
+
+    def test_wave90_no_detection_when_tagged(self):
+        """When niche IS set, detection block is None (no need
+        to run the detector when the orchestrator already
+        has bias data)."""
+        sm = _fake_sm(niche="beauty")
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external():
+            snap = wm.snapshot("test-store", skip_live=True)
+        assert snap["niche_priority"]["detection"] is None
+
+
 class TestApprovalsSection:
 
     def test_populates_pending_counts(self):
@@ -644,7 +748,8 @@ class TestSnapshotEnvelope:
             snap = wm.snapshot("test-store", skip_live=True)
         for key in (
             "store_id", "fetched_at", "store", "stats", "sync",
-            "connection", "config", "design", "approvals", "decisions",
+            "connection", "config", "design", "niche_priority",
+            "approvals", "decisions",
             "transfers", "recent_outcomes", "quarantine",
         ):
             assert key in snap
@@ -1108,3 +1213,856 @@ class TestSectionQuarantine:
         # Section still renders; recent_alerts degrades to []
         assert sec["checked"] is True
         assert sec["recent_alerts"] == []
+
+
+class TestSectionSubstrate:
+    """``_section_substrate`` surfaces capability-layer
+    overrides + bridge config + degradation candidates."""
+
+    def _override(
+        self, name, kind="demote", reason="", at=0.0,
+    ):
+        from core.capability_planner.\
+capability_overrides import CapabilityOverride
+        return CapabilityOverride(
+            name=name, kind=kind, reason=reason,
+            recorded_at=at,
+        )
+
+    def _overrides_for(self, *entries):
+        from core.capability_planner.\
+capability_overrides import CapabilityOverrides
+        return CapabilityOverrides(entries=list(entries))
+
+    def test_empty_substrate_envelope(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=self._overrides_for(),
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=[],
+        ):
+            sec = wm._section_substrate()
+        assert sec["checked"] is True
+        assert sec["scope"] == "fleet"
+        assert sec["overrides"]["total"] == 0
+        assert sec["overrides"]["promoted"] == []
+        assert sec["overrides"]["demoted"] == []
+        assert sec["overrides"]["auto_demoted"] == []
+        assert sec["demote_candidates"] == 0
+        assert sec["release_candidates"] == 0
+        assert sec["recent_degradations"] == []
+        assert sec["bridge"]["enabled"] is False
+        assert (
+            sec["bridge"]["recovery_threshold"] == 0.7
+        )
+
+    def test_overrides_populate_separated(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        overrides = self._overrides_for(
+            self._override(
+                "winner", kind="promote",
+                reason="beauty niche", at=100.0,
+            ),
+            self._override(
+                "regressed",
+                reason="auto_demote_degraded: drop=0.6 ...",
+                at=200.0,
+            ),
+            self._override(
+                "manual_broken",
+                reason="operator says",
+                at=300.0,
+            ),
+        )
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=overrides,
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=[],
+        ):
+            sec = wm._section_substrate()
+        assert sec["overrides"]["total"] == 3
+        assert len(sec["overrides"]["promoted"]) == 1
+        assert (
+            sec["overrides"]["promoted"][0]["name"]
+            == "winner"
+        )
+        assert len(sec["overrides"]["demoted"]) == 2
+        # Bridge-driven demote separated into auto bucket
+        assert len(sec["overrides"]["auto_demoted"]) == 1
+        assert (
+            sec["overrides"]["auto_demoted"][0]["name"]
+            == "regressed"
+        )
+
+    def test_demote_candidates_filters_blocked(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        candidates = [
+            {
+                "capability": "cap_a",
+                "blocked_by": None,
+            },
+            {
+                "capability": "cap_b",
+                "blocked_by": "promoted",
+            },
+            {
+                "capability": "cap_c",
+                "blocked_by": "already_demoted",
+            },
+        ]
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=self._overrides_for(),
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=candidates,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ):
+            sec = wm._section_substrate()
+        # Only the unblocked candidate counted
+        assert sec["demote_candidates"] == 1
+
+    def test_recent_degradations_capped_at_5(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        degs = [
+            {
+                "capability": f"cap_{i}",
+                "baseline_rate": 0.9,
+                "recent_rate": 0.1,
+                "drop": 0.8,
+                "recent_samples": 5,
+                "baseline_samples": 20,
+            }
+            for i in range(8)
+        ]
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=self._overrides_for(),
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=degs,
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=[],
+        ):
+            sec = wm._section_substrate()
+        assert len(sec["recent_degradations"]) == 5
+
+    def test_load_failure_fails_open(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            side_effect=RuntimeError("disk corrupt"),
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=[],
+        ):
+            sec = wm._section_substrate()
+        assert sec["checked"] is True
+        # Overrides empty (couldn't load) but section
+        # remains usable
+        assert sec["overrides"]["total"] == 0
+
+    def test_section_appears_in_full_snapshot(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external(), patch(
+            "core.capability_planner.capability_overrides."
+            "load_overrides",
+            return_value=self._overrides_for(),
+        ), patch(
+            "core.capability_planner."
+            "capability_degradations",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_demote_candidates",
+            return_value=[],
+        ), patch(
+            "core.capability_planner.auto_demote."
+            "find_release_candidates",
+            return_value=[],
+        ):
+            snap = wm.snapshot("test-store", skip_live=True)
+        assert "substrate" in snap
+        assert snap["substrate"]["checked"] is True
+        assert snap["substrate"]["scope"] == "fleet"
+
+
+class TestSectionCycle:
+    """Per-store cycle activity in the world-model snapshot."""
+
+    def test_default_zeros(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        assert sec["checked"] is True
+        assert sec["scope"] == "per_store"
+        assert sec["store_id"] == "store-x"
+        assert sec["stats"]["total"] == 0
+        assert sec["last_outcome"] is None
+
+    def test_per_store_stats_populate(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={
+                "store-a": {
+                    "executed": 5, "refused": 2,
+                    "errored": 0, "no_plan": 0,
+                    "total": 7,
+                },
+            },
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ):
+            sec = wm._section_cycle(store_id="store-a")
+        assert sec["stats"]["executed"] == 5
+        assert sec["stats"]["refused"] == 2
+        assert sec["stats"]["total"] == 7
+
+    def test_last_outcome_from_recent_events(self):
+        from core.autonomous.cycle_history import CycleEvent
+        ev = CycleEvent(
+            recorded_at=100.0,
+            executed=True,
+            advance={
+                "per_store": [
+                    {
+                        "store_id": "store-a",
+                        "outcome": "executed",
+                    },
+                ],
+            },
+        )
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={
+                "store-a": {
+                    "executed": 1, "refused": 0,
+                    "errored": 0, "no_plan": 0,
+                    "total": 1,
+                },
+            },
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[ev],
+        ):
+            sec = wm._section_cycle(store_id="store-a")
+        assert sec["last_outcome"] == "executed"
+        assert sec["last_recorded_at"] == 100.0
+
+    def test_fleet_scope_aggregates(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={
+                "a": {
+                    "executed": 2, "refused": 0,
+                    "errored": 0, "no_plan": 0,
+                    "total": 2,
+                },
+                "b": {
+                    "executed": 1, "refused": 3,
+                    "errored": 0, "no_plan": 0,
+                    "total": 4,
+                },
+            },
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ):
+            sec = wm._section_cycle(store_id=None)
+        assert sec["scope"] == "fleet"
+        assert sec["stats"]["executed"] == 3
+        assert sec["stats"]["refused"] == 3
+        assert sec["stats"]["total"] == 6
+
+    def test_import_failure_keeps_section(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            side_effect=RuntimeError("disk"),
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        # Stays checked, stats default zeros
+        assert sec["checked"] is True
+        assert sec["stats"]["total"] == 0
+
+    def test_section_appears_in_snapshot(self):
+        sm = _fake_sm()
+        wm = WorldModel(sm=sm, queue=_fake_queue())
+        with _patch_external(), patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ):
+            snap = wm.snapshot("store-x", skip_live=True)
+        assert "cycle" in snap
+        assert snap["cycle"]["checked"] is True
+
+    def test_per_store_revenue_trend_populates(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_revenue_history."
+            "per_store_trend",
+            return_value={
+                "store_id": "store-a",
+                "snapshots": 3,
+                "first_revenue": 1000.0,
+                "last_revenue": 1500.0,
+                "delta": 500.0,
+                "delta_pct": 50.0,
+            },
+        ):
+            sec = wm._section_cycle(store_id="store-a")
+        assert sec["revenue_trend_7d"]["delta"] == 500.0
+
+    def test_per_store_revenue_trend_none_at_fleet_scope(
+        self,
+    ):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ):
+            sec = wm._section_cycle(store_id=None)
+        # Fleet scope -- no per-store trend
+        assert sec["revenue_trend_7d"] is None
+
+    def test_per_store_alerts_filtered_to_store(self):
+        """When store_id is given, ``cycle.alerts`` carries
+        ONLY alerts for that store."""
+        from core.autonomous.cycle_alerts import (
+            PerStoreCycleAlert,
+        )
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_alerts."
+            "compute_per_store_alerts",
+            return_value=[
+                PerStoreCycleAlert(
+                    store_id="store-a",
+                    kind="store_consistently_refused",
+                    detail="this-store-alert",
+                ),
+                PerStoreCycleAlert(
+                    store_id="store-b",
+                    kind="store_consistently_errored",
+                    detail="other-store-alert",
+                ),
+            ],
+        ):
+            sec = wm._section_cycle(store_id="store-a")
+        # Only store-a's alert surfaces
+        assert len(sec["alerts"]) == 1
+        assert (
+            sec["alerts"][0]["kind"]
+            == "store_consistently_refused"
+        )
+        assert (
+            sec["alerts"][0]["detail"] == "this-store-alert"
+        )
+
+    def test_pause_state_surfaced(self):
+        """Cycle section carries fleet-wide pause state +
+        7d frequency rollup."""
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_pause.get_pause_state",
+            return_value={
+                "active": True,
+                "paused_until_at": 1700000000.0,
+                "reason": "maint",
+                "paused_at": 1699996400.0,
+            },
+        ), patch(
+            "core.autonomous.cycle_pause.pause_frequency",
+            return_value={
+                "pause_count": 3,
+                "resume_count": 2,
+                "extend_count": 1,
+                "total_downtime_hours": 4.25,
+                "avg_pause_duration_hours": 1.4,
+                "last_pause_at": 1699996400.0,
+                "window_days": 7.0,
+            },
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        assert sec["pause"]["active"] is True
+        assert sec["pause"]["reason"] == "maint"
+        assert sec["pause_frequency_7d"]["pause_count"] == 3
+        assert (
+            sec["pause_frequency_7d"]["total_downtime_hours"]
+            == 4.25
+        )
+
+    def test_engine_regressions_surfaced(self):
+        """Cycle section carries fleet-wide health
+        regressions from find_regressions()."""
+        from core.approval.engine_health_history import (
+            HealthRegression,
+        )
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_regressions",
+            return_value=[
+                HealthRegression(
+                    engine="loyalty",
+                    latest_score=4,
+                    latest_verdict="warning",
+                    baseline_score=8.0,
+                    drop=4.0,
+                    samples_in_baseline=5,
+                ),
+            ],
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        regs = sec["engine_regressions"]
+        assert len(regs) == 1
+        assert regs[0]["engine"] == "loyalty"
+        assert regs[0]["drop"] == 4.0
+        assert regs[0]["latest_score"] == 4
+
+    def test_engine_regressions_default_when_unavailable(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_regressions",
+            side_effect=RuntimeError("disk"),
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        assert sec["engine_regressions"] == []
+
+
+class TestEngineOutcomeAlertsInCycle:
+
+    def test_outcome_alerts_surfaced(self):
+        from core.approval.outcome_trends import EngineAlert
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.approval.outcome_trends."
+            "compute_engine_alerts",
+            return_value=[
+                EngineAlert(
+                    engine="loyalty",
+                    recent_executed=10,
+                    baseline_executed=40,
+                    recent_score=2.5,
+                    baseline_score=4.0,
+                    recent_polarised=8,
+                    baseline_polarised=35,
+                    drop=1.5,
+                    detail="outcome score dropped",
+                ),
+            ],
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        alerts = sec["engine_outcome_alerts"]
+        assert len(alerts) == 1
+        assert alerts[0]["engine"] == "loyalty"
+        assert alerts[0]["drop"] == 1.5
+        assert alerts[0]["recent_score"] == 2.5
+
+    def test_outcome_alerts_default_when_unavailable(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.approval.outcome_trends."
+            "compute_engine_alerts",
+            side_effect=RuntimeError("queue down"),
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        assert sec["engine_outcome_alerts"] == []
+
+
+class TestChronicWarningsInCycle:
+
+    def test_chronic_warnings_surfaced(self):
+        from core.approval.engine_health_history import (
+            ChronicWarning,
+        )
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_chronic_warnings",
+            return_value=[
+                ChronicWarning(
+                    engine="loyalty",
+                    latest_score=5,
+                    latest_verdict="warning",
+                    samples=4,
+                    avg_score=5.5,
+                ),
+            ],
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        chronics = sec["engine_chronic_warnings"]
+        assert len(chronics) == 1
+        assert chronics[0]["engine"] == "loyalty"
+        assert chronics[0]["avg_score"] == 5.5
+
+    def test_chronic_warnings_default_when_unavailable(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.approval.engine_health_history."
+            "find_chronic_warnings",
+            side_effect=RuntimeError("disk"),
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        assert sec["engine_chronic_warnings"] == []
+
+
+class TestAttributionSection:
+    """Wave 16: attribution surfaced in world-model snapshot."""
+
+    def test_default_returns_no_snapshot(self):
+        """Cold-start store with no per-store snapshots yet."""
+        sm = _fake_sm()
+        with patch(
+            "engines._attribution_snapshot.last_snapshot",
+            return_value=None,
+        ):
+            snap = WorldModel(sm=sm).snapshot(
+                "store-x", skip_live=True,
+            )
+        attr = snap["attribution"]
+        assert attr["checked"] is True
+        assert attr["has_snapshot"] is False
+        assert attr["attributed_revenue"] == 0.0
+        assert attr["top_cluster"] is None
+
+    def test_with_snapshot_surfaces_revenue(self):
+        from engines._attribution_snapshot import AttributionSnapshot
+        fake_snap = AttributionSnapshot(
+            snapshot_id="x", captured_at=1000.0,
+            window_hours=168.0, store_id="store-x",
+            total_orders_in_window=5,
+            total_revenue_in_window=500.0,
+            attributed_revenue=400.0,
+            attribution_rate=0.8,
+            per_cluster=[
+                {"cluster": "retention",
+                 "attributed_revenue": 400.0,
+                 "attributed_orders": 5},
+            ],
+            per_engine=[
+                {"engine": "loyalty", "cluster": "retention",
+                 "attributed_revenue": 400.0,
+                 "attributed_orders": 5},
+            ],
+        )
+        sm = _fake_sm()
+        with patch(
+            "engines._attribution_snapshot.last_snapshot",
+            return_value=fake_snap,
+        ), patch(
+            "engines._attribution_delta.latest_delta",
+            return_value=None,
+        ):
+            snap = WorldModel(sm=sm).snapshot(
+                "store-x", skip_live=True,
+            )
+        attr = snap["attribution"]
+        assert attr["checked"] is True
+        assert attr["has_snapshot"] is True
+        assert attr["attributed_revenue"] == 400.0
+        assert attr["top_cluster"] == "retention"
+        assert attr["top_engine"] == "loyalty"
+        assert attr["delta"] is None
+
+    def test_with_delta_alerts_surfaces_top_alert(self):
+        from engines._attribution_snapshot import AttributionSnapshot
+        from engines._attribution_delta import (
+            AttributionDelta, RegressionAlert,
+        )
+        fake_snap = AttributionSnapshot(
+            snapshot_id="x", captured_at=1000.0,
+            window_hours=168.0, store_id="store-x",
+            total_orders_in_window=5,
+            total_revenue_in_window=500.0,
+            attributed_revenue=200.0,
+            attribution_rate=0.4,
+        )
+        fake_delta = AttributionDelta(
+            prior_snapshot_id="prev", latest_snapshot_id="x",
+            prior_captured_at=900.0, latest_captured_at=1000.0,
+            prior_total_revenue=1000.0,
+            latest_total_revenue=500.0,
+            prior_attributed_revenue=800.0,
+            latest_attributed_revenue=200.0,
+            alerts=[
+                RegressionAlert(
+                    scope="cluster", name="retention",
+                    prior_revenue=800.0, latest_revenue=200.0,
+                    delta_pct=-0.75,
+                    reason="revenue dropped 75%",
+                ),
+            ],
+        )
+        sm = _fake_sm()
+        with patch(
+            "engines._attribution_snapshot.last_snapshot",
+            return_value=fake_snap,
+        ), patch(
+            "engines._attribution_delta.latest_delta",
+            return_value=fake_delta,
+        ):
+            snap = WorldModel(sm=sm).snapshot(
+                "store-x", skip_live=True,
+            )
+        attr = snap["attribution"]
+        assert attr["delta"]["alert_count"] == 1
+        assert "dropped 75%" in attr["delta"]["top_alert"]
+
+
+class TestLaunchReadinessSection:
+    """``cycle.launch_readiness`` -- opt-in section that
+    pipes the launch-audit result through world-model.show."""
+
+    def test_default_unchecked(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        sec = wm._section_launch_readiness(
+            store_id="store-x", include=False,
+        )
+        assert sec["checked"] is False
+        assert sec["ready_to_launch"] is None
+        assert sec["completion_pct"] is None
+
+    def test_include_runs_audit(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        fake_audit = {
+            "ready_to_launch": True,
+            "completion_pct": 100,
+            "missing_summary": "all checks passed",
+            "next_action": "",
+            "checks": [
+                {"key": "shop_identity", "ok": True},
+            ],
+        }
+        with patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value=fake_audit,
+        ):
+            sec = wm._section_launch_readiness(
+                store_id="store-x", include=True,
+            )
+        assert sec["checked"] is True
+        assert sec["ready_to_launch"] is True
+        assert sec["completion_pct"] == 100
+        assert len(sec["checks"]) == 1
+
+    def test_include_audit_failure_degrades(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "engines.store_setup.launch_audit.audit_store",
+            side_effect=RuntimeError("router down"),
+        ):
+            sec = wm._section_launch_readiness(
+                store_id="store-x", include=True,
+            )
+        assert sec["checked"] is False
+        assert "router down" in sec.get("error", "")
+
+    def test_snapshot_default_skips_readiness(self):
+        """The full snapshot doesn't run the audit unless
+        include_launch_readiness=True."""
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "engines.store_setup.launch_audit.audit_store",
+        ) as mock_audit:
+            snap = wm.snapshot("store-x", skip_live=True)
+        assert mock_audit.call_count == 0
+        assert (
+            snap["launch_readiness"]["checked"] is False
+        )
+
+    def test_snapshot_opt_in_runs_audit(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "engines.store_setup.launch_audit.audit_store",
+            return_value={
+                "ready_to_launch": False,
+                "completion_pct": 60,
+                "missing_summary": "x",
+                "next_action": "y",
+                "checks": [],
+            },
+        ) as mock_audit:
+            snap = wm.snapshot(
+                "store-x",
+                skip_live=True,
+                include_launch_readiness=True,
+            )
+        assert mock_audit.call_count == 1
+        assert snap["launch_readiness"]["checked"] is True
+        assert (
+            snap["launch_readiness"]["completion_pct"] == 60
+        )
+
+    def test_pause_state_default_when_unavailable(self):
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_pause.get_pause_state",
+            side_effect=RuntimeError("disk"),
+        ):
+            sec = wm._section_cycle(store_id="store-x")
+        # Soft default (no exception bubbled up)
+        assert sec["pause"]["active"] is False
+        assert sec["pause_frequency_7d"] is None
+
+    def test_fleet_scope_surfaces_all_alerts(self):
+        from core.autonomous.cycle_alerts import (
+            PerStoreCycleAlert,
+        )
+        wm = WorldModel(sm=_fake_sm(), queue=_fake_queue())
+        with patch(
+            "core.autonomous.cycle_history.per_store_stats",
+            return_value={},
+        ), patch(
+            "core.autonomous.cycle_history.recent_history",
+            return_value=[],
+        ), patch(
+            "core.autonomous.cycle_alerts."
+            "compute_per_store_alerts",
+            return_value=[
+                PerStoreCycleAlert(
+                    store_id="store-a",
+                    kind="store_consistently_refused",
+                    detail="alert-a",
+                ),
+                PerStoreCycleAlert(
+                    store_id="store-b",
+                    kind="store_consistently_errored",
+                    detail="alert-b",
+                ),
+            ],
+        ):
+            sec = wm._section_cycle(store_id=None)
+        # All alerts surface in fleet scope
+        assert len(sec["alerts"]) == 2
+        store_ids = {a["store_id"] for a in sec["alerts"]}
+        assert store_ids == {"store-a", "store-b"}

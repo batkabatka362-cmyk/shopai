@@ -88,7 +88,27 @@ class CustomerSegmentationEngine:
             query=data.get("hydrate_query"),
         )
         if not customers:
-            return self._fail("No customer data provided", 0.0)
+            # W963-161: cold-start success-skip.
+            return {
+                "status": "success",
+                "data": {
+                    "segments": [],
+                    "total_customers": 0,
+                    "applied_tags": [],
+                    "skipped": True,
+                    "skip_reason": (
+                        "no_customers_yet (cold-start)"
+                    ),
+                },
+                "meta": {
+                    "engine": self.ENGINE_NAME,
+                    "timestamp": time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(),
+                    ),
+                    "elapsed_seconds": 0.0,
+                },
+                "error": None,
+            }
 
         # ---- Stage 1: Read past segmentations (non-blocking) ----
         _past = read_past_segmentations(limit=5)

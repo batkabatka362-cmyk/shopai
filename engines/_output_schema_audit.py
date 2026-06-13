@@ -84,6 +84,65 @@ _EMPTY_INPUT: dict[str, Any] = {
     "error": None,
 }
 
+# W962-33: malformed input envelopes for the strict probe. Each
+# probe shape pokes a different fragile assumption engines
+# typically make about their input:
+#   - data is a STRING (engines that .get() on data raise)
+#   - data fields are nonsense strings (engines that float()
+#     or int() raise -- the W962-13/14 bug class)
+#   - meta is a list (engines that try meta.get raise)
+#   - The whole input is None
+# W962-54: extended with two more aggressive probes:
+#   - products/customers as list-of-ints (engines that do
+#     `for p in products: p.get(...)` raise AttributeError)
+#   - very large stringified numerics + Infinity (engines
+#     that don't bound int()/float() inputs raise OverflowError
+#     or InvalidOperation)
+# A clean Pattern Q engine catches ANY exception in its
+# run() body via top-level try/except and returns
+# status="error" + the four-key envelope. Engines that raise
+# escape the contract.
+_MALFORMED_INPUTS: tuple[dict[str, Any], ...] = (
+    {  # data as string
+        "status": "success",
+        "data": "this should be a dict",
+        "meta": {},
+        "error": None,
+    },
+    {  # data fields with nonsense values
+        "status": "success",
+        "data": {
+            "amount": "not-a-float",
+            "count": "not-an-int",
+            "items": "not-a-list",
+            "products": None,
+            "customers": None,
+        },
+        "meta": {},
+        "error": None,
+    },
+    {  # meta as list
+        "status": "success",
+        "data": {},
+        "meta": ["should", "be", "dict"],
+        "error": None,
+    },
+    {  # W962-54: list elements are wrong type
+        "status": "success",
+        "data": {
+            "products": [1, 2, 3],
+            "customers": [None, None, None],
+            "items": ["str", "str", "str"],
+            "tags": [None, 123, True],
+            "discount_pct": -100,
+            "discount_amount": None,
+            "apply_X": True,
+        },
+        "meta": {},
+        "error": None,
+    },
+)
+
 
 def _is_test_environment() -> bool:
     """Pattern J guard -- mirror the recorder's contract so the
@@ -95,6 +154,8 @@ def _is_test_environment() -> bool:
 
 def audit_engine_output_schema(
     engine_names: list[str] | None = None,
+    *,
+    strict: bool = False,
 ) -> EngineSchemaReport:
     """Run every registered engine with an empty input and
     verify the canonical envelope.
@@ -103,6 +164,15 @@ def audit_engine_output_schema(
         engine_names: Optional explicit list to scan (defaults
             to every engine in :func:`engines.registry.list_engines`).
             Tests use this to scope down.
+        strict: When True (W962-33), additionally probe each
+            engine with malformed input shapes (string-where-
+            dict-expected, nonsense-numeric strings, list-where-
+            dict-expected). Engines that raise on any of these
+            inputs violate Pattern Q -- a top-level try/except
+            in run() is the canonical fix (see W962-13/14
+            content_generation + fraud_detection).
+            Default False preserves CI behaviour; strict is
+            opt-in for periodic hardening sweeps.
 
     Returns:
         :class:`EngineSchemaReport` summarising which engines
@@ -179,6 +249,53 @@ def audit_engine_output_schema(
                 ),
             ))
             continue
+
+        # W962-33 strict probes: replay each engine with
+        # malformed input shapes. Any raise is a violation.
+        if strict:
+            strict_violation = None
+            for idx, bad_input in enumerate(_MALFORMED_INPUTS):
+                try:
+                    bad_result = runner(
+                        _copy.deepcopy(bad_input),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    strict_violation = EngineSchemaViolation(
+                        engine=name,
+                        reason="raised_on_malformed",
+                        detail=(
+                            f"probe_{idx}: "
+                            f"{type(exc).__name__}: {exc!s:.180}"
+                        ),
+                    )
+                    break
+                # Even if it didn't raise, the response must
+                # still be a four-key envelope.
+                if not isinstance(bad_result, dict):
+                    strict_violation = EngineSchemaViolation(
+                        engine=name,
+                        reason="not_a_dict_on_malformed",
+                        detail=(
+                            f"probe_{idx}: returned "
+                            f"{type(bad_result).__name__}"
+                        ),
+                    )
+                    break
+                missing = _EXPECTED_KEYS - set(bad_result.keys())
+                if missing:
+                    strict_violation = EngineSchemaViolation(
+                        engine=name,
+                        reason="missing_keys_on_malformed",
+                        detail=(
+                            f"probe_{idx}: missing "
+                            f"{sorted(missing)}"
+                        ),
+                    )
+                    break
+            if strict_violation is not None:
+                violations.append(strict_violation)
+                continue
+
         clean.append(name)
 
     return EngineSchemaReport(

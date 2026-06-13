@@ -151,6 +151,23 @@ class PriceElasticityEngine:
         # ---- Stage 7: Memory Writer (non-fatal) ----
         _write_result = write_elasticity_result(elasticity=elasticity)
 
+        # Phase 7: optional elasticity-tag apply. Opt-in via
+        # data.apply_elasticity_tags=True. Tags products with
+        # pricing:elastic / pricing:inelastic via
+        # SHOPIFY_UPDATE_PRODUCT.
+        tagged_elasticity: list[dict[str, Any]] = []
+        if bool(data.get("apply_elasticity_tags")):
+            try:
+                from .tag_applier import apply_elasticity_tags
+                tagged_elasticity = apply_elasticity_tags(
+                    elasticity, products,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "price_elasticity: apply loop raised: %s", exc,
+                )
+
         # ---- Stage 8: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -158,6 +175,7 @@ class PriceElasticityEngine:
             "status": "success",
             "data": {
                 "elasticity": elasticity,
+                "tagged_elasticity": tagged_elasticity,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,

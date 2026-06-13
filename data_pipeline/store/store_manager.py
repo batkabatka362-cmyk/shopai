@@ -43,16 +43,83 @@ def _get_auth_instance(shop_url: str, client_id: str, client_secret: str) -> Any
 class StoreManager:
     """Manages multiple Shopify stores for ShopAI."""
 
+    # W949: persist active store across CLI invocations
+    _ACTIVE_STORE_PATH = "data/.active_store"
+
     def __init__(self, db: Any = None) -> None:
         from data_pipeline.store.db import ShopAIDatabase
+        import os
         self._db: ShopAIDatabase = db or ShopAIDatabase()
-        self._active_store_id: str = ""
+        # W949 bugfix: load persisted active store id at init.
+        # W951 (Pattern J): under pytest, never read from the
+        # persistence file -- tests need clean state per
+        # fixture, not cross-test leakage.
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            self._active_store_id = ""
+        else:
+            try:
+                if os.path.exists(self._ACTIVE_STORE_PATH):
+                    with open(
+                        self._ACTIVE_STORE_PATH, "r",
+                        encoding="utf-8",
+                    ) as f:
+                        candidate = f.read().strip()
+                    # W958 bugfix: validate the persisted
+                    # active store still exists in the DB.
+                    # Stale .active_store from pre-W953 test
+                    # leakage (e.g. "store2") used to crash
+                    # downstream consumers with FK constraint
+                    # failures.
+                    if candidate and self._db.get_store(
+                        candidate,
+                    ):
+                        self._active_store_id = candidate
+                    else:
+                        self._active_store_id = ""
+                        if candidate:
+                            logger.info(
+                                "persisted active store %r "
+                                "not found in registry; "
+                                "ignoring stale value",
+                                candidate,
+                            )
+                else:
+                    self._active_store_id = ""
+            except Exception:  # noqa: BLE001
+                self._active_store_id = ""
         self._store_credentials: dict[str, dict[str, str]] = {}
         # Protects _active_store_id and _store_credentials from
         # concurrent access. Multiple API handlers can call
         # add_store / set_active_store / get_credentials in
         # parallel. Audit pass 48.
         self._lock = threading.RLock()
+
+    def _persist_active(self, store_id: str) -> None:
+        """W949: write active store id to disk so subsequent
+        CLI invocations pick it up. Best-effort -- a failure
+        does not break the in-memory operation.
+
+        W951 (Pattern J): short-circuit under pytest so tests
+        with their own StoreManager fixtures don't see
+        cross-test leakage from this disk file.
+        """
+        import os
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return
+        try:
+            os.makedirs(
+                os.path.dirname(self._ACTIVE_STORE_PATH),
+                exist_ok=True,
+            )
+            with open(
+                self._ACTIVE_STORE_PATH, "w",
+                encoding="utf-8",
+            ) as f:
+                f.write(store_id or "")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "active store persist failed: %s", exc,
+            )
 
     # ── Store CRUD ───────────────────────────────────────────
 
@@ -73,6 +140,58 @@ class StoreManager:
         if not isinstance(shop_url, str) or not shop_url:
             return {"error": "shop_url required"}
 
+        # W963-125 round-8 #2: refuse registration when
+        # this sid normalises to the SAME per-store
+        # env-var key as an already-registered sid.
+        # Without this guard, operator adding both
+        # 'store-a' and 'store_a' would silently share
+        # one set of SHOPAI_STORE_STORE_A_* credentials
+        # for ALL adapter categories (Meta Ads tokens,
+        # OpenAI keys, etc.), routing spend + mutations
+        # to the wrong account.
+        try:
+            from core.adapters._per_store_credentials import (
+                sid_normalises_to_same_env,
+            )
+            # W963-129 round-9 #5 fix: collision check
+            # consults DB (authoritative store list), not
+            # the in-memory cache. Pre-fix a fresh process
+            # (CLI `shopai store add` invocation) had an
+            # empty cache + the guard always passed --
+            # even when the colliding sid was already
+            # persisted to the DB. The collision then
+            # silently bit at credential-resolution time.
+            with self._lock:
+                cache_keys = set(
+                    self._store_credentials.keys(),
+                )
+            db_keys = self._list_persisted_store_ids()
+            existing = cache_keys | db_keys
+            for other in existing:
+                if sid_normalises_to_same_env(
+                    store_id, other,
+                ):
+                    return {
+                        "error": (
+                            f"store_id {store_id!r} "
+                            f"collides with existing "
+                            f"{other!r} -- they normalise "
+                            "to the same per-store env-var "
+                            "key (W963-125 guard). Pick a "
+                            "distinct sid; e.g. use "
+                            "'store_a_2' instead of "
+                            "'store-a' when 'store_a' "
+                            "already exists."
+                        ),
+                    }
+        except Exception as exc:  # noqa: BLE001
+            # Collision check failure must not block
+            # registration -- log + continue (degraded
+            # mode).
+            logger.debug(
+                "sid collision check raised: %s", exc,
+            )
+
         # Write the DB row FIRST. If the DB add fails, we don't
         # want the in-memory credentials to be left hanging.
         # Audit pass 48.
@@ -88,10 +207,52 @@ class StoreManager:
                 "client_id": client_id or "",
                 "client_secret": client_secret or "",
             }
+            became_active = False
             if not self._active_store_id:
                 self._active_store_id = store_id
+                became_active = True
+        # W949: persist auto-promoted active store
+        if became_active:
+            self._persist_active(store_id)
         logger.info("Store added: %s (%s)", store_id, shop_url)
         return result
+
+    def update_store_niche(
+        self, store_id: str, niche: str,
+    ) -> dict[str, Any]:
+        """Wave 77: update a store's niche without re-adding.
+
+        Operator wants to adjust a store's niche after
+        observing it; previously this meant `remove` + `add`
+        which loses credentials. This is a simple SQL UPDATE.
+        """
+        if not isinstance(store_id, str) or not store_id:
+            return {"error": "store_id required"}
+        if not isinstance(niche, str):
+            return {"error": "niche must be string"}
+        niche = niche.strip().lower()
+        store = self._db.get_store(store_id)
+        if not store:
+            return {"error": f"store '{store_id}' not found"}
+        import time as _t
+        conn = self._db._get_conn()
+        try:
+            conn.execute(
+                "UPDATE stores SET niche = ?, updated_at = ? "
+                "WHERE store_id = ?",
+                (niche, _t.time(), store_id),
+            )
+            conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"db update failed: {exc}"}
+        logger.info(
+            "Store niche updated: %s -> %s", store_id, niche,
+        )
+        return {
+            "store_id": store_id,
+            "niche": niche,
+            "status": "updated",
+        }
 
     def remove_store(self, store_id: str) -> dict[str, Any]:
         """Deactivate a store (soft delete)."""
@@ -103,10 +264,17 @@ class StoreManager:
             (time.time(), store_id),
         )
         conn.commit()
+        new_active = None
         with self._lock:
             if self._active_store_id == store_id:
                 stores = self._db.list_stores()
-                self._active_store_id = stores[0]["store_id"] if stores else ""
+                self._active_store_id = (
+                    stores[0]["store_id"] if stores else ""
+                )
+                new_active = self._active_store_id
+        # W949: persist active change after store removal
+        if new_active is not None:
+            self._persist_active(new_active)
         return {"store_id": store_id, "status": "removed"}
 
     def get_store(self, store_id: str) -> dict[str, Any] | None:
@@ -137,6 +305,9 @@ class StoreManager:
             return {"error": f"Store {store_id} not found"}
         with self._lock:
             self._active_store_id = store_id
+        # W949 bugfix: persist to disk so next CLI process
+        # picks it up (was in-memory only).
+        self._persist_active(store_id)
         logger.info("Active store set to: %s", store_id)
         return {"active_store": store_id, "shop_url": store["shop_url"]}
 
@@ -154,6 +325,118 @@ class StoreManager:
         return self._db.get_store(sid)
 
     # ── Credentials ──────────────────────────────────────────
+
+    def _list_persisted_store_ids(self) -> set[str]:
+        """W963-129 round-9 #5: helper that reads the
+        AUTHORITATIVE store_id list from the DB. The
+        in-memory _store_credentials cache is per-process
+        and only populated by add_store/set_credentials
+        calls INSIDE that process. Webhooks, CLI commands,
+        and any out-of-band handler instantiate a fresh
+        StoreManager() whose cache is empty until they
+        explicitly add stores -- the DB is the source of
+        truth.
+
+        Returns the set of store_ids currently active in
+        the DB. Failure to read returns empty set (degrade
+        safely; callers see the same as cold-start)."""
+        try:
+            rows = self._db.list_stores()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "_list_persisted_store_ids raised: %s",
+                exc,
+            )
+            return set()
+        out: set[str] = set()
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            sid = row.get("store_id")
+            if isinstance(sid, str) and sid:
+                out.add(sid)
+        return out
+
+    def has_store(self, store_id: str) -> bool:
+        """W963-124: return True iff store_id is a known
+        per-store entry (not just an env fallback).
+
+        W963-129 round-9 #5 fix: pre-fix only checked
+        in-memory _store_credentials, which is per-process
+        + only populated on add_store inside the SAME
+        process. Webhook handlers + CLI commands run in
+        fresh processes -- the cache was always empty,
+        so has_store ALWAYS returned False for stores
+        registered in the DB, defeating W963-124's hard-
+        fail (every unknown-sid case raised, even known
+        ones). Now we fall back to the DB.
+        """
+        if not isinstance(store_id, str) or not store_id:
+            return False
+        with self._lock:
+            if store_id in self._store_credentials:
+                return True
+        # Cache miss -> consult DB (authoritative source)
+        return store_id in self._list_persisted_store_ids()
+
+    def find_by_shop_url(self, shop_url: str) -> str:
+        """W963-128: reverse lookup from shop URL to
+        store_id.
+
+        W963-129 round-9 #4/#11/#12 fix: pre-fix only
+        scanned in-memory _store_credentials cache. Fresh
+        process (webhook server, CLI subcommand) has empty
+        cache + returned '' for EVERY shop URL, so the
+        W963-128 active_store wrap never fired in
+        production -- per-store substrate dormant on the
+        webhook path. Now consults DB on cache miss.
+
+        Returns the matching store_id, or empty string
+        when no store matches. Tolerates the leading
+        'https://' or trailing '/' that some webhook
+        clients send: normalised before comparison.
+        """
+        if not isinstance(shop_url, str) or not shop_url:
+            return ""
+
+        def _normalise(s: str) -> str:
+            return (
+                s.replace("https://", "")
+                .replace("http://", "")
+                .rstrip("/")
+                .lower()
+            )
+
+        normalised = _normalise(shop_url)
+
+        # Pass 1: in-memory cache (fast path)
+        with self._lock:
+            for sid, creds in self._store_credentials.items():
+                stored = str(creds.get("shop_url", ""))
+                if _normalise(stored) == normalised:
+                    return sid
+
+        # Pass 2: DB fallback (W963-129). The cache may be
+        # empty in fresh-process contexts (webhook handler,
+        # CLI subcommand) but the DB always has the
+        # canonical row.
+        try:
+            rows = self._db.list_stores()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "find_by_shop_url DB fallback raised: %s",
+                exc,
+            )
+            return ""
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            stored = str(row.get("shop_url", ""))
+            if _normalise(stored) == normalised:
+                sid = row.get("store_id")
+                if isinstance(sid, str) and sid:
+                    return sid
+        return ""
 
     def get_credentials(self, store_id: str = "") -> dict[str, str]:
         """Get API credentials for a store. Supports OAuth auto-refresh."""

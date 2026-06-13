@@ -67,12 +67,36 @@ customer {
   firstName
   lastName
   numberOfOrders
+  tags
+}
+fulfillments(first: 5) {
+  id
+  displayStatus
+  deliveredAt
+  inTransitAt
+  createdAt
+  updatedAt
+}
+refunds(first: 10) {
+  id
+  createdAt
+  note
+  totalRefundedSet { shopMoney { amount currencyCode } }
 }
 """.strip()
 
 
 _ORDER_FIELDS_WITH_LINE_ITEMS = f"""
 {_ORDER_FIELDS}
+transactions(first: 50) {{
+  id
+  kind
+  status
+  gateway
+  createdAt
+  amountSet {{ shopMoney {{ amount currencyCode }} }}
+  parentTransaction {{ id kind }}
+}}
 lineItems(first: 100) {{
   edges {{
     node {{
@@ -87,6 +111,7 @@ lineItems(first: 100) {{
       product {{
         id
         title
+        tags
       }}
       originalUnitPriceSet {{ shopMoney {{ amount currencyCode }} }}
       discountedUnitPriceSet {{ shopMoney {{ amount currencyCode }} }}
@@ -247,7 +272,13 @@ class ShopifyOrdersAdapter(ShopifyBaseAdapter):
             Capability.SHOPIFY_LIST_ORDERS,
             Capability.SHOPIFY_FETCH_ORDERS,
         ):
-            return self._list(params)
+            # W962-75: pass the caller's capability through so
+            # the response envelope echoes the asked-for value
+            # instead of always SHOPIFY_LIST_ORDERS. Downstream
+            # consumers (router/audit/AGI loop) match envelopes
+            # by capability; a drift here masquerades as a
+            # different capability returning data.
+            return self._list(params, capability=capability)
         if capability == Capability.SHOPIFY_GET_ORDER:
             return self._get(params)
         if capability == Capability.SHOPIFY_UPDATE_ORDER:
@@ -264,7 +295,12 @@ class ShopifyOrdersAdapter(ShopifyBaseAdapter):
 
     # ── List ───────────────────────────────────────────────────────
 
-    def _list(self, params: dict[str, Any]) -> Any:
+    def _list(
+        self,
+        params: dict[str, Any],
+        *,
+        capability: Capability = Capability.SHOPIFY_LIST_ORDERS,
+    ) -> Any:
         limit = params.get("limit", _DEFAULT_LIST_LIMIT)
         try:
             limit = int(limit)
@@ -310,7 +346,7 @@ class ShopifyOrdersAdapter(ShopifyBaseAdapter):
             for edge in edges if isinstance(edge, dict)
         ]
         return self._success(
-            Capability.SHOPIFY_LIST_ORDERS,
+            capability,
             data={
                 "orders": orders,
                 "count": len(orders),
@@ -556,6 +592,79 @@ class ShopifyOrdersAdapter(ShopifyBaseAdapter):
                 (customer.get("numberOfOrders") or 0)
                 if isinstance(customer, dict) else 0
             ),
+            # W962-10 bugfix: emit customer.tags so revenue
+            # attribution + tag-based segmentation can read
+            # them from the LIST orders path (was missing
+            # before; attribution undercounted).
+            "customer_tags": list(
+                customer.get("tags") or []
+                if isinstance(customer, dict) else []
+            ),
+            # W962-2 + W962-3 bugfix: emit fulfillments +
+            # refunds so shipping_alert + order_followup
+            # discoverers can operate on LIST orders. Pre-fix
+            # they always returned empty / mis-tagged.
+            "fulfillments": [
+                cls._normalise_fulfillment(f)
+                for f in (node.get("fulfillments") or [])
+                if isinstance(f, dict)
+            ],
+            "refunds": [
+                cls._normalise_refund(r)
+                for r in (node.get("refunds") or [])
+                if isinstance(r, dict)
+            ],
+        }
+
+    @classmethod
+    def _normalise_fulfillment(
+        cls, node: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "id": node.get("id", "") or "",
+            "display_status": node.get("displayStatus", "") or "",
+            "delivered_at": node.get("deliveredAt", "") or "",
+            "in_transit_at": node.get("inTransitAt", "") or "",
+            "created_at": node.get("createdAt", "") or "",
+            "updated_at": node.get("updatedAt", "") or "",
+        }
+
+    @classmethod
+    def _normalise_refund(
+        cls, node: dict[str, Any],
+    ) -> dict[str, Any]:
+        amt, cur = cls._money(node.get("totalRefundedSet"))
+        return {
+            "id": node.get("id", "") or "",
+            "created_at": node.get("createdAt", "") or "",
+            "note": node.get("note", "") or "",
+            "total_refunded": amt,
+            "currency_code": cur,
+        }
+
+    @classmethod
+    def _normalise_transaction(
+        cls, node: dict[str, Any],
+    ) -> dict[str, Any]:
+        # W962-1: emit transactions for refund_applier
+        amt, cur = cls._money(node.get("amountSet"))
+        parent = node.get("parentTransaction") or {}
+        return {
+            "id": node.get("id", "") or "",
+            "kind": node.get("kind", "") or "",
+            "status": node.get("status", "") or "",
+            "gateway": node.get("gateway", "") or "",
+            "created_at": node.get("createdAt", "") or "",
+            "amount": amt,
+            "currency_code": cur,
+            "parent_transaction_id": (
+                parent.get("id", "") if isinstance(parent, dict)
+                else ""
+            ) or "",
+            "parent_transaction_kind": (
+                parent.get("kind", "") if isinstance(parent, dict)
+                else ""
+            ) or "",
         }
 
     @classmethod
@@ -565,6 +674,16 @@ class ShopifyOrdersAdapter(ShopifyBaseAdapter):
         base = cls._normalise_order(node)
         if not base:
             return {}
+        # W962-1 bugfix: emit transactions so the refund
+        # applier can find the parent_transaction it needs.
+        # Pre-fix every refund silently skipped with
+        # `no_parent_transaction` because this field was
+        # never normalised.
+        base["transactions"] = [
+            cls._normalise_transaction(t)
+            for t in (node.get("transactions") or [])
+            if isinstance(t, dict)
+        ]
         line_edges = (node.get("lineItems") or {}).get("edges") or []
         base["line_items"] = [
             cls._normalise_line_item(edge.get("node") or {})
@@ -615,6 +734,13 @@ class ShopifyOrdersAdapter(ShopifyBaseAdapter):
                 product.get("title", "")
                 if isinstance(product, dict) else ""
             ) or "",
+            # W962-10: product.tags so revenue_attribution
+            # can join line-items to product-tag-based
+            # campaigns. Pre-fix this field wasn't queried.
+            "product_tags": list(
+                product.get("tags") or []
+                if isinstance(product, dict) else []
+            ),
             "original_unit_price": original_amount,
             "discounted_unit_price": discounted_amount,
         }

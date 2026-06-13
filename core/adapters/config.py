@@ -74,6 +74,24 @@ ENV_ALIASES: dict[str, str] = {
     "twilio_auth_token":  "TWILIO_AUTH_TOKEN",
     "twilio_from_number": "TWILIO_FROM_NUMBER",
 
+    # ── Social ────────────────────────────────
+    # W963-10: Pinterest API v5. OAuth bearer token + no
+    # account id needed for v5 (replaced by board id on each
+    # call).
+    "pinterest":     "PINTEREST_ACCESS_TOKEN",
+    # W963-12: TikTok for Business v2 / Content Posting API.
+    # OAuth access token + business account ID. Operators
+    # need a TikTok Business Center account + Content Posting
+    # permission granted at app setup time.
+    "tiktok":             "TIKTOK_ACCESS_TOKEN",
+    "tiktok_business_id": "TIKTOK_BUSINESS_ID",
+    # W963-15: Instagram Graph API. Uses Meta's Graph API
+    # (same auth domain as Meta Ads from W963-7 -- operators
+    # can reuse a single Meta app). Needs a Facebook Page
+    # connected to an Instagram Business Account.
+    "instagram":          "INSTAGRAM_ACCESS_TOKEN",
+    "instagram_account_id": "INSTAGRAM_ACCOUNT_ID",
+
     # ── Media / scraping ──────────────────────
     "firecrawl":     "FIRECRAWL_API_KEY",
     # Apify: actor-based scraping. Single token auths every
@@ -142,6 +160,24 @@ ENV_ALIASES: dict[str, str] = {
     # Meta (Facebook) Ads: long-lived access token + ad account ID
     "meta_ads_access_token": "META_ADS_ACCESS_TOKEN",
     "meta_ads_account_id":   "META_ADS_ACCOUNT_ID",
+
+    # ── Order tracking aggregators (W963-144) ──
+    # AfterShip: 1000+ carrier tracking aggregator. Drives
+    # 'where is my order?' auto-responses + delivery
+    # notifications + delivery_feedback engine.
+    "aftership_api_key": "AFTERSHIP_API_KEY",
+
+    # ── Customer support / helpdesk (W963-145) ──
+    "gorgias_api_key":   "GORGIAS_API_KEY",
+    "gorgias_username":  "GORGIAS_USERNAME",
+    "gorgias_subdomain": "GORGIAS_SUBDOMAIN",
+
+    # ── Analytics (W963-146) ──
+    # GA4 Measurement Protocol: send purchase / add_to_cart
+    # / etc. events from every store. Multi-store empires
+    # have one measurement_id per store.
+    "ga4_measurement_id": "GA4_MEASUREMENT_ID",
+    "ga4_api_secret":     "GA4_API_SECRET",
 
     # ── Ads intelligence / spy ──────────
     # Minea: paid SaaS ($49/mo) — dropshipping-focused winning
@@ -245,6 +281,10 @@ ENV_ALIASES: dict[str, str] = {
     # CJ Dropshipping uses email + password → access token exchange.
     "cj_email":         "CJ_DROPSHIPPING_EMAIL",
     "cj_password":      "CJ_DROPSHIPPING_PASSWORD",
+    # AutoDS: single API token (Bearer auth). Paid SaaS
+    # ($10-30/mo) with broader supplier coverage than CJ
+    # (AliExpress / Walmart / Costco / etc).
+    "autods":           "AUTODS_API_TOKEN",
 }
 
 

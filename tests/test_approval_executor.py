@@ -59,7 +59,15 @@ class TestRegistry:
 
     def test_all_action_types_register(self, loaded_dispatchers):
         types = set(list_registered_action_types())
-        assert types == {
+        # W963-156: this is a SUPERSET check. The dispatch
+        # catalogue grows whenever a new approval-class engine
+        # ships (W963-143 propose_product_batch, W963-149
+        # apply_brand_identity, etc.) -- a strict equality
+        # made every new wireup require a test edit even when
+        # the new types were correctly registered. The
+        # surviving invariant we care about: the historical
+        # set still registers.
+        expected_subset = {
             "mint_strategy_code",
             "mint_loyalty_code",
             "mint_cart_recovery_code",
@@ -83,6 +91,11 @@ class TestRegistry:
             "catalog_apply_tags",
             "apply_fraud_tag",
         }
+        missing = expected_subset - types
+        assert not missing, (
+            f"historical action types unregistered: "
+            f"{sorted(missing)}"
+        )
 
     def test_dispatchers_are_callables(self, loaded_dispatchers):
         for action_type, fn in _DISPATCHERS.items():

@@ -73,6 +73,8 @@ class AdapterCategory(str, Enum):
     HELPDESK = "helpdesk"                  # Customer support (Intercom, Zendesk)
     CRM = "crm"                            # Customer relationship management (HubSpot)
     SOURCING = "sourcing"                  # Dropshipping suppliers (CJ, AutoDS, Spocket)
+    SOCIAL = "social"                      # Social media publishing (Pinterest, future TikTok/IG)
+    TRACKING = "tracking"                  # Order tracking aggregators (AfterShip)
     OTHER = "other"
 
 
@@ -187,6 +189,8 @@ class Capability(str, Enum):
     SHOPIFY_UPDATE_PRODUCT = "shopify_update_product"
     SHOPIFY_DELETE_PRODUCT = "shopify_delete_product"
     SHOPIFY_UPDATE_VARIANTS = "shopify_update_variants"
+    SHOPIFY_TAG_PRODUCT = "shopify_tag_product"
+    SHOPIFY_UNTAG_PRODUCT = "shopify_untag_product"
     SHOPIFY_LIST_ORDERS = "shopify_list_orders"
     SHOPIFY_GET_ORDER = "shopify_get_order"
     SHOPIFY_UPDATE_ORDER = "shopify_update_order"
@@ -349,6 +353,7 @@ class Capability(str, Enum):
     SHOPIFY_UPDATE_FULFILLMENT_TRACKING = "shopify_update_fulfillment_tracking"
     SHOPIFY_CANCEL_FULFILLMENT = "shopify_cancel_fulfillment"
     SHOPIFY_REORDER_PRODUCT_MEDIA = "shopify_reorder_product_media"
+    SHOPIFY_CREATE_PRODUCT_MEDIA = "shopify_create_product_media"
     SHOPIFY_APPEND_VARIANT_MEDIA = "shopify_append_variant_media"
     SHOPIFY_DETACH_VARIANT_MEDIA = "shopify_detach_variant_media"
     SHOPIFY_ADD_PRICE_LIST_PRICES = "shopify_add_price_list_prices"
@@ -492,6 +497,17 @@ class Capability(str, Enum):
     SEND_SMS = "send_sms"
     SEND_PUSH = "send_push"
 
+    # ── Social ────────────────────────────────
+    # W963-10: social media publishing. Pinterest first
+    # (highest ROI for visual niches: beauty / fashion / home).
+    SOCIAL_VERIFY_AUTH = "social_verify_auth"
+    SOCIAL_LIST_BOARDS = "social_list_boards"
+    SOCIAL_CREATE_BOARD = "social_create_board"
+    SOCIAL_CREATE_PIN = "social_create_pin"
+    # W963-12: TikTok content posting via Content Posting API.
+    SOCIAL_LIST_POSTS = "social_list_posts"
+    SOCIAL_CREATE_POST = "social_create_post"
+
     # ── Media ─────────────────────────────────
     GENERATE_IMAGE = "generate_image"
     OPTIMIZE_IMAGE = "optimize_image"
@@ -556,6 +572,7 @@ class Capability(str, Enum):
     VIDEO_STOCK_SEARCH = "video_stock_search"    # Pexels / Pixabay: query → clips
     VIDEO_GENERATE = "video_generate"            # AI text→video (Higgsfield/Sora/Veo)
     VIDEO_GET_STATUS = "video_get_status"        # Poll async AI video job status
+    IMAGE_STOCK_SEARCH = "image_stock_search"    # Pexels / Pixabay: query → photo URLs
 
     # ── Automation ────────────────────────
     AUTOMATION_TRIGGER = "automation_trigger"
@@ -566,11 +583,22 @@ class Capability(str, Enum):
     HELPDESK_SEND_REPLY = "helpdesk_send_reply"
     HELPDESK_SEARCH_CONTACTS = "helpdesk_search_contacts"
     HELPDESK_CREATE_TICKET = "helpdesk_create_ticket"
+    # W963-145: Gorgias-class extensions
+    HELPDESK_GET_TICKET = "helpdesk_get_ticket"
+    HELPDESK_LIST_TICKETS = "helpdesk_list_tickets"
+    HELPDESK_UPDATE_TICKET_TAGS = (
+        "helpdesk_update_ticket_tags"
+    )
 
     # ── Analytics ─────────────────────────
     ANALYTICS_TRACK_EVENT = "analytics_track_event"
     ANALYTICS_QUERY = "analytics_query"
     ANALYTICS_IDENTIFY = "analytics_identify"
+
+    # ── Tracking (W963-144) ──────────────
+    TRACKING_REGISTER = "tracking_register"
+    TRACKING_LOOKUP = "tracking_lookup"
+    TRACKING_LIST_RECENT = "tracking_list_recent"
 
     # ── CRM ──────────────────────────────
     CRM_SEARCH_CONTACTS = "crm_search_contacts"
@@ -777,9 +805,11 @@ class BaseAdapter(ABC):
                 "adapter %s failed (%s): %s",
                 self.name, type(exc).__name__, exc.reason,
             )
-            return AdapterResult.failure(
+            fail = AdapterResult.failure(
                 self.name, cap.value, exc, latency_ms=round(elapsed, 2),
             )
+            self._record_call_safe(fail)
+            return fail
         except Exception as exc:  # noqa: BLE001
             # Vendor / library raised something we don't know
             # how to classify — wrap as generic AdapterError so
@@ -790,9 +820,11 @@ class BaseAdapter(ABC):
                 self.name, type(exc).__name__,
             )
             err = AdapterError(self.name, f"{type(exc).__name__}: {exc}")
-            return AdapterResult.failure(
+            fail = AdapterResult.failure(
                 self.name, cap.value, err, latency_ms=round(elapsed, 2),
             )
+            self._record_call_safe(fail)
+            return fail
 
         # _execute is allowed to return a fully-formed
         # AdapterResult OR raise. Patch the latency in if it
@@ -812,7 +844,35 @@ class BaseAdapter(ABC):
         if not result.capability:
             result.capability = cap.value
 
+        # W963-118: per-store cost attribution.
+        self._record_call_safe(result)
         return result
+
+    def _record_call_safe(
+        self, result: AdapterResult,
+    ) -> None:
+        """Record this adapter call into the per-store cost
+        log. Best-effort: any failure is swallowed so it
+        cannot break adapter throughput. The recorder
+        internally short-circuits under pytest (Pattern J).
+        """
+        try:
+            from engines.per_store_costs.recorder import (
+                record_call,
+            )
+            record_call(
+                adapter=getattr(self, "name", "?"),
+                capability=str(
+                    result.capability or "?",
+                ),
+                cost_usd=result.cost_usd,
+                latency_ms=result.latency_ms,
+                ok=result.ok,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "per_store_costs record raised: %s", exc,
+            )
 
     @abstractmethod
     def _execute(

@@ -139,19 +139,27 @@ def _load_raw_events() -> list[AlertEvent]:
     return events
 
 
-def _save_events(events: list[AlertEvent]) -> None:
-    """Atomic write via temp + rename. Same pattern as
-    ``core.approval.quarantine.save_state``."""
+def _save_events_unlocked(events: list[AlertEvent]) -> None:
+    """W962-15: write helper that assumes the caller already
+    holds ``_LOCK``. Used by ``record_alerts`` to keep the
+    full read-modify-write under one lock acquisition.
+    """
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = [asdict(e) for e in events]
     tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(payload, indent=2),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
+def _save_events(events: list[AlertEvent]) -> None:
+    """Atomic write via temp + rename. Same pattern as
+    ``core.approval.quarantine.save_state``."""
     with _LOCK:
-        tmp.write_text(
-            json.dumps(payload, indent=2),
-            encoding="utf-8",
-        )
-        tmp.replace(path)
+        _save_events_unlocked(events)
 
 
 def _resolve_store_id(explicit: str | None) -> str | None:
@@ -245,8 +253,23 @@ def record_alerts(
     if not new_events:
         return 0
 
-    existing = _load_raw_events()
-    _save_events(existing + new_events)
+    # W962-15 + W962-16 bugfix: widen the lock to span
+    # read-modify-write so concurrent invocations
+    # (daily-brief + cycle-run firing simultaneously) don't
+    # lose-update each other. Pre-fix the lock was inside
+    # `_save_events` only -- another writer could load the
+    # same `existing` snapshot and overwrite freshly-saved
+    # rows.
+    # Also: cap retained events at _MAX_ALERT_HISTORY
+    # (1000, mirroring the Phase 11 convention) so the
+    # JSON file doesn't grow unboundedly.
+    _MAX_ALERT_HISTORY = 5000
+    with _LOCK:
+        existing = _load_raw_events()
+        combined = existing + new_events
+        if len(combined) > _MAX_ALERT_HISTORY:
+            combined = combined[-_MAX_ALERT_HISTORY:]
+        _save_events_unlocked(combined)
     return len(new_events)
 
 
@@ -332,7 +355,17 @@ def consecutive_runs_per_engine(
         bucket = int(e.recorded_at // float(bucket_seconds))
         per_engine.setdefault(e.engine, set()).add(bucket)
 
-    return {engine: len(buckets) for engine, buckets in per_engine.items()}
+    # W962-76: cap bucket count at window/bucket. Epoch-anchored
+    # buckets straddling the cutoff can yield window_seconds /
+    # bucket_seconds + 1 distinct buckets (e.g., a 7-day window
+    # straddling the UTC-midnight of day 0 hits both day 0 AND
+    # day 7 -- 8 distinct buckets). Operators expect the result
+    # to align with "N consecutive days," so clamp to N.
+    max_buckets = max(1, int(float(window_seconds) / float(bucket_seconds)))
+    return {
+        engine: min(len(buckets), max_buckets)
+        for engine, buckets in per_engine.items()
+    }
 
 
 def consecutive_runs_per_engine_store(
@@ -367,7 +400,13 @@ def consecutive_runs_per_engine_store(
         bucket = int(e.recorded_at // float(bucket_seconds))
         per_pair.setdefault((e.engine, e.store_id), set()).add(bucket)
 
-    return {key: len(buckets) for key, buckets in per_pair.items()}
+    # W962-76: cap at window/bucket. See note on the sibling
+    # consecutive_runs_per_engine.
+    max_buckets = max(1, int(float(window_seconds) / float(bucket_seconds)))
+    return {
+        key: min(len(buckets), max_buckets)
+        for key, buckets in per_pair.items()
+    }
 
 
 def clear() -> None:

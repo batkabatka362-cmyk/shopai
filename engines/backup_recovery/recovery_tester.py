@@ -59,6 +59,20 @@ def test_recovery(
                 "error": f"Failed to parse backup data: {exc}",
             }
 
+        # W962-75: json.loads can return any JSON type; defend
+        # against list / scalar / None before .get on envelope.
+        if not isinstance(envelope, dict):
+            return {
+                "status": "error",
+                "dry_run_success": False,
+                "records_restorable": 0,
+                "estimated_restore_seconds": 0.0,
+                "error": (
+                    "Backup envelope is not an object "
+                    f"(got {type(envelope).__name__})"
+                ),
+            }
+
         # Validate schema version
         schema_version = envelope.get("schema_version", "unknown")
         if schema_version not in _SUPPORTED_SCHEMA_VERSIONS:

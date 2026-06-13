@@ -1,0 +1,352 @@
+"""Captain memory -- per-cluster outcome rollup.
+
+Aggregates Pattern Z + ApprovalQueue history at the cluster
+level. Captain reads "how has my cluster been performing?"
+to inform future decisions.
+
+## Why per-cluster
+
+Today, ``ApprovalQueue.engine_outcome_stats(engine)`` gives
+per-ENGINE outcome data. Captain needs per-CLUSTER rollup:
+"retention cluster: 87% success, 12% failure, 1% timeout".
+
+Without this, captain can't notice "my cluster is degrading"
+or "this cluster is healthy, fire more aggressively."
+
+## Data sources
+
+  ApprovalQueue:
+    - per-engine outcome stats (positive/negative/neutral)
+    - per-engine fire counts (executed/failed/rejected)
+
+  Pattern Z (via DataArchitecture):
+    - per-engine action records (when recorded)
+
+Per-cluster rollup = sum across cluster members.
+
+## What captain decides differently with memory
+
+  - cluster failing recently -> conservative member selection
+    (only safest engines this cycle)
+  - cluster succeeding -> aggressive member firing
+  - specific member underperforming -> exclude that member
+    even if signal matches
+
+For v1, the memory is observational -- captain logs cluster
+health but doesn't automatically adjust. Adjustment logic
+plugs in via MemoryAwareCaptainStrategy (future).
+
+## Pluggable
+
+ClusterMemoryStrategy protocol -- plug in:
+  - QueueOutcomeRollup (v1 default, this module)
+  - DataArchitectureRollup (when Phase 8 data is rich)
+  - ExternalMetricsRollup (revenue attribution from Shopify
+    orders -- ultimate ground truth)
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Protocol
+
+from engines._clusters import Cluster, get_cluster
+
+
+@dataclass
+class ClusterHealth:
+    """Per-cluster outcome rollup snapshot."""
+    cluster: str
+    member_count: int
+    wired_count: int
+    # Outcome stats aggregated across cluster members
+    total_executed: int = 0
+    total_failed: int = 0
+    total_rejected: int = 0
+    total_pending: int = 0
+    positive_outcomes: int = 0
+    negative_outcomes: int = 0
+    neutral_outcomes: int = 0
+    total_revenue: float = 0.0
+    # Attributed revenue (ground-truth from Shopify orders +
+    # tag join, not self-reported via record_outcome). Populated
+    # by ``enrich_with_attribution`` when an AttributionReport
+    # is available. Stays 0.0 when not enriched.
+    attributed_revenue: float = 0.0
+    attribution_window_hours: float = 0.0
+    attribution_orders: int = 0
+    attribution_confidence: str = "none"
+    # Per-member breakdown for drill-down
+    member_health: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def total_actions(self) -> int:
+        return (
+            self.total_executed + self.total_failed
+            + self.total_rejected
+        )
+
+    @property
+    def success_rate(self) -> float:
+        """Executed / (executed + failed + rejected) when any."""
+        total = self.total_actions
+        if total == 0:
+            return 0.0
+        return round(self.total_executed / total, 3)
+
+    @property
+    def positive_ratio(self) -> float:
+        """Positive outcome ratio when any outcomes recorded."""
+        total_oc = (
+            self.positive_outcomes + self.negative_outcomes
+            + self.neutral_outcomes
+        )
+        if total_oc == 0:
+            return 0.0
+        return round(self.positive_outcomes / total_oc, 3)
+
+    @property
+    def health_verdict(self) -> str:
+        """Single-word health: healthy / warning / unhealthy / unknown."""
+        if self.total_actions == 0:
+            return "unknown"
+        if self.success_rate >= 0.8:
+            return "healthy"
+        if self.success_rate >= 0.5:
+            return "warning"
+        return "unhealthy"
+
+    @property
+    def revenue_verdict(self) -> str:
+        """Revenue-dimension verdict: earning / flat / declining /
+        unknown.
+
+        Separate from health_verdict because a cluster can be
+        operationally healthy (high success_rate) but bring $0
+        (engines firing successfully but ineffective). Computed
+        from attributed_revenue + attribution_orders + a coarse
+        threshold.
+
+          unknown   - no attribution data (attribution_orders=0)
+          flat      - attributed but below threshold ($10)
+          earning   - attributed >= $10
+          declining - earning had alerts recently (set externally
+                      by attribution-aware caller; default = same
+                      as earning)
+
+        The ``declining`` tier is observational here -- callers
+        that integrate delta history (cycle-over-cycle) can flip
+        a cluster from earning to declining by setting
+        ``_force_declining`` after computing the delta. The
+        default property never flips on its own.
+        """
+        # When caller-overridden (set after delta computation),
+        # honor that.
+        forced = getattr(self, "_force_declining", False)
+        if forced:
+            return "declining"
+        if self.attribution_orders == 0:
+            return "unknown"
+        if self.attributed_revenue >= 10.0:
+            return "earning"
+        return "flat"
+
+
+class ClusterMemoryStrategy(Protocol):
+    """Pluggable: how to compute cluster health rollup."""
+
+    def health_for(self, cluster: Cluster) -> ClusterHealth:
+        ...
+
+
+class QueueOutcomeRollup:
+    """v1 default: aggregate ApprovalQueue stats per cluster."""
+
+    def __init__(self) -> None:
+        self._queue_stats: dict[str, dict[str, int]] | None = None
+        self._outcomes_cache: dict[str, dict[str, Any]] = {}
+
+    def _load_queue_stats(self) -> dict[str, dict[str, int]]:
+        if self._queue_stats is not None:
+            return self._queue_stats
+        try:
+            from core.approval.queue import get_approval_queue
+            self._queue_stats = (
+                get_approval_queue().stats_by_engine() or {}
+            )
+        except Exception:  # noqa: BLE001
+            self._queue_stats = {}
+        return self._queue_stats
+
+    def _load_outcomes(self, engine_name: str) -> dict[str, Any]:
+        if engine_name in self._outcomes_cache:
+            return self._outcomes_cache[engine_name]
+        try:
+            from core.approval.queue import get_approval_queue
+            outcomes = (
+                get_approval_queue().engine_outcome_stats(
+                    engine_name,
+                ) or {}
+            )
+        except Exception:  # noqa: BLE001
+            outcomes = {}
+        self._outcomes_cache[engine_name] = outcomes
+        return outcomes
+
+    def _load_wired(self) -> set[str]:
+        try:
+            from engines._writeback_audit import (
+                audit_writeback_coverage,
+            )
+            wb = audit_writeback_coverage("engines")
+            return {
+                s.name for s in wb.engines
+                if s.status == "wired"
+            }
+        except Exception:  # noqa: BLE001
+            return set()
+
+    def health_for(self, cluster: Cluster) -> ClusterHealth:
+        queue_stats = self._load_queue_stats()
+        wired = self._load_wired()
+
+        health = ClusterHealth(
+            cluster=cluster.name,
+            member_count=len(cluster.members),
+            wired_count=sum(
+                1 for m in cluster.members if m in wired
+            ),
+        )
+
+        for engine in sorted(cluster.members):
+            stats = queue_stats.get(engine, {})
+            executed = int(stats.get("executed", 0) or 0)
+            failed = int(stats.get("failed", 0) or 0)
+            rejected = int(stats.get("rejected", 0) or 0)
+            pending = int(stats.get("pending", 0) or 0)
+
+            outcomes = self._load_outcomes(engine)
+            pos = int(outcomes.get("positive_count", 0) or 0)
+            neg = int(outcomes.get("negative_count", 0) or 0)
+            neu = int(outcomes.get("neutral_count", 0) or 0)
+            rev = float(outcomes.get("total_revenue", 0.0) or 0.0)
+
+            health.total_executed += executed
+            health.total_failed += failed
+            health.total_rejected += rejected
+            health.total_pending += pending
+            health.positive_outcomes += pos
+            health.negative_outcomes += neg
+            health.neutral_outcomes += neu
+            health.total_revenue += rev
+
+            health.member_health.append({
+                "engine": engine,
+                "wired": engine in wired,
+                "executed": executed,
+                "failed": failed,
+                "rejected": rejected,
+                "pending": pending,
+                "positive": pos,
+                "negative": neg,
+                "revenue": rev,
+            })
+
+        return health
+
+
+def cluster_health_rollup(
+    cluster_name: str,
+    *,
+    strategy: ClusterMemoryStrategy | None = None,
+) -> ClusterHealth | None:
+    """Convenience: compute health for one cluster by name."""
+    cluster = get_cluster(cluster_name)
+    if cluster is None:
+        return None
+    strategy = strategy or QueueOutcomeRollup()
+    return strategy.health_for(cluster)
+
+
+def fleet_cluster_health(
+    strategy: ClusterMemoryStrategy | None = None,
+) -> list[ClusterHealth]:
+    """Compute health for ALL clusters. Useful for dashboards
+    + Tier 1 orchestrator's per-cluster awareness."""
+    from engines._clusters import list_clusters
+    strategy = strategy or QueueOutcomeRollup()
+    return [strategy.health_for(c) for c in list_clusters()]
+
+
+def enrich_with_attribution(
+    healths: list[ClusterHealth],
+    *,
+    window_hours: float = 168.0,
+    store_id: str | None = None,
+    orders: list[dict[str, Any]] | None = None,
+) -> list[ClusterHealth]:
+    """Mutate a list of ClusterHealth with revenue attribution.
+
+    Joins Shopify orders to clusters via tags (ground-truth
+    revenue), distinct from ``total_revenue`` which is the
+    sum of self-reported outcome metrics. Both fields stay
+    available -- callers pick whichever is more meaningful.
+
+    Args:
+        healths: Existing healths to enrich in-place.
+        window_hours: Attribution window.
+        store_id: Optional per-store filter.
+        orders: Pre-fetched orders (for tests). Otherwise
+            ``attribute_revenue`` fetches via adapter.
+
+    Returns:
+        Same list (mutated). Returned for chaining.
+    """
+    try:
+        from engines._revenue_attribution import attribute_revenue
+    except Exception:  # noqa: BLE001
+        return healths
+    try:
+        report = attribute_revenue(
+            window_hours=window_hours,
+            store_id=store_id,
+            orders=orders,
+        )
+    except Exception:  # noqa: BLE001
+        return healths
+
+    by_cluster = {c.cluster: c for c in report.per_cluster}
+    for h in healths:
+        attr = by_cluster.get(h.cluster)
+        if attr is None:
+            h.attribution_window_hours = window_hours
+            continue
+        h.attributed_revenue = round(attr.attributed_revenue, 2)
+        h.attribution_orders = attr.attributed_orders
+        h.attribution_confidence = attr.confidence
+        h.attribution_window_hours = window_hours
+
+    # Wave 18: cross-reference latest cycle-over-cycle delta to
+    # flip a cluster's revenue_verdict to "declining" when a
+    # regression alert fires against it. Best-effort -- delta
+    # may be unavailable when fewer than 2 snapshots exist.
+    try:
+        from engines._attribution_delta import latest_delta
+        delta = latest_delta()
+        if delta is not None and delta.alerts:
+            declining_clusters: set[str] = set()
+            for alert in delta.alerts:
+                if alert.scope == "cluster":
+                    declining_clusters.add(alert.name)
+                elif alert.scope == "engine":
+                    # Map engine back to cluster
+                    for e in delta.per_engine:
+                        if e.engine == alert.name and e.cluster:
+                            declining_clusters.add(e.cluster)
+                            break
+            for h in healths:
+                if h.cluster in declining_clusters:
+                    h._force_declining = True
+    except Exception:  # noqa: BLE001
+        pass
+
+    return healths

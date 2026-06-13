@@ -295,3 +295,31 @@ def get_tools() -> ExternalTools:
             if _tools is None:
                 _tools = ExternalTools()
     return _tools
+
+
+# W962-72: module-level web_search wrapper.
+# Multiple call sites (core/ai/competitor_monitor.py:105,
+# core/ai/product_finder.py:84, execution/content/image_sourcer.py:102,
+# execution/content/real_image_finder.py:60) tried
+# `from core.ai.external_tools import web_search` expecting a
+# top-level function. The ImportError was silently swallowed by
+# each site's broad `except Exception`, so every consumer of
+# web-search-based discovery was silently dead. This wrapper
+# closes that gap and returns the bare `results` list so callers
+# can iterate directly (matches the consumer expectation; the
+# method's dict envelope was the friction).
+def web_search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
+    """Module-level convenience wrapper. Returns a flat list of
+    result dicts, not the envelope ``{results, total, query}``
+    that the bound method returns."""
+    try:
+        envelope = get_tools().web_search(query, max_results=max_results)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("web_search wrapper raised: %s", exc)
+        return []
+    if isinstance(envelope, dict):
+        results = envelope.get("results", [])
+        return list(results) if isinstance(results, list) else []
+    if isinstance(envelope, list):
+        return envelope
+    return []

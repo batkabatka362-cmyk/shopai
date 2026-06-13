@@ -154,6 +154,23 @@ class ProductFilterEngine:
             filter_summary=filter_summary,
         )
 
+        # Phase 7: optional accepted-tag apply. Opt-in via
+        # data.apply_filter_tags=True. Tags every accepted
+        # product with filter:accepted.
+        tagged_accepted: list[dict[str, Any]] = []
+        if bool(data.get("apply_filter_tags")):
+            try:
+                from .tag_applier import apply_filter_tags
+                tagged_accepted = apply_filter_tags(
+                    brand_passed, products,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "product_filter: apply loop raised: %s",
+                    exc,
+                )
+
         # ---- Stage 8: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -163,6 +180,7 @@ class ProductFilterEngine:
                 "accepted_products": brand_passed,
                 "rejected_products": all_rejected,
                 "filter_summary": filter_summary,
+                "tagged_accepted": tagged_accepted,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,

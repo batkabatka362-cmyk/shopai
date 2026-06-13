@@ -489,3 +489,126 @@ class TestFindRegressions:
         assert isinstance(r, HealthRegression)
         assert r.samples_in_baseline == 5
         assert r.latest_verdict == "unhealthy"
+
+
+from core.approval.engine_health_history import (  # noqa: E402
+    ChronicWarning,
+    find_chronic_warnings,
+)
+
+
+class TestFindChronicWarnings:
+    """A chronic warning is a STATE (consistently sick),
+    distinct from a regression which is a CHANGE."""
+
+    def _seed_consistent(
+        self, engine, scores, now,
+    ):
+        """Seed N events at the given scores spread across
+        the last week."""
+        day = 86400.0
+        for i, s in enumerate(scores):
+            record_score(
+                engine,
+                score=s,
+                verdict=(
+                    "unhealthy" if s < 5
+                    else "warning" if s < 8
+                    else "healthy"
+                ),
+                now=now - day * (i + 0.5),
+            )
+
+    def test_no_history_returns_empty(self, isolated_data):
+        assert find_chronic_warnings() == []
+
+    def test_all_warning_flagged(
+        self, isolated_data, no_test_guard,
+    ):
+        now = 1_000_000.0
+        self._seed_consistent(
+            "loyalty", [6, 5, 6, 5, 6], now=now,
+        )
+        warnings = find_chronic_warnings(now=now)
+        assert len(warnings) == 1
+        w = warnings[0]
+        assert isinstance(w, ChronicWarning)
+        assert w.engine == "loyalty"
+        assert w.latest_score == 6
+        assert w.samples == 5
+        # avg of 5,5,6,6,6 = 5.6
+        assert w.avg_score == pytest.approx(5.6, abs=0.01)
+
+    def test_any_healthy_in_window_excludes(
+        self, isolated_data, no_test_guard,
+    ):
+        """If even one sample was healthy (>=7), it's not
+        chronic -- the engine recovered at least once."""
+        now = 1_000_000.0
+        self._seed_consistent(
+            "loyalty", [6, 5, 8, 5, 6], now=now,
+        )
+        warnings = find_chronic_warnings(now=now)
+        assert warnings == []
+
+    def test_insufficient_samples_skipped(
+        self, isolated_data, no_test_guard,
+    ):
+        now = 1_000_000.0
+        self._seed_consistent("loyalty", [6, 5], now=now)
+        # Default min_samples=3
+        assert find_chronic_warnings(now=now) == []
+        # With min_samples=2 it qualifies
+        warnings = find_chronic_warnings(
+            now=now, min_samples=2,
+        )
+        assert len(warnings) == 1
+
+    def test_sorted_sickest_first(
+        self, isolated_data, no_test_guard,
+    ):
+        now = 1_000_000.0
+        self._seed_consistent("warn_a", [6, 6, 6], now=now)
+        self._seed_consistent(
+            "sick_b", [3, 3, 3], now=now,
+        )
+        warnings = find_chronic_warnings(now=now)
+        assert [w.engine for w in warnings] == [
+            "sick_b", "warn_a",
+        ]
+        # Lowest score first
+        assert warnings[0].latest_score == 3
+        assert warnings[1].latest_score == 6
+
+    def test_old_samples_excluded(
+        self, isolated_data, no_test_guard,
+    ):
+        now = 1_000_000.0
+        # Seed 3 stale warnings (8 days ago) -- outside the
+        # default 7d window.
+        day = 86400.0
+        for i in range(3):
+            record_score(
+                "loyalty", score=5, verdict="warning",
+                now=now - day * (8 + i),
+            )
+        warnings = find_chronic_warnings(now=now)
+        assert warnings == []
+
+    def test_custom_floor(
+        self, isolated_data, no_test_guard,
+    ):
+        """Operators can tighten the floor -- e.g.,
+        treat score=8 as warning."""
+        now = 1_000_000.0
+        self._seed_consistent(
+            "loyalty", [7, 7, 7], now=now,
+        )
+        # Default floor=7 means score 7 is healthy -> not
+        # chronic.
+        assert find_chronic_warnings(now=now) == []
+        # Floor=8 means score 7 is below healthy.
+        warnings = find_chronic_warnings(
+            now=now, healthy_score_floor=8,
+        )
+        assert len(warnings) == 1

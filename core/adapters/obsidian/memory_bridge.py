@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -265,12 +266,21 @@ class VaultMemoryBridge:
             return {}
 
     def _save_import_state(self, state: dict[str, str]) -> None:
-        """Persist the hash→path mapping."""
+        """Persist the hash→path mapping.
+
+        W962-47: atomic write via temp + os.replace so a crash
+        mid-write doesn't leave a corrupt JSON file that
+        _load_import_state would silently treat as empty (losing
+        every imported note's hash mapping)."""
         state_file = self.vault_path / _IMPORT_STATE_FILE
         try:
-            state_file.write_text(
+            tmp = state_file.with_suffix(
+                state_file.suffix + ".tmp." + str(os.getpid())
+            )
+            tmp.write_text(
                 json.dumps(state, indent=2, ensure_ascii=False) + "\n",
                 encoding="utf-8",
             )
+            os.replace(tmp, state_file)
         except Exception as exc:  # noqa: BLE001
             logger.warning("failed to save import state: %s", exc)

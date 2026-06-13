@@ -87,6 +87,7 @@ class TestShowEmbedsOutcomes:
             cli._cmd_approvals_show,
             argparse.Namespace(
                 action_id=a.id, no_outcomes=False,
+                json=True,
             ),
         )
         assert code == 0
@@ -104,6 +105,7 @@ class TestShowEmbedsOutcomes:
             cli._cmd_approvals_show,
             argparse.Namespace(
                 action_id=a.id, no_outcomes=True,
+                json=True,
             ),
         )
         data = json.loads(out)
@@ -122,6 +124,7 @@ class TestShowEmbedsOutcomes:
             cli._cmd_approvals_show,
             argparse.Namespace(
                 action_id=a.id, no_outcomes=False,
+                json=True,
             ),
         )
         data = json.loads(out)
@@ -140,6 +143,7 @@ class TestShowEmbedsOutcomes:
             cli._cmd_approvals_show,
             argparse.Namespace(
                 action_id=a.id, no_outcomes=False,
+                json=True,
             ),
         )
         data = json.loads(out)
@@ -164,6 +168,7 @@ class TestShowEmbedsOutcomes:
             cli._cmd_approvals_show,
             argparse.Namespace(
                 action_id=a.id, no_outcomes=False,
+                json=True,
             ),
         )
         data = json.loads(out)
@@ -178,6 +183,7 @@ class TestExistingBehavior:
             argparse.Namespace(
                 action_id="appr_does_not_exist",
                 no_outcomes=False,
+                json=True,
             ),
         )
         assert code == 1
@@ -204,6 +210,7 @@ class TestExistingBehavior:
                 cli._cmd_approvals_show,
                 argparse.Namespace(
                     action_id=a.id, no_outcomes=False,
+                    json=True,
                 ),
             )
         assert code == 0

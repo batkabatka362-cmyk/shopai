@@ -170,6 +170,7 @@ GUARDRAIL_ENGINES: tuple[str, ...] = (
     "email_marketing",
     "wholesale_b2b",
     "discount_strategy",
+    "churn_prediction",
 )
 
 
@@ -236,6 +237,111 @@ def explain_guardrail_block(metrics: dict[str, Any]) -> str:
         f"negative=true positive=false "
         f"avg_relevance={metrics.get('avg_relevance', 0.0):.2f}"
     )
+
+
+def thrash_guardrail_enabled(
+    store_id: str | None = None,
+) -> bool:
+    """Wave 915: env-var opt-in for the thrash guardrail.
+
+    Default env var: ``SHOPAI_THRASH_GUARDRAIL``. Default OFF.
+    When enabled, ``should_block_thrashing_store`` returns True
+    for stores whose verdict-flip rate is ``thrashing``.
+
+    Wave 925: per-store override. When ``store_id`` is
+    supplied, the resolver checks
+    ``SHOPAI_THRASH_GUARDRAIL_<STORE>`` first; if set, that
+    value wins. Allows operators to quiesce a single
+    misbehaving store without touching the fleet-wide
+    setting. Empty per-store value falls through to the
+    global env var.
+
+    Operator-level kill switch -- decoupled from per-engine
+    AGI guardrails so a global thrash response can be flipped
+    on/off in seconds without touching individual engines.
+    """
+    if store_id:
+        per_store_key = (
+            f"SHOPAI_THRASH_GUARDRAIL_"
+            f"{store_id.upper().replace('-', '_')}"
+        )
+        per_store = os.environ.get(per_store_key, "")
+        if per_store:
+            return per_store in _GUARDRAIL_TRUTHY
+    return os.environ.get(
+        "SHOPAI_THRASH_GUARDRAIL", "",
+    ) in _GUARDRAIL_TRUTHY
+
+
+def should_block_thrashing_store(
+    store_id: str | None,
+) -> bool:
+    """Wave 915: block writebacks on a store whose verdict
+    is currently ``thrashing``.
+
+    A store thrashing armed <-> degraded suggests something
+    is racing or the engine layer is undecided; layering
+    new writebacks on top compounds the problem. The guard
+    short-circuits when ``thrash_guardrail_enabled()`` is
+    False so the default is preserve-existing-behavior.
+
+    Never raises -- a probe failure returns False (does not
+    block).
+    """
+    if not thrash_guardrail_enabled(store_id):
+        return False
+    if not store_id:
+        return False
+    try:
+        from core.automation.autonomy_overview_thrash import (
+            compute_thrash,
+        )
+        rep = compute_thrash(
+            window_hours=24.0, store_id=store_id,
+        )
+        return rep.verdict == "thrashing"
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "thrash guardrail probe raised: %s", exc,
+        )
+        return False
+
+
+def explain_thrash_block(store_id: str | None) -> str:
+    """Audit reason for record_writeback when thrash blocks."""
+    return (
+        f"thrash_guardrail_blocked: "
+        f"store={store_id or 'fleet'} verdict=thrashing"
+    )
+
+
+def log_thrash_block(
+    *,
+    engine: str,
+    action_type: str,
+    capability: str,
+    store_id: str | None,
+) -> None:
+    """Wave 930: append blocked writeback to the read-side log.
+
+    Best-effort -- never raises. Appliers call this AFTER
+    record_writeback so the read-side substrate sees the
+    block event with a dedicated query path
+    (``shopai thrash-blocks``).
+    """
+    try:
+        from core.automation.thrash_block_log import (
+            record_block,
+        )
+        record_block(
+            engine=engine,
+            action_type=action_type,
+            capability=capability,
+            store_id=store_id,
+            reason=explain_thrash_block(store_id),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("log_thrash_block raised: %s", exc)
 
 
 def _summarize_similar(

@@ -46,7 +46,19 @@ _DEFAULT_STATE_PATH = (
     Path(__file__).resolve().parents[2]
     / "data" / "engine_health_history.json"
 )
-_LOCK = threading.Lock()
+# W962 race fix: must span the full load+modify+save.
+# _LOCK was previously inside _save_events only, which
+# only protected the write -- two concurrent record_score
+# callers could both load the same `existing` list and
+# the second save would clobber the first's append.
+_LOCK = threading.RLock()
+
+# W962-36: bound the persisted history. 150 engines x 365
+# days = 55K events/year if daily-brief runs nightly. Cap
+# at 50K to keep the JSON file under ~10MB without losing a
+# year+ of trend data. prune() is the operator's explicit
+# nuclear option; this is the silent backstop.
+_MAX_EVENTS = 50_000
 
 
 @dataclass(frozen=True)
@@ -116,16 +128,32 @@ def _load_raw_events() -> list[ScoreEvent]:
 
 def _save_events(events: list[ScoreEvent]) -> None:
     """Atomic write via temp + rename so a crash mid-write
-    can't leave a half-truncated file."""
+    can't leave a half-truncated file.
+
+    Caller MUST hold ``_LOCK`` -- the lock is acquired by
+    record_score / record_scores / prune wrapping their
+    load+modify+save sequence. Doing the load outside the
+    lock and the save inside it (the original pattern) lets
+    two concurrent writers clobber each other's append.
+
+    W962-36: applies the _MAX_EVENTS bound so the on-disk
+    file can't grow without limit.
+    """
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    # W962-36 silent backstop: drop the oldest entries past
+    # the cap. Operator-driven prune() is the explicit
+    # window-based eviction path.
+    if len(events) > _MAX_EVENTS:
+        events = events[-_MAX_EVENTS:]
+    # Per-pid temp suffix so concurrent processes don't
+    # collide on the rename target.
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
     payload = [asdict(e) for e in events]
-    with _LOCK:
-        tmp.write_text(
-            json.dumps(payload, indent=2), encoding="utf-8",
-        )
-        tmp.replace(path)
+    tmp.write_text(
+        json.dumps(payload, indent=2), encoding="utf-8",
+    )
+    tmp.replace(path)
 
 
 def record_score(
@@ -162,8 +190,9 @@ def record_score(
         score=int(score),
         verdict=verdict,
     )
-    existing = _load_raw_events()
-    _save_events(existing + [event])
+    with _LOCK:
+        existing = _load_raw_events()
+        _save_events(existing + [event])
     return True
 
 
@@ -208,8 +237,9 @@ def record_scores(
             continue
     if not new_events:
         return 0
-    existing = _load_raw_events()
-    _save_events(existing + new_events)
+    with _LOCK:
+        existing = _load_raw_events()
+        _save_events(existing + new_events)
     return len(new_events)
 
 
@@ -266,8 +296,7 @@ def clear() -> None:
     """
     path = _state_path()
     try:
-        if path.exists():
-            path.unlink()
+        path.unlink(missing_ok=True)  # W962-68 TOCTOU
     except OSError as exc:
         logger.debug(
             "engine_health_history.clear failed: %s", exc,
@@ -288,11 +317,12 @@ def prune(
     if now is None:
         now = time.time()
     cutoff = now - max(0.0, float(older_than_seconds))
-    events = _load_raw_events()
-    kept = [e for e in events if e.recorded_at >= cutoff]
-    dropped = len(events) - len(kept)
-    if dropped:
-        _save_events(kept)
+    with _LOCK:
+        events = _load_raw_events()
+        kept = [e for e in events if e.recorded_at >= cutoff]
+        dropped = len(events) - len(kept)
+        if dropped:
+            _save_events(kept)
     return dropped
 
 
@@ -402,4 +432,88 @@ def find_regressions(
         ))
 
     out.sort(key=lambda r: -r.drop)
+    return out
+
+
+@dataclass(frozen=True)
+class ChronicWarning:
+    """One engine stuck in warning/unhealthy across the
+    sample window. Distinct from ``HealthRegression`` --
+    a chronic warning is a STATE (consistently sick),
+    while a regression is a CHANGE (got worse)."""
+
+    engine: str
+    latest_score: int
+    latest_verdict: str
+    samples: int
+    avg_score: float
+
+
+def find_chronic_warnings(
+    *,
+    sample_window_seconds: float = 86400.0 * 7.0,
+    min_samples: int = 3,
+    healthy_score_floor: int = 7,
+    now: float | None = None,
+) -> list[ChronicWarning]:
+    """Detect engines whose last N samples have ALL been
+    below the healthy-score floor.
+
+    Complements ``find_regressions``: a regression compares
+    baseline-vs-latest (a CHANGE signal), while a chronic
+    warning flags engines that have been consistently
+    unhealthy across the window (a STATE signal). Both
+    matter -- a regression can resolve on its own; a chronic
+    warning typically can't.
+
+    Args:
+        sample_window_seconds: Look-back window (default 7d).
+        min_samples: Minimum number of events in the window
+            for the engine to qualify (default 3 -- one or two
+            samples is too noisy to call chronic).
+        healthy_score_floor: Scores AT OR ABOVE this value
+            count as "engine recovered at least once" and
+            exempt the engine from chronic flagging.
+            Default 7 -- an engine that scored even a single
+            7+ in the window isn't truly stuck. Verdict
+            bands for reference: 8-10 healthy / 5-7 warning
+            / <5 unhealthy; setting floor=8 would treat ANY
+            non-healthy sample as chronic-eligible (a
+            stricter filter).
+        now: Override for testing.
+
+    Returns:
+        List of :class:`ChronicWarning`, sorted by latest
+        score ascending (sickest first).
+    """
+    if now is None:
+        now = time.time()
+    cutoff = now - max(0.0, float(sample_window_seconds))
+
+    events = _load_raw_events()
+    by_engine: dict[str, list[ScoreEvent]] = {}
+    for e in events:
+        if e.recorded_at < cutoff:
+            continue
+        by_engine.setdefault(e.engine, []).append(e)
+
+    out: list[ChronicWarning] = []
+    for engine, bucket in by_engine.items():
+        if len(bucket) < min_samples:
+            continue
+        if any(
+            ev.score >= healthy_score_floor for ev in bucket
+        ):
+            continue
+        latest = max(bucket, key=lambda ev: ev.recorded_at)
+        avg = sum(ev.score for ev in bucket) / len(bucket)
+        out.append(ChronicWarning(
+            engine=engine,
+            latest_score=latest.score,
+            latest_verdict=latest.verdict,
+            samples=len(bucket),
+            avg_score=round(avg, 1),
+        ))
+
+    out.sort(key=lambda c: c.latest_score)
     return out

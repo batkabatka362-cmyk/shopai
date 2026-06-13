@@ -60,7 +60,15 @@ MAX_NEGATIVE_RATIO = float(
 )
 
 _DEFAULT_STATE_PATH = Path("data") / "quarantine_state.json"
-_LOCK = threading.Lock()
+# W962 race fix: was Lock() acquired only inside save_state's
+# write step; 8 mutators (exempt/unexempt/release/clear_release
+# /add_alert_pause/clear_alert_pause/clear_all_alert_pauses_
+# for_engine + future) did load_state() + modify + save_state()
+# unlocked. Two concurrent mutators (e.g. cycle-run bridge +
+# operator CLI release) could clobber each other's set diff.
+# Upgrade to RLock so each mutator can wrap its full read-
+# modify-write under the same lock save_state already holds.
+_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -225,7 +233,9 @@ def save_state(state: QuarantineState) -> None:
             )
         ],
     }
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    # W962: per-pid temp suffix prevents concurrent-process
+    # rename collisions on the atomic write.
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
     with _LOCK:
         tmp.write_text(
             json.dumps(payload, indent=2), encoding="utf-8",
@@ -238,13 +248,16 @@ def exempt_engine(engine: str) -> QuarantineState:
     engine = engine.strip()
     if not engine:
         raise ValueError("engine name must be non-empty")
-    s = load_state()
-    new = QuarantineState(
-        exemptions=s.exemptions | {engine},
-        released=s.released,
-        alert_paused=s.alert_paused,
-    )
-    save_state(new)
+    # W962: span load+modify+save so concurrent mutators don't
+    # clobber each other's set diff.
+    with _LOCK:
+        s = load_state()
+        new = QuarantineState(
+            exemptions=s.exemptions | {engine},
+            released=s.released,
+            alert_paused=s.alert_paused,
+        )
+        save_state(new)
     return new
 
 
@@ -252,13 +265,14 @@ def unexempt_engine(engine: str) -> QuarantineState:
     engine = engine.strip()
     if not engine:
         raise ValueError("engine name must be non-empty")
-    s = load_state()
-    new = QuarantineState(
-        exemptions=s.exemptions - {engine},
-        released=s.released,
-        alert_paused=s.alert_paused,
-    )
-    save_state(new)
+    with _LOCK:
+        s = load_state()
+        new = QuarantineState(
+            exemptions=s.exemptions - {engine},
+            released=s.released,
+            alert_paused=s.alert_paused,
+        )
+        save_state(new)
     return new
 
 
@@ -270,13 +284,14 @@ def release_engine(engine: str) -> QuarantineState:
     engine = engine.strip()
     if not engine:
         raise ValueError("engine name must be non-empty")
-    s = load_state()
-    new = QuarantineState(
-        exemptions=s.exemptions,
-        released=s.released | {engine},
-        alert_paused=s.alert_paused,
-    )
-    save_state(new)
+    with _LOCK:
+        s = load_state()
+        new = QuarantineState(
+            exemptions=s.exemptions,
+            released=s.released | {engine},
+            alert_paused=s.alert_paused,
+        )
+        save_state(new)
     return new
 
 
@@ -284,13 +299,14 @@ def clear_release(engine: str) -> QuarantineState:
     engine = engine.strip()
     if not engine:
         raise ValueError("engine name must be non-empty")
-    s = load_state()
-    new = QuarantineState(
-        exemptions=s.exemptions,
-        released=s.released - {engine},
-        alert_paused=s.alert_paused,
-    )
-    save_state(new)
+    with _LOCK:
+        s = load_state()
+        new = QuarantineState(
+            exemptions=s.exemptions,
+            released=s.released - {engine},
+            alert_paused=s.alert_paused,
+        )
+        save_state(new)
     return new
 
 
@@ -317,13 +333,14 @@ def add_alert_pause(
         store_clean = None
     else:
         store_clean = str(store_id).strip() or None
-    s = load_state()
-    new = QuarantineState(
-        exemptions=s.exemptions,
-        released=s.released,
-        alert_paused=s.alert_paused | {(engine, store_clean)},
-    )
-    save_state(new)
+    with _LOCK:
+        s = load_state()
+        new = QuarantineState(
+            exemptions=s.exemptions,
+            released=s.released,
+            alert_paused=s.alert_paused | {(engine, store_clean)},
+        )
+        save_state(new)
     return new
 
 
@@ -351,13 +368,14 @@ def clear_alert_pause(
         store_clean = None
     else:
         store_clean = str(store_id).strip() or None
-    s = load_state()
-    new = QuarantineState(
-        exemptions=s.exemptions,
-        released=s.released,
-        alert_paused=s.alert_paused - {(engine, store_clean)},
-    )
-    save_state(new)
+    with _LOCK:
+        s = load_state()
+        new = QuarantineState(
+            exemptions=s.exemptions,
+            released=s.released,
+            alert_paused=s.alert_paused - {(engine, store_clean)},
+        )
+        save_state(new)
     return new
 
 
@@ -370,17 +388,18 @@ def clear_all_alert_pauses_for_engine(
     engine = engine.strip()
     if not engine:
         raise ValueError("engine name must be non-empty")
-    s = load_state()
-    remaining = frozenset(
-        pair for pair in s.alert_paused
-        if pair[0] != engine
-    )
-    new = QuarantineState(
-        exemptions=s.exemptions,
-        released=s.released,
-        alert_paused=remaining,
-    )
-    save_state(new)
+    with _LOCK:
+        s = load_state()
+        remaining = frozenset(
+            pair for pair in s.alert_paused
+            if pair[0] != engine
+        )
+        new = QuarantineState(
+            exemptions=s.exemptions,
+            released=s.released,
+            alert_paused=remaining,
+        )
+        save_state(new)
     return new
 
 

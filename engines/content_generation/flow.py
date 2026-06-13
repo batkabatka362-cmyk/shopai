@@ -52,6 +52,18 @@ class ContentGenerationEngine:
         Returns:
             ContentGenerationOutput dict.
         """
+        # W962-14: top-level guard so malformed non-empty
+        # payloads don't escape Pattern Q envelope (e.g.
+        # `float(data.get('min_apply_seo_score'))` on
+        # operator-supplied string would raise uncaught).
+        try:
+            return self._run_inner(input_payload)
+        except Exception as exc:  # noqa: BLE001
+            return self._fail(
+                f"unhandled exception: {exc!s:.200}", 0.0,
+            )
+
+    def _run_inner(self, input_payload: dict[str, Any]) -> dict[str, Any]:
         start = time.monotonic()
 
         # ---- Stage 0: Input validation ----
@@ -77,6 +89,18 @@ class ContentGenerationEngine:
         brand = data.get("brand", {})
         platform = str(data.get("platform", "web")).strip()
 
+        if not isinstance(product, dict) or not product:
+            # W963-156: auto-hydrate first product when caller
+            # leaves it empty (cycle batch invocation).
+            try:
+                from engines._shopify_hydrator import hydrate_one
+                product = hydrate_one(
+                    supplied=None,
+                    capability_name="SHOPIFY_LIST_PRODUCTS",
+                    list_field="products",
+                )
+            except Exception:  # noqa: BLE001
+                product = {}
         if not isinstance(product, dict) or not product:
             return self._fail("No product data provided", 0.0)
 

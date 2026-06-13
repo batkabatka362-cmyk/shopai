@@ -128,6 +128,21 @@ class CustomerJourneyEngine:
             )
         optimizations = opt_result.get("optimizations", [])
 
+        # Phase 7: optional journey-stage tag apply. Opt-in via
+        # data.apply_journey_tags=True. Tags every customer with
+        # their furthest reached journey stage via
+        # SHOPIFY_TAG_CUSTOMER.
+        tagged_journey: list[dict[str, Any]] = []
+        if bool(data.get("apply_journey_tags")):
+            try:
+                from .tag_applier import apply_journey_tags
+                tagged_journey = apply_journey_tags(customer_journeys)
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "customer_journey: apply loop raised: %s", exc,
+                )
+
         # ---- Stage 5: Assemble output ----
         elapsed = time.monotonic() - start
 
@@ -138,6 +153,7 @@ class CustomerJourneyEngine:
                 "stage_metrics": stage_metrics,
                 "drop_off_points": drop_off_points,
                 "optimizations": optimizations,
+                "tagged_journey": tagged_journey,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,

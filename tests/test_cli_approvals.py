@@ -115,11 +115,20 @@ class TestPending:
             _ns(engine=None, limit=20),
         )
         assert code == 0
-        assert "Pending actions (1)" in out
+        # Format gained a `; sort=N` qualifier post-original
+        # write; substring check is enough to verify the header
+        # renders.
+        assert "Pending actions (1" in out
         assert action.id in out
         assert "cart_recovery/mint_cart_recovery_code" in out
         assert "conf=0.85" in out
         assert "recovery for cust_1" in out
+        # Drill-down hint points at the first pending action
+        # with --with-context for inline similar-decisions.
+        assert (
+            f"shopai approvals show {action.id} --with-context"
+            in out
+        )
 
     def test_engine_filter(self, isolated_queue, cli):
         isolated_queue.enqueue(
@@ -237,7 +246,7 @@ class TestShow:
         )
         out, code = _capture(
             cli._cmd_approvals_show,
-            _ns(action_id=action.id),
+            _ns(action_id=action.id, json=True),
         )
         assert code == 0
         payload = json.loads(out)
@@ -246,6 +255,34 @@ class TestShow:
         assert payload["narrative"] == "test narrative"
         # operator_context field present (None when no note)
         assert "operator_context" in payload
+
+    def test_show_default_renders_text(
+        self, isolated_queue, cli,
+    ):
+        """approvals show defaults to a human-readable text
+        view (--json opts in to the raw payload)."""
+        action = isolated_queue.enqueue(
+            engine="cart_recovery",
+            action_type="mint_cart_recovery_code",
+            capability="SHOPIFY_CREATE_DISCOUNT",
+            params={"token": "tok"},
+            narrative="test narrative",
+            confidence=0.9,
+        )
+        out, code = _capture(
+            cli._cmd_approvals_show,
+            argparse.Namespace(
+                action_id=action.id, no_outcomes=False,
+                with_context=False, context_k=3, json=False,
+            ),
+        )
+        assert code == 0
+        # Text view -- not parseable JSON
+        assert f"Action: {action.id}" in out
+        assert "cart_recovery" in out
+        assert "mint_cart_recovery_code" in out
+        # Footer points at the JSON opt-in
+        assert "--json" in out
 
 
 # ─── approve ────────────────────────────────────────────────────

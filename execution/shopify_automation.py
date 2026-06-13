@@ -100,54 +100,55 @@ class ShopifyAutomation:
                            usage_limit: int = 0,
                            once_per_customer: bool = False,
                            prerequisite_quantity: int = 0) -> dict:
-        rule = {
-            "price_rule": {
-                "title": code,
-                "target_type": "line_item",
-                "target_selection": "all",
-                "allocation_method": "across",
-                "value_type": "percentage",
-                "value": str(value),
-                "customer_selection": "all",
-                "starts_at": time.strftime("%Y-%m-%dT00:00:00Z"),
-                "once_per_customer": once_per_customer,
+        # W963-157: was REST price_rules.json + price_rules/<id>/
+        # discount_codes.json (deprecated write_price_rules scope).
+        # GraphQL discountCodeBasicCreate via _discount_compat.
+        from ._discount_compat import create_code_discount
+        result = create_code_discount(
+            code=code,
+            value_pct=value,
+            description=title,
+            once_per_customer=once_per_customer,
+            usage_limit=usage_limit if usage_limit else None,
+            min_qty=(
+                prerequisite_quantity
+                if prerequisite_quantity else None
+            ),
+        )
+        # Legacy callers branch on `result.get("price_rule")`;
+        # preserve that shape so the discount-create surfaces
+        # don't all need to change at once.
+        if result.get("ok"):
+            return {
+                "price_rule": {
+                    "id": result.get("discount_id", ""),
+                    "title": code,
+                },
+                "discount_code": {"code": code},
             }
-        }
-        if usage_limit:
-            rule["price_rule"]["usage_limit"] = usage_limit
-        if prerequisite_quantity:
-            rule["price_rule"]["prerequisite_quantity_range"] = {
-                "greater_than_or_equal_to": prerequisite_quantity}
-
-        result = self._post("price_rules.json", rule)
-        if result.get("price_rule"):
-            rule_id = result["price_rule"]["id"]
-            self._post("price_rules/{}/discount_codes.json".format(rule_id),
-                       {"discount_code": {"code": code}})
-        return result
+        return {"error": result.get("error", "create_failed")}
 
     def _create_price_rule_shipping(self, code: str, min_amount: float,
                                     title: str) -> dict:
-        rule = {
-            "price_rule": {
-                "title": code,
-                "target_type": "shipping_line",
-                "target_selection": "all",
-                "allocation_method": "each",
-                "value_type": "percentage",
-                "value": "-100.0",
-                "customer_selection": "all",
-                "starts_at": time.strftime("%Y-%m-%dT00:00:00Z"),
-                "prerequisite_subtotal_range": {
-                    "greater_than_or_equal_to": str(min_amount)},
+        # W963-157: GraphQL discountCodeBasicCreate with
+        # target_type=shipping_line via _discount_compat.
+        from ._discount_compat import create_code_discount
+        result = create_code_discount(
+            code=code,
+            value_pct=-100.0,
+            description=title,
+            target_type="shipping_line",
+            min_subtotal=min_amount,
+        )
+        if result.get("ok"):
+            return {
+                "price_rule": {
+                    "id": result.get("discount_id", ""),
+                    "title": code,
+                },
+                "discount_code": {"code": code},
             }
-        }
-        result = self._post("price_rules.json", rule)
-        if result.get("price_rule"):
-            rule_id = result["price_rule"]["id"]
-            self._post("price_rules/{}/discount_codes.json".format(rule_id),
-                       {"discount_code": {"code": code}})
-        return result
+        return {"error": result.get("error", "create_failed")}
 
     # == CUSTOMER TAGGING ==========================================
 
@@ -268,12 +269,26 @@ class ShopifyAutomation:
 
     # == HELPERS ===================================================
 
+    # W962-69: cap response reads. Shopify Admin responses are
+    # typically < 100 KB; 16 MB is generous slack while still
+    # OOM-proofing against MITM / misrouted endpoints.
+    _MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+
+    def _read_bounded(self, resp):
+        raw = resp.read(self._MAX_RESPONSE_BYTES + 1)
+        if len(raw) > self._MAX_RESPONSE_BYTES:
+            raise ValueError(
+                "shopify response exceeded "
+                f"{self._MAX_RESPONSE_BYTES} bytes"
+            )
+        return raw
+
     def _get(self, path):
         req = urllib.request.Request(
             "https://{}/admin/api/2024-01/{}".format(self._shop, path),
             headers={"X-Shopify-Access-Token": self._token})
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())
+            return json.loads(self._read_bounded(resp))
 
     def _post(self, path, payload):
         url = "https://{}/admin/api/2024-01/{}".format(self._shop, path)
@@ -283,7 +298,7 @@ class ShopifyAutomation:
                      "Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
-                return json.loads(resp.read())
+                return json.loads(self._read_bounded(resp))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode()[:200]
             return {"error": "HTTP {} {}".format(exc.code, body)}
@@ -296,7 +311,7 @@ class ShopifyAutomation:
                      "Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
-                return json.loads(resp.read())
+                return json.loads(self._read_bounded(resp))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode()[:200]
             return {"error": "HTTP {} {}".format(exc.code, body)}

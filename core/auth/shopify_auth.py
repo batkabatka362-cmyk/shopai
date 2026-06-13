@@ -197,24 +197,64 @@ class ShopifyAuth:
         )
 
         try:
+            # W962-69: cap the response. A client_credentials
+            # response is < 4 KB in practice; 1 MB defensive
+            # ceiling against MITM / proxy-injected payloads.
+            _OAUTH_RESPONSE_MAX = 1 * 1024 * 1024
             with urllib.request.urlopen(req, timeout=30) as resp:
-                raw = resp.read().decode("utf-8")
+                raw_bytes = resp.read(_OAUTH_RESPONSE_MAX + 1)
+            if len(raw_bytes) > _OAUTH_RESPONSE_MAX:
+                raise RuntimeError(
+                    "Shopify client_credentials response exceeded "
+                    f"{_OAUTH_RESPONSE_MAX} bytes; refusing to parse."
+                )
+            raw = raw_bytes.decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
+            # W962-57 / W962-73: don't interpolate raw response
+            # body into the exception OR the debug log. Shopify
+            # error responses can echo back the submitted
+            # client_id / client_secret in the
+            # error_description / parameter field, and a debug
+            # log line carrying that body would persist credentials
+            # to log sinks + crash reporters even when debug
+            # logging is enabled for unrelated reasons.
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+                # Log only the structural shape (status + length
+                # + first 80 chars stripped of obvious creds);
+                # never the full body.
+                preview = body[:80].replace(
+                    "client_secret", "[REDACTED]",
+                ).replace(
+                    "access_token", "[REDACTED]",
+                )
+                logger.debug(
+                    "Shopify token request HTTP %d len=%d preview=%r",
+                    exc.code, len(body), preview,
+                )
+            except Exception:  # noqa: BLE001
+                pass
             raise RuntimeError(
-                f"Shopify token request failed ({exc.code}): {body}"
+                f"Shopify token request failed: HTTP {exc.code}"
             ) from exc
 
         try:
             data = json.loads(raw)
         except ValueError as exc:
-            raise RuntimeError(f"Shopify token response was not JSON: {exc}") from exc
+            raise RuntimeError(
+                "Shopify token response was not JSON"
+            ) from exc
         if not isinstance(data, dict):
             raise RuntimeError(
-                f"Shopify token response is {type(data).__name__}, expected dict"
+                f"Shopify token response is "
+                f"{type(data).__name__}, expected dict"
             )
         if "access_token" not in data or not data["access_token"]:
-            raise ValueError(f"No access_token in response: {data}")
+            # W962-57: list keys only, never the raw dict.
+            raise ValueError(
+                "Shopify token response missing access_token; "
+                f"keys={sorted(data.keys())}"
+            )
         return data
 
     def get_auth_url(self, scopes: str = "", redirect_uri: str = "") -> str:
@@ -255,11 +295,34 @@ class ShopifyAuth:
             method="POST",
         )
 
+        # W962-69: cap the OAuth response read. A token-exchange
+        # response is < 4 KB in practice; 1 MB is a defensive
+        # ceiling that catches MITM / proxy-injection of nonsense
+        # bodies without burning operator memory.
+        _OAUTH_RESPONSE_MAX = 1 * 1024 * 1024
         with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            raw = resp.read(_OAUTH_RESPONSE_MAX + 1)
+        if len(raw) > _OAUTH_RESPONSE_MAX:
+            raise ValueError(
+                "Shopify code-exchange response exceeded "
+                f"{_OAUTH_RESPONSE_MAX} bytes; refusing to parse."
+            )
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"Shopify code-exchange response not valid JSON: "
+                f"{type(exc).__name__}"
+            ) from None
 
         if "access_token" not in data:
-            raise ValueError(f"No access_token: {data}")
+            # W962-57: keys-only error so the access_token
+            # (or other secrets) never leak into the exception
+            # string.
+            raise ValueError(
+                "Shopify code-exchange response missing "
+                f"access_token; keys={sorted(data.keys())}"
+            )
 
         self._access_token = data["access_token"]
         # New Shopify tokens may or may not expire
@@ -302,11 +365,38 @@ class ShopifyAuth:
                     "expires_at": self._expires_at,
                     "client_id": self._client_id[:8] + "..." if self._client_id else "",
                 }
-                tmp = _TOKEN_CACHE_FILE.with_suffix(_TOKEN_CACHE_FILE.suffix + ".tmp")
-                tmp.write_text(json.dumps(cache, indent=2))
-                os.replace(str(tmp), str(_TOKEN_CACHE_FILE))
-                # Restrict file permissions — tokens are
-                # sensitive. 0600 = owner read/write only.
+                # W962-70: write via tempfile.mkstemp so the
+                # tmp file is born with mode 0o600 (the stdlib
+                # contract) and a random unique name (defeats
+                # the symlink-attack race on a deterministic
+                # tmp name). The fd is opened with O_EXCL by
+                # mkstemp itself.
+                # Why this matters: pre-fix wrote plaintext
+                # tokens to a deterministic `.tmp` path with
+                # default umask (typically 0o644), THEN renamed
+                # + chmod'd. During the write window the tokens
+                # were world-readable on POSIX. mkstemp closes
+                # that window.
+                import tempfile as _tempfile
+                payload = json.dumps(cache, indent=2).encode("utf-8")
+                fd, tmp_str = _tempfile.mkstemp(
+                    prefix=".shopify_tokens_",
+                    suffix=".tmp",
+                    dir=str(_TOKEN_CACHE_DIR),
+                )
+                try:
+                    with os.fdopen(fd, "wb") as f:
+                        f.write(payload)
+                    os.replace(tmp_str, str(_TOKEN_CACHE_FILE))
+                except Exception:
+                    try:
+                        os.unlink(tmp_str)
+                    except OSError:
+                        pass
+                    raise
+                # Belt-and-suspenders chmod on the final path
+                # in case os.replace transferred a default mode
+                # on some FS implementations.
                 try:
                     os.chmod(str(_TOKEN_CACHE_FILE), 0o600)
                 except OSError as exc:
@@ -316,8 +406,7 @@ class ShopifyAuth:
                 # Clean up half-written tmp.
                 try:
                     tmp_path = _TOKEN_CACHE_FILE.with_suffix(_TOKEN_CACHE_FILE.suffix + ".tmp")
-                    if tmp_path.exists():
-                        tmp_path.unlink()
+                    tmp_path.unlink(missing_ok=True)  # W962-68 TOCTOU
                 except OSError as exc:
                     logger.debug("credential tmp file cleanup failed: %s", exc)
 

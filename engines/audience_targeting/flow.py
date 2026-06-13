@@ -87,7 +87,34 @@ class AudienceTargetingEngine:
         )
 
         if not customers:
-            return self._fail("Customer list is required", 0.0)
+            # W963-161: cold-start success-skip (mirrors the
+            # W963-156 cycle-output fix pattern). Stores with
+            # 0 customers used to trip a hard error here. The
+            # right semantic is success + empty plan: engine
+            # ran, found no input, recommended nothing. Cycle
+            # records ok; downstream consumers see empty
+            # audiences list + skipped flag.
+            return {
+                "status": "success",
+                "data": {
+                    "audiences": [],
+                    "recommended_audience": None,
+                    "total_reachable": 0,
+                    "tagged_audiences": [],
+                    "skipped": True,
+                    "skip_reason": (
+                        "no_customers_yet (cold-start)"
+                    ),
+                },
+                "meta": {
+                    "engine": self.ENGINE_NAME,
+                    "timestamp": time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(),
+                    ),
+                    "elapsed_seconds": 0.0,
+                },
+                "error": None,
+            }
 
         # ---- Stage 1: Read past audiences (non-blocking) ----
         _past = read_past_audiences(limit=5)
@@ -187,6 +214,22 @@ class AudienceTargetingEngine:
             total_reachable=total_reachable,
         )
 
+        # Phase 7: optional audience-tag apply. Opt-in via
+        # data.apply_audience_tags=True. Tags every matched
+        # customer with audience:<segment_id> via
+        # SHOPIFY_TAG_CUSTOMER (one customer can carry many).
+        tagged_audiences: list[dict[str, Any]] = []
+        if bool(data.get("apply_audience_tags")):
+            try:
+                from .tag_applier import apply_audience_tags
+                tagged_audiences = apply_audience_tags(match_results)
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "audience_targeting: apply loop raised: %s",
+                    exc,
+                )
+
         # ---- Stage 8: Return output ----
         elapsed = time.monotonic() - start
 
@@ -196,6 +239,7 @@ class AudienceTargetingEngine:
                 "audiences": audiences,
                 "recommended_audience": recommended,
                 "total_reachable": total_reachable,
+                "tagged_audiences": tagged_audiences,
             },
             "meta": {
                 "engine": self.ENGINE_NAME,

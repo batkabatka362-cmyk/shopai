@@ -96,7 +96,10 @@ class TestJson:
         assert code == 0
         data = json.loads(out)
         assert data["ok"] is True
-        assert set(data["sections"].keys()) == {
+        # W937: roster grows over time; assert subset semantics
+        # so new sections (e.g. wireup_resolve) don't break the
+        # test as the doctor expands.
+        base = {
             "pattern_k_dispatchers",
             "oauth_scope_coverage",
             "pattern_y_capabilities",
@@ -107,6 +110,7 @@ class TestJson:
             "live_webhook_drift",
             "engines_writebacks",
         }
+        assert base <= set(data["sections"].keys())
 
     def test_json_pattern_k_section(self, cli):
         out, _ = _capture(

@@ -23,6 +23,7 @@ from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
 from .brevo import BrevoAdapter
+from .klaviyo import KlaviyoAdapter
 from .resend import ResendAdapter
 
 logger = get_logger("adapters.email.bootstrap")
@@ -30,6 +31,7 @@ logger = get_logger("adapters.email.bootstrap")
 
 _EMAIL_ADAPTER_CLASSES = (
     BrevoAdapter,
+    KlaviyoAdapter,
     ResendAdapter,
 )
 
@@ -41,7 +43,7 @@ def register_all(
 
     Returns a ``{adapter_name: is_configured}`` map.
     """
-    reg = registry or get_registry()
+    reg = registry if registry is not None else get_registry()
     status: dict[str, bool] = {}
 
     for cls in _EMAIL_ADAPTER_CLASSES:

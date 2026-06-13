@@ -96,6 +96,22 @@ class WishlistEngine:
 
         _write = write_wishlist_result(analysis=analysis, recommendations_count=len(conversion_recommendations))
 
+        # Phase 7: optional wishlist-tag apply. Opt-in via
+        # data.apply_wishlist_tags=True. Tags products with
+        # wishlist_count >= 3 (and >= 10 for top_tier).
+        tagged_wishlist: list[dict[str, Any]] = []
+        if bool(data.get("apply_wishlist_tags")):
+            try:
+                from .tag_applier import apply_wishlist_tags
+                tagged_wishlist = apply_wishlist_tags(
+                    analysis.get("top_wishlisted", []), products,
+                )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).debug(
+                    "wishlist: apply loop raised: %s", exc,
+                )
+
         elapsed = time.monotonic() - start
         return {
             "status": "success",
@@ -104,6 +120,7 @@ class WishlistEngine:
                 "price_alerts": price_alerts,
                 "conversion_recommendations": conversion_recommendations,
                 "social_proof_data": social_proof_data,
+                "tagged_wishlist": tagged_wishlist,
             },
             "meta": {"engine": self.ENGINE_NAME, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "elapsed_seconds": round(elapsed, 3)},
             "error": None,

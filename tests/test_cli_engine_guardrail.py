@@ -53,7 +53,8 @@ class TestStateRender:
     def test_all_off_default(self, cli, monkeypatch):
         for engine in (
             "loyalty", "cart_recovery", "browse_recovery",
-            "email_marketing", "wholesale_b2b", "discount_strategy",
+            "email_marketing", "wholesale_b2b",
+            "discount_strategy", "churn_prediction",
         ):
             monkeypatch.delenv(
                 f"SHOPAI_{engine.upper()}_AGI_GUARDRAIL",
@@ -64,7 +65,7 @@ class TestStateRender:
             return_value=MagicMock(_conn=MagicMock()),
         ):
             out = _capture(cli._cmd_engine_guardrail, _ns())
-        assert "0/6 engine(s) enabled" in out
+        assert "0/7 engine(s) enabled" in out
         # Hint shown when all off
         assert "Enable any engine via env var" in out
 
@@ -74,6 +75,7 @@ class TestStateRender:
         for other in (
             "browse_recovery", "email_marketing",
             "wholesale_b2b", "discount_strategy",
+            "churn_prediction",
         ):
             monkeypatch.delenv(
                 f"SHOPAI_{other.upper()}_AGI_GUARDRAIL",
@@ -84,7 +86,7 @@ class TestStateRender:
             return_value=MagicMock(_conn=MagicMock()),
         ):
             out = _capture(cli._cmd_engine_guardrail, _ns())
-        assert "2/6 engine(s) enabled" in out
+        assert "2/7 engine(s) enabled" in out
         assert "*loyalty" in out
         assert "*cart_recovery" in out
         # Disabled engines are NOT prefixed with *
@@ -146,11 +148,12 @@ class TestJsonShape:
             )
         data = json.loads(out)
         assert data["window_hours"] == 48
-        # All 6 engines surface
+        # All 7 engines surface
         engines = {e["engine"] for e in data["engines"]}
         assert engines == {
             "loyalty", "cart_recovery", "browse_recovery",
-            "email_marketing", "wholesale_b2b", "discount_strategy",
+            "email_marketing", "wholesale_b2b",
+            "discount_strategy", "churn_prediction",
         }
         # Each entry has all 4 fields
         for e in data["engines"]:

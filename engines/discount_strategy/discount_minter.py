@@ -48,7 +48,10 @@ from typing import Any
 from engines._agi_context import (
     capture_decision_context,
     explain_guardrail_block,
+    explain_thrash_block,
     guardrail_enabled,
+    log_thrash_block,
+    should_block_thrashing_store,
     should_block_unambiguous_negative,
 )
 from engines._recovery_codes import mint_recovery_code as _mint
@@ -142,6 +145,35 @@ def mint_strategy_code(
         params=mint_params,
     )
     agi_metrics = agi_context.get("metrics") or {}
+
+    # Wave 919: thrash guardrail (system-level kill switch).
+    # Storewide promos have the broadest blast radius -- a
+    # thrashing store is the worst place to layer one on top.
+    try:
+        from core.context import get_active_store_id
+        active_store_id = get_active_store_id()
+    except Exception:  # noqa: BLE001
+        active_store_id = None
+    if should_block_thrashing_store(active_store_id):
+        # W937 bugfix: forward agi_metrics for learning-loop
+        # joinability (pre-fix was metrics=None, splitting
+        # thrash blocks from the rest of the action history).
+        record_writeback(
+            engine="discount_strategy",
+            action_type="mint_strategy_code",
+            capability="SHOPIFY_CREATE_DISCOUNT",
+            params=mint_params,
+            success=False,
+            error=explain_thrash_block(active_store_id),
+            metrics=agi_metrics or None,
+        )
+        log_thrash_block(
+            engine="discount_strategy",
+            action_type="mint_strategy_code",
+            capability="SHOPIFY_CREATE_DISCOUNT",
+            store_id=active_store_id,
+        )
+        return None
 
     # v2 guardrail: opt-in via
     # ``SHOPAI_DISCOUNT_STRATEGY_AGI_GUARDRAIL=1``. Storewide

@@ -328,10 +328,81 @@ class TestDiscounts:
         )
         assert "BEAUTY20" in result["results"]["discounts"]["codes"]
 
+    # W963-162: tests rewritten around the router boundary.
+    # Production code goes through SHOPIFY_LIST_DISCOUNTS
+    # (read) + SHOPIFY_CREATE_DISCOUNT (write) via the
+    # SmartRouter. The legacy REST-shape mocks were pinned
+    # to a dead code path -- this rewrite pins each test to
+    # the actual production contract.
+
+    def _patch_router(
+        self, monkeypatch, existing_titles=None,
+    ):
+        """Patch the router used by store_configurator's
+        _existing_discount_titles helper + _create_discount.
+
+        Returns a list of (capability_name, params) tuples
+        for every router.execute call -- mirrors how the
+        legacy REST tests collected calls via _install_fake_client.
+        """
+        calls: list[tuple[str, dict]] = []
+
+        class FakeResult:
+            def __init__(self, ok=True, data=None, error=""):
+                self.ok = ok
+                self.data = data or {}
+                self.error = error
+
+        class FakeRouter:
+            def execute(self_inner, capability, params):
+                cap_name = (
+                    capability.value
+                    if hasattr(capability, "value")
+                    else str(capability)
+                )
+                calls.append((cap_name, dict(params)))
+                if cap_name == "shopify_list_discounts":
+                    return FakeResult(
+                        ok=True,
+                        data={
+                            "discounts": [
+                                {"title": t}
+                                for t in (existing_titles or [])
+                            ],
+                        },
+                    )
+                if cap_name == "shopify_create_discount":
+                    return FakeResult(
+                        ok=True,
+                        data={"discount_id": "gid://x/1"},
+                    )
+                if cap_name == (
+                    "shopify_create_discount_free_shipping"
+                ):
+                    return FakeResult(
+                        ok=True,
+                        data={"id": "gid://x/2"},
+                    )
+                return FakeResult(ok=False, error="unknown")
+
+        fake_router = FakeRouter()
+        monkeypatch.setattr(
+            "core.adapters.get_router",
+            lambda: fake_router,
+        )
+        monkeypatch.setattr(
+            "core.adapters.router.get_router",
+            lambda: fake_router,
+        )
+        return calls
+
     def test_existing_discount_not_recreated(self, monkeypatch):
         _install_fake_client(
             monkeypatch,
-            responses=self._responses(existing=[{"title": "WELCOME15"}]),
+            responses=self._responses(),
+        )
+        self._patch_router(
+            monkeypatch, existing_titles=["WELCOME15"],
         )
         c = _make()
         result = c.configure(
@@ -345,71 +416,95 @@ class TestDiscounts:
         assert "BUNDLE15" in codes
 
     def test_bundle_has_min_quantity_rule(self, monkeypatch):
-        calls = _install_fake_client(monkeypatch, responses=self._responses())
+        _install_fake_client(monkeypatch, responses=self._responses())
+        calls = self._patch_router(monkeypatch)
         c = _make()
         c.configure(
             "x.myshopify.com", "tok", niche="home",
             features=["discounts"],
         )
-        bundle_body = None
-        for m, p, b in calls:
-            if m == "POST" and p == "price_rules.json" and b:
-                if b["price_rule"]["title"] == "BUNDLE15":
-                    bundle_body = b
-                    break
-        assert bundle_body is not None
-        assert bundle_body["price_rule"]["prerequisite_quantity_range"] == {
-            "greater_than_or_equal_to": 3,
-        }
+        bundle_params = None
+        for cap, params in calls:
+            if cap != "shopify_create_discount":
+                continue
+            if params.get("code") == "BUNDLE15":
+                bundle_params = params
+                break
+        assert bundle_params is not None
+        assert bundle_params.get("min_quantity") == 3
 
-    def test_free_shipping_uses_shipping_target_and_min_subtotal(self, monkeypatch):
-        calls = _install_fake_client(monkeypatch, responses=self._responses())
+    def test_free_shipping_routes_to_free_shipping_mutation(self, monkeypatch):
+        # W963-163: FREESHIP50 now routes through
+        # SHOPIFY_CREATE_DISCOUNT_FREE_SHIPPING (Shopify's
+        # dedicated free-shipping mutation), NOT the basic
+        # percentage discount mutation. The latent gap from
+        # W963-162's note is closed.
+        _install_fake_client(monkeypatch, responses=self._responses())
+        calls = self._patch_router(monkeypatch)
         c = _make()
         c.configure(
             "x.myshopify.com", "tok", niche="home",
             features=["discounts"],
         )
-        ship_body = None
-        for m, p, b in calls:
-            if m == "POST" and p == "price_rules.json" and b:
-                if b["price_rule"]["title"] == "FREESHIP50":
-                    ship_body = b
-                    break
-        assert ship_body is not None
-        assert ship_body["price_rule"]["target_type"] == "shipping_line"
-        assert ship_body["price_rule"]["prerequisite_subtotal_range"] == {
-            "greater_than_or_equal_to": "50.0",
-        }
-        assert ship_body["price_rule"]["value"] == "-100.0"
+        ship_params = None
+        for cap, params in calls:
+            if cap != "shopify_create_discount_free_shipping":
+                continue
+            if params.get("code") == "FREESHIP50":
+                ship_params = params
+                break
+        assert ship_params is not None, (
+            "FREESHIP50 must route through the free-shipping "
+            "capability, not the basic discount mutation"
+        )
+        # Free-shipping doesn't carry a percentage; it carries
+        # minimum_subtotal for the order-value gate.
+        assert ship_params.get("minimum_subtotal") == 50.0
+        assert "percentage" not in ship_params
+        # And NO basic-discount call was made for FREESHIP50
+        basic_for_freeship = [
+            p for c2, p in calls
+            if c2 == "shopify_create_discount"
+            and p.get("code") == "FREESHIP50"
+        ]
+        assert not basic_for_freeship
 
     def test_welcome_and_loyal_once_per_customer(self, monkeypatch):
-        calls = _install_fake_client(monkeypatch, responses=self._responses())
+        _install_fake_client(monkeypatch, responses=self._responses())
+        calls = self._patch_router(monkeypatch)
         c = _make()
         c.configure(
             "x.myshopify.com", "tok", niche="home",
             features=["discounts"],
         )
         opc_codes = set()
-        for m, p, b in calls:
-            if m == "POST" and p == "price_rules.json" and b:
-                if b["price_rule"].get("once_per_customer"):
-                    opc_codes.add(b["price_rule"]["title"])
+        for cap, params in calls:
+            if cap != "shopify_create_discount":
+                continue
+            if params.get("applies_once_per_customer"):
+                opc_codes.add(params.get("code"))
         assert {"WELCOME15", "COMEBACK10", "LOYAL20"}.issubset(opc_codes)
 
-    def test_discount_codes_attached_after_rule(self, monkeypatch):
-        calls = _install_fake_client(monkeypatch, responses=self._responses())
+    def test_core_codes_all_created_through_router(self, monkeypatch):
+        # W963-162: every CORE code reaches the router. W963-163:
+        # FREESHIP50 specifically routes through the free-shipping
+        # capability while the others use the basic capability.
+        _install_fake_client(monkeypatch, responses=self._responses())
+        calls = self._patch_router(monkeypatch)
         c = _make()
         c.configure(
             "x.myshopify.com", "tok", niche="home",
             features=["discounts"],
         )
-        code_attachments = [
-            (p, b) for m, p, b in calls
-            if m == "POST" and "discount_codes.json" in p
-        ]
-        # One attach per core code + seasonal + SAVE10
-        attached_codes = {b["discount_code"]["code"] for _, b in code_attachments if b}
-        assert self._CORE_CODES.issubset(attached_codes)
+        created_codes = {
+            params.get("code")
+            for cap, params in calls
+            if cap in (
+                "shopify_create_discount",
+                "shopify_create_discount_free_shipping",
+            )
+        }
+        assert self._CORE_CODES.issubset(created_codes)
 
 
 class TestSeasonalDiscountTable:
@@ -811,15 +906,65 @@ class TestLoyalty:
 
 
 class TestReferral:
+    def _patch_router(
+        self, monkeypatch, existing_titles=None,
+    ):
+        """Same router-boundary patch as TestDiscounts.
+        Returns the call list for assertion."""
+        calls: list[tuple[str, dict]] = []
+
+        class FakeResult:
+            def __init__(self, ok=True, data=None, error=""):
+                self.ok = ok
+                self.data = data or {}
+                self.error = error
+
+        class FakeRouter:
+            def execute(self_inner, capability, params):
+                cap_name = (
+                    capability.value
+                    if hasattr(capability, "value")
+                    else str(capability)
+                )
+                calls.append((cap_name, dict(params)))
+                if cap_name == "shopify_list_discounts":
+                    return FakeResult(data={
+                        "discounts": [
+                            {"title": t}
+                            for t in (existing_titles or [])
+                        ],
+                    })
+                if cap_name == "shopify_create_discount":
+                    return FakeResult(data={
+                        "discount_id": "gid://x/1",
+                    })
+                if cap_name == (
+                    "shopify_create_discount_free_shipping"
+                ):
+                    return FakeResult(data={
+                        "id": "gid://x/2",
+                    })
+                return FakeResult(ok=False)
+
+        fake_router = FakeRouter()
+        monkeypatch.setattr(
+            "core.adapters.get_router",
+            lambda: fake_router,
+        )
+        monkeypatch.setattr(
+            "core.adapters.router.get_router",
+            lambda: fake_router,
+        )
+        return calls
+
     def test_creates_friend10_and_metafield(self, monkeypatch):
-        calls = _install_fake_client(
+        _install_fake_client(
             monkeypatch,
             responses={
-                "GET price_rules.json": {"price_rules": []},
-                "POST price_rules.json": {"price_rule": {"id": 55}},
                 "POST metafields.json": {"metafield": {"id": 1}},
             },
         )
+        router_calls = self._patch_router(monkeypatch)
         c = _make()
         result = c.configure(
             "x.myshopify.com", "tok", features=["referral"],
@@ -828,18 +973,23 @@ class TestReferral:
         assert r["saved"] is True
         assert r["discount_code"] == "FRIEND10"
         assert r["code_created"] is True
-        # FRIEND10 price_rule was POSTed
-        titles = [b["price_rule"]["title"] for m, p, b in calls
-                  if m == "POST" and p == "price_rules.json" and b]
-        assert "FRIEND10" in titles
+        # FRIEND10 went through the router create path
+        codes = {
+            params.get("code")
+            for cap, params in router_calls
+            if cap == "shopify_create_discount"
+        }
+        assert "FRIEND10" in codes
 
     def test_skips_rule_creation_if_exists(self, monkeypatch):
         _install_fake_client(
             monkeypatch,
             responses={
-                "GET price_rules.json": {"price_rules": [{"title": "FRIEND10"}]},
                 "POST metafields.json": {"metafield": {"id": 1}},
             },
+        )
+        router_calls = self._patch_router(
+            monkeypatch, existing_titles=["FRIEND10"],
         )
         c = _make()
         result = c.configure(
@@ -847,6 +997,13 @@ class TestReferral:
         )
         assert result["results"]["referral"]["code_created"] is False
         assert result["results"]["referral"]["saved"] is True  # metafield still saved
+        # No create_discount call fired for FRIEND10
+        creates = [
+            params for cap, params in router_calls
+            if cap == "shopify_create_discount"
+            and params.get("code") == "FRIEND10"
+        ]
+        assert not creates
 
     def test_metafield_body_has_reward_config(self, monkeypatch):
         calls = _install_fake_client(

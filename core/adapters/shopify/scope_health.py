@@ -118,7 +118,17 @@ def compare_to_live(adapter: Any = None) -> ScopeHealthReport | None:
     data = getattr(result, "data", {}) or {}
     if not isinstance(data, dict):
         return None
-    raw_scopes = data.get("access_scopes")
+    # W956 bugfix: the apps adapter normalises the GraphQL
+    # response to data["installation"]["access_scopes"], not
+    # data["access_scopes"]. Pre-fix this returned None and
+    # operators saw "Live scope check unavailable" even though
+    # the live call succeeded with 60+ granted scopes.
+    installation = data.get("installation") or {}
+    raw_scopes = installation.get("access_scopes")
+    if not isinstance(raw_scopes, list):
+        # Fall back to legacy flat path for older adapter
+        # response shapes
+        raw_scopes = data.get("access_scopes")
     if not isinstance(raw_scopes, list):
         return None
 
