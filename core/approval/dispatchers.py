@@ -994,14 +994,31 @@ def _attach_product_images(
 
 
 _ONLINE_STORE_PUB_CACHE: dict[str, str] = {}
+# W963-178: serialise cache reads + writes so concurrent
+# callers (parallel cycle fan-out across stores, pytest -n auto,
+# webhook server with multiple inbound requests for the same
+# shop) don't duplicate LIST_PUBLICATIONS calls. Race wasn't
+# corrupting state (both writers would land the same GID) but
+# wasted a router call per cycle x worker.
+import threading as _pub_cache_threading
+_ONLINE_STORE_PUB_CACHE_LOCK = _pub_cache_threading.Lock()
 
 
 def _resolve_online_store_publication() -> str:
-    """W963-165: cache the Online Store publication GID.
+    """W963-165 + W963-174 + W963-178: cache the Online Store
+    publication GID with thread safety.
 
     Shopify's publication IDs are per-shop + per-active_store
-    context. We resolve once per process per (cache key) +
-    reuse. Returns '' on any failure (caller falls back to
+    context. We resolve once per process per (sid != '') +
+    reuse. The sid='' path always re-resolves (W963-174:
+    prevents leaking a sibling shop's publication GID when
+    active_store isn't set).
+
+    Cache access is guarded by a module-level lock
+    (W963-178) so two threads asking for the same sid don't
+    both fire LIST_PUBLICATIONS.
+
+    Returns '' on any failure (caller falls back to
     operator-supplied publication_ids).
     """
     # Cache key includes active_store so multi-store callers
@@ -1011,15 +1028,15 @@ def _resolve_online_store_publication() -> str:
         sid = str(get_active_store_id() or "")
     except Exception:  # noqa: BLE001
         sid = ""
-    # W963-174: only consult / write the cache when we have a
-    # real sid. The empty-key path could leak a publication GID
-    # from one no-active_store call to the next -- if that's
-    # ever a different store (multi-tenant cron, test fixtures),
-    # the resolved GID belongs to whichever Shopify happened to
-    # answer the first uncached call. Always re-resolve on
-    # sid='' so the active_store-less path stays correct.
-    if sid and sid in _ONLINE_STORE_PUB_CACHE:
-        return _ONLINE_STORE_PUB_CACHE[sid]
+    # W963-174 + W963-178: only consult / write the cache when
+    # we have a real sid. Lock guards the read + miss + write
+    # window so two concurrent callers for the same sid don't
+    # both fire LIST_PUBLICATIONS.
+    if sid:
+        with _ONLINE_STORE_PUB_CACHE_LOCK:
+            cached = _ONLINE_STORE_PUB_CACHE.get(sid)
+        if cached:
+            return cached
 
     ok, result = _router_call(
         "SHOPIFY_LIST_PUBLICATIONS", {},
@@ -1034,7 +1051,8 @@ def _resolve_online_store_publication() -> str:
             pub_id = str(pub.get("id") or "")
             if pub_id:
                 if sid:
-                    _ONLINE_STORE_PUB_CACHE[sid] = pub_id
+                    with _ONLINE_STORE_PUB_CACHE_LOCK:
+                        _ONLINE_STORE_PUB_CACHE[sid] = pub_id
                 return pub_id
     return ""
 

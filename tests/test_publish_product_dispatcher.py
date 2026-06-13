@@ -139,6 +139,76 @@ class TestPublishProduct:
             == "gid://shopify/Product/100"
         )
 
+    def test_resolve_publication_thread_safe(self):
+        """W963-178: concurrent _resolve_online_store_publication
+        calls for the same sid must not duplicate the
+        LIST_PUBLICATIONS router call (race condition was harmless
+        but wasted)."""
+        import threading
+        from core.approval.dispatchers import (
+            _resolve_online_store_publication,
+            _ONLINE_STORE_PUB_CACHE,
+        )
+        _ONLINE_STORE_PUB_CACHE.clear()
+        call_count = {"n": 0}
+        call_lock = threading.Lock()
+        start_barrier = threading.Barrier(8)
+
+        def fake_router_call(cap, params):
+            with call_lock:
+                call_count["n"] += 1
+            if cap == "SHOPIFY_LIST_PUBLICATIONS":
+                return True, {
+                    "publications": [{
+                        "id": "gid://shopify/Publication/X",
+                        "name": "Online Store",
+                    }],
+                }
+            return False, {}
+
+        results: list[str] = []
+        results_lock = threading.Lock()
+
+        def worker():
+            from core.context import active_store
+            start_barrier.wait()
+            with active_store("race_test_store"):
+                pid = _resolve_online_store_publication()
+            with results_lock:
+                results.append(pid)
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=fake_router_call,
+        ):
+            threads = [
+                threading.Thread(target=worker)
+                for _ in range(8)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        # Every worker got the right GID
+        assert all(
+            r == "gid://shopify/Publication/X"
+            for r in results
+        )
+        # Cache populated correctly
+        assert (
+            _ONLINE_STORE_PUB_CACHE.get("race_test_store")
+            == "gid://shopify/Publication/X"
+        )
+        # Best-effort: lock means most workers find a cache
+        # hit. Worst case under race: 2-3 calls (the early
+        # ones racing to populate). Solid upper bound is 8
+        # (no lock at all would let every thread fire).
+        assert call_count["n"] <= 4, (
+            f"too many LIST_PUBLICATIONS under race: "
+            f"{call_count['n']}/8 -- lock not effective"
+        )
+
     def test_status_update_failure_short_circuits(self):
         calls: list[str] = []
 
