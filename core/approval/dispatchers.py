@@ -952,9 +952,20 @@ def _attach_product_images(
         and isinstance(image_query, str)
         and image_query.strip()
     ):
+        # W963-176: defensively coerce image_count. Raw
+        # int(metadata.get(...) or 1) would crash the dispatcher
+        # if image_count is a non-numeric string (e.g. operator
+        # hand-edited a queue entry). Falls back to 1 on any
+        # coercion error so the autonomous chain stays alive.
+        try:
+            image_limit = int(
+                metadata.get("image_count", 1) or 1,
+            )
+        except (TypeError, ValueError):
+            image_limit = 1
         discovered = _discover_stock_images(
             query=image_query.strip(),
-            limit=int(metadata.get("image_count", 1) or 1),
+            limit=image_limit,
             orientation=str(
                 metadata.get("image_orientation", "")
                 or "",

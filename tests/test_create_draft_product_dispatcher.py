@@ -627,6 +627,69 @@ class TestImageAttachment:
                 f"publish_on_approve={raw!r} should enable"
             )
 
+    def test_image_count_non_numeric_falls_back_to_1(self):
+        """W963-176: image_count is a string like 'abc' or
+        a dict (operator typo / hand-edited proposal) must
+        NOT crash the dispatcher -- fall back to 1."""
+        captured: list[tuple[str, dict]] = []
+
+        def fake_router_call(cap, params):
+            captured.append((cap, dict(params)))
+            if cap == "SHOPIFY_CREATE_PRODUCT":
+                return True, {
+                    "product": {
+                        "id": "gid://x/1",
+                        "variants": [{
+                            "id": "gid://x/v1",
+                            "price": "0.0",
+                            "sku": "",
+                        }],
+                    },
+                }
+            if cap == "IMAGE_STOCK_SEARCH":
+                return True, {
+                    "photo_count": 1,
+                    "photos": [{
+                        "url_large2x": (
+                            "https://pexels.com/x.jpg"
+                        ),
+                        "alt": "x",
+                    }],
+                }
+            if cap == "SHOPIFY_CREATE_PRODUCT_MEDIA":
+                return True, {
+                    "attached_count": len(
+                        params.get("media") or [],
+                    ),
+                }
+            return True, {}
+
+        for bad_image_count in ("abc", {}, [1, 2], None):
+            captured.clear()
+            with patch(
+                "core.approval.dispatchers._router_call",
+                side_effect=fake_router_call,
+            ):
+                ok, result = _create_draft_product_dispatch(
+                    {
+                        "title": "Bad image_count",
+                        "_metadata": {
+                            "suggested_price": 10.0,
+                            "image_query": "x",
+                            "image_count": bad_image_count,
+                        },
+                    },
+                )
+            assert ok is True, (
+                f"image_count={bad_image_count!r} "
+                "should not crash"
+            )
+            # Search still fires with limit=1
+            for cap, params in captured:
+                if cap == "IMAGE_STOCK_SEARCH":
+                    assert params["limit"] == 1
+                    break
+
     def test_explicit_urls_skip_stock_search(self):
         """When image_urls is provided, no IMAGE_STOCK_SEARCH
         call should fire even if image_query is also set."""
