@@ -7175,6 +7175,42 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
     )
 
+    # W963-182: prune autonomy action log events
+    autonomy_prune_p = sub.add_parser(
+        "autonomy-prune",
+        help=(
+            "W963-182: remove events from a domain's "
+            "action log. Useful for clearing dev-test "
+            "residue without losing real-production "
+            "events. Filter by signal_source prefix or "
+            "max age."
+        ),
+    )
+    autonomy_prune_p.add_argument(
+        "domain",
+        type=str,
+        help=(
+            "autonomy domain name (catalog_quality, "
+            "customer_outreach, etc.) OR a direct path "
+            "to a JSON log file"
+        ),
+    )
+    autonomy_prune_p.add_argument(
+        "--signal-source-prefix", type=str, default="",
+        help="remove events whose signal_source starts with this",
+    )
+    autonomy_prune_p.add_argument(
+        "--older-than-hours", type=float, default=0.0,
+        help="remove events older than N hours",
+    )
+    autonomy_prune_p.add_argument(
+        "--yes", action="store_true",
+        help="actually delete (default is dry-run preview)",
+    )
+    autonomy_prune_p.add_argument(
+        "--json", action="store_true",
+    )
+
     # Wave 289: empire-wide autonomy SMOKE (runtime exerciser)
     autonomy_smoke_p = sub.add_parser(
         "autonomy-smoke",
@@ -45342,6 +45378,156 @@ def _cmd_autonomy_smoke(args) -> None:
         sys.exit(1)
 
 
+_DOMAIN_LOG_PATHS = {
+    "catalog_quality": "data/catalog_quality_log.json",
+    "customer_outreach": (
+        "data/customer_outreach_log.json"
+    ),
+    "customer_support": (
+        "data/refund_log.json"
+    ),
+    "marketing": "data/ad_spend_log.json",
+    "fulfillment": (
+        "data/fulfillment_log.json"
+    ),
+    "inventory": "data/inventory_log.json",
+    "discount_cleanup": (
+        "data/discount_cleanup_log.json"
+    ),
+    "order_followup": (
+        "data/order_followup_log.json"
+    ),
+    "product_seo": "data/product_seo_log.json",
+    "shipping_alert": (
+        "data/shipping_alert_log.json"
+    ),
+}
+
+
+def _cmd_autonomy_prune(args) -> None:
+    """W963-182: prune events from a domain's action log."""
+    from core.automation.action_log import (
+        load_log, prune_events_matching, log_size,
+    )
+    from pathlib import Path
+
+    domain = (getattr(args, "domain", "") or "").strip()
+    prefix = (
+        getattr(args, "signal_source_prefix", "") or ""
+    ).strip()
+    older = float(getattr(args, "older_than_hours", 0.0))
+    yes = bool(getattr(args, "yes", False))
+    as_json = bool(getattr(args, "json", False))
+
+    # Resolve domain -> log path
+    if domain in _DOMAIN_LOG_PATHS:
+        log_path = Path(_DOMAIN_LOG_PATHS[domain])
+    elif "/" in domain or domain.endswith(".json"):
+        log_path = Path(domain)
+    else:
+        msg = (
+            f"unknown domain {domain!r}; known: "
+            f"{', '.join(sorted(_DOMAIN_LOG_PATHS))}"
+        )
+        if as_json:
+            print(json.dumps({"ok": False, "error": msg}))
+        else:
+            print(f"ERROR: {msg}")
+        sys.exit(2)
+
+    if not log_path.exists():
+        msg = f"log not found: {log_path}"
+        if as_json:
+            print(json.dumps({
+                "ok": True, "removed": 0, "reason": msg,
+            }))
+        else:
+            print(f"NOOP: {msg}")
+        return
+
+    if not prefix and older <= 0:
+        msg = (
+            "must supply --signal-source-prefix or "
+            "--older-than-hours"
+        )
+        if as_json:
+            print(json.dumps({"ok": False, "error": msg}))
+        else:
+            print(f"ERROR: {msg}")
+        sys.exit(2)
+
+    # Build predicate
+    import time as _t
+    cutoff = (
+        _t.time() - (older * 3600.0)
+        if older > 0 else None
+    )
+
+    def _predicate(ev):
+        if prefix and not str(
+            ev.get("signal_source", "")
+        ).startswith(prefix):
+            return False
+        if cutoff is not None:
+            ts = float(ev.get("recorded_at") or 0)
+            if ts >= cutoff:
+                return False
+        return True
+
+    pre_size = log_size(log_path)
+    # Dry-run preview
+    matches = [
+        e for e in load_log(log_path)
+        if _predicate(e)
+    ]
+    if not yes:
+        if as_json:
+            print(json.dumps({
+                "dry_run": True,
+                "domain": domain,
+                "log_path": str(log_path),
+                "log_size": pre_size,
+                "matching_count": len(matches),
+                "signal_source_prefix": prefix,
+                "older_than_hours": older,
+            }, indent=2))
+        else:
+            print(
+                f"DRY-RUN  domain={domain}  "
+                f"log={log_path}  size={pre_size}"
+            )
+            print(
+                f"  would remove: {len(matches)} event(s)"
+            )
+            if prefix:
+                print(
+                    f"  filter: signal_source startswith "
+                    f"{prefix!r}"
+                )
+            if older > 0:
+                print(
+                    f"  filter: older than {older} hours"
+                )
+            print("\n  Pass --yes to actually delete.")
+        return
+
+    removed = prune_events_matching(log_path, _predicate)
+    if as_json:
+        print(json.dumps({
+            "dry_run": False,
+            "domain": domain,
+            "log_path": str(log_path),
+            "pre_size": pre_size,
+            "removed": removed,
+            "post_size": pre_size - removed,
+        }, indent=2))
+    else:
+        print(
+            f"LIVE  domain={domain}  removed={removed}  "
+            f"({pre_size} -> {pre_size - removed})"
+        )
+
+
 def _cmd_autonomy_doctor(args) -> None:
     """Wave 235: 360 autonomy doctor (verdict + wiring)."""
     from core.automation.autonomy_doctor import (
@@ -62659,6 +62845,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "autonomy-doctor":
         _cmd_autonomy_doctor(args)
+        return
+
+    if args.command == "autonomy-prune":
+        _cmd_autonomy_prune(args)
         return
 
     if args.command == "autonomy-smoke":

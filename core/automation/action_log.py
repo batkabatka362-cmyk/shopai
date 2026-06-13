@@ -177,3 +177,71 @@ def recent_events(
 
 def log_size(path: Path) -> int:
     return len(load_log(path))
+
+
+# ── Pruning (W963-182) ──────────────────────────────────────────
+
+
+def prune_events_matching(
+    path: Path,
+    predicate: Any,
+) -> int:
+    """W963-182: remove events from a domain action log that
+    satisfy the predicate. Returns the count removed.
+
+    The predicate is a callable taking a single event dict +
+    returning True if the event should be REMOVED. Atomic
+    rewrite + lock-guarded. Pattern J guard preserves test
+    isolation.
+
+    Use case: clear residue from dev-test events with a
+    recognisable signal_source pattern after a session of
+    verification work, without losing real-production events.
+
+    Example::
+
+        prune_events_matching(
+            Path('data/catalog_quality_log.json'),
+            lambda e: str(
+                e.get('signal_source', ''),
+            ).startswith('w963_'),
+        )
+    """
+    if is_test_environment():
+        return 0
+    with _lock_for(path):
+        existing = load_log(path)
+        if not existing:
+            return 0
+        kept: list[dict[str, Any]] = []
+        removed = 0
+        for ev in existing:
+            try:
+                if predicate(ev):
+                    removed += 1
+                    continue
+            except Exception:  # noqa: BLE001
+                # Predicate raised on this event -- play it
+                # safe and KEEP the event (don't drop on a
+                # buggy filter).
+                kept.append(ev)
+                continue
+            kept.append(ev)
+        if removed:
+            save_log(path, kept)
+        return removed
+
+
+def prune_events_older_than(
+    path: Path,
+    max_age_hours: float,
+) -> int:
+    """Remove events older than max_age_hours from the log.
+    Returns the count removed."""
+    cutoff = time.time() - (max_age_hours * 3600.0)
+    return prune_events_matching(
+        path,
+        lambda e: float(
+            e.get("recorded_at") or 0,
+        ) < cutoff,
+    )
