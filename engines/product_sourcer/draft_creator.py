@@ -74,6 +74,14 @@ def _candidate_to_params(
         # automatically. Built from the product name + niche
         # so beauty stores get beauty-themed photos, fashion
         # stores get fashion photos, etc.
+        # W963-170: publish_on_approve makes the dispatcher
+        # auto-flip DRAFT -> ACTIVE + publish on Online Store
+        # so operator approval IS the launch trigger. Env-
+        # gated: SHOPAI_PRODUCT_SOURCER_AUTO_PUBLISH=1.
+        # Default OFF -- operator must opt in for true 1-step
+        # autonomous launches. When off, operator enqueues a
+        # publish_product action manually after approving the
+        # create.
         "_metadata": {
             "source": "product_sourcer",
             "niche": niche,
@@ -84,8 +92,17 @@ def _candidate_to_params(
                 candidate, niche,
             ),
             "image_count": 1,
+            "publish_on_approve": _auto_publish_enabled(),
         },
     }
+
+
+def _auto_publish_enabled() -> bool:
+    """W963-170: env-gated single-step launch toggle."""
+    import os
+    return os.environ.get(
+        "SHOPAI_PRODUCT_SOURCER_AUTO_PUBLISH", "",
+    ).strip().lower() in ("1", "true", "yes")
 
 
 def _build_image_query(

@@ -808,6 +808,33 @@ def _create_draft_product_dispatch(
     if images_attached is not None:
         result["images_attached"] = images_attached
 
+    # W963-170: publish_on_approve makes the dispatcher a
+    # single-step launcher. After create + price + images, flip
+    # DRAFT -> ACTIVE + publish on Online Store. Defaults to
+    # False (operator still has to enqueue a publish_product
+    # action explicitly). product_sourcer's
+    # _ENABLE_AUTO_PUBLISH env-controlled flag sets this on the
+    # enqueue so high-trust empires get true single-approval
+    # launches. Failure swallowed into result for observability;
+    # the create + price + images already landed and the next
+    # cycle can pick up the publish path.
+    publish_on_approve = metadata.get("publish_on_approve")
+    if (
+        publish_on_approve is True
+        or str(publish_on_approve).lower() in ("1", "true", "yes")
+    ):
+        publish_ok, publish_result = (
+            _publish_product_dispatch(
+                {"product_id": product_id},
+            )
+        )
+        result["published"] = bool(publish_ok)
+        result["publish_result"] = publish_result
+        if not publish_ok:
+            result["publish_error"] = publish_result.get(
+                "error", "unknown",
+            )
+
     return ok, result
 
 

@@ -485,6 +485,148 @@ class TestImageAttachment:
         assert search_params["query"] == "vitamin c serum"
         assert search_params["limit"] == 1
 
+    def test_publish_on_approve_fires_publish_chain(self):
+        """W963-170: _metadata.publish_on_approve=True chains
+        create + price + image attach + status flip + publish
+        into a single dispatcher call."""
+        captured: list[str] = []
+
+        def fake(cap, params):
+            captured.append(cap)
+            if cap == "SHOPIFY_CREATE_PRODUCT":
+                return True, {
+                    "product": {
+                        "id": "gid://x/1",
+                        "variants": [{
+                            "id": "gid://x/v1",
+                            "price": "0.0",
+                            "sku": "",
+                        }],
+                    },
+                }
+            if cap == "SHOPIFY_UPDATE_PRODUCT":
+                return True, {}
+            if cap == "SHOPIFY_LIST_PUBLICATIONS":
+                return True, {
+                    "publications": [{
+                        "id": "gid://shopify/Publication/1",
+                        "name": "Online Store",
+                    }],
+                }
+            if cap == "SHOPIFY_PUBLISH_RESOURCE":
+                return True, {
+                    "id": params["id"],
+                    "publication_count": 1,
+                }
+            return True, {}
+
+        from core.approval.dispatchers import (
+            _ONLINE_STORE_PUB_CACHE,
+        )
+        _ONLINE_STORE_PUB_CACHE.clear()
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=fake,
+        ):
+            ok, result = _create_draft_product_dispatch({
+                "title": "Single-Step Launch",
+                "_metadata": {
+                    "suggested_price": 10.0,
+                    "publish_on_approve": True,
+                },
+            })
+
+        assert ok is True
+        assert result["published"] is True
+        # Full chain fired in order:
+        # CREATE_PRODUCT, UPDATE_VARIANTS, UPDATE_PRODUCT,
+        # LIST_PUBLICATIONS, PUBLISH_RESOURCE
+        assert captured == [
+            "SHOPIFY_CREATE_PRODUCT",
+            "SHOPIFY_UPDATE_VARIANTS",
+            "SHOPIFY_UPDATE_PRODUCT",
+            "SHOPIFY_LIST_PUBLICATIONS",
+            "SHOPIFY_PUBLISH_RESOURCE",
+        ]
+
+    def test_no_publish_on_approve_stays_draft(self):
+        """Default behavior: no publish step fires."""
+        captured: list[str] = []
+
+        def fake(cap, params):
+            captured.append(cap)
+            if cap == "SHOPIFY_CREATE_PRODUCT":
+                return True, {
+                    "product": {
+                        "id": "gid://x/1",
+                        "variants": [{
+                            "id": "gid://x/v1",
+                            "price": "0.0",
+                            "sku": "",
+                        }],
+                    },
+                }
+            return True, {}
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=fake,
+        ):
+            ok, result = _create_draft_product_dispatch({
+                "title": "Stay Draft",
+                "_metadata": {"suggested_price": 10.0},
+            })
+
+        assert ok is True
+        assert "SHOPIFY_PUBLISH_RESOURCE" not in captured
+        assert "published" not in result
+
+    def test_publish_on_approve_string_truthy(self):
+        """String '1' / 'true' / 'yes' also enable publish."""
+        for raw in ("1", "true", "yes", "TRUE"):
+            captured: list[str] = []
+
+            def fake(cap, params):
+                captured.append(cap)
+                if cap == "SHOPIFY_CREATE_PRODUCT":
+                    return True, {
+                        "product": {
+                            "id": "gid://x/1",
+                            "variants": [{
+                                "id": "gid://x/v1",
+                                "price": "0.0",
+                                "sku": "",
+                            }],
+                        },
+                    }
+                if cap == "SHOPIFY_LIST_PUBLICATIONS":
+                    return True, {
+                        "publications": [{
+                            "id": "gid://shopify/Publication/1",
+                            "name": "Online Store",
+                        }],
+                    }
+                return True, {}
+
+            from core.approval.dispatchers import (
+                _ONLINE_STORE_PUB_CACHE,
+            )
+            _ONLINE_STORE_PUB_CACHE.clear()
+            with patch(
+                "core.approval.dispatchers._router_call",
+                side_effect=fake,
+            ):
+                _, result = _create_draft_product_dispatch({
+                    "title": "X",
+                    "_metadata": {
+                        "suggested_price": 10.0,
+                        "publish_on_approve": raw,
+                    },
+                })
+            assert result.get("published") is True, (
+                f"publish_on_approve={raw!r} should enable"
+            )
+
     def test_explicit_urls_skip_stock_search(self):
         """When image_urls is provided, no IMAGE_STOCK_SEARCH
         call should fire even if image_query is also set."""
