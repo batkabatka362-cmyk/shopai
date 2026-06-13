@@ -642,6 +642,29 @@ class ShopifyProductsAdapter(ShopifyBaseAdapter):
                 )
             out["barcode"] = barcode
 
+        # W963-166: inventory_policy controls oversell behavior.
+        # CONTINUE = allow customer to order even when stock=0
+        # (the right default for dropshipping stores where the
+        # supplier ships on demand). DENY = block when out of
+        # stock (the right default for own-inventory stores).
+        # Without this set, Shopify defaults to DENY -- which
+        # combined with the platform's default 0 stock on new
+        # products meant every autonomously-created product
+        # showed 'Sold Out' to customers regardless of price.
+        ip = raw.get("inventory_policy") or raw.get(
+            "inventoryPolicy",
+        )
+        if ip is not None:
+            if not isinstance(ip, str) or (
+                ip.upper() not in ("CONTINUE", "DENY")
+            ):
+                raise AdapterValidationError(
+                    self.name,
+                    f"variants[{index}] 'inventory_policy' "
+                    "must be 'CONTINUE' or 'DENY'",
+                )
+            out["inventoryPolicy"] = ip.upper()
+
         return out
 
     def _coerce_money(self, value: Any, label: str) -> str:

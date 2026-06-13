@@ -762,6 +762,20 @@ def _create_draft_product_dispatch(
         return ok, result
 
     price_str = f"{price:.2f}"
+
+    # W963-166: dropshipping stores need inventoryPolicy=CONTINUE
+    # so customers can order even when stock=0 (supplier ships
+    # on demand). _metadata.inventory_policy controls; defaults
+    # to CONTINUE -- matches the most common autonomous-merchant
+    # use case (dropshipping). Operators with own-inventory
+    # stores set _metadata.inventory_policy='DENY' on the
+    # proposal.
+    inventory_policy = metadata.get("inventory_policy", "CONTINUE")
+    if not isinstance(inventory_policy, str) or (
+        inventory_policy.upper() not in ("CONTINUE", "DENY")
+    ):
+        inventory_policy = "CONTINUE"
+
     price_ok, price_result = _router_call(
         "SHOPIFY_UPDATE_VARIANTS",
         {
@@ -769,11 +783,13 @@ def _create_draft_product_dispatch(
             "variants": [{
                 "id": variant_id,
                 "price": price_str,
+                "inventory_policy": inventory_policy.upper(),
             }],
         },
     )
     result["price_set"] = bool(price_ok)
     result["price_set_value"] = price_str
+    result["inventory_policy"] = inventory_policy.upper()
     if not price_ok:
         result["price_set_error"] = price_result.get(
             "error", "unknown",

@@ -64,10 +64,15 @@ class TestPriceThreading:
         assert update_params["product_id"] == (
             "gid://shopify/Product/1"
         )
+        # W963-166: dispatcher now also defaults inventory_policy
+        # to CONTINUE (dropshipping-safe) so customers can order
+        # even when stock=0.
         assert update_params["variants"] == [{
             "id": "gid://shopify/ProductVariant/100",
             "price": "19.99",
+            "inventory_policy": "CONTINUE",
         }]
+        assert result["inventory_policy"] == "CONTINUE"
 
     def test_no_suggested_price_skips_variant_update(self):
         """No _metadata.suggested_price -> only create
@@ -202,6 +207,77 @@ class TestPriceThreading:
                 })
             assert ok is True
             assert calls == ["SHOPIFY_CREATE_PRODUCT"]
+
+    def test_inventory_policy_override_deny(self):
+        """Operator can opt into DENY via _metadata."""
+        captured: list[dict] = []
+
+        def fake_router_call(cap, params):
+            captured.append(dict(params))
+            if cap == "SHOPIFY_CREATE_PRODUCT":
+                return True, {
+                    "product": {
+                        "id": "gid://x/1",
+                        "variants": [{
+                            "id": "gid://x/v1",
+                            "price": "0.0",
+                            "sku": "",
+                        }],
+                    },
+                }
+            return True, {}
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=fake_router_call,
+        ):
+            ok, result = _create_draft_product_dispatch({
+                "title": "Own Inventory Product",
+                "_metadata": {
+                    "suggested_price": 25.00,
+                    "inventory_policy": "DENY",
+                },
+            })
+
+        assert ok is True
+        update_params = captured[1]
+        assert update_params["variants"][0][
+            "inventory_policy"
+        ] == "DENY"
+        assert result["inventory_policy"] == "DENY"
+
+    def test_invalid_inventory_policy_falls_back_to_continue(self):
+        captured: list[dict] = []
+
+        def fake_router_call(cap, params):
+            captured.append(dict(params))
+            if cap == "SHOPIFY_CREATE_PRODUCT":
+                return True, {
+                    "product": {
+                        "id": "gid://x/1",
+                        "variants": [{
+                            "id": "gid://x/v1",
+                            "price": "0.0",
+                            "sku": "",
+                        }],
+                    },
+                }
+            return True, {}
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=fake_router_call,
+        ):
+            ok, result = _create_draft_product_dispatch({
+                "title": "Bad Policy Product",
+                "_metadata": {
+                    "suggested_price": 10.00,
+                    "inventory_policy": "garbage",
+                },
+            })
+
+        assert ok is True
+        assert result["inventory_policy"] == "CONTINUE"
 
     def test_missing_title_rejects(self):
         ok, result = _create_draft_product_dispatch({})
