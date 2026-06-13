@@ -344,9 +344,20 @@ class TestImageAttachment:
         ]
         media_params = captured[2][1]
         assert media_params["product_id"] == "gid://x/1"
+        # W963-168: Pexels URLs auto-resized to <=1500px wide
         assert media_params["media"] == [
-            {"url": "https://images.pexels.com/a.jpg"},
-            {"url": "https://images.pexels.com/b.jpg"},
+            {
+                "url": (
+                    "https://images.pexels.com/a.jpg"
+                    "?auto=compress&cs=tinysrgb&w=1500"
+                ),
+            },
+            {
+                "url": (
+                    "https://images.pexels.com/b.jpg"
+                    "?auto=compress&cs=tinysrgb&w=1500"
+                ),
+            },
         ]
 
     def test_images_dicts_with_alt(self):
@@ -394,6 +405,26 @@ class TestImageAttachment:
         caps = [c for c, _ in captured]
         assert "SHOPIFY_CREATE_PRODUCT_MEDIA" not in caps
         assert "images_attached" not in result
+
+    def test_pexels_urls_resized(self):
+        """W963-168: Pexels URLs must be sized to avoid
+        Shopify's 25MP limit triggering FAILED media uploads."""
+        from core.approval.dispatchers import (
+            _normalise_image_url,
+        )
+        raw = (
+            "https://images.pexels.com/photos/"
+            "34939693/pexels-photo-34939693.jpeg"
+        )
+        sized = _normalise_image_url(raw)
+        assert "?auto=compress" in sized
+        assert "w=1500" in sized
+        # Already-sized URL stays unchanged
+        already = raw + "?w=600"
+        assert _normalise_image_url(already) == already
+        # Non-Pexels URL passes through
+        other = "https://cdn.example.com/image.jpg"
+        assert _normalise_image_url(other) == other
 
     def test_image_attach_failure_doesnt_crash_create(self):
         """Image attach is best-effort. If it fails the product

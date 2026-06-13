@@ -811,6 +811,26 @@ def _create_draft_product_dispatch(
     return ok, result
 
 
+def _normalise_image_url(url: str) -> str:
+    """W963-168: resize Pexels URLs to a safe dimension before
+    handing them to Shopify.
+
+    Shopify's productCreateMedia rejects images exceeding 25MP
+    (the field returns MediaWarning code=INVALID_IMAGE_RESOLUTION
+    + the upload lands in status=FAILED). Pexels by default
+    serves images at the photographer's native resolution which
+    is often 30-60MP. Adding ``?auto=compress&cs=tinysrgb&w=1500``
+    capped at 1500px wide produces a ~2MP image -- well under
+    Shopify's limit + still high-quality for product cards.
+
+    Other CDN URLs are returned unchanged.
+    """
+    u = url.strip()
+    if "images.pexels.com" in u and "?" not in u:
+        return u + "?auto=compress&cs=tinysrgb&w=1500"
+    return u
+
+
 def _attach_product_images(
     *,
     product_id: str,
@@ -827,14 +847,20 @@ def _attach_product_images(
     if isinstance(raw_images, list) and raw_images:
         for m in raw_images:
             if isinstance(m, dict) and m.get("url"):
-                entry = {"url": str(m["url"]).strip()}
+                entry = {
+                    "url": _normalise_image_url(
+                        str(m["url"]),
+                    ),
+                }
                 if m.get("alt"):
                     entry["alt"] = str(m["alt"])
                 media_inputs.append(entry)
     if isinstance(raw_urls, list) and raw_urls:
         for url in raw_urls:
             if isinstance(url, str) and url.strip():
-                media_inputs.append({"url": url.strip()})
+                media_inputs.append({
+                    "url": _normalise_image_url(url),
+                })
     if not media_inputs:
         return None
 
