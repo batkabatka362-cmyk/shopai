@@ -667,18 +667,35 @@ class StoreConfigurator:
         # adapter's friendly shape).
         percentage = abs(float(value))
 
-        # Build friendly params for SHOPIFY_CREATE_DISCOUNT.
+        # W963-163: shipping_line target routes through
+        # SHOPIFY_CREATE_DISCOUNT_FREE_SHIPPING (Shopify has a
+        # dedicated mutation for free shipping codes -- the basic
+        # discount mutation only handles line-item percentage/
+        # amount). Pre-fix every shipping_line caller silently
+        # got a regular percentage discount on the order subtotal
+        # instead of free shipping.
+        is_free_shipping = (
+            target_type == "shipping_line"
+        )
+
+        # Build friendly params.
         params: dict[str, Any] = {
             "title": code,
             "code": code,
-            "percentage": percentage,
             "applies_once_per_customer": bool(once_per_customer),
             "starts_at": time.strftime("%Y-%m-%dT00:00:00Z"),
         }
-        if min_subtotal > 0:
-            params["min_subtotal"] = float(min_subtotal)
-        if min_qty:
-            params["min_quantity"] = int(min_qty)
+        if is_free_shipping:
+            # Free shipping mutation: NO percentage/amount field,
+            # uses minimumRequirement.minimum_subtotal.
+            if min_subtotal > 0:
+                params["minimum_subtotal"] = float(min_subtotal)
+        else:
+            params["percentage"] = percentage
+            if min_subtotal > 0:
+                params["min_subtotal"] = float(min_subtotal)
+            if min_qty:
+                params["min_quantity"] = int(min_qty)
 
         desc = (
             description
@@ -687,9 +704,14 @@ class StoreConfigurator:
 
         if self._dry_run:
             # Mirror the legacy dry-run path: append to plan.
+            mutation_label = (
+                "discountCodeFreeShippingCreate"
+                if is_free_shipping
+                else "discountCodeBasicCreate"
+            )
             self._plan.append({
                 "method": "POST",
-                "path": "graphql.json[discountCodeBasicCreate]",
+                "path": f"graphql.json[{mutation_label}]",
                 "description": desc,
                 "body_preview": self._summarize_body(params),
             })
@@ -700,9 +722,12 @@ class StoreConfigurator:
             from core.adapters.router import get_router
             from core.adapters.base import Capability
             router = get_router()
-            result = router.execute(
-                Capability.SHOPIFY_CREATE_DISCOUNT, params,
+            cap = (
+                Capability.SHOPIFY_CREATE_DISCOUNT_FREE_SHIPPING
+                if is_free_shipping
+                else Capability.SHOPIFY_CREATE_DISCOUNT
             )
+            result = router.execute(cap, params)
             ok = bool(getattr(result, "ok", False))
             if not ok:
                 err = getattr(result, "error", "unknown") or ""

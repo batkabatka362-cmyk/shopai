@@ -376,6 +376,13 @@ class TestDiscounts:
                         ok=True,
                         data={"discount_id": "gid://x/1"},
                     )
+                if cap_name == (
+                    "shopify_create_discount_free_shipping"
+                ):
+                    return FakeResult(
+                        ok=True,
+                        data={"id": "gid://x/2"},
+                    )
                 return FakeResult(ok=False, error="unknown")
 
         fake_router = FakeRouter()
@@ -426,15 +433,12 @@ class TestDiscounts:
         assert bundle_params is not None
         assert bundle_params.get("min_quantity") == 3
 
-    def test_free_shipping_uses_min_subtotal_and_full_off(self, monkeypatch):
-        # W963-162: production code passes percentage=100 +
-        # min_subtotal=50 via SHOPIFY_CREATE_DISCOUNT. The legacy
-        # REST 'target_type=shipping_line' field is not currently
-        # threaded into the GraphQL params (latent gap noted in
-        # the migration commit -- the adapter side would need a
-        # discount_type=free_shipping branch). What this test
-        # locks in: the basic-create path sets the right
-        # percentage + min_subtotal for FREESHIP50.
+    def test_free_shipping_routes_to_free_shipping_mutation(self, monkeypatch):
+        # W963-163: FREESHIP50 now routes through
+        # SHOPIFY_CREATE_DISCOUNT_FREE_SHIPPING (Shopify's
+        # dedicated free-shipping mutation), NOT the basic
+        # percentage discount mutation. The latent gap from
+        # W963-162's note is closed.
         _install_fake_client(monkeypatch, responses=self._responses())
         calls = self._patch_router(monkeypatch)
         c = _make()
@@ -444,14 +448,26 @@ class TestDiscounts:
         )
         ship_params = None
         for cap, params in calls:
-            if cap != "shopify_create_discount":
+            if cap != "shopify_create_discount_free_shipping":
                 continue
             if params.get("code") == "FREESHIP50":
                 ship_params = params
                 break
-        assert ship_params is not None
-        assert ship_params.get("percentage") == 100.0
-        assert ship_params.get("min_subtotal") == 50.0
+        assert ship_params is not None, (
+            "FREESHIP50 must route through the free-shipping "
+            "capability, not the basic discount mutation"
+        )
+        # Free-shipping doesn't carry a percentage; it carries
+        # minimum_subtotal for the order-value gate.
+        assert ship_params.get("minimum_subtotal") == 50.0
+        assert "percentage" not in ship_params
+        # And NO basic-discount call was made for FREESHIP50
+        basic_for_freeship = [
+            p for c2, p in calls
+            if c2 == "shopify_create_discount"
+            and p.get("code") == "FREESHIP50"
+        ]
+        assert not basic_for_freeship
 
     def test_welcome_and_loyal_once_per_customer(self, monkeypatch):
         _install_fake_client(monkeypatch, responses=self._responses())
@@ -470,12 +486,9 @@ class TestDiscounts:
         assert {"WELCOME15", "COMEBACK10", "LOYAL20"}.issubset(opc_codes)
 
     def test_core_codes_all_created_through_router(self, monkeypatch):
-        # W963-162: replaces legacy 'codes attached after rule'
-        # check. Production GraphQL discountCodeBasicCreate is
-        # a single mutation that creates both the rule + code,
-        # so the legacy 2-POST sequence is collapsed. The
-        # invariant we still care about: every CORE code reaches
-        # the router.
+        # W963-162: every CORE code reaches the router. W963-163:
+        # FREESHIP50 specifically routes through the free-shipping
+        # capability while the others use the basic capability.
         _install_fake_client(monkeypatch, responses=self._responses())
         calls = self._patch_router(monkeypatch)
         c = _make()
@@ -486,7 +499,10 @@ class TestDiscounts:
         created_codes = {
             params.get("code")
             for cap, params in calls
-            if cap == "shopify_create_discount"
+            if cap in (
+                "shopify_create_discount",
+                "shopify_create_discount_free_shipping",
+            )
         }
         assert self._CORE_CODES.issubset(created_codes)
 
@@ -921,6 +937,12 @@ class TestReferral:
                 if cap_name == "shopify_create_discount":
                     return FakeResult(data={
                         "discount_id": "gid://x/1",
+                    })
+                if cap_name == (
+                    "shopify_create_discount_free_shipping"
+                ):
+                    return FakeResult(data={
+                        "id": "gid://x/2",
                     })
                 return FakeResult(ok=False)
 
