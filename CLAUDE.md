@@ -2787,3 +2787,160 @@ hookup.
                      + 4 enriched (go-live, daily-brief, empire,
                      cycle run)
   Commits ahead of main: 506+
+
+## W963 Per-store + earning loop (W963-115..172, 2026-06-12..14)
+
+After Phase 35 the substrate could orchestrate but could not
+actually EARN. The W963 ramp closes that gap end-to-end:
+
+  Cred routing -> Cost tracking -> Quota/autopause -> P&L ->
+  Forecast -> Per-store dashboards -> External webhooks ->
+  Autonomous earning loop -> Adversarial review.
+
+### W963-115..142: Per-store substrate (28 commits)
+
+`active_store` thread-local + `with active_store(sid):` Pattern
+CD wrap at 3 entry points:
+  - core/autonomous/controller.py:_phase_analyze (W963-127)
+  - core/webhooks/__init__.py:_trigger_engine (W963-128)
+  - core/approval/executor.py:dispatcher call site (W963-133)
+
+Shopify base adapter `_resolve_credentials` reads from the
+thread-local + StoreManager + falls back to env (W963-115/117).
+
+Per-store substrate stack:
+  engines/per_store_costs/      -- JSONL append-only log
+  engines/per_store_quota/      -- budget cap + critical_stores()
+  engines/per_store_quota/autopause.py -- spend-class disarm
+                                          bridge (env-gated)
+  engines/per_store_pnl/        -- P&L snapshots + sort
+  engines/per_store_quota/forecast.py -- linear+EMA forecast
+
+Operator surfaces:
+  shopai cost / quota / pnl / forecast / store fleet
+
+Pattern CD audit (74th gate): AST scan asserting every
+engine.run callsite in strict files (cli.py, core/autonomous,
+core/webhooks, core/approval) is inside a `with active_store(...)`
+block OR explicitly exempt.
+
+### W963-143..155: External vendor webhook ramp (13 commits)
+
+`core/webhooks/external/` unified ingestion layer:
+
+  VendorHandler (per-vendor base) -> ExternalWebhookHandler
+  -> EVENT_ENGINE_MAP -> active_store(sid) wrap -> engine.run
+
+7 inbound vendor handlers + 1 outbound:
+  Gorgias (W963-145)    -- helpdesk tickets
+  AfterShip (W963-144)  -- shipment tracking
+  Stripe (W963-150)     -- chargebacks + payouts
+  Klaviyo (W963-151)    -- email engagement
+  Loox (W963-152)       -- photo review feedback
+  PayPal (W963-154)     -- alt-gateway payments
+  Klarna (W963-155)     -- BNPL events
+  GA4 (W963-146)        -- outbound analytics push
+
+30+ webhook topics per-store routed. Pattern CE audit (75th
+gate): every VendorHandler subclass in vendors/* must be:
+  - exported in vendors/__init__.py __all__
+  - exported in external/__init__.py __all__
+  - mapped to >= 1 EVENT_ENGINE_MAP key with prefix `<name>.`
+
+Outbound-only handlers opt out via `inbound = False` class
+attribute.
+
+### W963-156..172: Autonomous earning loop (17 commits)
+
+Closes the gap from "substrate orchestrates" to "products land
+on storefront with real prices + images, customer can buy".
+Surfaced by W963-156 live stress test against beauty store
+fkcq1i-0s.myshopify.com:
+
+  W963-156: cold-start gates degrade gracefully instead of
+            erroring (discount_strategy depth_calculator,
+            landing_page hydrator, content_generation hydrator,
+            writeback recorder store_id)
+  W963-157: 5 deprecated REST `price_rules.json` callsites
+            migrated to GraphQL via execution/_discount_compat.py
+  W963-158: autonomy-fire fire() groups payload by store_id +
+            wraps each group in active_store(sid). Pattern CD
+            extended to core/automation/autonomy_fire.py
+  W963-159: SHOPIFY_TAG_PRODUCT + SHOPIFY_UNTAG_PRODUCT
+            capability + ShopifyProductsAdapter._tag() helper.
+            Closes Phase 28 catalog_quality_autonomy latent
+            gap. Pattern F compliant
+  W963-160: SHOPIFY_GET_PRODUCT images fragment conflict
+            (split _PRODUCT_FIELDS_BASE + _PRODUCT_FIELDS +
+             _PRODUCT_FIELDS_WITH_VARIANTS)
+  W963-161: 5 engines emit success-skip envelope on cold-start
+            input -> cycle 9 errors -> 0 errors
+  W963-162: 7 SKIP'd REST-shape tests rewritten around router
+            boundary
+  W963-163: FREESHIP50 routes through
+            SHOPIFY_CREATE_DISCOUNT_FREE_SHIPPING (was
+            masquerading as basic line-item discount; production
+            customers weren't getting shipping waived)
+  W963-164: variant price set after create via
+            SHOPIFY_UPDATE_VARIANTS follow-up; products.py
+            CREATE mutation gains variants(first:1)
+  W963-165: publish_product dispatcher (UPDATE_PRODUCT
+            status=ACTIVE + LIST_PUBLICATIONS + PUBLISH_RESOURCE
+            with per-active-store Online Store cache)
+  W963-166: inventoryPolicy=CONTINUE for dropshipping
+  W963-167+168: SHOPIFY_CREATE_PRODUCT_MEDIA capability +
+                _attach_product_images dispatcher hook + Pexels
+                URL resize hack (Shopify 25MP ceiling)
+  W963-169: IMAGE_STOCK_SEARCH capability + PexelsPhotosAdapter
+            + autonomous image discovery in dispatcher.
+            product_sourcer auto-emits _metadata.image_query
+  W963-170: _metadata.publish_on_approve flag fires
+            _publish_product_dispatch inline after image attach.
+            SINGLE approval -> 7-router-call chain -> fully
+            merchantable product
+  W963-171: scripts/session_batch_dispatch.py one-shot batch
+            dispatcher
+  W963-172: Round 12 adversarial fixes (revenue_projector
+            cold-start key schema parity, _build_image_query
+            regex word-boundary, 6-word cap order)
+
+### Adversarial review pattern
+
+3 rounds run during W963 (Round 8/9/10/11/12):
+
+  Round 8/9/10 (W963-115..142): 24 confirmed bugs (sentinel
+    ambiguity / sid collision / sort flips / forecast cold-start
+    / fleet alias / drill hints)
+  Round 11 (W963-143..152): 3 confirmed bugs fixed in W963-153
+    - autonomy_gate probe with SIDE EFFECTS
+    - GA4 user_id == client_id collapse
+    - Gorgias body_html unescaped
+  Round 12 (W963-156..170): 3 confirmed bugs fixed in W963-172
+    - revenue_projector cold-start key schema mismatch
+    - _build_image_query regex word boundary
+    - _build_image_query 6-word cap order
+
+Workflow pattern (10 finders + 3 lens-diverse refuters per
+finding; survives 2+/3 = confirmed):
+  - Lens 1: CORRECTNESS -- walk the code path
+  - Lens 2: REACHABILITY -- realistic given caller patterns?
+  - Lens 3: SEVERITY/IMPACT -- operator-visible harm?
+
+Default refuted=true unless the verifier can demonstrate.
+
+### Operational state at end of W963 ramp
+
+Live verified against fkcq1i-0s.myshopify.com:
+  103 products active + priced ($9.99-$27.99) + imaged +
+    published + inventoryPolicy=CONTINUE
+  cycle: 26/26 ok, 0 err
+  institutional audits: 75/75 pass
+  test suite: 1900+ pass
+  PR #503 (94+ commits ahead of main)
+
+Remaining for revenue activation (operator only):
+  - merge to main
+  - set Meta Ads / Google Ads API keys
+  - install cron via `shopai cycle schedule`
+  - optional vendor webhook secrets (Klaviyo, AfterShip,
+    Gorgias, Stripe, PayPal, Klarna, Loox)
