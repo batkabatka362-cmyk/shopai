@@ -46,10 +46,27 @@ def project_revenue(
     """
     try:
         if not margin_analyses:
+            # W963-172: completing W963-161 -- the second
+            # cold-start guard at line ~81 caught the
+            # 'no-priced-products' path but this earlier
+            # 'no-input-at-all' path still returned status=error.
+            # Now both emit the same success-skip envelope with
+            # the canonical success-path key schema so consumers
+            # never KeyError on cold-start input.
             return {
-                "status": "error",
-                "projection": {},
-                "error": "No margin analyses provided",
+                "status": "success",
+                "projection": {
+                    "base_revenue_daily": 0.0,
+                    "projected_revenue_daily": 0.0,
+                    "revenue_change_pct": 0.0,
+                    "margin_loss_per_unit": 0.0,
+                    "volume_lift_multiplier": 1.0,
+                    "break_even_volume": 0.0,
+                    "break_even_achievable": False,
+                    "net_profit_impact": 0.0,
+                    "projection_confidence": 0.1,
+                },
+                "error": "",
             }
 
         # --- Aggregate base metrics ---
@@ -79,30 +96,27 @@ def project_revenue(
             count += 1
 
         if count == 0 or total_daily_units <= 0:
-            # W963-161: cold-start fallback (mirrors the W963-156
-            # depth_calculator fix). Cold-start stores with no
-            # priced products + no recorded daily_sales used to
-            # crash the cycle with status=error. Emit a synthetic
-            # zero-projection so downstream consumers receive a
-            # usable envelope + cycle records ok.
+            # W963-161 + W963-172: cold-start fallback. Must
+            # mirror the SUCCESS-PATH key schema below (line ~188)
+            # so downstream consumers reading
+            # projection['base_revenue_daily'] / projection_
+            # confidence / etc. don't KeyError on cold-start.
+            # Pre-W963-172 the fallback used keys like
+            # baseline_daily_revenue + confidence which no
+            # success-path consumer expected -- silent crash on
+            # the consumer side.
             return {
                 "status": "success",
                 "projection": {
-                    "baseline_daily_revenue": 0.0,
-                    "discounted_daily_revenue": 0.0,
-                    "incremental_daily_revenue": 0.0,
-                    "baseline_daily_profit": 0.0,
-                    "discounted_daily_profit": 0.0,
-                    "incremental_daily_profit": 0.0,
-                    "campaign_total_revenue": 0.0,
-                    "campaign_total_profit": 0.0,
-                    "expected_volume_lift": 1.0,
+                    "base_revenue_daily": 0.0,
+                    "projected_revenue_daily": 0.0,
+                    "revenue_change_pct": 0.0,
                     "margin_loss_per_unit": 0.0,
-                    "confidence": 0.1,
-                    "rationale": (
-                        "cold-start fallback (no priced "
-                        "products or daily-sales history)"
-                    ),
+                    "volume_lift_multiplier": 1.0,
+                    "break_even_volume": 0.0,
+                    "break_even_achievable": False,
+                    "net_profit_impact": 0.0,
+                    "projection_confidence": 0.1,
                 },
                 "error": "",
             }

@@ -127,11 +127,15 @@ def _build_image_query(
     name = str(candidate.get("name") or "").strip()
     if not name:
         return niche or "product"
-    # Strip common quantity/size suffixes
+    # Strip common quantity/size suffixes.
+    # W963-172: append \b after each unit so '200gram' / '5-package'
+    # / '10ozonic' don't get matched as '200g' / '5-pack' / '10oz'
+    # which strips meaningful words ('200gram Cream' -> 'ram cream').
     name_clean = re.sub(
         r"\s*[\(\[]?\s*"
         r"(\d+\s*(ml|oz|g|ct|pack|piece|pcs|pair|"
-        r"set|count)|[0-9]+\s*-\s*pack|[0-9]+\s*-\s*pair)"
+        r"set|count)\b|"
+        r"[0-9]+\s*-\s*pack\b|[0-9]+\s*-\s*pair\b)"
         r"\s*[\)\]]?",
         "",
         name,
@@ -149,12 +153,14 @@ def _build_image_query(
     theme = _NICHE_THEME.get(
         str(niche).lower(), str(niche).lower(),
     )
-    query = (
-        f"{name_clean} {theme}".strip().lower()
-    )
-    # Pexels matches better with short queries; cap at 6 words
-    words = query.split()
-    return " ".join(words[:6])
+    # W963-172: cap the name portion to 5 words FIRST so the
+    # theme always survives the 6-word ceiling. Pre-fix a long
+    # product name (6+ words) would push the theme out of the
+    # final query, defeating the docstring's promise that the
+    # niche aesthetic anchors the search.
+    name_words = name_clean.split()[:5]
+    query_words = name_words + [theme]
+    return " ".join(query_words).lower()
 
 
 def _build_narrative(

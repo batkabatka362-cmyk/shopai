@@ -272,3 +272,40 @@ class TestImageQueryBuilder:
             "beauty",
         )
         assert len(q.split()) <= 6
+
+    def test_word_boundary_preserves_compound_words(self):
+        """W963-172: unit-strip regex needs \\b so '200gram'
+        / '5-package' / '10ozonic' don't get mangled."""
+        from engines.product_sourcer.draft_creator import (
+            _build_image_query,
+        )
+        # '200gram' must NOT lose 'gram' chars
+        q = _build_image_query(
+            {"name": "Vitamin C 200gram Cream"},
+            "beauty",
+        )
+        assert "gram" in q  # 200gram preserved
+        assert "cream" in q
+        # '5-package' must NOT lose 'age'
+        q2 = _build_image_query(
+            {"name": "Tea 5-package"}, "beauty",
+        )
+        assert "package" in q2
+
+    def test_theme_always_survives_6_word_cap(self):
+        """W963-172: niche theme word must appear in the
+        final query even when name has 6+ words."""
+        from engines.product_sourcer.draft_creator import (
+            _build_image_query,
+        )
+        q = _build_image_query(
+            {
+                "name": (
+                    "Hydrating Daily Face Brightening "
+                    "Vitamin C Serum"
+                ),
+            },
+            "beauty",
+        )
+        assert "skincare" in q  # theme survived
+        assert len(q.split()) <= 6
