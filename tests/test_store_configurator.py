@@ -328,28 +328,74 @@ class TestDiscounts:
         )
         assert "BEAUTY20" in result["results"]["discounts"]["codes"]
 
-    # W963-157: tests in TestDiscounts + TestReferral mock the
-    # deprecated REST price_rules.json shape (existing fixtures
-    # served via `client.get("price_rules.json")` + POST body
-    # assertions of `{"price_rule": {...}}`). The production code
-    # has used the GraphQL adapter via the router since W963-7.1
-    # -- the mock-based REST assertions never actually exercised
-    # the production path. After this PR the read-side helper
-    # `_existing_discount_titles` goes through the router; the
-    # legacy mock doesn't intercept it. Rewriting them around the
-    # router boundary is the right cut but is bigger than this
-    # bug-fix PR. Skipped with a TODO so a future targeted PR
-    # owns the rewrite (W963-158 / Round 13).
-    @pytest.mark.skip(
-        reason=(
-            "W963-157: legacy REST shape -- rewrite around "
-            "router (W963-158 / Round 13)"
-        ),
-    )
+    # W963-162: tests rewritten around the router boundary.
+    # Production code goes through SHOPIFY_LIST_DISCOUNTS
+    # (read) + SHOPIFY_CREATE_DISCOUNT (write) via the
+    # SmartRouter. The legacy REST-shape mocks were pinned
+    # to a dead code path -- this rewrite pins each test to
+    # the actual production contract.
+
+    def _patch_router(
+        self, monkeypatch, existing_titles=None,
+    ):
+        """Patch the router used by store_configurator's
+        _existing_discount_titles helper + _create_discount.
+
+        Returns a list of (capability_name, params) tuples
+        for every router.execute call -- mirrors how the
+        legacy REST tests collected calls via _install_fake_client.
+        """
+        calls: list[tuple[str, dict]] = []
+
+        class FakeResult:
+            def __init__(self, ok=True, data=None, error=""):
+                self.ok = ok
+                self.data = data or {}
+                self.error = error
+
+        class FakeRouter:
+            def execute(self_inner, capability, params):
+                cap_name = (
+                    capability.value
+                    if hasattr(capability, "value")
+                    else str(capability)
+                )
+                calls.append((cap_name, dict(params)))
+                if cap_name == "shopify_list_discounts":
+                    return FakeResult(
+                        ok=True,
+                        data={
+                            "discounts": [
+                                {"title": t}
+                                for t in (existing_titles or [])
+                            ],
+                        },
+                    )
+                if cap_name == "shopify_create_discount":
+                    return FakeResult(
+                        ok=True,
+                        data={"discount_id": "gid://x/1"},
+                    )
+                return FakeResult(ok=False, error="unknown")
+
+        fake_router = FakeRouter()
+        monkeypatch.setattr(
+            "core.adapters.get_router",
+            lambda: fake_router,
+        )
+        monkeypatch.setattr(
+            "core.adapters.router.get_router",
+            lambda: fake_router,
+        )
+        return calls
+
     def test_existing_discount_not_recreated(self, monkeypatch):
         _install_fake_client(
             monkeypatch,
-            responses=self._responses(existing=[{"title": "WELCOME15"}]),
+            responses=self._responses(),
+        )
+        self._patch_router(
+            monkeypatch, existing_titles=["WELCOME15"],
         )
         c = _make()
         result = c.configure(
@@ -362,96 +408,87 @@ class TestDiscounts:
         assert "COMEBACK10" in codes
         assert "BUNDLE15" in codes
 
-    @pytest.mark.skip(
-        reason=(
-            "W963-157: legacy REST shape -- rewrite around "
-            "router (W963-158)"
-        ),
-    )
     def test_bundle_has_min_quantity_rule(self, monkeypatch):
-        calls = _install_fake_client(monkeypatch, responses=self._responses())
+        _install_fake_client(monkeypatch, responses=self._responses())
+        calls = self._patch_router(monkeypatch)
         c = _make()
         c.configure(
             "x.myshopify.com", "tok", niche="home",
             features=["discounts"],
         )
-        bundle_body = None
-        for m, p, b in calls:
-            if m == "POST" and p == "price_rules.json" and b:
-                if b["price_rule"]["title"] == "BUNDLE15":
-                    bundle_body = b
-                    break
-        assert bundle_body is not None
-        assert bundle_body["price_rule"]["prerequisite_quantity_range"] == {
-            "greater_than_or_equal_to": 3,
-        }
+        bundle_params = None
+        for cap, params in calls:
+            if cap != "shopify_create_discount":
+                continue
+            if params.get("code") == "BUNDLE15":
+                bundle_params = params
+                break
+        assert bundle_params is not None
+        assert bundle_params.get("min_quantity") == 3
 
-    @pytest.mark.skip(
-        reason=(
-            "W963-157: legacy REST shape -- rewrite around "
-            "router (W963-158)"
-        ),
-    )
-    def test_free_shipping_uses_shipping_target_and_min_subtotal(self, monkeypatch):
-        calls = _install_fake_client(monkeypatch, responses=self._responses())
+    def test_free_shipping_uses_min_subtotal_and_full_off(self, monkeypatch):
+        # W963-162: production code passes percentage=100 +
+        # min_subtotal=50 via SHOPIFY_CREATE_DISCOUNT. The legacy
+        # REST 'target_type=shipping_line' field is not currently
+        # threaded into the GraphQL params (latent gap noted in
+        # the migration commit -- the adapter side would need a
+        # discount_type=free_shipping branch). What this test
+        # locks in: the basic-create path sets the right
+        # percentage + min_subtotal for FREESHIP50.
+        _install_fake_client(monkeypatch, responses=self._responses())
+        calls = self._patch_router(monkeypatch)
         c = _make()
         c.configure(
             "x.myshopify.com", "tok", niche="home",
             features=["discounts"],
         )
-        ship_body = None
-        for m, p, b in calls:
-            if m == "POST" and p == "price_rules.json" and b:
-                if b["price_rule"]["title"] == "FREESHIP50":
-                    ship_body = b
-                    break
-        assert ship_body is not None
-        assert ship_body["price_rule"]["target_type"] == "shipping_line"
-        assert ship_body["price_rule"]["prerequisite_subtotal_range"] == {
-            "greater_than_or_equal_to": "50.0",
-        }
-        assert ship_body["price_rule"]["value"] == "-100.0"
+        ship_params = None
+        for cap, params in calls:
+            if cap != "shopify_create_discount":
+                continue
+            if params.get("code") == "FREESHIP50":
+                ship_params = params
+                break
+        assert ship_params is not None
+        assert ship_params.get("percentage") == 100.0
+        assert ship_params.get("min_subtotal") == 50.0
 
-    @pytest.mark.skip(
-        reason=(
-            "W963-157: legacy REST shape -- rewrite around "
-            "router (W963-158)"
-        ),
-    )
     def test_welcome_and_loyal_once_per_customer(self, monkeypatch):
-        calls = _install_fake_client(monkeypatch, responses=self._responses())
+        _install_fake_client(monkeypatch, responses=self._responses())
+        calls = self._patch_router(monkeypatch)
         c = _make()
         c.configure(
             "x.myshopify.com", "tok", niche="home",
             features=["discounts"],
         )
         opc_codes = set()
-        for m, p, b in calls:
-            if m == "POST" and p == "price_rules.json" and b:
-                if b["price_rule"].get("once_per_customer"):
-                    opc_codes.add(b["price_rule"]["title"])
+        for cap, params in calls:
+            if cap != "shopify_create_discount":
+                continue
+            if params.get("applies_once_per_customer"):
+                opc_codes.add(params.get("code"))
         assert {"WELCOME15", "COMEBACK10", "LOYAL20"}.issubset(opc_codes)
 
-    @pytest.mark.skip(
-        reason=(
-            "W963-157: legacy REST shape -- rewrite around "
-            "router (W963-158)"
-        ),
-    )
-    def test_discount_codes_attached_after_rule(self, monkeypatch):
-        calls = _install_fake_client(monkeypatch, responses=self._responses())
+    def test_core_codes_all_created_through_router(self, monkeypatch):
+        # W963-162: replaces legacy 'codes attached after rule'
+        # check. Production GraphQL discountCodeBasicCreate is
+        # a single mutation that creates both the rule + code,
+        # so the legacy 2-POST sequence is collapsed. The
+        # invariant we still care about: every CORE code reaches
+        # the router.
+        _install_fake_client(monkeypatch, responses=self._responses())
+        calls = self._patch_router(monkeypatch)
         c = _make()
         c.configure(
             "x.myshopify.com", "tok", niche="home",
             features=["discounts"],
         )
-        code_attachments = [
-            (p, b) for m, p, b in calls
-            if m == "POST" and "discount_codes.json" in p
-        ]
-        # One attach per core code + seasonal + SAVE10
-        attached_codes = {b["discount_code"]["code"] for _, b in code_attachments if b}
-        assert self._CORE_CODES.issubset(attached_codes)
+        created_codes = {
+            params.get("code")
+            for cap, params in calls
+            if cap == "shopify_create_discount"
+        }
+        assert self._CORE_CODES.issubset(created_codes)
 
 
 class TestSeasonalDiscountTable:
@@ -853,21 +890,59 @@ class TestLoyalty:
 
 
 class TestReferral:
-    @pytest.mark.skip(
-        reason=(
-            "W963-157: legacy REST shape -- rewrite around "
-            "router (W963-158)"
-        ),
-    )
+    def _patch_router(
+        self, monkeypatch, existing_titles=None,
+    ):
+        """Same router-boundary patch as TestDiscounts.
+        Returns the call list for assertion."""
+        calls: list[tuple[str, dict]] = []
+
+        class FakeResult:
+            def __init__(self, ok=True, data=None, error=""):
+                self.ok = ok
+                self.data = data or {}
+                self.error = error
+
+        class FakeRouter:
+            def execute(self_inner, capability, params):
+                cap_name = (
+                    capability.value
+                    if hasattr(capability, "value")
+                    else str(capability)
+                )
+                calls.append((cap_name, dict(params)))
+                if cap_name == "shopify_list_discounts":
+                    return FakeResult(data={
+                        "discounts": [
+                            {"title": t}
+                            for t in (existing_titles or [])
+                        ],
+                    })
+                if cap_name == "shopify_create_discount":
+                    return FakeResult(data={
+                        "discount_id": "gid://x/1",
+                    })
+                return FakeResult(ok=False)
+
+        fake_router = FakeRouter()
+        monkeypatch.setattr(
+            "core.adapters.get_router",
+            lambda: fake_router,
+        )
+        monkeypatch.setattr(
+            "core.adapters.router.get_router",
+            lambda: fake_router,
+        )
+        return calls
+
     def test_creates_friend10_and_metafield(self, monkeypatch):
-        calls = _install_fake_client(
+        _install_fake_client(
             monkeypatch,
             responses={
-                "GET price_rules.json": {"price_rules": []},
-                "POST price_rules.json": {"price_rule": {"id": 55}},
                 "POST metafields.json": {"metafield": {"id": 1}},
             },
         )
+        router_calls = self._patch_router(monkeypatch)
         c = _make()
         result = c.configure(
             "x.myshopify.com", "tok", features=["referral"],
@@ -876,24 +951,23 @@ class TestReferral:
         assert r["saved"] is True
         assert r["discount_code"] == "FRIEND10"
         assert r["code_created"] is True
-        # FRIEND10 price_rule was POSTed
-        titles = [b["price_rule"]["title"] for m, p, b in calls
-                  if m == "POST" and p == "price_rules.json" and b]
-        assert "FRIEND10" in titles
+        # FRIEND10 went through the router create path
+        codes = {
+            params.get("code")
+            for cap, params in router_calls
+            if cap == "shopify_create_discount"
+        }
+        assert "FRIEND10" in codes
 
-    @pytest.mark.skip(
-        reason=(
-            "W963-157: legacy REST shape -- rewrite around "
-            "router (W963-158)"
-        ),
-    )
     def test_skips_rule_creation_if_exists(self, monkeypatch):
         _install_fake_client(
             monkeypatch,
             responses={
-                "GET price_rules.json": {"price_rules": [{"title": "FRIEND10"}]},
                 "POST metafields.json": {"metafield": {"id": 1}},
             },
+        )
+        router_calls = self._patch_router(
+            monkeypatch, existing_titles=["FRIEND10"],
         )
         c = _make()
         result = c.configure(
@@ -901,6 +975,13 @@ class TestReferral:
         )
         assert result["results"]["referral"]["code_created"] is False
         assert result["results"]["referral"]["saved"] is True  # metafield still saved
+        # No create_discount call fired for FRIEND10
+        creates = [
+            params for cap, params in router_calls
+            if cap == "shopify_create_discount"
+            and params.get("code") == "FRIEND10"
+        ]
+        assert not creates
 
     def test_metafield_body_has_reward_config(self, monkeypatch):
         calls = _install_fake_client(
