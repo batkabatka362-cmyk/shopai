@@ -781,6 +781,115 @@ def _create_draft_product_dispatch(
     return ok, result
 
 
+# ── product_sourcer → publish DRAFT product to Online Store ──────
+
+
+_ONLINE_STORE_PUB_CACHE: dict[str, str] = {}
+
+
+def _resolve_online_store_publication() -> str:
+    """W963-165: cache the Online Store publication GID.
+
+    Shopify's publication IDs are per-shop + per-active_store
+    context. We resolve once per process per (cache key) +
+    reuse. Returns '' on any failure (caller falls back to
+    operator-supplied publication_ids).
+    """
+    # Cache key includes active_store so multi-store callers
+    # don't reuse a sibling store's publication id.
+    try:
+        from core.context import get_active_store_id
+        sid = str(get_active_store_id() or "")
+    except Exception:  # noqa: BLE001
+        sid = ""
+    if sid in _ONLINE_STORE_PUB_CACHE:
+        return _ONLINE_STORE_PUB_CACHE[sid]
+
+    ok, result = _router_call(
+        "SHOPIFY_LIST_PUBLICATIONS", {},
+    )
+    if not ok:
+        return ""
+    for pub in result.get("publications") or []:
+        if not isinstance(pub, dict):
+            continue
+        name = str(pub.get("name") or "").strip().lower()
+        if name == "online store":
+            pub_id = str(pub.get("id") or "")
+            if pub_id:
+                _ONLINE_STORE_PUB_CACHE[sid] = pub_id
+                return pub_id
+    return ""
+
+
+@register_dispatcher("publish_product")
+def _publish_product_dispatch(
+    params: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """W963-165: flip DRAFT -> ACTIVE + publish on Online Store.
+
+    Two-step:
+      1. SHOPIFY_UPDATE_PRODUCT to set status=ACTIVE so the
+         product is visible to the storefront.
+      2. SHOPIFY_PUBLISH_RESOURCE on the Online Store publication
+         so the product appears on the customer-facing storefront.
+
+    Params:
+      id (or product_id): Shopify GID of the product to publish.
+      publication_ids (optional): list of GIDs; if omitted,
+        defaults to the resolved Online Store publication GID.
+
+    Both router calls go inside the executor's active_store
+    wrap so per-store credentials route correctly.
+    """
+    product_id = str(
+        params.get("id") or params.get("product_id") or "",
+    ).strip()
+    if not product_id:
+        return False, {"error": "missing_product_id"}
+
+    # Step 1: status -> ACTIVE
+    ok_status, status_result = _router_call(
+        "SHOPIFY_UPDATE_PRODUCT",
+        {"id": product_id, "status": "ACTIVE"},
+    )
+    if not ok_status:
+        return False, {
+            "error": "status_update_failed",
+            "detail": status_result.get("error", "unknown"),
+        }
+
+    # Step 2: publish on the requested channels
+    publication_ids = params.get("publication_ids")
+    if not publication_ids:
+        resolved = _resolve_online_store_publication()
+        if not resolved:
+            return False, {
+                "error": (
+                    "no_online_store_publication_found"
+                ),
+                "detail": (
+                    "SHOPIFY_LIST_PUBLICATIONS returned no "
+                    "publication named 'Online Store'."
+                ),
+            }
+        publication_ids = [resolved]
+
+    ok_pub, pub_result = _router_call(
+        "SHOPIFY_PUBLISH_RESOURCE",
+        {
+            "id": product_id,
+            "publication_ids": publication_ids,
+        },
+    )
+    return ok_pub, {
+        "product_id": product_id,
+        "status_updated": True,
+        "publication_ids": publication_ids,
+        "publish_result": pub_result,
+    }
+
+
 # ── content_publisher → SHOPIFY_CREATE_ARTICLE (draft blog) ──────
 
 
