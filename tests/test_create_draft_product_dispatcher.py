@@ -406,6 +406,122 @@ class TestImageAttachment:
         assert "SHOPIFY_CREATE_PRODUCT_MEDIA" not in caps
         assert "images_attached" not in result
 
+    def test_image_query_triggers_stock_search(self):
+        """W963-169: _metadata.image_query -> IMAGE_STOCK_SEARCH
+        fan-out -> first photo attached as hero image."""
+        captured: list[tuple[str, dict]] = []
+
+        def fake_router_call(cap, params):
+            captured.append((cap, dict(params)))
+            if cap == "SHOPIFY_CREATE_PRODUCT":
+                return True, {
+                    "product": {
+                        "id": "gid://x/1",
+                        "variants": [{
+                            "id": "gid://x/v1",
+                            "price": "0.0",
+                            "sku": "",
+                        }],
+                    },
+                }
+            if cap == "SHOPIFY_UPDATE_VARIANTS":
+                return True, {}
+            if cap == "IMAGE_STOCK_SEARCH":
+                return True, {
+                    "photo_count": 2,
+                    "photos": [
+                        {
+                            "url_large2x": (
+                                "https://pexels.com/p1.jpg"
+                                "?w=1500"
+                            ),
+                            "alt": "matching photo",
+                        },
+                        {
+                            "url_large2x": (
+                                "https://pexels.com/p2.jpg"
+                            ),
+                            "alt": "second photo",
+                        },
+                    ],
+                }
+            if cap == "SHOPIFY_CREATE_PRODUCT_MEDIA":
+                return True, {
+                    "attached_count": len(
+                        params.get("media") or [],
+                    ),
+                }
+            return False, {"error": "unexpected"}
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=fake_router_call,
+        ):
+            ok, result = _create_draft_product_dispatch({
+                "title": "Autonomous Image Test",
+                "_metadata": {
+                    "suggested_price": 15.0,
+                    "image_query": "vitamin c serum",
+                    "image_count": 1,
+                },
+            })
+
+        assert ok is True
+        assert result["images_attached"] == 1
+        assert (
+            result["images_discovered_from"]
+            == "stock_search"
+        )
+        # Capability chain: create -> update -> search -> media
+        caps = [c for c, _ in captured]
+        assert caps == [
+            "SHOPIFY_CREATE_PRODUCT",
+            "SHOPIFY_UPDATE_VARIANTS",
+            "IMAGE_STOCK_SEARCH",
+            "SHOPIFY_CREATE_PRODUCT_MEDIA",
+        ]
+        # The search params carried the query + clamped limit
+        search_params = captured[2][1]
+        assert search_params["query"] == "vitamin c serum"
+        assert search_params["limit"] == 1
+
+    def test_explicit_urls_skip_stock_search(self):
+        """When image_urls is provided, no IMAGE_STOCK_SEARCH
+        call should fire even if image_query is also set."""
+        captured: list[str] = []
+
+        def fake(cap, params):
+            captured.append(cap)
+            if cap == "SHOPIFY_CREATE_PRODUCT":
+                return True, {
+                    "product": {
+                        "id": "gid://x/1",
+                        "variants": [{
+                            "id": "gid://x/v1",
+                            "price": "0.0",
+                            "sku": "",
+                        }],
+                    },
+                }
+            return True, {}
+
+        with patch(
+            "core.approval.dispatchers._router_call",
+            side_effect=fake,
+        ):
+            _create_draft_product_dispatch({
+                "title": "Has URLs",
+                "_metadata": {
+                    "suggested_price": 10.0,
+                    "image_urls": [
+                        "https://images.pexels.com/a.jpg",
+                    ],
+                    "image_query": "fallback query",
+                },
+            })
+
+        assert "IMAGE_STOCK_SEARCH" not in captured
+
     def test_pexels_urls_resized(self):
         """W963-168: Pexels URLs must be sized to avoid
         Shopify's 25MP limit triggering FAILED media uploads."""

@@ -811,6 +811,57 @@ def _create_draft_product_dispatch(
     return ok, result
 
 
+def _discover_stock_images(
+    *,
+    query: str,
+    limit: int,
+    orientation: str,
+    result: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """W963-169: search IMAGE_STOCK_SEARCH for hero images.
+
+    Returns a list of {url, alt} dicts ready to feed into the
+    SHOPIFY_CREATE_PRODUCT_MEDIA call. Picks ``url_large2x``
+    (~2MP) which fits comfortably under Shopify's 25MP ceiling
+    so we don't even need W963-168's resize hack -- the adapter's
+    own size variant is correct by construction.
+
+    On any failure returns an empty list + tags result.images_
+    discover_error for observability.
+    """
+    params = {"query": query, "limit": max(1, min(limit, 10))}
+    if orientation in ("landscape", "portrait", "square"):
+        params["orientation"] = orientation
+    ok, search_result = _router_call(
+        "IMAGE_STOCK_SEARCH", params,
+    )
+    if not ok:
+        result["images_discover_error"] = (
+            search_result.get("error", "unknown")
+        )
+        return []
+    photos = search_result.get("photos") or []
+    out: list[dict[str, Any]] = []
+    for p in photos[:limit]:
+        if not isinstance(p, dict):
+            continue
+        # Prefer large2x (~2MP); fall back to large then medium.
+        url = (
+            p.get("url_large2x")
+            or p.get("url_large")
+            or p.get("url_medium")
+            or ""
+        )
+        if not url:
+            continue
+        out.append({
+            "url": url,
+            "alt": p.get("alt") or query,
+        })
+    result["images_discovered_from"] = "stock_search"
+    return out
+
+
 def _normalise_image_url(url: str) -> str:
     """W963-168: resize Pexels URLs to a safe dimension before
     handing them to Shopify.
@@ -861,6 +912,31 @@ def _attach_product_images(
                 media_inputs.append({
                     "url": _normalise_image_url(url),
                 })
+
+    # W963-169: when no explicit URLs were supplied AND the
+    # proposal carries an _metadata.image_query, fan out to
+    # IMAGE_STOCK_SEARCH to find a hero image automatically.
+    # Engines that don't set image_query get the previous
+    # silent-skip behaviour. limit defaults to 1 (just pick
+    # the top result).
+    image_query = metadata.get("image_query")
+    if (
+        not media_inputs
+        and isinstance(image_query, str)
+        and image_query.strip()
+    ):
+        discovered = _discover_stock_images(
+            query=image_query.strip(),
+            limit=int(metadata.get("image_count", 1) or 1),
+            orientation=str(
+                metadata.get("image_orientation", "")
+                or "",
+            ),
+            result=result,
+        )
+        for entry in discovered:
+            media_inputs.append(entry)
+
     if not media_inputs:
         return None
 

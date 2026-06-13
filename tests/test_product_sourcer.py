@@ -210,3 +210,65 @@ class TestEmptyInput:
         })
         assert result["status"] == "success"
         assert result["data"]["count_returned"] == 0
+
+
+class TestImageQueryBuilder:
+    """W963-169: _build_image_query strips size/quantity
+    suffixes + appends a niche-theme word so Pexels search
+    returns niche-appropriate photos."""
+
+    def test_strips_ml_suffix(self):
+        from engines.product_sourcer.draft_creator import (
+            _build_image_query,
+        )
+        q = _build_image_query(
+            {"name": "Rose Hip Hydrating Toner 200ml"},
+            "beauty",
+        )
+        assert "200ml" not in q
+        assert "skincare" in q
+        assert "rose hip" in q
+
+    def test_strips_pack_suffix(self):
+        from engines.product_sourcer.draft_creator import (
+            _build_image_query,
+        )
+        q = _build_image_query(
+            {"name": "Matcha Antioxidant Face Mask (5-pack)"},
+            "beauty",
+        )
+        assert "5" not in q
+        assert "pack" not in q
+        assert "matcha" in q
+
+    def test_appends_niche_theme(self):
+        from engines.product_sourcer.draft_creator import (
+            _build_image_query,
+        )
+        q = _build_image_query(
+            {"name": "Bamboo Cutting Board"}, "home",
+        )
+        assert "home" in q
+
+    def test_empty_name_falls_back_to_niche(self):
+        from engines.product_sourcer.draft_creator import (
+            _build_image_query,
+        )
+        assert _build_image_query(
+            {}, "beauty",
+        ) == "beauty"
+
+    def test_query_capped_at_6_words(self):
+        from engines.product_sourcer.draft_creator import (
+            _build_image_query,
+        )
+        q = _build_image_query(
+            {
+                "name": (
+                    "Super Premium Triple Action Vitamin "
+                    "C Brightening Serum Plus"
+                ),
+            },
+            "beauty",
+        )
+        assert len(q.split()) <= 6

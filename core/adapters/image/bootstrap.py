@@ -23,12 +23,14 @@ from utils.logger import get_logger
 
 from ..registry import AdapterRegistry, get_registry
 from .dalle3 import DallE3Adapter
+from .pexels_photos import PexelsPhotosAdapter
 
 logger = get_logger("adapters.image.bootstrap")
 
 
 _IMAGE_ADAPTER_CLASSES = (
     DallE3Adapter,
+    PexelsPhotosAdapter,
 )
 
 

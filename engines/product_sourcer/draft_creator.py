@@ -69,14 +69,75 @@ def _candidate_to_params(
         # W963-3: structured metadata so the future executor can
         # join back to the source catalog (niche + suggested
         # price band) without re-deriving.
+        # W963-169: image_query carries a Pexels search hint
+        # so the dispatcher finds + attaches a stock photo
+        # automatically. Built from the product name + niche
+        # so beauty stores get beauty-themed photos, fashion
+        # stores get fashion photos, etc.
         "_metadata": {
             "source": "product_sourcer",
             "niche": niche,
             "suggested_price": candidate.get("suggested_price"),
             "price_min": candidate.get("price_min"),
             "price_max": candidate.get("price_max"),
+            "image_query": _build_image_query(
+                candidate, niche,
+            ),
+            "image_count": 1,
         },
     }
+
+
+def _build_image_query(
+    candidate: dict[str, Any], niche: str,
+) -> str:
+    """W963-169: build a Pexels search query from the product
+    name + niche.
+
+    Examples:
+        ('Vitamin C Brightening Serum 30ml', 'beauty')
+          -> 'vitamin c brightening serum skincare'
+        ('Bamboo Cutting Board', 'home')
+          -> 'bamboo cutting board home'
+
+    Strips quantity / size suffixes (30ml, 5-pack, 16ct, etc.)
+    so the query matches what Pexels has photo coverage of.
+    The niche is appended as a fallback theme so the photo
+    aesthetic matches the store (skincare / fashion / home /
+    tech / food).
+    """
+    import re
+    name = str(candidate.get("name") or "").strip()
+    if not name:
+        return niche or "product"
+    # Strip common quantity/size suffixes
+    name_clean = re.sub(
+        r"\s*[\(\[]?\s*"
+        r"(\d+\s*(ml|oz|g|ct|pack|piece|pcs|pair|"
+        r"set|count)|[0-9]+\s*-\s*pack|[0-9]+\s*-\s*pair)"
+        r"\s*[\)\]]?",
+        "",
+        name,
+        flags=re.IGNORECASE,
+    ).strip()
+    # Append niche-theme word so beauty stores get beauty
+    # aesthetic photos
+    _NICHE_THEME = {
+        "beauty": "skincare",
+        "fashion": "clothing",
+        "home": "home",
+        "tech": "tech",
+        "food": "food",
+    }
+    theme = _NICHE_THEME.get(
+        str(niche).lower(), str(niche).lower(),
+    )
+    query = (
+        f"{name_clean} {theme}".strip().lower()
+    )
+    # Pexels matches better with short queries; cap at 6 words
+    words = query.split()
+    return " ".join(words[:6])
 
 
 def _build_narrative(

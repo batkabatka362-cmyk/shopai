@@ -572,6 +572,7 @@ class Capability(str, Enum):
     VIDEO_STOCK_SEARCH = "video_stock_search"    # Pexels / Pixabay: query → clips
     VIDEO_GENERATE = "video_generate"            # AI text→video (Higgsfield/Sora/Veo)
     VIDEO_GET_STATUS = "video_get_status"        # Poll async AI video job status
+    IMAGE_STOCK_SEARCH = "image_stock_search"    # Pexels / Pixabay: query → photo URLs
 
     # ── Automation ────────────────────────
     AUTOMATION_TRIGGER = "automation_trigger"
