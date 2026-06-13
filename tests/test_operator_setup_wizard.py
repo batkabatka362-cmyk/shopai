@@ -17,8 +17,10 @@ from engines._operator_setup import (
     categorise_existing,
     parse_env_file,
     prompt_for_var,
+    read_env_raw_lines,
     run_wizard,
     write_env_file,
+    write_env_preserving_order,
 )
 
 
@@ -314,3 +316,188 @@ class TestRunWizard:
         assert "MY_CUSTOM_KEY=preserved" in text
         assert "ANOTHER=also_preserved" in text
         assert report.keys_preserved == 2
+
+
+class TestPreservingWrite:
+    """W963-181: write_env_preserving_order keeps comments,
+    blank lines, and key ORDER from the original .env."""
+
+    def test_preserves_comments(self, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text(
+            "# section: Shopify\n"
+            "SHOPAI_SHOPIFY_URL=acme.myshopify.com\n"
+            "\n"
+            "# section: Ads (this comment must survive)\n"
+            "META_ADS_ACCESS_TOKEN=abc\n",
+            encoding="utf-8",
+        )
+        write_env_preserving_order(
+            env,
+            {
+                "SHOPAI_SHOPIFY_URL": "acme.myshopify.com",
+                "META_ADS_ACCESS_TOKEN": "abc",
+            },
+            known_keys={
+                "SHOPAI_SHOPIFY_URL",
+                "META_ADS_ACCESS_TOKEN",
+            },
+        )
+        text = env.read_text(encoding="utf-8")
+        assert "# section: Shopify" in text
+        assert (
+            "# section: Ads (this comment must survive)"
+            in text
+        )
+
+    def test_preserves_key_order(self, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text(
+            "Z_KEY=last\n"
+            "A_KEY=first\n"
+            "M_KEY=middle\n",
+            encoding="utf-8",
+        )
+        write_env_preserving_order(
+            env,
+            {
+                "Z_KEY": "last",
+                "A_KEY": "first",
+                "M_KEY": "middle",
+            },
+            known_keys={"Z_KEY", "A_KEY", "M_KEY"},
+        )
+        lines = [
+            line.strip()
+            for line in env.read_text(
+                encoding="utf-8",
+            ).splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
+        # Order from input file preserved (not alphabetical)
+        assert lines == [
+            "Z_KEY=last",
+            "A_KEY=first",
+            "M_KEY=middle",
+        ]
+
+    def test_appends_new_keys_at_end(self, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text(
+            "# header\nKEY_A=value_a\n",
+            encoding="utf-8",
+        )
+        write_env_preserving_order(
+            env,
+            {
+                "KEY_A": "value_a",
+                "KEY_NEW": "fresh",
+            },
+            known_keys={"KEY_A", "KEY_NEW"},
+        )
+        lines = env.read_text(
+            encoding="utf-8",
+        ).splitlines()
+        # Header + KEY_A unchanged at top
+        assert lines[0] == "# header"
+        assert "KEY_A=value_a" in lines
+        # New key appended somewhere after KEY_A
+        new_idx = lines.index("KEY_NEW=fresh")
+        a_idx = lines.index("KEY_A=value_a")
+        assert new_idx > a_idx
+
+    def test_unknown_keys_preserved_verbatim(self, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text(
+            "# comment\n"
+            "WIZARD_KEY=managed\n"
+            "OPERATOR_KEY=hand_edited  # operator's note\n",
+            encoding="utf-8",
+        )
+        write_env_preserving_order(
+            env,
+            {"WIZARD_KEY": "managed"},
+            known_keys={"WIZARD_KEY"},
+        )
+        text = env.read_text(encoding="utf-8")
+        assert "OPERATOR_KEY=hand_edited" in text
+        assert "operator's note" in text
+
+    def test_value_update_replaces_inline(self, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text(
+            "# Shopify\n"
+            "SHOPAI_SHOPIFY_URL=old.myshopify.com\n"
+            "# Ads\n"
+            "META_ADS_ACCOUNT_ID=12345\n",
+            encoding="utf-8",
+        )
+        write_env_preserving_order(
+            env,
+            {
+                "SHOPAI_SHOPIFY_URL": "new.myshopify.com",
+                "META_ADS_ACCOUNT_ID": "12345",
+            },
+            known_keys={
+                "SHOPAI_SHOPIFY_URL",
+                "META_ADS_ACCOUNT_ID",
+            },
+        )
+        text = env.read_text(encoding="utf-8")
+        assert "new.myshopify.com" in text
+        assert "old.myshopify.com" not in text
+        # Comments still in their original positions
+        lines = text.splitlines()
+        assert lines.index("# Shopify") < lines.index(
+            "SHOPAI_SHOPIFY_URL=new.myshopify.com",
+        )
+
+    def test_delete_unset_known(self, tmp_path):
+        """delete_unset_known=True removes keys whose new value
+        is empty string."""
+        env = tmp_path / ".env"
+        env.write_text(
+            "KEEP=alive\nDROP=should_go\n",
+            encoding="utf-8",
+        )
+        write_env_preserving_order(
+            env,
+            {"KEEP": "alive", "DROP": ""},
+            known_keys={"KEEP", "DROP"},
+            delete_unset_known=True,
+        )
+        text = env.read_text(encoding="utf-8")
+        assert "KEEP=alive" in text
+        assert "DROP=" not in text
+
+    def test_read_raw_lines_missing_file(self, tmp_path):
+        assert read_env_raw_lines(
+            tmp_path / "missing.env",
+        ) == []
+
+    def test_run_wizard_preserves_comments_end_to_end(
+        self, tmp_path,
+    ):
+        env = tmp_path / ".env"
+        env.write_text(
+            "# === Shopify (DO NOT DELETE) ===\n"
+            "SHOPAI_SHOPIFY_URL=acme.myshopify.com\n"
+            "SHOPAI_SHOPIFY_KEY=shpat_" + "x" * 40 + "\n"
+            "\n"
+            "# operator's note: rotate this monthly\n"
+            "OPERATOR_KEY=preserved\n",
+            encoding="utf-8",
+        )
+        run_wizard(
+            env_path=env,
+            input_fn=lambda _: "",
+            print_fn=lambda _: None,
+        )
+        text = env.read_text(encoding="utf-8")
+        # Both comments survived
+        assert "# === Shopify (DO NOT DELETE) ===" in text
+        assert (
+            "# operator's note: rotate this monthly"
+            in text
+        )
+        assert "OPERATOR_KEY=preserved" in text

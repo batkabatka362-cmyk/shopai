@@ -356,6 +356,17 @@ def parse_env_file(env_path: Path) -> dict[str, str]:
     return out
 
 
+def _format_value(val: str) -> str:
+    """Quote a value if it contains whitespace or # so the
+    KEY=VALUE round-trip is unambiguous."""
+    needs_quote = (
+        " " in val or "\t" in val or "#" in val
+    )
+    if needs_quote:
+        return f'"{val}"'
+    return val
+
+
 def write_env_file(
     env_path: Path,
     values: dict[str, str],
@@ -365,8 +376,14 @@ def write_env_file(
     """Atomically write a dict + preserved lines to .env.
 
     preserved_lines is any blank/comment lines and unknown keys
-    we should keep verbatim. We always rewrite values from the
-    dict on top of the preserved lines.
+    we should keep verbatim. Wizard-managed values are sorted +
+    written after the preserved block. Legacy callers (tests
+    written before W963-181) keep working.
+
+    NEW callers should prefer ``write_env_preserving_order``
+    which preserves comment ORDER + key ORDER relative to the
+    original file -- the simpler API here loses comment
+    placement.
     """
     tmp = env_path.with_suffix(env_path.suffix + ".tmp")
     body_lines: list[str] = []
@@ -376,16 +393,113 @@ def write_env_file(
             body_lines.append("")  # blank separator
     # Write dict values in deterministic order
     for key in sorted(values.keys()):
-        val = values[key]
-        # Quote if contains whitespace or # to be safe
-        needs_quote = (
-            " " in val or "\t" in val or "#" in val
-        )
-        if needs_quote:
-            val = f'"{val}"'
-        body_lines.append(f"{key}={val}")
+        body_lines.append(f"{key}={_format_value(values[key])}")
     tmp.write_text(
         "\n".join(body_lines) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(tmp, env_path)
+
+
+# ── Order-preserving raw-line interface (W963-181) ───────────────
+
+
+def read_env_raw_lines(env_path: Path) -> list[str]:
+    """Read .env as raw lines (no parsing). Returns [] if the
+    file doesn't exist. Newlines stripped per line."""
+    if not env_path.exists():
+        return []
+    return env_path.read_text(
+        encoding="utf-8",
+    ).splitlines()
+
+
+def write_env_preserving_order(
+    env_path: Path,
+    new_values: dict[str, str],
+    *,
+    delete_unset_known: bool = False,
+    known_keys: set[str] | None = None,
+) -> None:
+    """W963-181: atomically rewrite .env preserving comments,
+    blank lines, and key ORDER from the original file. Known
+    keys in ``new_values`` replace their existing line; new
+    keys (not in original) are appended at the end. Unknown
+    keys + comments + blank lines are preserved verbatim.
+
+    Args:
+        env_path: Path to .env (created if missing).
+        new_values: keys the wizard manages + their target
+            values. Includes already-set keys (with existing
+            values) + newly-set keys + previously-unknown keys.
+        delete_unset_known: if True, KNOWN keys whose value is
+            empty string are removed from the output (use to
+            explicitly clear a key). Default False: empty
+            values stay as ``KEY=`` lines.
+        known_keys: optional set of keys the wizard owns.
+            Used to decide which existing KEY= lines we may
+            replace vs. preserve verbatim. If omitted, treats
+            ``new_values.keys()`` as the owned set.
+    """
+    raw_lines = read_env_raw_lines(env_path)
+    owned = set(known_keys) if known_keys else set(
+        new_values.keys(),
+    )
+
+    out_lines: list[str] = []
+    seen_in_file: set[str] = set()
+
+    for raw in raw_lines:
+        stripped = raw.strip()
+        # Preserve comments + blanks verbatim
+        if not stripped or stripped.startswith("#"):
+            out_lines.append(raw)
+            continue
+        # KEY=VALUE line?
+        if "=" not in stripped:
+            out_lines.append(raw)
+            continue
+        key = stripped.partition("=")[0].strip()
+        if key in owned:
+            # Wizard-managed line. Replace value if we have
+            # one; otherwise keep verbatim.
+            if key in new_values:
+                seen_in_file.add(key)
+                val = new_values[key]
+                if delete_unset_known and val == "":
+                    continue  # remove the line entirely
+                out_lines.append(
+                    f"{key}={_format_value(val)}",
+                )
+            else:
+                # Wizard owns this key but the run didn't
+                # produce a value (e.g. optional skipped).
+                # Preserve the existing line.
+                out_lines.append(raw)
+        else:
+            # Unknown key (operator hand-edited / from
+            # another module) -- preserve verbatim.
+            out_lines.append(raw)
+
+    # Append wizard-managed keys NOT seen in the file
+    new_keys = [
+        k for k in new_values.keys()
+        if k not in seen_in_file
+    ]
+    if new_keys:
+        # Blank separator before the new block if last line
+        # has content
+        if out_lines and out_lines[-1].strip():
+            out_lines.append("")
+        for k in sorted(new_keys):
+            val = new_values[k]
+            if delete_unset_known and val == "":
+                continue
+            out_lines.append(f"{k}={_format_value(val)}")
+
+    tmp = env_path.with_suffix(env_path.suffix + ".tmp")
+    tmp.write_text(
+        "\n".join(out_lines) + "\n",
         encoding="utf-8",
     )
     os.replace(tmp, env_path)
@@ -543,9 +657,17 @@ def run_wizard(
                 status.invalid += 1
         report.categories.append(status)
 
-    write_env_file(
-        path, managed, preserved_lines=preserved,
+    # W963-181: use order-preserving write so comments + key
+    # placement from the original .env survive the round-trip.
+    known_keys_set: set[str] = set()
+    for cat in cats:
+        for v in cat.vars:
+            known_keys_set.add(v.key)
+    write_env_preserving_order(
+        path, managed, known_keys=known_keys_set,
     )
+    # Preserved-line count still surfaces in the report for
+    # operator visibility (which non-wizard keys did we keep?).
     report.keys_preserved = len(preserved)
 
     # Revenue-ready iff every required-for-revenue category has
