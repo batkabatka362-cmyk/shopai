@@ -169,11 +169,27 @@ query product($id: ID!) {{
 """.strip()
 
 
+# W963-164: include variants(first: 1) so the create response
+# carries the default variant id. Downstream price-set follow-up
+# (dispatchers.py _create_draft_product_dispatch) needs it to
+# call productVariantsBulkUpdate without an extra GET round-trip.
+# This is the only place the LIST-path fragment conflicts -- the
+# selection is INLINE here, not in _PRODUCT_FIELDS.
 _CREATE_PRODUCT_MUTATION = f"""
 mutation productCreate($input: ProductInput!) {{
   productCreate(input: $input) {{
     product {{
-      {_PRODUCT_FIELDS}
+      {_PRODUCT_FIELDS_BASE}
+      images(first: 1) {{ edges {{ node {{ id }} }} }}
+      variants(first: 1) {{
+        edges {{
+          node {{
+            id
+            price
+            sku
+          }}
+        }}
+      }}
     }}
     userErrors {{
       field
@@ -669,6 +685,28 @@ class ShopifyProductsAdapter(ShopifyBaseAdapter):
         )
         variants_count_raw = node.get("variantsCount") or {}
         seo_raw = node.get("seo") or {}
+        # W963-164: emit a flat ``variants`` list when the
+        # CREATE response carries variants(first: 1). The LIST
+        # path doesn't fetch variants so the field stays empty
+        # there. Downstream dispatchers (create_draft_product
+        # price-set follow-up) read this to find the default
+        # variant id without a second GET round-trip.
+        variants_out: list[dict[str, Any]] = []
+        variants_edges_raw = (
+            node.get("variants") or {}
+        ).get("edges") or []
+        for edge in variants_edges_raw:
+            if not isinstance(edge, dict):
+                continue
+            v_node = edge.get("node") or {}
+            if not isinstance(v_node, dict):
+                continue
+            variants_out.append({
+                "id": v_node.get("id", "") or "",
+                "price": v_node.get("price", "") or "",
+                "sku": v_node.get("sku", "") or "",
+            })
+
         return {
             "id": node.get("id", "") or "",
             "title": node.get("title", "") or "",
@@ -693,6 +731,7 @@ class ShopifyProductsAdapter(ShopifyBaseAdapter):
             "variant_count": int(
                 variants_count_raw.get("count", 0) or 0
             ),
+            "variants": variants_out,
             "seo": {
                 "title": seo_raw.get("title", "") or "",
                 "description": seo_raw.get(

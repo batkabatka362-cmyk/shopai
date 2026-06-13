@@ -709,6 +709,12 @@ def _create_draft_product_dispatch(
     trusts it. Operators who explicitly want to publish an active
     product should change `status` to ACTIVE in the queue entry's
     params before approving (or use a future ``--publish`` flag).
+
+    W963-164: after productCreate, follow up with
+    productVariantsBulkUpdate to set the variant price from
+    _metadata.suggested_price. Pre-fix every newly-created
+    product had a default $0 variant -- the product appeared
+    in the catalog but customers literally could not buy it.
     """
     title = str(params.get("title", "")).strip()
     if not title:
@@ -717,7 +723,62 @@ def _create_draft_product_dispatch(
         k: v for k, v in params.items()
         if not k.startswith("_")
     }
-    return _router_call("SHOPIFY_CREATE_PRODUCT", adapter_params)
+    ok, result = _router_call(
+        "SHOPIFY_CREATE_PRODUCT", adapter_params,
+    )
+    if not ok:
+        return ok, result
+
+    # W963-164: thread suggested_price -> variant price.
+    metadata = params.get("_metadata") or {}
+    suggested_price = metadata.get("suggested_price") if (
+        isinstance(metadata, dict)
+    ) else None
+    if suggested_price is None:
+        return ok, result
+    try:
+        price = float(suggested_price)
+    except (TypeError, ValueError):
+        return ok, result
+    if price <= 0:
+        return ok, result
+
+    product = result.get("product") or {}
+    product_id = str(product.get("id") or "").strip()
+    variants = product.get("variants") or []
+    variant_id = ""
+    if variants and isinstance(variants, list):
+        first = variants[0]
+        if isinstance(first, dict):
+            variant_id = str(first.get("id") or "").strip()
+    if not product_id or not variant_id:
+        # Create succeeded but we can't locate the default
+        # variant -- surface success on the create + log the
+        # gap as a result field instead of erroring out.
+        result["price_set"] = False
+        result["price_set_skip_reason"] = (
+            "default_variant_id_not_in_response"
+        )
+        return ok, result
+
+    price_str = f"{price:.2f}"
+    price_ok, price_result = _router_call(
+        "SHOPIFY_UPDATE_VARIANTS",
+        {
+            "product_id": product_id,
+            "variants": [{
+                "id": variant_id,
+                "price": price_str,
+            }],
+        },
+    )
+    result["price_set"] = bool(price_ok)
+    result["price_set_value"] = price_str
+    if not price_ok:
+        result["price_set_error"] = price_result.get(
+            "error", "unknown",
+        )
+    return ok, result
 
 
 # ── content_publisher → SHOPIFY_CREATE_ARTICLE (draft blog) ──────
