@@ -130,6 +130,14 @@ class TestPublishProduct:
             result["error"]
             == "no_online_store_publication_found"
         )
+        # W963-175: error envelope surfaces partial-state so
+        # operator knows the product IS ACTIVE on Shopify but
+        # NOT on the Online Store sales channel.
+        assert result["status_updated"] is True
+        assert (
+            result["product_id"]
+            == "gid://shopify/Product/100"
+        )
 
     def test_status_update_failure_short_circuits(self):
         calls: list[str] = []

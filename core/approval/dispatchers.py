@@ -1070,6 +1070,16 @@ def _publish_product_dispatch(
     if not publication_ids:
         resolved = _resolve_online_store_publication()
         if not resolved:
+            # W963-175: partial-state observability. The
+            # status flip on Shopify ALREADY HAPPENED at
+            # step 1; the failure here is only the publish
+            # step. Surface status_updated=True + the
+            # product_id so the operator knows the product
+            # is now ACTIVE (visible via direct URL / API)
+            # but NOT on the Online Store sales channel.
+            # Pre-fix the error envelope made it look like
+            # the dispatcher was a no-op when in fact it
+            # had mutated state.
             return False, {
                 "error": (
                     "no_online_store_publication_found"
@@ -1078,6 +1088,8 @@ def _publish_product_dispatch(
                     "SHOPIFY_LIST_PUBLICATIONS returned no "
                     "publication named 'Online Store'."
                 ),
+                "product_id": product_id,
+                "status_updated": True,
             }
         publication_ids = [resolved]
 
