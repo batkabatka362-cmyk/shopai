@@ -142,6 +142,21 @@ def fire(
     try:
         from core.context import active_store
     except Exception as exc:  # noqa: BLE001
+        # W963-174: log the silent-fallback path so it's at
+        # least operator-visible if it ever fires in production.
+        # core.context is in-process + has no transitive deps
+        # that could realistically fail, so this branch should
+        # never execute -- but if it does, the Pattern CD wrap
+        # is bypassed silently + every applier resolves
+        # credentials via the env-default chain.
+        import logging
+        logging.getLogger(__name__).warning(
+            "autonomy_fire: core.context import failed "
+            "(%s); active_store wrap will be skipped for "
+            "this dispatch -- per-store credential routing "
+            "is DEGRADED.",
+            exc,
+        )
         active_store = None  # type: ignore[assignment]
 
     grouped: dict[str, list[dict]] = {}

@@ -1000,7 +1000,14 @@ def _resolve_online_store_publication() -> str:
         sid = str(get_active_store_id() or "")
     except Exception:  # noqa: BLE001
         sid = ""
-    if sid in _ONLINE_STORE_PUB_CACHE:
+    # W963-174: only consult / write the cache when we have a
+    # real sid. The empty-key path could leak a publication GID
+    # from one no-active_store call to the next -- if that's
+    # ever a different store (multi-tenant cron, test fixtures),
+    # the resolved GID belongs to whichever Shopify happened to
+    # answer the first uncached call. Always re-resolve on
+    # sid='' so the active_store-less path stays correct.
+    if sid and sid in _ONLINE_STORE_PUB_CACHE:
         return _ONLINE_STORE_PUB_CACHE[sid]
 
     ok, result = _router_call(
@@ -1015,7 +1022,8 @@ def _resolve_online_store_publication() -> str:
         if name == "online store":
             pub_id = str(pub.get("id") or "")
             if pub_id:
-                _ONLINE_STORE_PUB_CACHE[sid] = pub_id
+                if sid:
+                    _ONLINE_STORE_PUB_CACHE[sid] = pub_id
                 return pub_id
     return ""
 
