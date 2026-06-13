@@ -1463,6 +1463,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit raw JSON instead of text view",
     )
 
+    # W963-180: interactive .env setup wizard.
+    operator_setup_p = sub.add_parser(
+        "operator-setup",
+        help=(
+            "W963-180: interactive wizard that walks the "
+            "operator through each .env category (Shopify, "
+            "ad channels, email, notify webhook, vendor "
+            "webhooks). Preserves existing keys + comments; "
+            "writes back atomically. Closes the manual "
+            ".env-edit step in docs/OPERATOR_QUICK_START.md."
+        ),
+    )
+    operator_setup_p.add_argument(
+        "--env-file", default=".env",
+        help="Path to .env (default: .env)",
+    )
+    operator_setup_p.add_argument(
+        "--rewrite", action="store_true",
+        help=(
+            "Re-prompt for keys already set (default skips "
+            "them)."
+        ),
+    )
+    operator_setup_p.add_argument(
+        "--json", action="store_true",
+        help="Emit SetupReport JSON instead of text view",
+    )
+
     # W963-5: earn-bootstrap — one-command cold-start chain
     # that wraps revenue-readiness + product-candidates.
     earn_bootstrap_p = sub.add_parser(
@@ -18385,6 +18413,57 @@ def _cmd_revenue_readiness(args) -> None:
         print(f"  NEXT: {next_action}")
     else:
         print("  All gates passed — monitor + iterate.")
+
+
+def _cmd_operator_setup(args) -> None:
+    """W963-180: interactive .env setup wizard."""
+    from engines._operator_setup import (
+        run_wizard, SetupReport,
+    )
+    from pathlib import Path
+
+    env_file = getattr(args, "env_file", ".env") or ".env"
+    force_rewrite = bool(getattr(args, "rewrite", False))
+    as_json = bool(getattr(args, "json", False))
+
+    report = run_wizard(
+        env_path=Path(env_file),
+        force_rewrite=force_rewrite,
+    )
+
+    if as_json:
+        from dataclasses import asdict
+        print(json.dumps(asdict(report), indent=2))
+        return
+
+    print("\n=== Summary ===")
+    for cat_status in report.categories:
+        print(
+            f"  {cat_status.name:<35} "
+            f"already_set={cat_status.already_set} "
+            f"newly_set={cat_status.newly_set} "
+            f"skipped={cat_status.skipped}"
+        )
+    if report.keys_added:
+        print(
+            f"\nNewly set: "
+            f"{', '.join(report.keys_added)}"
+        )
+    print(
+        f"Preserved {report.keys_preserved} "
+        "non-wizard keys verbatim"
+    )
+    if report.revenue_ready:
+        print(
+            "\n[OK] Revenue-ready: Shopify + at least one "
+            "ad channel configured. Next: shopai go-live + "
+            "shopai cycle schedule"
+        )
+    else:
+        print(
+            "\n[WARN] NOT revenue-ready -- set at least "
+            "one ad-channel API key + Shopify credentials"
+        )
 
 
 def _cmd_go_live(args) -> None:
@@ -61545,6 +61624,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "go-live":
         _cmd_go_live(args)
+        return
+
+    if args.command == "operator-setup":
+        _cmd_operator_setup(args)
         return
 
     if args.command == "revenue-readiness":
