@@ -52,29 +52,46 @@ def list_existing_discount_titles(
             "discount_compat router import failed: %s", exc,
         )
         return set()
+    # W963-177: paginate through ALL discounts, not just the
+    # first 250. Established stores with marketing teams running
+    # quarterly promos easily accumulate 250+ codes; capping at
+    # one page meant dedup would miss any code beyond #250 +
+    # store_configurator would try to re-create them, hitting
+    # Shopify's unique-code rejection. Cap at 10 pages (2,500
+    # codes) as a runaway safety net.
+    titles: set[str] = set()
+    cursor: str | None = None
     try:
         router = get_router()
-        result = router.execute(
-            Capability.SHOPIFY_LIST_DISCOUNTS,
-            {"limit": 250},
-        )
+        for _ in range(10):
+            params: dict[str, Any] = {"limit": 250}
+            if cursor:
+                params["cursor"] = cursor
+            result = router.execute(
+                Capability.SHOPIFY_LIST_DISCOUNTS, params,
+            )
+            if not getattr(result, "ok", False):
+                break
+            data = getattr(result, "data", None) or {}
+            for d in data.get("discounts") or []:
+                if not isinstance(d, dict):
+                    continue
+                title = d.get("title") or d.get("code") or ""
+                if isinstance(title, str) and title:
+                    titles.add(title)
+            if not data.get("has_next_page"):
+                break
+            cursor = data.get("end_cursor") or ""
+            if not cursor:
+                break
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "discount_compat list_discounts raised: %s",
             exc,
         )
-        return set()
-    if not getattr(result, "ok", False):
-        return set()
-    data = getattr(result, "data", None) or {}
-    discounts = data.get("discounts") or []
-    titles: set[str] = set()
-    for d in discounts:
-        if not isinstance(d, dict):
-            continue
-        title = d.get("title") or d.get("code") or ""
-        if isinstance(title, str) and title:
-            titles.add(title)
+        # Return what we collected so far (partial is better
+        # than empty -- still useful for dedup)
+        return titles
     return titles
 
 
